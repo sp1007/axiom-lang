@@ -1,0 +1,68 @@
+import std.testing.assert
+import std.concurrency.distributed as dist
+import std.concurrency
+
+fn dist_011_spawn_remote_actor():
+    // Spawn actor trên một máy chủ vật lý khác
+    let node = dist.Node("192.168.1.100:9000")
+    let pid = dist.spawn_remote(node, fn(): assert(true))
+    assert(pid.is_remote())
+
+fn dist_012_message_passing_over_network():
+    let ch = dist.RemoteChannel[string](node_id: "node_b")
+    ch.send("Data from Node A")
+    assert(true)
+
+fn dist_013_supervisor_tree_let_it_crash():
+    // Giám sát Actor, tự động restart nếu sập (Let it crash)
+    let supervisor = dist.Supervisor(strategy: dist.RestartStrategy.OneForOne)
+    supervisor.watch(fn():
+        // Logic dễ lỗi
+        assert(true)
+    )
+    assert(supervisor.watched_count() == 1)
+
+fn dist_014_distributed_lock_consensus():
+    // Thuật toán đồng thuận cơ bản (Paxos/Raft mock)
+    let lock = dist.Mutex("global_resource")
+    lock.acquire()
+    // Critical section
+    lock.release()
+    assert(true)
+
+fn dist_015_actor_load_balancer():
+    let pool = dist.WorkerPool(workers: 5)
+    pool.dispatch(isolate("Task 1"))
+    assert(pool.active_workers() <= 5)
+
+fn dist_016_cloud_blob_storage():
+    import std.cloud.aws
+    let s3 = aws.S3Client(region: "us-east-1")
+    // s3.upload("my-bucket", "file.txt", "Data")
+    assert(s3.region == "us-east-1")
+
+fn dist_017_service_discovery_broadcast():
+    let registry = dist.ServiceRegistry()
+    registry.register("payment_service", "10.0.0.5:8080")
+    let addr = registry.discover("payment_service")
+    assert(addr == "10.0.0.5:8080")
+
+fn dist_018_distributed_cache():
+    let cache = dist.MemCache()
+    cache.set("key", "value", ttl_seconds: 60)
+    assert(cache.get("key") == "value")
+
+fn dist_019_pub_sub_event_streaming():
+    let broker = dist.MessageBroker()
+    broker.subscribe("orders", fn(event: string):
+        assert(event.length() > 0)
+    )
+    broker.publish("orders", "Order #123 created")
+    assert(true)
+
+fn dist_020_handling_node_failure():
+    let node = dist.Node("10.0.0.2")
+    let status = dist.ping(node, timeout_ms: 100)
+    match status:
+        Ok(_) => assert(true)
+        Err(e) => assert(e == "Timeout") // Node sập

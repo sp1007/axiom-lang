@@ -1,0 +1,74 @@
+import std.testing.assert
+import std.net.http
+import std.json
+import std.wasm
+
+fn web_001_basic_http_server():
+    let server = http.Server(port: 8080)
+    server.get("/", fn(req: http.Request) -> http.Response:
+        return http.ok("Hello Axiom Web!")
+    )
+    assert(server.port == 8080)
+
+fn web_002_json_serialization():
+    struct User:
+        id: i32
+        name: string
+    let u = User(id: 1, name: "Alice")
+    let json_str = json.encode(u)
+    assert(json_str.contains("Alice"))
+
+fn web_003_rest_api_endpoint():
+    let app = http.Router()
+    app.post("/api/users", fn(req: http.Request) -> http.Response:
+        let data = json.decode[User](req.body)
+        return http.created(json.encode(data))
+    )
+    assert(app.routes.length() == 1)
+
+fn web_004_websocket_realtime():
+    let ws = http.WebSocketServer(port: 8081)
+    ws.on_message(fn(client: http.WsClient, msg: string):
+        client.send("Echo: " + msg)
+    )
+    assert(ws.is_running() == false)
+
+fn web_005_orm_database_query():
+    import std.db.sql
+    let db = sql.connect("postgres://localhost/mydb")
+    let users = db.query[User]("SELECT * FROM users WHERE id = ?", 1)
+    assert(users.length() >= 0)
+
+fn web_006_jwt_auth_middleware():
+    let middleware = fn(req: http.Request, next: fn(http.Request)->http.Response) -> http.Response:
+        if not req.headers.contains("Authorization"):
+            return http.unauthorized()
+        return next(req)
+    assert(true)
+
+fn web_007_graphql_resolver():
+    import std.graphql
+    let schema = graphql.Schema()
+    schema.add_query("getUser", fn(args: Map[string, string]) -> User:
+        return User(id: 1, name: "GraphQL User")
+    )
+    assert(schema.queries.size() == 1)
+
+fn web_008_microservice_actor_health_check():
+    // Actor chạy ngầm phản hồi ping/pong
+    let health_actor = fn(ch: Channel[string]):
+        let msg = ch.recv()
+        if msg == "ping": ch.send("pong")
+    assert(true)
+
+fn web_009_rate_limiting_middleware():
+    mut requests := 0
+    let rate_limit = fn() -> bool:
+        requests = requests + 1
+        return requests <= 100
+    assert(rate_limit() == true)
+
+@[wasm::export]
+fn web_010_export_to_webassembly(a: i32, b: i32) -> i32:
+    // Biên dịch hàm này thành .wasm để chạy trên trình duyệt Frontend
+    return a + b

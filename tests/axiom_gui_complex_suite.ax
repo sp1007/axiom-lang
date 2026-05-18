@@ -1,0 +1,418 @@
+///    Dưới đây là bộ **`axiom_gui_complex_suite.ax`** bổ sung thêm 10 ví dụ nâng cao. Các ví dụ này tập trung vào việc **lồng ghép sâu (deep nesting)** các thành phần giao diện, quản lý trạng thái phức tạp, và kết hợp với kiến trúc lưới/hộp linh hoạt (lấy cảm hứng từ Flexbox/Grid và V UI). 
+///
+///    Bộ test này kiểm chứng khả năng của Trình biên dịch Axiom trong việc xử lý cây AST giao diện lớn, tính toán layout lồng nhau và quản lý vòng đời bộ nhớ cục bộ cho các sự kiện bất đồng bộ.
+///
+///    ### Các tính năng kiến trúc chính được kiểm chứng qua 10 ví dụ:
+///    1. **Kiến trúc Layout phân tầng (Nested Trees):** Kết hợp tự nhiên giữa `HStack`, `VStack`, `ZStack` và `ScrollView` cho phép dựng bất kỳ giao diện nào (như Kanban, IDE, Dashboard) tương tự triết lý của CSS Flexbox/Grid và cấu trúc component của V UI.
+///    2. **Dynamic / Conditional UI:** Các thành phần như `ui.If` (Ví dụ `107`) hay `ui.MatchWidget` (Ví dụ `109`) kiểm tra khả năng biên dịch giao diện linh hoạt dựa trên trạng thái biến (state-driven), tự động gọi lại hàm vẽ khi dữ liệu thay đổi.
+///    3. **Splitters & Lazy Loading:** Sử dụng `HSplit`/`VSplit` cho IDE interface và `ListView` cho bảng biểu hàng ngàn bản ghi (`108`), đòi hỏi bộ nhớ cục bộ (Actor Memory) phải rất ưu việt và trình GC thời gian biên dịch (CTGC) không rò rỉ RAM khi cuộn danh sách.
+///    4. **AI Compiler Hooks (`@[ai::auto_layout]`):** Ví dụ 110 tái khẳng định định hướng AI-Native của Axiom, nơi bộ phân tích AST tự động chuyển đổi cấu trúc cây `HStack` thành `VStack` khi chạy trên thiết bị di động.
+
+import std.testing.assert
+import std.ui
+import std.concurrency
+import std.time
+
+/// ============================================================================
+/// NHÓM 5: GIAO DIỆN LỒNG NHAU PHỨC TẠP (DEEP NESTING & COMPLEX LAYOUTS)
+/// ============================================================================
+
+fn gui_101_admin_dashboard_layout():
+    // Ví dụ: Bố cục Dashboard có Sidebar, Header và Nội dung chính
+    mut active_tab := "Home"
+    let dashboard = ui.Window(
+        title: "Admin Dashboard",
+        width: 1280, height: 720,
+        child: ui.HStack(
+            spacing: 0,
+            children: [
+                // 1. Sidebar bên trái
+                ui.VStack(
+                    width: 250, bg_color: ui.Color.hex("#2C3E50"), padding: 15,
+                    children: [
+                        ui.Label(text: "Axiom Admin", color: ui.Color.White, font_weight: ui.Font.Bold),
+                        ui.Spacer(height: 30),
+                        ui.Button(text: "Home", on_click: fn(): active_tab = "Home"),
+                        ui.Button(text: "Analytics", on_click: fn(): active_tab = "Analytics"),
+                        ui.Button(text: "Settings", on_click: fn(): active_tab = "Settings"),
+                        ui.Spacer(expand: true), // Đẩy nút Logout xuống cuối cùng
+                        ui.Button(text: "Logout", bg_color: ui.Color.Red)
+                    ]
+                ),
+                // 2. Khu vực Nội dung (Main Content)
+                ui.VStack(
+                    expand: true, bg_color: ui.Color.hex("#ECF0F1"),
+                    children: [
+                        // 2.1 Header
+                        ui.HStack(
+                            padding: 20, bg_color: ui.Color.White,
+                            children: [
+                                ui.Label(text: "Welcome back, Admin!", font_size: 18),
+                                ui.Spacer(expand: true),
+                                ui.TextField(placeholder: "Search...", width: 200),
+                                ui.Image(src: "avatar.png", width: 40, height: 40, corner_radius: 20)
+                            ]
+                        ),
+                        // 2.2 Khu vực hiển thị động dựa trên State
+                        ui.ScrollView(
+                            expand: true, padding: 20,
+                            child: ui.Container(id: "tab_content") // Tượng trưng cho nội dung tab
+                        )
+                    ]
+                )
+            ]
+        )
+    )
+    assert(dashboard.title == "Admin Dashboard")
+
+fn gui_102_chat_application_interface():
+    // Ví dụ: App chat với danh sách tin nhắn cuộn và khung nhập liệu
+    mut message_input := ""
+    let chat_app = ui.VStack(
+        expand: true,
+        children: [
+            // Header
+            ui.HStack(
+                padding: 10, bg_color: ui.Color.Blue,
+                children: [
+                    ui.Label(text: "Axiom Developers Chat", color: ui.Color.White),
+                    ui.Spacer(expand: true),
+                    ui.Label(text: "🟢 Online", font_size: 12)
+                ]
+            ),
+            // Message List
+            ui.ScrollView(
+                expand: true, bg_color: ui.Color.LightGray,
+                child: ui.VStack(
+                    spacing: 15, padding: 10,
+                    children: [
+                        ui.Container( // Tin nhắn người khác (Trái)
+                            bg_color: ui.Color.White, padding: 10, corner_radius: 8,
+                            align_self: ui.Align.Start,
+                            child: ui.Label(text: "Hello! How is the compiler going?")
+                        ),
+                        ui.Container( // Tin nhắn của mình (Phải)
+                            bg_color: ui.Color.Green, padding: 10, corner_radius: 8,
+                            align_self: ui.Align.End,
+                            child: ui.Label(text: "Just passed 100 tests!", color: ui.Color.White)
+                        )
+                    ]
+                )
+            ),
+            // Input Area
+            ui.HStack(
+                padding: 10, bg_color: ui.Color.White,
+                children: [
+                    ui.TextField(
+                        expand: true, placeholder: "Type a message...",
+                        on_change: fn(v: string): message_input = v
+                    ),
+                    ui.Button(
+                        text: "Send", bg_color: ui.Color.Blue,
+                        on_click: fn():
+                            message_input = "" // Clear input sau khi gửi
+                    )
+                ]
+            )
+        ]
+    )
+    assert(chat_app.children.length() == 3)
+
+fn gui_103_ecommerce_product_card():
+    // Card sản phẩm lồng ghép ZStack (Lớp đè lên nhau) để hiển thị thẻ "Sale"
+    let product_card = ui.Container(
+        width: 300, padding: 15, corner_radius: 12, shadow: ui.Shadow(radius: 5),
+        child: ui.VStack(
+            spacing: 10,
+            children: [
+                ui.ZStack( // Đặt huy hiệu (badge) đè lên hình ảnh
+                    children: [
+                        ui.Image(src: "laptop.jpg", width: 270, height: 180),
+                        ui.Container(
+                            padding: 5, bg_color: ui.Color.Red, corner_radius: 4,
+                            position: ui.Position.Absolute(top: 10, right: 10),
+                            child: ui.Label(text: "-20% SALE", color: ui.Color.White)
+                        )
+                    ]
+                ),
+                ui.Label(text: "Axiom ThinkPad Pro", font_size: 20, font_weight: ui.Font.Bold),
+                ui.Label(text: "Compiler-optimized laptop with 64GB RAM.", font_size: 14, color: ui.Color.Gray),
+                ui.HStack(
+                    alignment: ui.Align.Middle,
+                    children: [
+                        ui.Label(text: "$1,999", font_size: 22, color: ui.Color.Green),
+                        ui.Spacer(expand: true),
+                        ui.Button(text: "Add to Cart", icon: "cart_icon")
+                    ]
+                )
+            ]
+        )
+    )
+    assert(product_card.width == 300)
+
+fn gui_104_kanban_board_layout():
+    // Bố cục lưới ngang cuộn chứa nhiều cột dọc (Kanban)
+    let kanban = ui.ScrollView(
+        direction: ui.ScrollDirection.Horizontal,
+        child: ui.HStack(
+            spacing: 20, padding: 20,
+            children: [
+                // Cột "To Do"
+                ui.VStack(
+                    width: 300, bg_color: ui.Color.LightGray, padding: 10, corner_radius: 8,
+                    children: [
+                        ui.Label(text: "TO DO (2)", font_weight: ui.Font.Bold),
+                        ui.Card(title: "Design Generics", desc: "Implement monomorphization"),
+                        ui.Card(title: "Fix Parser", desc: "Handle nested brackets")
+                    ]
+                ),
+                // Cột "In Progress"
+                ui.VStack(
+                    width: 300, bg_color: ui.Color.LightGray, padding: 10, corner_radius: 8,
+                    children: [
+                        ui.Label(text: "IN PROGRESS (1)", font_weight: ui.Font.Bold),
+                        ui.Card(title: "CTGC", desc: "Compile-time garbage collection pass")
+                    ]
+                ),
+                // Cột "Done"
+                ui.VStack(
+                    width: 300, bg_color: ui.Color.LightGray, padding: 10, corner_radius: 8,
+                    children: [
+                        ui.Label(text: "DONE (1)", font_weight: ui.Font.Bold),
+                        ui.Card(title: "Lexer", desc: "Zero-copy tokenization")
+                    ]
+                )
+            ]
+        )
+    )
+    assert(kanban.direction == ui.ScrollDirection.Horizontal)
+
+fn gui_105_media_player_controls():
+    // Giao diện điều khiển nhạc với Slider lồng bên trong VStack
+    mut is_playing := false
+    let player = ui.Container(
+        width: 400, bg_color: ui.Color.DarkGray, corner_radius: 20, padding: 20,
+        child: ui.VStack(
+            spacing: 15,
+            children: [
+                ui.Image(src: "album_art.png", width: 360, height: 360, corner_radius: 10),
+                ui.VStack(
+                    spacing: 5,
+                    children: [
+                        ui.Label(text: "System Override", font_size: 24, color: ui.Color.White),
+                        ui.Label(text: "The Axiom Band", font_size: 16, color: ui.Color.LightGray)
+                    ]
+                ),
+                // Thanh tiến trình
+                ui.Slider(min: 0.0, max: 215.0, value: 45.0, color: ui.Color.Green),
+                ui.HStack( // Thời gian 2 bên Slider
+                    children: [
+                        ui.Label(text: "0:45", color: ui.Color.Gray),
+                        ui.Spacer(expand: true),
+                        ui.Label(text: "3:35", color: ui.Color.Gray)
+                    ]
+                ),
+                // Cụm Nút điều khiển (Nested HStack)
+                ui.HStack(
+                    alignment: ui.Align.Center, spacing: 20,
+                    children: [
+                        ui.Button(icon: "shuffle", style: ui.ButtonStyle.Ghost),
+                        ui.Button(icon: "prev", style: ui.ButtonStyle.Ghost),
+                        ui.Button( // Nút Play/Pause động
+                            icon: if is_playing: "pause" else: "play",
+                            width: 60, height: 60, corner_radius: 30, bg_color: ui.Color.Green,
+                            on_click: fn(): is_playing = not is_playing
+                        ),
+                        ui.Button(icon: "next", style: ui.ButtonStyle.Ghost),
+                        ui.Button(icon: "repeat", style: ui.ButtonStyle.Ghost)
+                    ]
+                )
+            ]
+        )
+    )
+    assert(player.width == 400)
+
+fn gui_106_ide_split_layout():
+    // Mô phỏng giao diện IDE sử dụng công cụ SplitView (Kéo thả để chỉnh kích thước)
+    let ide = ui.Window(
+        title: "AxCode",
+        child: ui.HSplit( // Chia ngang
+            left_weight: 0.2, // 20% cho Sidebar
+            left: ui.VStack(
+                bg_color: ui.Color.hex("#252526"),
+                children: [
+                    ui.Label(text: "EXPLORER", color: ui.Color.White),
+                    ui.TreeView(items: ["src/", "tests/", "axiom.toml"])
+                ]
+            ),
+            right: ui.VSplit( // Bên phải lại chia dọc
+                top_weight: 0.7, // 70% cho Code Editor
+                top: ui.TextArea(
+                    text: "fn main(): echo(\"Hello\")",
+                    syntax_highlight: "axiom",
+                    bg_color: ui.Color.hex("#1E1E1E"), color: ui.Color.White
+                ),
+                bottom: ui.ScrollView( // 30% cho Terminal
+                    bg_color: ui.Color.Black,
+                    child: ui.Label(text: "$ axc build main.ax\nSuccess: 0.05s", color: ui.Color.Green)
+                )
+            )
+        )
+    )
+    assert(ide.title == "AxCode")
+
+fn gui_107_login_form_with_validation():
+    // Form đăng nhập phức tạp với biểu thức phản hồi (Reactive validation)
+    mut username := ""
+    mut password := ""
+    mut error_msg := ""
+    
+    let login_form = ui.Container(
+        alignment: ui.Align.Center, // Căn giữa màn hình
+        child: ui.VStack(
+            width: 350, padding: 30, shadow: ui.Shadow(radius: 10),
+            children: [
+                ui.Label(text: "Sign In", font_size: 28, font_weight: ui.Font.Bold),
+                ui.Spacer(height: 20),
+                ui.Label(text: "Username"),
+                ui.TextField(on_change: fn(v: string): username = v),
+                ui.Spacer(height: 10),
+                ui.Label(text: "Password"),
+                ui.TextField(is_password: true, on_change: fn(v: string): password = v),
+                
+                // Render có điều kiện (Conditional UI)
+                ui.If(
+                    condition: fn() -> bool: return error_msg.length() > 0,
+                    child: ui.Label(text: error_msg, color: ui.Color.Red, font_size: 12)
+                ),
+                
+                ui.Spacer(height: 20),
+                ui.Button(
+                    text: "Login", expand: true, bg_color: ui.Color.Blue,
+                    on_click: fn():
+                        if username.length() < 3:
+                            error_msg = "Username too short!"
+                        elif password == "":
+                            error_msg = "Password required!"
+                        else:
+                            error_msg = ""
+                            // Xử lý login
+                )
+            ]
+        )
+    )
+    assert(login_form.alignment == ui.Align.Center)
+
+fn gui_108_data_grid_table():
+    // Giao diện bảng tính (Table/Grid) chứa hàng ngàn node con
+    let data_table = ui.VStack(
+        children: [
+            ui.HStack( // Header Hàng
+                bg_color: ui.Color.LightGray, padding: 10,
+                children: [
+                    ui.Label(text: "ID", width: 50, font_weight: ui.Font.Bold),
+                    ui.Label(text: "Name", width: 200, font_weight: ui.Font.Bold),
+                    ui.Label(text: "Role", width: 150, font_weight: ui.Font.Bold),
+                    ui.Label(text: "Actions", expand: true, font_weight: ui.Font.Bold)
+                ]
+            ),
+            ui.ScrollView(
+                height: 400,
+                child: ui.ListView( // Khởi tạo danh sách lười biếng (Lazy Loading) để tối ưu bộ nhớ
+                    items:, // Tượng trưng cho dữ liệu
+                    builder: fn(item: i32) -> ui.Widget:
+                        return ui.HStack(
+                            padding: 10, border_bottom: 1,
+                            children: [
+                                ui.Label(text: $item, width: 50),
+                                ui.Label(text: "User " + $item, width: 200),
+                                ui.Badge(text: "Admin", color: ui.Color.Green, width: 150),
+                                ui.Button(text: "Edit", style: ui.ButtonStyle.Outline)
+                            ]
+                        )
+                )
+            )
+        ]
+    )
+    assert(data_table.children.length() == 2)
+
+fn gui_109_wizard_multistep_form():
+    // Form nhiều bước (Wizard) quản lý state chuyển trang
+    mut current_step := 1
+    
+    let wizard = ui.VStack(
+        width: 500, padding: 20,
+        children: [
+            // Thanh chỉ báo tiến trình
+            ui.ProgressBar(value: (current_step as f64) * 33.3, max: 100.0),
+            ui.Spacer(height: 20),
+            
+            // Sử dụng Match để render UI theo State
+            ui.MatchWidget(
+                value: fn() -> i32: return current_step,
+                cases: {
+                    1: ui.VStack(children: [ui.Label(text: "Step 1: Account Info"), ui.TextField()]),
+                    2: ui.VStack(children: [ui.Label(text: "Step 2: Payment Details"), ui.TextField()]),
+                    3: ui.VStack(children: [ui.Label(text: "Step 3: Confirm"), ui.Label(text: "All good?")])
+                },
+                default: ui.Label(text: "Done!")
+            ),
+            
+            ui.Spacer(height: 20),
+            ui.HStack( // Nút điều hướng
+                children: [
+                    ui.Button(
+                        text: "Back", disabled: current_step == 1,
+                        on_click: fn(): current_step = current_step - 1
+                    ),
+                    ui.Spacer(expand: true),
+                    ui.Button(
+                        text: if current_step == 3: "Submit" else: "Next",
+                        on_click: fn(): current_step = current_step + 1
+                    )
+                ]
+            )
+        ]
+    )
+    assert(wizard.width == 500)
+
+@[ai::auto_layout(responsive=true, mobile_breakpoint=768)]
+fn gui_110_ai_responsive_dashboard():
+    // Sử dụng AI Compiler Hook để tự động bẻ (wrap) giao diện
+    // Khi màn hình < 768px, HStack tự động chuyển thành VStack mà không cần viết Media Query.
+    let dashboard = ui.HStack(
+        padding: 20, spacing: 20,
+        children: [
+            ui.Card(
+                expand: true, bg_color: ui.Color.Blue, padding: 20,
+                child: ui.VStack(children: [ui.Label(text: "Revenue", color: ui.Color.White), ui.Label(text: "$12,340")])
+            ),
+            ui.Card(
+                expand: true, bg_color: ui.Color.Green, padding: 20,
+                child: ui.VStack(children: [ui.Label(text: "Users", color: ui.Color.White), ui.Label(text: "1,204")])
+            ),
+            ui.Card(
+                expand: true, bg_color: ui.Color.Orange, padding: 20,
+                child: ui.VStack(children: [ui.Label(text: "Uptime", color: ui.Color.White), ui.Label(text: "99.99%")])
+            )
+        ]
+    )
+    assert(dashboard.padding == 20)
+
+/// ============================================================================
+/// HÀM MAIN CHẠY TEST
+/// ============================================================================
+pub fn main():
+    gui_101_admin_dashboard_layout()
+    gui_102_chat_application_interface()
+    gui_103_ecommerce_product_card()
+    gui_104_kanban_board_layout()
+    gui_105_media_player_controls()
+    gui_106_ide_split_layout()
+    gui_107_login_form_with_validation()
+    gui_108_data_grid_table()
+    gui_109_wizard_multistep_form()
+    gui_110_ai_responsive_dashboard()
+    
+    import std.io
+    io.print("Axiom Complex GUI Suite: 10 Nested Layout Tests Passed!")

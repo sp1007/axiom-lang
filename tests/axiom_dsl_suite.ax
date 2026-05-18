@@ -1,0 +1,67 @@
+import std.testing.assert
+
+fn dsl_171_html_builder_macro():
+    // DSL tạo HTML an toàn kiểu
+    let make_div = fn(content: string) -> string:
+        return "<div>" + content + "</div>"
+    assert(make_div("Axiom") == "<div>Axiom</div>")
+
+fn dsl_172_sql_query_builder():
+    // DSL chống SQL Injection
+    struct Query:
+        table: string
+    let select = fn(t: string) -> Query: return Query(table: t)
+    assert(select("users").table == "users")
+
+fn dsl_173_regex_comptime_compiler():
+    // Trình biên dịch Regex thành Mã máy ngay lúc build (#run)
+    let compile_regex = fn(pattern: string) -> bool: return true
+    const is_valid = #run compile_regex("^[A-Z]+$")
+    assert(is_valid == true)
+
+fn dsl_174_json_schema_validator():
+    let validate = fn(json: string, required_key: string) -> bool:
+        return json.contains(required_key)
+    assert(validate("{'id': 1}", "id") == true)
+
+fn dsl_175_fsm_definition():
+    // DSL mô phỏng Máy trạng thái hữu hạn (Finite State Machine)
+    enum State: Idle, Running
+    mut s := State.Idle
+    let transition = fn(event: string):
+        if event == "START": s = State.Running
+    transition("START")
+    assert(s == State.Running)
+
+fn dsl_176_css_style_generator():
+    // DSL sinh CSS nội tuyến
+    let css_rule = fn(sel: string, color: string) -> string:
+        return sel + " { color: " + color + "; }"
+    assert(css_rule(".btn", "red").contains("color: red"))
+
+fn dsl_177_api_endpoint_dsl():
+    // Định tuyến API theo phong cách Declarative
+    struct Route:
+        path: string
+        method: string
+    let route = Route(path: "/users", method: "GET")
+    assert(route.method == "GET")
+
+fn dsl_178_cron_expression_parser():
+    let is_every_minute = fn(cron: string) -> bool:
+        return cron == "* * * * *"
+    assert(is_every_minute("* * * * *") == true)
+
+fn dsl_179_graph_node_dsl():
+    // DSL định nghĩa Đồ thị (DAG) cho luồng xử lý AI
+    struct Node:
+        name: string
+    let connect = fn(a: Node, b: Node) -> bool: return true
+    let n1 = Node(name: "Input"); let n2 = Node(name: "Conv2D")
+    assert(connect(n1, n2) == true)
+
+fn dsl_180_test_assert_dsl():
+    // DSL viết Unit Test bằng ngôn ngữ tự nhiên
+    let expect = fn(val: i32, to_be: i32) -> bool:
+        return val == to_be
+    assert(expect(5, to_be: 5) == true)

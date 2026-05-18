@@ -1,0 +1,76 @@
+import std.testing.assert
+
+fn fp_041_map_filter_reduce_pipeline():
+    let data =
+    let result = data.iter()
+        .filter(fn(x: i32) -> bool: return x % 2 != 0) //
+        .map(fn(x: i32) -> i32: return x * 10)         //
+        .reduce(0, fn(acc: i32, x: i32) -> i32: return acc + x)
+    assert(result == 90)
+
+fn fp_042_immutable_record_update():
+    struct State:
+        count: i32
+        name: string
+    let s1 = State(count: 0, name: "Init")
+    // Copy-on-write syntax (Cú pháp cập nhật bất biến)
+    let s2 = s1 with (count: 1)
+    assert(s1.count == 0 and s2.count == 1)
+
+fn fp_043_lazy_infinite_sequence():
+    import std.iter
+    // Tạo chuỗi vô hạn các số chẵn, nhưng chỉ lấy 3 số đầu
+    let evens = iter.count(from: 0, step: 2).take(3).to_array()
+    assert(evens ==)
+
+fn fp_044_currying_partial_application():
+    let multiply = fn(a: i32) -> (fn(i32)->i32):
+        return fn(b: i32) -> i32: return a * b
+    let double = multiply(2)
+    assert(double(5) == 10)
+
+fn fp_045_monadic_error_handling_flatmap():
+    let divide = fn(a: i32, b: i32) -> Result[i32, string]:
+        if b == 0: return Err("Div 0")
+        return Ok(a / b)
+    
+    // Nối chuỗi các operation rủi ro mà không cần check if-else
+    let res = Ok(10).flat_map(fn(x: i32): return divide(x, 2))
+    match res:
+        Ok(val) => assert(val == 5)
+        _ => assert(false)
+
+fn fp_046_algebraic_data_types_adt():
+    // Enum mang theo payload (Sum Types)
+    enum Shape:
+        Circle(radius: f64)
+        Rect(w: f64, h: f64)
+        
+    let c = Shape.Circle(radius: 5.0)
+    match c:
+        Circle(r) => assert(r == 5.0)
+        _ => assert(false)
+
+@[ai::assert_pure]
+fn fp_047_pure_function_enforcement(a: i32) -> i32:
+    // Sẽ văng lỗi biên dịch nếu hàm này thay đổi global variable
+    return a + 1
+
+fn fp_048_tail_call_optimization():
+    // Compiler tự động tối ưu hóa đệ quy đuôi thành vòng lặp while
+    fn tco_fact(n: i32, acc: i32) -> i32:
+        if n == 0: return acc
+        return tco_fact(n - 1, n * acc)
+    assert(tco_fact(5, 1) == 120)
+
+fn fp_049_function_composition():
+    let add_one = fn(x: i32) -> i32: return x + 1
+    let square = fn(x: i32) -> i32: return x * x
+    let composed = fn(x: i32) -> i32: return square(add_one(x))
+    assert(composed(3) == 16)
+
+fn fp_050_memoization():
+    import std.cache
+    // Cache kết quả tự động dựa trên args
+    let slow_func = cache.memoize(fn(x: i32) -> i32: return x * 100)
+    assert(slow_func(2) == 200)

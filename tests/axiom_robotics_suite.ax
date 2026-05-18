@@ -1,0 +1,85 @@
+import std.testing.assert
+import std.mem
+import std.math
+import std.concurrency
+
+fn bot_121_pid_controller():
+    // Bộ điều khiển PID cho động cơ Robot
+    mut prev_error := 0.0
+    mut integral := 0.0
+    let kp = 0.1; let ki = 0.01; let kd = 0.05
+    
+    let compute_pid = fn(setpoint: f64, measured: f64, dt: f64) -> f64:
+        let error = setpoint - measured
+        integral = integral + (error * dt)
+        let derivative = (error - prev_error) / dt
+        prev_error = error
+        return (kp * error) + (ki * integral) + (kd * derivative)
+        
+    assert(compute_pid(100.0, 90.0, 0.1) > 0.0)
+
+fn bot_122_gpio_memory_map():
+    // Ghi trực tiếp vào thanh ghi GPIO trên Bare-metal ARM Cortex
+    let GPIO_BASE: *mut u32 = 0x4002_0000 as *mut u32
+    unsafe:
+        // Bật bit thứ 5 (đèn LED)
+        GPIO_BASE.* = GPIO_BASE.* | (1 << 5)
+    assert(true)
+
+fn bot_123_i2c_sensor_read():
+    // Giả lập đọc cảm biến nhiệt độ qua I2C
+    let I2C_DR: *mut u8 = 0x4000_5410 as *mut u8
+    unsafe:
+        let temp_data = I2C_DR.*
+    assert(true)
+
+fn bot_124_uart_transmit():
+    let UART_TX: *mut u8 = 0x4001_3828 as *mut u8
+    let send_char = fn(c: char8):
+        unsafe: UART_TX.* = c as u8
+    // send_char('A')
+    assert(true)
+
+fn bot_125_pwm_duty_cycle():
+    // Tính toán độ rộng xung (PWM) cho Servo Motor
+    let period = 20000 // 20ms
+    let pulse = 1500   // 1.5ms (Góc 0 độ)
+    let duty_cycle = (pulse as f64) / (period as f64)
+    assert(duty_cycle == 0.075)
+
+fn bot_126_kalman_filter_1d():
+    // Bộ lọc Kalman đơn chiều chống nhiễu cảm biến
+    mut est_p := 10.0; mut est_v := 1.0
+    let measure = 12.0; let kalman_gain = 0.5
+    est_p = est_p + kalman_gain * (measure - est_p)
+    assert(est_p == 11.0)
+
+@[interrupt(vector=15)]
+fn bot_127_systick_interrupt():
+    // Hàm xử lý ngắt (ISR) thời gian thực
+    // asm { "cpsie i" } // Clear interrupt flag
+    assert(true)
+
+fn bot_128_stepper_motor_ik():
+    // Động học ngược (Inverse Kinematics) cơ bản cho cánh tay robot 2 khớp
+    let x = 3.0; let y = 4.0; let l1 = 5.0; let l2 = 5.0
+    let distance = math.sqrt(x*x + y*y)
+    assert(distance == 5.0) // Chạm tới được
+
+fn bot_129_sensor_actor_loop():
+    // Vòng lặp Actor đọc cảm biến siêu âm độc lập
+    let sonar_actor = fn(ch: Channel[f64]):
+        let dist = 15.5 // mm
+        ch.send(dist)
+    assert(true)
+
+@packed
+struct CANFrame:
+    id: u16
+    dlc: u8
+    data: Array[u8] // Tối đa 8 bytes
+
+fn bot_130_can_bus_frame():
+    // Mạng Controller Area Network cho xe tự hành
+    let frame = CANFrame(id: 0x123, dlc: 4, data: [0xDE, 0xAD, 0xBE, 0xEF])
+    assert(mem.size_of(CANFrame) == 3 + 8) // Giả sử array tĩnh

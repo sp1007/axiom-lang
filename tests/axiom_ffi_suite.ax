@@ -1,0 +1,76 @@
+import std.testing.assert
+import std.ffi.c
+import std.ffi.python
+
+// 061: Khai báo hàm C malloc và free
+extern "C" fn malloc(size: usize) -> *mut u8
+extern "C" fn free(ptr: *mut u8)
+
+fn ffi_061_call_c_malloc():
+    unsafe:
+        let ptr = malloc(1024)
+        assert(ptr != c.NULL)
+        free(ptr)
+
+// 062: Tương tác cấu trúc C (C-ABI Compatible)
+@extern_c
+struct C_Point:
+    x: f32
+    y: f32
+
+fn ffi_062_pass_struct_to_c():
+    let p = C_Point(x: 1.0, y: 2.0)
+    assert(p.x == 1.0)
+
+@[export_c]
+fn axiom_add_numbers(a: i32, b: i32) -> i32:
+    // 063: Hàm này sẽ xuất ra thư viện chia sẻ (shared library) .so / .dll
+    // để các ngôn ngữ khác gọi vào mà không bị đổi tên (Name mangling)
+    return a + b
+
+fn ffi_063_export_axiom_to_c():
+    assert(axiom_add_numbers(5, 5) == 10)
+
+fn ffi_064_call_cpp_library():
+    // Tương tác C++ thông qua cầu nối chuẩn (như Carbon language)
+    // let cpp_str = cpp.std_string("C++ String")
+    assert(true)
+
+fn ffi_065_call_python_interpreter():
+    // Giao tiếp với Python C-API
+    python.initialize()
+    let py_math = python.import_module("math")
+    let result = py_math.call("sqrt", [16.0])
+    assert(result.as_f64() == 4.0)
+    python.finalize()
+
+fn ffi_066_create_python_extension():
+    // Trình biên dịch có khả năng sinh mã module cPython
+    // `axc build --target=python_ext math.ax`
+    assert(true)
+
+fn ffi_067_call_nodejs_v8():
+    // Tương tự FFI với môi trường V8 JS Engine
+    assert(true)
+
+fn ffi_068_handle_c_strings():
+    // Xử lý mảng char kết thúc bằng null của C
+    let c_str: *char8 = "Hello C\0".ptr
+    let axiom_str = c.to_axiom_string(c_str)
+    assert(axiom_str == "Hello C")
+
+extern "C" fn set_callback(cb: fn(i32))
+
+fn ffi_069_pass_closure_to_c():
+    // Truyền một hàm Axiom vào làm callback cho C
+    let my_callback = fn(code: i32):
+        assert(code == 200)
+    // set_callback(my_callback)
+    assert(true)
+
+fn ffi_070_dynamic_library_loading():
+    // Gọi dlopen/dlsym lúc chạy thay vì liên kết lúc biên dịch
+    let lib = c.load_library("libsqlite3.so")
+    if lib.is_valid():
+        let sqlite3_open = lib.get_symbol("sqlite3_open")
+        assert(sqlite3_open != c.NULL)

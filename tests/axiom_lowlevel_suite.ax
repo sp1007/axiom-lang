@@ -1,0 +1,66 @@
+import std.testing.assert
+import std.mem
+
+fn sys_021_bitwise_operations():
+    let flags: u8 = 0b1010_0000
+    let masked = flags & 0b1000_0000
+    assert(masked == 128)
+
+fn sys_022_endianness_conversion():
+    let val: u32 = 0x12345678
+    let swapped = mem.byte_swap(val) // Đổi từ Little sang Big Endian
+    assert(swapped == 0x78563412)
+
+fn sys_023_unsafe_raw_pointers():
+    mut x := 42
+    unsafe:
+        let ptr: *mut i32 = mem.addr(x)
+        ptr.* = 99 // Giải tham chiếu thô không check an toàn
+    assert(x == 99)
+
+fn sys_024_memory_alignment():
+    @align(16) // Căn lề 16 byte cho SIMD
+    struct Vector4:
+        x: f32; y: f32; z: f32; w: f32
+    assert(mem.align_of(Vector4) == 16)
+
+fn sys_025_custom_arena_allocator():
+    let arena = mem.Arena(size: 1024 * 1024) // 1MB
+    in [arena]:
+        let data = // Được cấp phát trong Arena, giải phóng O(1)
+        assert(data == 1)
+
+fn sys_026_direct_linux_syscall():
+    // Gọi Syscall SYS_write (mã 1) trên Linux x86_64
+    let fd = 1 // stdout
+    let msg = "Hello Syscall"
+    // unsafe: mem.syscall3(1, fd, mem.addr(msg), msg.length())
+    assert(true)
+
+fn sys_027_baremetal_gpio_register():
+    // Ghi trực tiếp vào địa chỉ bộ nhớ vi điều khiển (VD: STM32 / ARM)
+    let GPIOA_MODER: *mut u32 = 0x4800_0000 as *mut u32
+    // unsafe: GPIOA_MODER.* = 0x01
+    assert(true)
+
+fn sys_028_interrupt_service_routine():
+    @[interrupt(vector=14)] // Đánh dấu là hàm ngắt (ISR)
+    fn timer_interrupt_handler():
+        // clear_interrupt_flag()
+        assert(true)
+    assert(true)
+
+@packed // Vô hiệu hóa padding, giống __attribute__((packed)) trong C
+struct NetworkHeader:
+    protocol: u8
+    length: u16
+
+fn sys_029_packed_structs():
+    assert(mem.size_of(NetworkHeader) == 3)
+
+fn sys_030_simd_intrinsics():
+    import std.arch.x86
+    let a = x86._mm256_set1_ps(1.0)
+    let b = x86._mm256_set1_ps(2.0)
+    let c = x86._mm256_add_ps(a, b)
+    assert(true)

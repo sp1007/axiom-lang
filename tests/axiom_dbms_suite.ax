@@ -1,0 +1,77 @@
+import std.testing.assert
+import std.mem
+import std.concurrency
+
+struct BTreeNode:
+    is_leaf: bool
+    keys: Array[i32]
+    children: Array[u32]
+
+fn db_141_btree_node_split():
+    mut node := BTreeNode(is_leaf: true, keys:, children: [])
+    assert(node.keys.length() == 3)
+
+fn db_142_write_ahead_log():
+    // Kỹ thuật WAL cho ACID Transactions
+    mut wal := Array[string].empty()
+    wal.add("BEGIN TX 1")
+    wal.add("INSERT (42, 'Axiom')")
+    wal.add("COMMIT TX 1")
+    assert(wal.length() == 3)
+
+fn db_143_arena_page_allocation():
+    // Cấp phát Page 4KB trên RAM không dùng malloc
+    let PAGE_SIZE = 4096
+    let page_arena = mem.Arena(size: PAGE_SIZE * 10)
+    assert(page_arena.capacity() == 40960)
+
+fn db_144_kv_store_actor():
+    // Key-Value Store chạy trên 1 Actor để tránh Lock (Single-threaded in-memory)
+    mut kv := Map[string, string]()
+    let kv_actor = fn(msg: string):
+        kv.put("version", "1.0")
+    kv_actor("init")
+    assert(kv.get("version") == "1.0")
+
+fn db_145_lru_cache_eviction():
+    // Bộ đệm LRU cơ bản
+    mut cache := List[i32]()
+    cache.add(1); cache.add(2); cache.add(3)
+    if cache.length() > 2:
+        cache.remove_at(0) // Evict oldest
+    assert(cache.length() == 2 and cache == 2)
+
+fn db_146_bloom_filter():
+    // Bloom Filter kiểm tra phần tử có tồn tại không (O(1))
+    mut bitset := 0b0000_0000
+    let hash_func = fn(val: i32) -> i32: return val % 8
+    bitset = bitset | (1 << hash_func(42))
+    
+    let probably_exists = (bitset & (1 << hash_func(42))) != 0
+    assert(probably_exists == true)
+
+fn db_147_sql_query_parser():
+    let query = "SELECT id FROM users"
+    let is_select = query.starts_with("SELECT")
+    assert(is_select == true)
+
+fn db_148_acid_tx_lock():
+    // Mutex bảo vệ Row-level
+    let row_lock = Locker[string](value: "RowData")
+    lock row_lock as data:
+        data = "UpdatedData"
+        assert(data == "UpdatedData")
+
+fn db_149_hash_index_lookup():
+    let index = {"alice": 0x10A, "bob": 0x20B} // Trỏ tới Offset trên file
+    assert(index["bob"] == 0x20B)
+
+fn db_150_paxos_consensus_mock():
+    // Thuật toán đồng thuận phân tán
+    mut promised_id := 0
+    let prepare = fn(proposal_id: i32) -> bool:
+        if proposal_id > promised_id:
+            promised_id = proposal_id
+            return true
+        return false
+    assert(prepare(10) == true)

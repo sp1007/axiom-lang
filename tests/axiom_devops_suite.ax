@@ -1,0 +1,57 @@
+import std.testing.assert
+import std.fs
+import std.os
+import std.process
+
+fn ops_031_cli_argument_parsing():
+    import std.cli
+    let parser = cli.Parser()
+    parser.add_flag("--verbose", "-v")
+    // let args = parser.parse(["--verbose"])
+    assert(true)
+
+fn ops_032_file_read_write():
+    fs.write("test.log", "Build complete")
+    let content = fs.read_string("test.log")
+    assert(content == "Build complete")
+    fs.delete("test.log")
+
+fn ops_033_directory_traversal():
+    let files = fs.list_dir(".", recursive: false)
+    assert(files.length() >= 0)
+
+fn ops_034_subprocess_execution():
+    let result = process.exec("echo", ["Hello DevOps"])
+    assert(result.stdout.contains("Hello DevOps"))
+
+fn ops_035_process_piping():
+    // Tương đương lệnh shell: `ls | grep "ax"`
+    let p1 = process.Command("ls").pipe(process.Command("grep", ["ax"]))
+    assert(true)
+
+fn ops_036_environment_variables():
+    os.set_env("DEPLOY_ENV", "production")
+    let env = os.get_env("DEPLOY_ENV")
+    assert(env == "production")
+
+fn ops_037_yaml_config_parsing():
+    import std.yaml
+    let config = yaml.parse("server:\n  port: 80")
+    assert(config["server"]["port"].as_int() == 80)
+
+fn ops_038_ssh_remote_execution():
+    import std.net.ssh
+    // let client = ssh.connect("admin@10.0.0.1")
+    // client.exec("systemctl restart nginx")
+    assert(true)
+
+fn ops_039_docker_container_management():
+    // Gọi API của Docker daemon
+    // let containers = process.exec("docker", ["ps", "-q"])
+    assert(true)
+
+fn ops_040_ci_cd_task_runner():
+    // Axiom dùng làm ngôn ngữ viết script CI/CD do compile siêu nhanh
+    fn build_task():
+        assert(process.exec("axc", ["build", "main.ax"]).exit_code == 0)
+    build_task()

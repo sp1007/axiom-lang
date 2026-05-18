@@ -1,0 +1,72 @@
+import std.testing.assert
+import std.math
+import std.math.tensor as ts
+
+fn media_151_sine_oscillator():
+    // Sinh sóng âm Sine (Synthesizer)
+    let sample_rate = 44100.0
+    let freq = 440.0 // Nốt A4
+    let phase = (2.0 * math.PI * freq) / sample_rate
+    let sample = math.sin(phase)
+    assert(sample > 0.0)
+
+@SOA
+struct AudioBuffer:
+    left_channel: Array[f32]
+    right_channel: Array[f32]
+
+fn media_152_audio_buffer_soa():
+    // Buffer âm thanh tối ưu Cache (SIMD-ready)
+    let buf = AudioBuffer(left_channel: [0.0], right_channel: [0.0])
+    assert(buf.left_channel.length() == 1)
+
+fn media_153_fft_radix2_butterfly():
+    // Bướm FFT (Mô phỏng phép toán nhân phức)
+    let real = 1.0; let imag = 0.0
+    let w_real = -1.0; let w_imag = 0.0
+    let out_r = real * w_real - imag * w_imag
+    assert(out_r == -1.0)
+
+fn media_154_lowpass_filter():
+    // Bộ lọc Low-pass đơn giản (IIR)
+    mut prev_out := 0.0
+    let alpha = 0.1 // Hệ số cắt
+    let process = fn(sample: f64) -> f64:
+        prev_out = prev_out + alpha * (sample - prev_out)
+        return prev_out
+    assert(process(1.0) == 0.1)
+
+fn media_155_yuv_to_rgb():
+    // Chuyển mã không gian màu Video
+    let y = 0.5; let u = -0.2; let v = 0.6
+    let r = y + 1.402 * v
+    assert(r > 1.3)
+
+fn media_156_image_blur_convolution():
+    let pixels = ts.Matrix.fill(3, 3, 1.0)
+    let kernel = ts.Matrix.fill(3, 3, 0.111) // 1/9
+    let blur_center = ts.sum(pixels * kernel)
+    assert(blur_center > 0.99 and blur_center < 1.01)
+
+fn media_157_wav_header_parse():
+    // Phân tích tệp Binary
+    let header_bytes = [0x52, 0x49, 0x46, 0x46] // "RIFF"
+    assert(header_bytes == 82) // 'R'
+
+fn media_158_midi_event_match():
+    let midi_byte: u8 = 0x90 // Note On, Channel 1
+    let is_note_on = (midi_byte & 0xF0) == 0x90
+    assert(is_note_on == true)
+
+fn media_159_adsr_envelope():
+    // Attack-Decay-Sustain-Release cho Synthesizer
+    let attack_time = 0.1; let sample_rate = 44100.0
+    let attack_inc = 1.0 / (attack_time * sample_rate)
+    assert(attack_inc > 0.0002)
+
+fn media_160_realtime_audio_thread():
+    // Ưu tiên luồng cực cao cho Audio
+    @[concurrency::realtime_priority]
+    spawn fn():
+        assert(true)
+    assert(true)

@@ -1,0 +1,73 @@
+import std.testing.assert
+import std.time
+import std.math.big as big
+
+struct LimitOrder:
+    price: i32 // Định dạng tick (Ví dụ: 100.50 -> 10050)
+    qty: i32
+    is_buy: bool
+
+fn hft_161_limit_order_struct():
+    let order = LimitOrder(price: 50000, qty: 10, is_buy: true)
+    assert(order.price == 50000)
+
+fn hft_162_order_book_matching():
+    // Khớp lệnh cực nhanh O(1)
+    mut best_ask := 50000
+    let incoming_buy = 50050
+    let is_match = incoming_buy >= best_ask
+    assert(is_match == true)
+
+fn hft_163_fix_protocol_parser():
+    // Phân tích giao thức FIX (Tài chính)
+    let fix_msg = "8=FIX.4.2|35=D|55=AAPL|"
+    let is_new_order = fix_msg.contains("35=D")
+    assert(is_new_order == true)
+
+fn hft_164_ring_buffer_ticks():
+    // Ring buffer lưu trữ Market Data (Tick data) chống phân mảnh RAM
+    mut ticks := Array[i32].fill(1024, 0)
+    mut head := 0
+    let add_tick = fn(price: i32):
+        ticks[head] = price
+        head = (head + 1) & 1023 // Modulo nhanh bằng Bitwise AND
+    add_tick(150)
+    assert(ticks == 150)
+
+fn hft_165_vwap_calculation():
+    // Volume Weighted Average Price
+    let prices = [100.0, 101.0]
+    let vols = [10.0, 20.0]
+    let vwap = (prices*vols + prices*vols) / (vols + vols)
+    assert(vwap > 100.6)
+
+fn hft_166_black_scholes_pricing():
+    // Định giá quyền chọn (Options Pricing)
+    let S = 100.0; let K = 100.0; let r = 0.05; let v = 0.2; let t = 1.0
+    // d1 = (ln(S/K) + (r + v^2/2)t) / (v*sqrt(t))
+    let d1 = (0.0 + (0.05 + 0.04/2.0)*1.0) / (0.2 * 1.0)
+    assert(d1 == 0.35)
+
+fn hft_167_zero_copy_udp_multicast():
+    // Nhận dữ liệu sàn giao dịch qua UDP mà không copy byte
+    let packet_ptr = isolate([0x01, 0x02])
+    assert(packet_ptr == 1)
+
+fn hft_168_latency_rdtsc():
+    // Đọc CPU Cycle Counter để đo độ trễ (chuẩn HFT)
+    import std.arch.x86
+    let start_cycle = x86.rdtsc()
+    let end_cycle = x86.rdtsc()
+    assert(end_cycle >= start_cycle)
+
+fn hft_169_slippage_calculation():
+    let expected = 100.0
+    let executed = 100.05
+    let slippage_bps = ((executed - expected) / expected) * 10000.0
+    assert(slippage_bps == 5.0) // 5 Basis points
+
+fn hft_170_kelly_criterion_allocation():
+    let win_prob = 0.55
+    let win_loss_ratio = 1.0
+    let f = win_prob - ((1.0 - win_prob) / win_loss_ratio)
+    assert(f > 0.09 and f < 0.11) // Cược 10% vốn

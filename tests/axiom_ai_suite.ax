@@ -1,0 +1,151 @@
+/// Để minh họa sức mạnh của Axiom trong lĩnh vực Trí tuệ Nhân tạo (AI) và Học máy (Machine Learning), dưới đây là bộ **`axiom_ai_suite.ax`** gồm 10 ví dụ thực tế. 
+/// 
+/// Được thiết kế để thay thế Python trong hệ sinh thái dữ liệu, Axiom mang lại cú pháp cực kỳ ngắn gọn và trực quan (tương tự như `NumPy` hay `PyTorch` trong Python), nhưng lại thực thi ở tốc độ của mã máy (C/C++), tự động vector hóa (SIMD), và tối ưu hóa quản lý bộ nhớ thông qua `Structure of Arrays` (SoA) cũng như tự động đẩy khối lượng tính toán xuống GPU.
+/// 
+/// ### Tại sao Axiom tốt hơn Python trong AI?
+/// 1. **Zero-cost Abstraction:** Không giống Python phải wrap C/C++ bằng các thư viện như `NumPy`, Axiom bản chất là một ngôn ngữ biên dịch ngang tầm C. Lệnh `ts.matmul(inputs, weights)` chạy với tốc độ native mà không phát sinh độ trễ truyền dữ liệu giữa các ranh giới ngôn ngữ.
+/// 2. **Không có Global Interpreter Lock (GIL):** Ví dụ DataLoader (`ai_118_async_dataloader`) sử dụng `await_all:` và `spawn` cho phép tải dữ liệu đa luồng (Multi-threading) thực sự đồng thời, tận dụng tối đa CPU nhiều lõi, điều mà Python không thể làm được dễ dàng.
+/// 3. **Thân thiện với bộ nhớ GPU (`std.gpu`):** Thay vì phải dùng các quy trình cấp phát rườm rà như CUDA/PyTorch memory management, các Object mảng tĩnh của Axiom ở ví dụ `116` có thể được truyền thẳng sang GPU VRAM qua mô hình `isolate()` mà không cần deep-copy (Zero-copy GPU offloading).
+/// 
+
+import std.testing.assert
+import std.math.tensor as ts    // Thư viện Tensor nội tại (như NumPy / PyTorch)
+import std.math.big as big      // Thư viện tính toán siêu chính xác
+import std.gpu                  // API tương tác trực tiếp với VRAM
+import std.concurrency
+import std.compiler.ai
+
+/// ============================================================================
+/// NHÓM CÁC THUẬT TOÁN AI VÀ HỌC MÁY (111 - 120)
+/// ============================================================================
+
+fn ai_111_linear_layer_forward():
+    // Lan truyền xuôi (Forward Pass) của một Fully Connected Layer
+    // Tương đương Python: Y = np.dot(X, W) + b
+    let inputs = ts.Matrix.from_array([[1.0, 2.0], [3.0, 4.0]])
+    let weights = ts.Matrix.from_array([[0.2, 0.8], [0.5, 0.1]])
+    let biases = ts.Vector.fill(2, 0.1)
+    
+    // Nạp chồng toán tử trực quan cho Ma trận/Vector
+    let output = ts.matmul(inputs, weights) + biases
+    assert(output.rows == 2 and output.cols == 2)
+
+fn ai_112_relu_activation_vectorized():
+    // Hàm kích hoạt ReLU ứng dụng hàm map (Tự động biên dịch ra SIMD instruction)
+    // Tương đương Python: np.maximum(0, data)
+    let data = ts.Vector(-1.0, 0.0, 2.5, -3.2, 5.0)
+    let relu = data.map(fn(x: f64) -> f64: return if x > 0.0: x else: 0.0)
+    
+    assert(relu == 0.0 and relu == 2.5)
+
+fn ai_113_softmax_distribution():
+    // Tính toán phân phối xác suất Softmax cho Multi-class Classification
+    let logits = ts.Vector(2.0, 1.0, 0.1)
+    let exp_logits = logits.map(fn(x: f64) -> f64: return big.exp(x))
+    let sum_exp = ts.sum(exp_logits)
+    
+    let probabilities = exp_logits / sum_exp
+    // Đảm bảo tổng xác suất bằng 1
+    assert(ts.sum(probabilities) > 0.99 and ts.sum(probabilities) < 1.01)
+
+fn ai_114_mean_squared_error_loss():
+    // Hàm mất mát MSE (Mean Squared Error)
+    let predictions = ts.Vector(0.8, 0.2, 0.9)
+    let targets = ts.Vector(1.0, 0.0, 1.0)
+    
+    let diff = predictions - targets
+    let sq_diff = diff * diff // Nhân element-wise
+    let mse = ts.mean(sq_diff)
+    
+    assert(mse > 0.0)
+
+fn ai_115_gradient_descent_update():
+    // Thuật toán tối ưu hóa Gradient Descent (Cập nhật trọng số)
+    mut weights := ts.Vector(0.5, -0.2, 0.1)
+    let gradients = ts.Vector(0.1, 0.05, -0.1)
+    let learning_rate = 0.01
+    
+    // Cập nhật bộ nhớ In-place nhờ Compile-Time GC
+    weights = weights - (gradients * learning_rate)
+    assert(weights == 0.499)
+
+fn ai_116_gpu_accelerated_matmul():
+    // Tính toán ma trận khổng lồ trên GPU
+    // Trình biên dịch Axiom bỏ qua chi phí CUDA overhead, giao tiếp trực tiếp C ABI
+    let a = gpu.Matrix.random(1024, 1024)
+    let b = gpu.Matrix.random(1024, 1024)
+    
+    let c = gpu.matmul(a, b) // Gọi trực tiếp cuBLAS/ROCm ở nền
+    assert(c.rows == 1024 and c.cols == 1024)
+
+fn ai_117_cnn_conv2d_feature_map():
+    // Lớp Tích chập (Convolutional Layer) dùng trong Computer Vision
+    let image = ts.Matrix.random(28, 28) // Ảnh MNIST 28x28
+    let kernel = ts.Matrix.from_array([[-1.0, -1.0, -1.0], 
+                                       [-1.0,  8.0, -1.0], 
+                                       [-1.0, -1.0, -1.0]]) // Kernel Edge Detection
+                                       
+    let feature_map = ts.conv2d(image, kernel, stride: 1, padding: 1)
+    assert(feature_map.rows == 28 and feature_map.cols == 28)
+
+async fn fetch_minibatch(batch_id: i32) -> !ts.Matrix:
+    // Giả lập đọc dữ liệu từ Disk/Network
+    return ts.Matrix.random(32, 784) // Batch 32 ảnh, 784 features
+
+fn ai_118_async_dataloader():
+    // DataLoader tải dữ liệu bất đồng bộ song song không khóa (Lock-free)
+    // Giúp GPU không bao giờ phải chờ CPU chuẩn bị dữ liệu (Data starvation)
+    mut total_samples := 0
+    await_all:
+        let b1 = spawn fetch_minibatch(0)
+        let b2 = spawn fetch_minibatch(1)
+        
+        let data1 = await b1
+        let data2 = await b2
+        total_samples = data1.rows + data2.rows
+        
+    assert(total_samples == 64)
+
+fn ai_119_knn_euclidean_distance():
+    // Thuật toán K-Nearest Neighbors: Tính khoảng cách Euclidean
+    let data_point = ts.Vector(1.0, 2.0, 3.0)
+    let centroid = ts.Vector(4.0, 5.0, 6.0)
+    
+    let diff = data_point - centroid
+    let distance = big.sqrt(ts.dot(diff, diff))
+    assert(distance > 5.19 and distance < 5.20) // sqrt(27) ~ 5.196
+
+@[ai::suggest_layout(layout="SoA")]
+struct BackpropCache:
+    // Cấu trúc lưu trữ Cache cho thuật toán Backpropagation.
+    // Annotation @ai::suggest_layout sẽ tự động yêu cầu Trình biên dịch 
+    // chuyển đổi mảng object này thành Structure of Arrays để chống trượt CPU Cache.
+    activations: Array[f64]
+    gradients: Array[f64]
+    dropout_mask: Array[bool]
+
+fn ai_120_soa_backprop_cache():
+    let cache = BackpropCache(
+        activations: [0.5, 0.2, 0.9], 
+        gradients: [0.1, -0.1, 0.05], 
+        dropout_mask: [true, false, true]
+    )
+    assert(cache.dropout_mask == true)
+
+/// ============================================================================
+/// HÀM MAIN CHẠY TEST
+/// ============================================================================
+pub fn main():
+    ai_111_linear_layer_forward()
+    ai_112_relu_activation_vectorized()
+    ai_113_softmax_distribution()
+    ai_114_mean_squared_error_loss()
+    ai_115_gradient_descent_update()
+    ai_116_gpu_accelerated_matmul()
+    ai_117_cnn_conv2d_feature_map()
+    ai_118_async_dataloader()
+    ai_119_knn_euclidean_distance()
+    ai_120_soa_backprop_cache()
+    
+    import std.io
+    io.print("Axiom AI & Machine Learning Suite: 10/10 Tests Passed!")

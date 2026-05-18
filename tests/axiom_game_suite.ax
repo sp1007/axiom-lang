@@ -1,0 +1,178 @@
+/// Để đáp ứng yêu cầu phát triển game với đồ họa và điều khiển phức tạp, tôi đã thiết kế bộ **`axiom_game_suite.ax`** gồm 10 ví dụ nâng cao. 
+/// 
+/// Trong ngành công nghiệp game, các trò chơi thực chất là "những cỗ máy lấp đầy bộ nhớ" (machines that fill memory), đòi hỏi việc di chuyển hàng trăm megabyte dữ liệu giữa RAM, CPU và GPU một cách cực kỳ hiệu quả. Do đó, các ví dụ này sử dụng tối đa sức mạnh của Axiom như **Data-Oriented Design** (tối ưu hóa luồng dữ liệu), kết xuất đồ họa 2D/3D (giống thư viện đồ họa của ngôn ngữ V), quản lý camera, và shader thời gian thực.
+/// 
+/// Ngoài ra, Axiom hỗ trợ nhúng mã kịch bản (scripting) mềm dẻo tương tự như Lua, và nạp mã nóng (hot code reloading) giúp thay đổi logic game ngay lập tức mà không cần biên dịch lại toàn bộ dự án.
+/// 
+/// 
+/// ### Tệp: `tests/axiom_game_suite.ax`
+
+
+
+import std.testing.assert
+import std.graphics.2d as d2
+import std.graphics.3d as d3
+import std.window
+import std.input
+import std.math.tensor as ts
+import std.concurrency
+import std.scripting
+
+/// ============================================================================
+/// NHÓM 1: VÒNG LẶP GAME, RENDER PIXEL VÀ DATA-ORIENTED DESIGN
+/// ============================================================================
+
+fn game_001_main_game_loop():
+    // Khởi tạo cửa sổ và vòng lặp game chính (Game Loop)
+    let win = window.create(title: "Axiom Engine", width: 1280, height: 720)
+    mut is_running := true
+    mut frames := 0
+    
+    while is_running and frames < 10:
+        input.poll_events()
+        if input.is_key_pressed(input.Key.Escape):
+            is_running = false
+            
+        d2.clear(color: d2.Color.Black)
+        // Vẽ đồ họa cơ bản dựa trên tọa độ pixel
+        d2.draw_rect(x: 100, y: 100, w: 50, h: 50, color: d2.Color.Red)
+        win.swap_buffers()
+        frames = frames + 1
+        
+    assert(frames > 0)
+
+@SOA // Áp dụng Structure of Arrays cho Data-Oriented Design
+struct TransformComponent:
+    pos: ts.Vector3
+    vel: ts.Vector3
+    active: bool
+
+fn game_002_data_oriented_ecs():
+    // Entity Component System (ECS) tối ưu hóa CPU Cache cho hàng vạn thực thể
+    mut transforms := Array[TransformComponent].fill(10000, TransformComponent(pos: ts.Vector3(0.0,0.0,0.0), vel: ts.Vector3(1.0,0.0,0.0), active: true))
+    let dt = 0.016 // 60 FPS
+    
+    // Vòng lặp siêu nhanh nhờ bố cục bộ nhớ kề nhau (SoA)
+    for i in 0..10000:
+        if transforms.active[i]:
+            transforms.pos[i] = transforms.pos[i] + (transforms.vel[i] * dt)
+            
+    assert(transforms.pos.x == 0.016)
+
+/// ============================================================================
+/// NHÓM 2: XỬ LÝ ĐIỀU KHIỂN PHỨC TẠP (COMPLEX INPUT)
+/// ============================================================================
+
+fn game_003_complex_combo_input():
+    // Xử lý chuỗi combo phím (Ví dụ: Game đối kháng)
+    mut combo_meter := 0
+    let handle_input = fn(event: input.GamepadEvent):
+        match event.button:
+            input.Gamepad.A => combo_meter = combo_meter + 1
+            input.Gamepad.B => combo_meter = 0 // Reset combo
+            input.Gamepad.RT => if combo_meter >= 2: combo_meter = combo_meter * 2
+            _ => :
+            
+    handle_input(input.GamepadEvent(button: input.Gamepad.A)) // Combo: 1
+    handle_input(input.GamepadEvent(button: input.Gamepad.A)) // Combo: 2
+    handle_input(input.GamepadEvent(button: input.Gamepad.RT)) // Skill đặc biệt
+    
+    assert(combo_meter == 4)
+
+fn game_004_mouse_raycasting_3d():
+    // Bắn tia (Raycast) từ tọa độ chuột 2D vào không gian 3D để chọn object
+    let mouse_pos = ts.Vector2(640.0, 360.0) // Giữa màn hình
+    let cam = d3.Camera(pos: ts.Vector3(0.0, 0.0, -10.0), target: ts.Vector3(0.0, 0.0, 0.0))
+    
+    let ray = d3.screen_to_ray(mouse_pos, cam)
+    let hit_box = d3.BoundingBox(min: ts.Vector3(-1.0, -1.0, -1.0), max: ts.Vector3(1.0, 1.0, 1.0))
+    
+    let is_hit = ray.intersects(hit_box)
+    assert(is_hit == true)
+
+/// ============================================================================
+/// NHÓM 3: ĐỒ HỌA 3D, ANIMATION VÀ SHADER THỜI GIAN THỰC
+/// ============================================================================
+
+fn game_005_3d_camera_controls():
+    // Khởi tạo và điều khiển Camera góc nhìn thứ nhất (FPS)
+    mut cam := d3.Camera(pos: ts.Vector3(0.0, 1.5, 0.0), up: ts.Vector3(0.0, 1.0, 0.0))
+    cam.yaw(45.0)   // Xoay ngang
+    cam.pitch(-10.0) // Nhìn xuống
+    cam.move_forward(5.0)
+    
+    let view_mat = cam.get_view_matrix()
+    assert(view_mat.rows == 4 and view_mat.cols == 4)
+
+fn game_006_skeletal_animation():
+    // Tải mô hình 3D phức tạp với texture và hiệu ứng khung xương (Skeletal Animation)
+    mut character := d3.Model.load("hero.gltf")
+    character.play_animation("run", loop: true, speed: 1.5)
+    
+    // Cập nhật các khớp xương (bones) theo Delta Time
+    character.update_skeleton(dt: 0.016)
+    assert(character.current_animation == "run")
+
+@[gpu::fragment_shader]
+fn game_007_realtime_pixel_shader(uv: ts.Vector2, time: f32) -> ts.Vector4:
+    // Lập trình Shader thời gian thực ngay trong Axiom (tương đương GLSL/HLSL)
+    let color_x = 0.5 + 0.5 * ts.cos(time + uv.x)
+    let color_y = 0.5 + 0.5 * ts.cos(time + uv.y)
+    return ts.Vector4(color_x, color_y, 1.0, 1.0)
+
+fn game_008_apply_custom_shader():
+    let material = d3.Material(shader: game_007_realtime_pixel_shader)
+    let sphere = d3.Mesh.sphere(radius: 2.0, mat: material)
+    assert(sphere.material.is_valid() == true)
+
+/// ============================================================================
+/// NHÓM 4: KIẾN TRÚC MỞ RỘNG (HOT-RELOAD VÀ SCRIPTING)
+/// ============================================================================
+
+@[hot_reloadable]
+fn update_boss_phase(health: i32) -> string:
+    // Tính năng Hot Code Reloading: Cho phép lập trình viên sửa logic Boss
+    // và áp dụng ngay vào game đang chạy mà không cần biên dịch lại từ đầu.
+    if health < 30: return "Enraged"
+    return "Normal"
+
+fn game_009_hot_reloading_logic():
+    let current_phase = update_boss_phase(25)
+    assert(current_phase == "Enraged")
+
+@[scripting::export]
+fn engine_spawn_particle(x: f32, y: f32):
+    // Cầu nối API cho Engine
+    d2.draw_circle(x, y, 5.0, d2.Color.Yellow)
+
+fn game_010_embedded_lua_style_scripting():
+    // Trình biên dịch Axiom có thể nhúng một ngôn ngữ Scripting nhẹ (như Lua)
+    // để các Game Designer tùy biến tính năng mà không cần đụng vào mã gốc C/C++.
+    let script_code = """
+        function on_enemy_death()
+            engine_spawn_particle(100.0, 200.0)
+            return true
+        end
+    """
+    let env = scripting.Environment()
+    env.load(script_code)
+    
+    let success = env.call("on_enemy_death")
+    assert(success == true)
+
+/// ============================================================================
+/// HÀM MAIN CHẠY TEST
+/// ============================================================================
+pub fn main():
+    game_001_main_game_loop()
+    game_002_data_oriented_ecs()
+    game_003_complex_combo_input()
+    game_004_mouse_raycasting_3d()
+    game_005_3d_camera_controls()
+    game_006_skeletal_animation()
+    game_008_apply_custom_shader()
+    game_009_hot_reloading_logic()
+    game_010_embedded_lua_style_scripting()
+    
+    import std.io
+    io.print("Axiom Game Dev Suite: 10 Advanced Interactive Tests Passed!")

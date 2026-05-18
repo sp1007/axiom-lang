@@ -1,0 +1,86 @@
+import std.testing.assert
+
+enum TokenKind:
+    Identifier, Number, Keyword, Plus, Minus, EOF
+
+struct Token:
+    kind: TokenKind
+    value: string
+
+fn comp_131_lexer_scan():
+    // Máy quét từ vựng Zero-copy
+    let source = "let x = 5"
+    let tok = Token(kind: TokenKind.Keyword, value: source.slice(0, 3))
+    assert(tok.value == "let")
+
+struct AstNode:
+    kind: u8
+    child_idx: u32
+    sibling_idx: u32
+
+fn comp_132_flat_ast_allocation():
+    // Cây cú pháp phẳng lưu trữ trên mảng liên tiếp để tối ưu Cache
+    mut tree := Array[AstNode].empty()
+    tree.add(AstNode(kind: 1, child_idx: 1, sibling_idx: 0)) // Root
+    tree.add(AstNode(kind: 2, child_idx: 0, sibling_idx: 0)) // Child
+    assert(tree.length() == 2)
+
+fn comp_133_recursive_descent_parser():
+    mut pos := 0
+    let tokens = [TokenKind.Keyword, TokenKind.Identifier]
+    let match_token = fn(k: TokenKind) -> bool:
+        if tokens[pos] == k:
+            pos = pos + 1
+            return true
+        return false
+    assert(match_token(TokenKind.Keyword) == true)
+
+fn comp_134_pratt_parser_precedence():
+    // Phân tích biểu thức toán học theo độ ưu tiên
+    let get_precedence = fn(op: TokenKind) -> i32:
+        match op:
+            TokenKind.Plus => return 10
+            TokenKind.Minus => return 10
+            _ => return 0
+    assert(get_precedence(TokenKind.Plus) == 10)
+
+fn comp_135_symbol_table():
+    // Bảng băm theo dõi biến và scope
+    mut sym_table := Map[string, string]()
+    sym_table.put("my_var", "i32")
+    assert(sym_table.get("my_var") == "i32")
+
+fn comp_136_type_checker():
+    let check_assign = fn(lhs_type: string, rhs_type: string) -> bool:
+        return lhs_type == rhs_type
+    assert(check_assign("i32", "i32") == true)
+
+fn comp_137_comptime_constant_folding():
+    // Tối ưu hóa: Thu gọn hằng số
+    let fold = fn(op: string, a: i32, b: i32) -> i32:
+        if op == "+": return a + b
+        return 0
+    let optimized_ast_value = fold("+", 5, 10)
+    assert(optimized_ast_value == 15)
+
+struct AirInst:
+    opcode: u16
+    dest: u32
+    src1: u32
+
+fn comp_138_air_generation():
+    // Sinh Axiom Intermediate Representation (AIR)
+    let inst = AirInst(opcode: 0x01, dest: 5, src1: 2) // %r5 = add %r2
+    assert(inst.dest == 5)
+
+fn comp_139_dead_code_elimination():
+    let is_branch_reachable = false
+    let eliminate = fn(reachable: bool) -> string:
+        return if reachable: "keep" else: "remove"
+    assert(eliminate(is_branch_reachable) == "remove")
+
+fn comp_140_c_backend_emit():
+    // Bộ chuyển đổi mã (Transpiler) sinh mã C11
+    let emit_add = fn(dest: string, a: string, b: string) -> string:
+        return "int " + dest + " = " + a + " + " + b + ";"
+    assert(emit_add("x", "1", "2") == "int x = 1 + 2;")
