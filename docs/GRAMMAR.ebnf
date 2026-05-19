@@ -1,0 +1,423 @@
+(* AXIOM Language Grammar — Formal EBNF Definition
+   Version: 0.1.0
+   Date: 2026-05-18
+
+   This grammar is the authoritative specification for AXIOM syntax.
+   The parser in compiler/parser/ must implement this grammar exactly.
+
+   Notation: ISO/IEC 14977 EBNF with minor extensions noted in comments.
+     Rule = Alternative1 | Alternative2 ;
+     Rule = TermA , TermB ;            (* sequence *)
+     Rule = [ Optional ] ;
+     Rule = { Repeated } ;             (* zero or more *)
+     Rule = TermA - KEYWORD ;          (* except *)
+     'keyword'                          (* literal terminal *)
+     UPPER_CASE                         (* lexer token reference *)
+
+   Naming Conventions (AXIOM Source):
+     Variables and functions: snake_case
+     Types, structs, interfaces: PascalCase
+     Constants: SCREAMING_SNAKE_CASE
+     Module paths: lower.dotted.path
+
+   Indentation:
+     AXIOM uses exactly 4-space indentation. Tabs are forbidden.
+     The lexer emits INDENT and DEDENT tokens to represent scope changes.
+     NEWLINE tokens represent logical line endings.
+*)
+
+(* =================================================================== *)
+(* === PROGRAM STRUCTURE === *)
+(* =================================================================== *)
+
+Program = { ImportDecl } , { TopLevelDecl } , EOF ;
+
+TopLevelDecl = FnDecl
+             | StructDecl
+             | InterfaceDecl
+             | TypeAliasDecl
+             | ConstDecl ;
+
+(* =================================================================== *)
+(* === IMPORT DECLARATIONS === *)
+(* =================================================================== *)
+
+(* Imports follow the pattern: import std.fs { read, write }
+   The braces are optional — bare import makes the entire module available.
+   Capability-based: imported symbols define the security scope. *)
+
+ImportDecl = 'import' , ModulePath , [ '{' , ImportList , '}' ] , NEWLINE ;
+ModulePath = IDENT , { '.' , IDENT } ;
+ImportList = IDENT , { ',' , IDENT } ;
+
+(* =================================================================== *)
+(* === DECLARATIONS === *)
+(* =================================================================== *)
+
+(* --- Function declarations ---
+   Functions may be: pub (public), async (coroutine), extern (FFI).
+   Generic params use [T: Constraint] syntax.
+   Effect annotations use {.raises: [ErrorType].} syntax. *)
+
+FnDecl = [ 'pub' ] , [ 'async' ] , [ 'extern' ] ,
+         'fn' , IDENT , [ GenericParams ] ,
+         '(' , [ ParamList ] , ')' ,
+         [ '->' , TypeExpr , [ EffectAnnotation ] ] ,
+         ':' , Block ;
+
+GenericParams = '[' , GenericParam , { ',' , GenericParam } , ']' ;
+GenericParam  = IDENT , [ ':' , TypeExpr ] ;
+
+ParamList = Param , { ',' , Param } ;
+Param = [ ParamModifier ] , IDENT , ':' , TypeExpr ;
+ParamModifier = 'mut' | 'lent' | '!' ;
+
+(* Effect annotations declare side effects: {.raises: [IOError, ParseError].} *)
+EffectAnnotation = '{' , '.' , IDENT , ':' , '[' , TypeList , ']' , '.' , '}' ;
+
+(* --- Struct declarations ---
+   Structs may be pub, packed (explicit memory layout).
+   Fields may be pub (accessible outside module) and mut (mutable).
+   Methods are defined inline within the struct body. *)
+
+StructDecl    = [ 'pub' ] , [ 'packed' ] , 'struct' , IDENT ,
+                [ GenericParams ] , ':' , INDENT ,
+                { FieldDecl } , { FnDecl } , DEDENT ;
+
+FieldDecl     = [ 'pub' ] , [ 'mut' ] , IDENT , ':' , TypeExpr , NEWLINE ;
+
+(* --- Interface declarations ---
+   Interfaces use structural/duck typing: any struct that implements
+   the required method signatures satisfies the interface.
+   No explicit 'implements' keyword needed. *)
+
+InterfaceDecl = [ 'pub' ] , 'interface' , IDENT ,
+                [ GenericParams ] , ':' , INDENT ,
+                { MethodSig } , DEDENT ;
+
+MethodSig     = [ 'async' ] , 'fn' , IDENT ,
+                [ GenericParams ] , '(' , [ ParamList ] , ')' ,
+                [ '->' , TypeExpr ] , NEWLINE ;
+
+(* --- Type alias and sum types ---
+   Sum types (algebraic data types): type Result[T,E] = Ok(T) | Err(E)
+   Each variant may carry associated data in parentheses. *)
+
+TypeAliasDecl = [ 'pub' ] , 'type' , IDENT , [ GenericParams ] ,
+                '=' , SumTypeExpr , NEWLINE ;
+
+SumTypeExpr   = TypeVariant , { '|' , TypeVariant } ;
+TypeVariant   = IDENT , [ '(' , TypeList , ')' ] ;
+TypeList      = TypeExpr , { ',' , TypeExpr } ;
+
+(* --- Const declarations --- *)
+
+ConstDecl = [ 'pub' ] , 'const' , IDENT , ':' , TypeExpr , '=' , Expr , NEWLINE ;
+
+(* =================================================================== *)
+(* === TYPE EXPRESSIONS === *)
+(* =================================================================== *)
+
+(* Type expressions cover all AXIOM types:
+   primitives, pointers, slices, arrays, function types, generics,
+   isolated types (for actor heaps), and future types (for async). *)
+
+TypeExpr = PtrTypeExpr
+         | SliceTypeExpr
+         | ArrayTypeExpr
+         | FuncTypeExpr
+         | GenericTypeExpr
+         | IsolatedTypeExpr
+         | FutureTypeExpr
+         | IDENT ;
+
+PtrTypeExpr      = '*' , [ 'mut' ] , TypeExpr ;
+SliceTypeExpr    = '[' , TypeExpr , ']' ;
+ArrayTypeExpr    = '[' , TypeExpr , ';' , INT_LIT , ']' ;
+FuncTypeExpr     = 'fn' , '(' , [ TypeList ] , ')' , [ '->' , TypeExpr ] ;
+GenericTypeExpr  = IDENT , '[' , TypeList , ']' ;
+IsolatedTypeExpr = 'Isolated' , '[' , TypeExpr , ']' ;
+FutureTypeExpr   = 'Future' , '[' , TypeExpr , ']' ;
+
+(* =================================================================== *)
+(* === STATEMENTS === *)
+(* =================================================================== *)
+
+Block = INDENT , { Stmt } , DEDENT ;
+
+Stmt = VarDecl
+     | AssignStmt
+     | ReturnStmt
+     | IfStmt
+     | ForStmt
+     | WhileStmt
+     | MatchStmt
+     | DeferStmt
+     | UnsafeBlock
+     | ArenaBlock
+     | ExprStmt ;
+
+(* Variable declarations:
+   'let' creates an immutable binding, 'mut' creates a mutable binding.
+   Type annotation is optional when the type can be inferred. *)
+
+VarDecl    = ( 'let' | 'mut' ) , IDENT , [ ':' , TypeExpr ] ,
+             '=' , Expr , NEWLINE ;
+
+(* Assignment statement:
+   Left-hand side must be a mutable location (mut variable, field, index). *)
+
+AssignStmt = Expr , AssignOp , Expr , NEWLINE ;
+AssignOp   = '=' | '+=' | '-=' | '*=' | '/=' | '%=' ;
+
+ReturnStmt = 'return' , [ Expr ] , NEWLINE ;
+
+ExprStmt   = Expr , NEWLINE ;
+
+(* --- Control flow --- *)
+
+IfStmt   = 'if' , Expr , ':' , Block ,
+           { 'elif' , Expr , ':' , Block } ,
+           [ 'else' , ':' , Block ] ;
+
+ForStmt  = 'for' , IDENT , 'in' , Expr , ':' , Block ;
+
+WhileStmt = 'while' , Expr , ':' , Block ;
+
+(* --- Defer ---
+   Defer schedules an expression to execute when the enclosing scope exits.
+   Useful for resource cleanup: defer file.close() *)
+
+DeferStmt  = 'defer' , Expr , NEWLINE ;
+
+(* --- Unsafe block ---
+   Disables generational reference checks inside the block.
+   Required for raw pointer operations and performance-critical code. *)
+
+UnsafeBlock = 'unsafe' , ':' , Block ;
+
+(* --- Arena block ---
+   in [arena_name]:
+       ... allocations use the named arena ...
+   Arena allocations skip generational ID checks for performance. *)
+
+ArenaBlock  = 'in' , '[' , IDENT , ']' , ':' , Block ;
+
+(* =================================================================== *)
+(* === MATCH STATEMENT AND PATTERNS === *)
+(* =================================================================== *)
+
+(* Match requires exhaustive pattern coverage for sum types.
+   Each arm maps a pattern to either a block or a single expression. *)
+
+MatchStmt  = 'match' , Expr , ':' , INDENT ,
+             { MatchArm } , DEDENT ;
+
+MatchArm   = Pattern , ':' , ( Block | ( Expr , NEWLINE ) ) ;
+
+Pattern    = WildcardPat
+           | LiteralPat
+           | BindingPat
+           | VariantPat
+           | TuplePat ;
+
+WildcardPat = '_' ;
+LiteralPat  = INT_LIT | FLOAT_LIT | STRING_LIT | 'true' | 'false' | 'nil' ;
+BindingPat  = IDENT ;
+VariantPat  = IDENT , [ '(' , PatternList , ')' ] ;
+TuplePat    = '(' , PatternList , ')' ;
+PatternList = Pattern , { ',' , Pattern } ;
+
+(* =================================================================== *)
+(* === EXPRESSIONS === *)
+(* =================================================================== *)
+
+(* Operator Precedence Table (lowest to highest):
+   Level 10:  or         — logical OR
+   Level 20:  and        — logical AND
+   Level 30:  not        — logical NOT (unary prefix)
+   Level 40:  == != < > <= >=  — comparison
+   Level 50:  |          — bitwise OR
+   Level 60:  ^          — bitwise XOR
+   Level 70:  &          — bitwise AND
+   Level 80:  << >>      — bit shift
+   Level 90:  + -        — addition/subtraction
+   Level 100: * / %      — multiplication/division/modulo
+   Level 110: **         — exponentiation (RIGHT-associative)
+   Level 120: - ~ not    — unary prefix
+   Level 130: . [] () .* as  — postfix/member/call/cast
+*)
+
+Expr       = OrExpr ;
+
+OrExpr     = AndExpr , { 'or' , AndExpr } ;
+AndExpr    = NotExpr , { 'and' , NotExpr } ;
+NotExpr    = [ 'not' ] , CmpExpr ;
+
+CmpExpr    = BitOrExpr , { CmpOp , BitOrExpr } ;
+CmpOp      = '==' | '!=' | '<' | '>' | '<=' | '>=' ;
+
+BitOrExpr  = BitXorExpr , { '|' , BitXorExpr } ;
+BitXorExpr = BitAndExpr , { '^' , BitAndExpr } ;
+BitAndExpr = ShiftExpr , { '&' , ShiftExpr } ;
+ShiftExpr  = AddExpr , { ( '<<' | '>>' ) , AddExpr } ;
+
+AddExpr    = MulExpr , { ( '+' | '-' ) , MulExpr } ;
+MulExpr    = PowerExpr , { ( '*' | '/' | '%' ) , PowerExpr } ;
+
+(* PowerExpr is RIGHT-associative: 2 ** 3 ** 2 = 2 ** (3 ** 2) = 512 *)
+PowerExpr  = UnaryExpr , [ '**' , PowerExpr ] ;
+
+UnaryExpr  = ( '-' | '~' | 'not' ) , UnaryExpr
+           | PostfixExpr ;
+
+PostfixExpr = PrimaryExpr , { PostfixOp } ;
+
+PostfixOp  = '.' , IDENT                       (* member access *)
+           | '[' , Expr , ']'                   (* index access *)
+           | '(' , [ ArgList ] , ')'            (* function call *)
+           | '.*'                               (* deref *)
+           | 'as' , TypeExpr ;                  (* type cast *)
+
+(* =================================================================== *)
+(* === PRIMARY EXPRESSIONS === *)
+(* =================================================================== *)
+
+PrimaryExpr = IDENT
+            | INT_LIT | FLOAT_LIT | STRING_LIT | CHAR_LIT
+            | 'true' | 'false' | 'nil'
+            | '(' , Expr , ')'                  (* grouping *)
+            | ArrayLit
+            | StructLit
+            | SpawnExpr
+            | AwaitExpr
+            | ClosureExpr ;
+
+ArrayLit   = '[' , [ ExprList ] , ']' ;
+
+StructLit  = IDENT , '{' , [ FieldInitList ] , '}' ;
+FieldInitList = FieldInit , { ',' , FieldInit } ;
+FieldInit  = IDENT , ':' , Expr ;
+
+SpawnExpr  = 'spawn' , Expr ;
+AwaitExpr  = 'await' , Expr ;
+
+(* Closures use |params| syntax:
+   |x: i32, y: i32| x + y           — expression body
+   |x: i32| :                        — block body
+       return x * 2
+*)
+ClosureExpr = '|' , [ ParamList ] , '|' , ( Expr | Block ) ;
+
+ExprList   = Expr , { ',' , Expr } ;
+
+(* Named arguments supported in function calls: foo(name: value) *)
+ArgList    = Arg , { ',' , Arg } ;
+Arg        = [ IDENT , ':' ] , Expr ;
+
+(* =================================================================== *)
+(* === LEXICAL TERMINALS === *)
+(* =================================================================== *)
+
+(* Identifiers: Unicode letters/digits/underscores, excluding keywords *)
+IDENT      = LETTER , { LETTER | DIGIT | '_' } - KEYWORD ;
+
+(* Integer literals with optional underscores as separators *)
+INT_LIT    = DecInt | HexInt | OctInt | BinInt ;
+DecInt     = DIGIT , { DIGIT | '_' } ;
+HexInt     = '0x' , HEXDIGIT , { HEXDIGIT | '_' } ;
+OctInt     = '0o' , OCTDIGIT , { OCTDIGIT | '_' } ;
+BinInt     = '0b' , ( '0' | '1' ) , { '0' | '1' | '_' } ;
+
+(* Float literals with optional exponent *)
+FLOAT_LIT  = DIGIT , { DIGIT } , '.' , DIGIT , { DIGIT } ,
+             [ ( 'e' | 'E' ) , [ '+' | '-' ] , DIGIT , { DIGIT } ] ;
+
+(* String literals: double-quoted, with escape sequences *)
+STRING_LIT = '"' , { StrChar } , '"' ;
+CHAR_LIT   = "'" , StrChar , "'" ;
+
+StrChar    = ? any UTF-8 character except '"' and '\' ?
+           | '\n' | '\t' | '\\' | '\"' | '\0'
+           | "\u{" , HEXDIGIT , { HEXDIGIT } , '}' ;
+
+(* Character classes *)
+LETTER     = ? Unicode letter (L category) or '_' ? ;
+DIGIT      = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ;
+HEXDIGIT   = DIGIT | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
+           | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' ;
+OCTDIGIT   = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' ;
+
+(* Complete keyword list — all reserved, cannot be used as identifiers *)
+KEYWORD    = 'fn' | 'let' | 'mut' | 'struct' | 'interface' | 'import'
+           | 'pub' | 'return' | 'if' | 'elif' | 'else' | 'for' | 'while'
+           | 'in' | 'match' | 'type' | 'spawn' | 'await' | 'defer'
+           | 'unsafe' | 'and' | 'or' | 'not' | 'true' | 'false' | 'nil'
+           | 'async' | 'extern' | 'packed' | 'lent' | 'const'
+           | 'as' ;
+
+(* Note: 'Isolated' and 'Future' are NOT keywords — they are regular identifiers
+   that are recognized as builtin type constructors in the type system.
+   This allows user code to shadow them if needed, though it is discouraged. *)
+
+(* Indentation tokens — emitted by the lexer, not present in source *)
+INDENT  = (* increase in indentation level by exactly 4 spaces *) ;
+DEDENT  = (* decrease in indentation level by exactly 4 spaces *) ;
+NEWLINE = (* line feed, possibly preceded by carriage return *) ;
+EOF     = (* end of input *) ;
+
+(* =================================================================== *)
+(* === DISAMBIGUATION NOTES === *)
+(* =================================================================== *)
+
+(* 1. AssignStmt vs ExprStmt:
+      Both start with an expression. The parser speculatively parses
+      the left-hand side as an expression, then checks if the next
+      token is an AssignOp (=, +=, -=, *=, /=, %=).
+      If yes → AssignStmt. If no → ExprStmt.
+      This requires no backtracking — just 1-token lookahead after the LHS.
+
+   2. StructLit vs Block:
+      IDENT '{' in expression context is always parsed as StructLit.
+      The parser distinguishes this from Block because Block only appears
+      after ':' (following if/for/while/fn/etc.), never in expression position.
+
+   3. GenericTypeExpr vs Comparison:
+      IDENT '[' TypeExpr ']' is parsed as GenericTypeExpr only in type context
+      (after ':', '->', 'as', generic parameter bounds).
+      In expression context, '[' always starts an ArrayLit or IndexExpr.
+
+   4. VariantPat vs BindingPat in match arms:
+      An IDENT followed by '(' is a VariantPat.
+      A bare IDENT is a BindingPat.
+      This requires 1-token lookahead (check for '(' after IDENT).
+
+   5. Closure vs Bitwise OR:
+      '|' in expression context starts a ClosureExpr only at the beginning
+      of a PrimaryExpr position. Inside binary expressions, '|' is BitOrExpr.
+      The parser resolves this by checking context: if '|' is at the start
+      of a PrimaryExpr (not after another expression), it's a closure.
+*)
+
+(* =================================================================== *)
+(* === EXAMPLES OF INVALID PROGRAMS === *)
+(* =================================================================== *)
+
+(* INVALID: Tab-indented code
+   fn main():
+   \t let x = 1    (* lexer error: tab character not allowed *)
+*)
+
+(* INVALID: 2-space indentation
+   fn main():
+     let x = 1      (* lexer error: indentation must be multiple of 4 spaces *)
+*)
+
+(* INVALID: Keyword used as identifier
+   let fn = 42      (* parser error: 'fn' is a reserved keyword *)
+*)
+
+(* INVALID: Missing ':' after function signature
+   fn main()        (* parser error: expected ':' after function signature *)
+       return 0
+*)
