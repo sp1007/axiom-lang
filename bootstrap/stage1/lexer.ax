@@ -14,7 +14,7 @@ pub fn new_token_vec() -> TokenVec:
 
 pub fn push(mut self: TokenVec, t: Token):
     if self.len == self.cap:
-        mut new_cap := 16
+        mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
         let new_data = @alloc(new_cap * 8) as ptr[Token] // Token size is 8 bytes
@@ -37,7 +37,7 @@ pub fn new_int_vec() -> IntVec:
 
 pub fn push(mut self: IntVec, val: i32):
     if self.len == self.cap:
-        mut new_cap := 16
+        mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
         let new_data = @alloc(new_cap * 4) as ptr[i32] // i32 size is 4 bytes
@@ -95,47 +95,81 @@ pub fn emit(mut self: Lexer, kind: u8, offset: i64, length: i64):
     ))
 
 fn lookup_keyword(s: str) -> u8:
-    if s == "and": return TK_AND
-    if s == "as": return TK_AS
-    if s == "async": return TK_ASYNC
-    if s == "await": return TK_AWAIT
-    if s == "const": return TK_CONST
-    if s == "defer": return TK_DEFER
-    if s == "elif": return TK_ELIF
-    if s == "else": return TK_ELSE
-    if s == "extern": return TK_EXTERN
-    if s == "false": return TK_FALSE
-    if s == "fn": return TK_FN
-    if s == "for": return TK_FOR
-    if s == "Future": return TK_FUTURE
-    if s == "if": return TK_IF
-    if s == "import": return TK_IMPORT
-    if s == "in": return TK_IN
-    if s == "interface": return TK_INTERFACE
-    if s == "Isolated": return TK_ISOLATED
-    if s == "lent": return TK_LENT
-    if s == "let": return TK_LET
-    if s == "match": return TK_MATCH
-    if s == "mut": return TK_MUT
-    if s == "nil": return TK_NIL
-    if s == "not": return TK_NOT
-    if s == "or": return TK_OR
-    if s == "packed": return TK_PACKED
-    if s == "pub": return TK_PUB
-    if s == "return": return TK_RETURN
-    if s == "spawn": return TK_SPAWN
-    if s == "struct": return TK_STRUCT
-    if s == "true": return TK_TRUE
-    if s == "type": return TK_TYPE
-    if s == "unsafe": return TK_UNSAFE
-    if s == "while": return TK_WHILE
+    if s == "and":
+        return TK_AND
+    if s == "as":
+        return TK_AS
+    if s == "async":
+        return TK_ASYNC
+    if s == "await":
+        return TK_AWAIT
+    if s == "const":
+        return TK_CONST
+    if s == "defer":
+        return TK_DEFER
+    if s == "elif":
+        return TK_ELIF
+    if s == "else":
+        return TK_ELSE
+    if s == "extern":
+        return TK_EXTERN
+    if s == "false":
+        return TK_FALSE
+    if s == "fn":
+        return TK_FN
+    if s == "for":
+        return TK_FOR
+    if s == "Future":
+        return TK_FUTURE
+    if s == "if":
+        return TK_IF
+    if s == "import":
+        return TK_IMPORT
+    if s == "in":
+        return TK_IN
+    if s == "interface":
+        return TK_INTERFACE
+    if s == "Isolated":
+        return TK_ISOLATED
+    if s == "lent":
+        return TK_LENT
+    if s == "let":
+        return TK_LET
+    if s == "match":
+        return TK_MATCH
+    if s == "mut":
+        return TK_MUT
+    if s == "nil":
+        return TK_NIL
+    if s == "not":
+        return TK_NOT
+    if s == "or":
+        return TK_OR
+    if s == "packed":
+        return TK_PACKED
+    if s == "pub":
+        return TK_PUB
+    if s == "return":
+        return TK_RETURN
+    if s == "spawn":
+        return TK_SPAWN
+    if s == "struct":
+        return TK_STRUCT
+    if s == "true":
+        return TK_TRUE
+    if s == "type":
+        return TK_TYPE
+    if s == "unsafe":
+        return TK_UNSAFE
+    if s == "while":
+        return TK_WHILE
     return TK_IDENT
 
 fn is_ident_start(b: u8) -> bool:
-    return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
+    return (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or b == 95
 
 fn is_ident_continue(b: u8) -> bool:
-    return is_ident_start(b) || (b >= 48 && b <= 57)
+    return is_ident_start(b) or (b >= 48 and b <= 57)
 
 pub fn scan_ident(mut self: Lexer):
     let start = self.pos
@@ -151,21 +185,21 @@ pub fn scan_ident(mut self: Lexer):
     self.emit(kind, start, self.pos - start)
 
 fn is_dec_digit(b: u8) -> bool:
-    return b >= 48 && b <= 57
+    return b >= 48 and b <= 57
 
 fn is_hex_digit(b: u8) -> bool:
-    return is_dec_digit(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70)
+    return is_dec_digit(b) or (b >= 97 and b <= 102) or (b >= 65 and b <= 70)
 
 fn is_oct_digit(b: u8) -> bool:
-    return b >= 48 && b <= 55
+    return b >= 48 and b <= 55
 
 fn is_bin_digit(b: u8) -> bool:
-    return b == 48 || b == 49
+    return b == 48 or b == 49
 
 pub fn scan_dec_digits(mut self: Lexer):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
-        if is_dec_digit(b) || b == 95:
+        if is_dec_digit(b) or b == 95:
             self.pos = self.pos + 1
         else:
             break
@@ -173,7 +207,7 @@ pub fn scan_dec_digits(mut self: Lexer):
 pub fn scan_hex_digits(mut self: Lexer):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
-        if is_hex_digit(b) || b == 95:
+        if is_hex_digit(b) or b == 95:
             self.pos = self.pos + 1
         else:
             break
@@ -181,7 +215,7 @@ pub fn scan_hex_digits(mut self: Lexer):
 pub fn scan_oct_digits(mut self: Lexer):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
-        if is_oct_digit(b) || b == 95:
+        if is_oct_digit(b) or b == 95:
             self.pos = self.pos + 1
         else:
             break
@@ -189,7 +223,7 @@ pub fn scan_oct_digits(mut self: Lexer):
 pub fn scan_bin_digits(mut self: Lexer):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
-        if is_bin_digit(b) || b == 95:
+        if is_bin_digit(b) or b == 95:
             self.pos = self.pos + 1
         else:
             break
@@ -198,19 +232,19 @@ pub fn scan_number(mut self: Lexer):
     let start = self.pos
     let b = self.src[self.pos] as u8
 
-    if b == 48 && self.pos + 1 < self.len: // '0'
+    if b == 48 and self.pos + 1 < self.len: // '0'
         let next = self.src[self.pos + 1] as u8
-        if next == 120 || next == 88: // 'x', 'X'
+        if next == 120 or next == 88: // 'x', 'X'
             self.pos = self.pos + 2
             self.scan_hex_digits()
             self.emit(TK_INT_LIT, start, self.pos - start)
             return
-        elif next == 111 || next == 79: // 'o', 'O'
+        elif next == 111 or next == 79: // 'o', 'O'
             self.pos = self.pos + 2
             self.scan_oct_digits()
             self.emit(TK_INT_LIT, start, self.pos - start)
             return
-        elif next == 98 || next == 66: // 'b', 'B'
+        elif next == 98 or next == 66: // 'b', 'B'
             self.pos = self.pos + 2
             self.scan_bin_digits()
             self.emit(TK_INT_LIT, start, self.pos - start)
@@ -219,7 +253,7 @@ pub fn scan_number(mut self: Lexer):
     self.scan_dec_digits()
 
     // Check for float: decimal point followed by digit
-    if self.pos < self.len && self.src[self.pos] as u8 == 46: // '.'
+    if self.pos < self.len and self.src[self.pos] as u8 == 46: // '.'
         if self.pos + 1 < self.len:
             let next = self.src[self.pos + 1] as u8
             if is_dec_digit(next):
@@ -228,11 +262,11 @@ pub fn scan_number(mut self: Lexer):
                 // Optional exponent
                 if self.pos < self.len:
                     let exp = self.src[self.pos] as u8
-                    if exp == 101 || exp == 69: // 'e', 'E'
+                    if exp == 101 or exp == 69: // 'e', 'E'
                         self.pos = self.pos + 1
                         if self.pos < self.len:
                             let sign = self.src[self.pos] as u8
-                            if sign == 43 || sign == 45: // '+', '-'
+                            if sign == 43 or sign == 45: // '+', '-'
                                 self.pos = self.pos + 1
                         self.scan_dec_digits()
                 self.emit(TK_FLOAT_LIT, start, self.pos - start)
@@ -274,13 +308,13 @@ pub fn scan_char(mut self: Lexer):
         elif b != 39: // '\''
             self.pos = self.pos + 1
 
-    if self.pos < self.len && self.src[self.pos] as u8 == 39:
+    if self.pos < self.len and self.src[self.pos] as u8 == 39:
         self.pos = self.pos + 1
     self.emit(TK_CHAR_LIT, start, self.pos - start)
 
 pub fn scan_line_comment(mut self: Lexer):
     self.pos = self.pos + 2 // skip //
-    while self.pos < self.len && self.src[self.pos] as u8 != 10: // '\n'
+    while self.pos < self.len and self.src[self.pos] as u8 != 10: // '\n'
         self.pos = self.pos + 1
 
 pub fn scan_operator_or_punct(mut self: Lexer):
@@ -289,63 +323,63 @@ pub fn scan_operator_or_punct(mut self: Lexer):
 
     if self.pos + 1 < self.len:
         let next = self.src[self.pos + 1] as u8
-        if b == 61 && next == 61:
+        if b == 61 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_EQ_EQ, start, 2)
             return
-        if b == 33 && next == 61:
+        if b == 33 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_BANG_EQ, start, 2)
             return
-        if b == 60 && next == 61:
+        if b == 60 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_LT_EQ, start, 2)
             return
-        if b == 62 && next == 61:
+        if b == 62 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_GT_EQ, start, 2)
             return
-        if b == 42 && next == 42:
+        if b == 42 and next == 42:
             self.pos = self.pos + 2
             self.emit(TK_STAR_STAR, start, 2)
             return
-        if b == 60 && next == 60:
+        if b == 60 and next == 60:
             self.pos = self.pos + 2
             self.emit(TK_LT_LT, start, 2)
             return
-        if b == 62 && next == 62:
+        if b == 62 and next == 62:
             self.pos = self.pos + 2
             self.emit(TK_GT_GT, start, 2)
             return
-        if b == 45 && next == 62:
+        if b == 45 and next == 62:
             self.pos = self.pos + 2
             self.emit(TK_ARROW, start, 2)
             return
-        if b == 58 && next == 61:
+        if b == 58 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_COLON_EQ, start, 2)
             return
-        if b == 43 && next == 61:
+        if b == 43 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_PLUS_EQ, start, 2)
             return
-        if b == 45 && next == 61:
+        if b == 45 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_MINUS_EQ, start, 2)
             return
-        if b == 42 && next == 61:
+        if b == 42 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_STAR_EQ, start, 2)
             return
-        if b == 47 && next == 61:
+        if b == 47 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_SLASH_EQ, start, 2)
             return
-        if b == 37 && next == 61:
+        if b == 37 and next == 61:
             self.pos = self.pos + 2
             self.emit(TK_PERCENT_EQ, start, 2)
             return
-        if b == 46 && next == 42:
+        if b == 46 and next == 42:
             self.pos = self.pos + 2
             self.emit(TK_DOT_STAR, start, 2)
             return
@@ -449,7 +483,9 @@ pub fn scan_operator_or_punct(mut self: Lexer):
 pub fn run(mut self: Lexer):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
-        if b == 32 || b == 13: // ' ' or '\r'
+        if b == 32 or b == 13: // ' ' or '\r'
+            self.pos = self.pos + 1
+        elif b == 64: // '@'
             self.pos = self.pos + 1
         elif b == 9: // '\t'
             self.pos = self.pos + 1
@@ -458,9 +494,9 @@ pub fn run(mut self: Lexer):
             self.newline_offsets.push(offset as i32)
             self.emit(TK_NEWLINE, offset, 1)
             self.pos = self.pos + 1
-        elif b == 47 && self.peek1() == 47: // '//'
+        elif b == 47 and self.peek1() == 47: // '//'
             self.scan_line_comment()
-        elif b >= 48 && b <= 57: // '0'..'9'
+        elif b >= 48 and b <= 57: // '0'..'9'
             self.scan_number()
         elif b == 34: // '"'
             self.scan_string()

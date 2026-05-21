@@ -360,16 +360,31 @@ func (g *StmtGen) emitBlock(idx uint32, node *ast.AstNode) {
 
 // emitDestroy generates CTGC-injected destroy (free) calls.
 func (g *StmtGen) emitDestroy(idx uint32, node *ast.AstNode) {
+	var typeID types.TypeID
+	var name string
+
 	if node.FirstChild != ast.NullIdx {
 		expr := g.ExprGen.Emit(node.FirstChild)
-		g.W.Linef("ax_free(%s);", expr)
+		typeID = g.ExprGen.NodeType(node.FirstChild)
+		name = expr
 	} else {
 		symID := node.Payload
 		if symID != 0 && g.Symbols != nil && int(symID) < len(g.Symbols.Symbols) {
 			sym := g.Symbols.SymbolAt(symID)
-			name := resolveName(sym.NameID, g.Intern)
-			g.W.Linef("ax_free(%s);", name)
+			typeID = types.TypeID(sym.TypeID)
+			name = resolveName(sym.NameID, g.Intern)
 		}
+	}
+
+	if typeID != types.TypeUnknown && g.Table != nil && int(typeID) < g.Table.Count() {
+		entry := g.Table.Entry(typeID)
+		if entry.Kind == types.KindPointer || entry.Kind == types.KindRef {
+			g.W.Linef("ax_free(%s);", name)
+		} else {
+			g.W.Linef("/* skip destroy for value type %s */", name)
+		}
+	} else {
+		g.W.Linef("ax_free(%s);", name)
 	}
 }
 

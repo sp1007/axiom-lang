@@ -273,6 +273,7 @@ func (tt *TypeTable) CanImplicitCast(from, to TypeID) bool {
 		return true
 	}
 
+
 	// Integer widening: must preserve signedness and strictly widen
 	if from.IsSigned() && to.IsSigned() {
 		return from.SizeOf() < to.SizeOf() && from != TypeISize && to != TypeISize
@@ -332,6 +333,11 @@ func (tt *TypeTable) CommonType(a, b TypeID) (TypeID, bool) {
 // RegisterPointer registers a pointer-to-T type and returns its TypeID.
 // Extra stores the inner TypeID of the pointee.
 func (tt *TypeTable) RegisterPointer(innerTypeID TypeID) TypeID {
+	for idx, entry := range tt.entries {
+		if entry.Kind == KindPointer && entry.Extra == uint32(innerTypeID) {
+			return TypeID(idx)
+		}
+	}
 	id := TypeID(len(tt.entries))
 	tt.entries = append(tt.entries, TypeEntry{
 		Kind:  KindPointer,
@@ -345,6 +351,11 @@ func (tt *TypeTable) RegisterPointer(innerTypeID TypeID) TypeID {
 // RegisterSlice registers a slice-of-T type and returns its TypeID.
 // Extra stores the inner TypeID of the element.
 func (tt *TypeTable) RegisterSlice(elemTypeID TypeID) TypeID {
+	for idx, entry := range tt.entries {
+		if entry.Kind == KindSlice && entry.Extra == uint32(elemTypeID) {
+			return TypeID(idx)
+		}
+	}
 	id := TypeID(len(tt.entries))
 	tt.entries = append(tt.entries, TypeEntry{
 		Kind:  KindSlice,

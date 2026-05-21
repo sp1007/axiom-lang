@@ -91,7 +91,15 @@ func (or *OverloadResolver) collectCandidates(nameID uint32) []uint32 {
 	for i := len(or.st.stack) - 1; i >= 0; i-- {
 		scopeIdx := or.st.stack[i]
 		if symIdx, found := or.st.Scopes[scopeIdx].get(nameID); found {
-			candidates = append(candidates, symIdx)
+			currIdx := symIdx
+			for {
+				candidates = append(candidates, currIdx)
+				sym := or.st.SymbolAt(currIdx)
+				if sym.NextOverload == 0 {
+					break
+				}
+				currIdx = sym.NextOverload
+			}
 		}
 	}
 	return candidates

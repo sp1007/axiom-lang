@@ -118,10 +118,11 @@ func TestCheckExpr_FieldExprValid(t *testing.T) {
 	objID := pool.Intern([]byte("obj"))
 	symIdx, _ := st.Define(objID, sema.SymVar, 0, 0)
 	
-	structType := tt.RegisterStruct(0, nil, nil)
+	fieldID := pool.Intern([]byte("f"))
+	structType := tt.RegisterStruct(0, []types.FieldEntry{{NameID: fieldID, TypeID: types.TypeI32}}, nil)
 	st.SymbolAt(symIdx).TypeID = uint32(structType)
 	
-	field := addNode(tree, 0, ast.NodeFieldExpr, 0, 0)
+	field := addNode(tree, 0, ast.NodeFieldExpr, fieldID, 0)
 	addNode(tree, field, ast.NodeIdent, symIdx, 0) // obj
 	
 	ie.Infer()

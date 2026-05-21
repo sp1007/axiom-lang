@@ -186,6 +186,11 @@ func (oc *OwnershipChecker) checkVarDecl(nodeIdx uint32) {
 					}
 				}
 				oc.moved[srcSym] = true
+				// We have already handled this NodeIdent fully and moved it.
+				// Do NOT call checkNode(child) recursively, as that would double-check
+				// and report a false "use of moved value" for this move itself.
+				child = childNode.NextSibling
+				continue
 			}
 		}
 		oc.checkNode(child)
@@ -294,11 +299,25 @@ func (oc *OwnershipChecker) checkIdentUse(nodeIdx uint32) {
 	}
 }
 
+// isCopyType returns true if the type is copyable (e.g. primitives, pointers, references, etc.).
+func (oc *OwnershipChecker) isCopyType(typeID types.TypeID) bool {
+	if typeID == types.TypeUnknown {
+		return true // Treat unresolved/unknown as copy to avoid cascade errors
+	}
+	if typeID.IsPrimitive() {
+		return true
+	}
+	entry := oc.types.Entry(typeID)
+	switch entry.Kind {
+	case types.KindPointer, types.KindRef, types.KindFunction:
+		return true
+	}
+	return false
+}
+
 // isMoveContext returns true if the given node is in a position that constitutes a move.
-// For MVP, all value bindings are moves (non-Copy types).
+// Value bindings of non-Copy types (structs, sum types, etc.) constitute a move.
 func (oc *OwnershipChecker) isMoveContext(nodeIdx uint32) bool {
-	// For MVP, treat all value assignments as moves.
-	// A full implementation would check if the type is Copy (primitives are Copy).
 	node := &oc.ast.Nodes[nodeIdx]
 	if node.Kind == ast.NodeIdent {
 		symID := node.Payload
@@ -308,8 +327,11 @@ func (oc *OwnershipChecker) isMoveContext(nodeIdx uint32) bool {
 			if sym.Kind == SymBuiltinType || sym.Kind == SymConst || sym.Kind == SymFunc {
 				return false
 			}
-			// Variables with struct types are moved; primitives are copied
-			// For MVP, we only move non-primitive variables
+			// If the variable has a Copy type, it is not moved
+			if oc.isCopyType(types.TypeID(sym.TypeID)) {
+				return false
+			}
+			// Variables with non-Copy types (e.g., structs, sum types) are moved
 			if sym.Kind == SymVar || sym.Kind == SymParam {
 				return true
 			}

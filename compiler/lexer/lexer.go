@@ -63,6 +63,12 @@ func (l *lexer) run() {
 		switch {
 		case b == ' ' || b == '\r':
 			l.pos++
+		case b == '@':
+			if l.pos+1 < len(l.src) && isIdentStart(l.src[l.pos+1]) {
+				l.pos++
+			} else {
+				l.scanOperatorOrPunct()
+			}
 		case b == '\t':
 			l.addDiag(1, "tab character not allowed; use 4 spaces for indentation")
 			l.pos++

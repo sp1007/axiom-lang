@@ -38,10 +38,14 @@ func runOwnership(src []byte) ([]diagnostics.Diagnostic, *sema.OwnershipChecker)
 
 func TestOwnershipMoveRule(t *testing.T) {
 	// Moving a value then using it should produce an error.
-	src := []byte(`fn main():
-    let x = 42
-    let y = x
-    let z = x
+	src := []byte(`struct Point:
+    x: i32
+    y: i32
+
+fn main():
+    let p = Point(x: 1, y: 2)
+    let q = p
+    let r = p
 `)
 	diags, _ := runOwnership(src)
 
@@ -52,7 +56,7 @@ func TestOwnershipMoveRule(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected 'use of moved value' error for x after move to y")
+		t.Error("expected 'use of moved value' error for p after move to q")
 		for _, d := range diags {
 			t.Logf("  diag: %s", d.Message)
 		}

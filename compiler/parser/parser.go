@@ -154,7 +154,7 @@ func (p *Parser) syncToTopLevel() {
 	for !p.check(lexer.TokenEOF) {
 		switch p.peek().Kind {
 		case lexer.TokenFn, lexer.TokenStruct, lexer.TokenInterface,
-			lexer.TokenImport, lexer.TokenPub, lexer.TokenType, lexer.TokenConst, lexer.TokenAsync:
+			lexer.TokenImport, lexer.TokenPub, lexer.TokenType, lexer.TokenConst, lexer.TokenAsync, lexer.TokenExtern:
 			return
 		}
 		p.consume()
@@ -213,6 +213,8 @@ func (p *Parser) parseTopLevelDecl() uint32 {
 		return p.parseTypeAliasDecl(false)
 	case lexer.TokenConst:
 		return p.parseConstDecl(false)
+	case lexer.TokenExtern:
+		return p.parseExternDecl(false)
 	default:
 		p.errorf(tok, "expected declaration, got %s", tok.Kind)
 		p.syncToTopLevel()
@@ -238,11 +240,71 @@ func (p *Parser) parsePubDecl() uint32 {
 		return p.parseTypeAliasDecl(true)
 	case lexer.TokenConst:
 		return p.parseConstDecl(true)
+	case lexer.TokenExtern:
+		return p.parseExternDecl(true)
 	default:
 		p.errorf(tok, "expected declaration after 'pub', got %s", tok.Kind)
 		p.syncToTopLevel()
 		return 0
 	}
+}
+
+func (p *Parser) parseExternDecl(isPub bool) uint32 {
+	_, _ = p.expect(lexer.TokenExtern)
+
+	// Expect ABI string literal, e.g. "C"
+	_, _ = p.expect(lexer.TokenStringLit)
+
+	fnTok, ok := p.expect(lexer.TokenFn)
+	if !ok {
+		return 0
+	}
+
+	node := p.tree.AddNode(ast.NodeFuncDecl, p.tokenIdx(fnTok))
+	p.tree.SetFlags(node, ast.FlagIsExtern)
+	if isPub {
+		p.tree.SetFlags(node, ast.FlagIsPub)
+	}
+
+	nameTok, ok := p.expect(lexer.TokenIdent)
+	if ok {
+		p.tree.SetPayload(node, p.pool.Intern(p.tokenText(nameTok)))
+	}
+
+	if p.check(lexer.TokenLBracket) {
+		p.tree.SetFlags(node, ast.FlagIsGeneric)
+		gp := p.parseGenericParams()
+		if gp != 0 {
+			p.tree.AppendChild(node, gp)
+		}
+	}
+
+	p.expect(lexer.TokenLParen)
+	for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
+		param := p.parseParam()
+		if param != 0 {
+			p.tree.AppendChild(node, param)
+		}
+		if !p.check(lexer.TokenRParen) {
+			p.expect(lexer.TokenComma)
+		}
+		if p.pos == prevPos {
+			p.consume()
+		}
+	}
+	p.expect(lexer.TokenRParen)
+
+	if p.checkRaw(lexer.TokenArrow) {
+		p.consume()
+		retType := p.parseTypeExpr()
+		if retType != 0 {
+			p.tree.AppendChild(node, retType)
+		}
+	}
+
+	p.expectNewline()
+	return node
 }
 
 // =============================================================================
@@ -682,7 +744,7 @@ func (p *Parser) parseMethodSig() uint32 {
 	}
 	p.expect(lexer.TokenRParen)
 
-	if p.check(lexer.TokenArrow) {
+	if p.checkRaw(lexer.TokenArrow) {
 		p.consume()
 		ret := p.parseTypeExpr()
 		if ret != 0 {

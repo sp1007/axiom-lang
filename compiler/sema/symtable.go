@@ -26,6 +26,12 @@ var builtins = []builtinType{
 	{"bool", 11}, {"string", 12}, {"char8", 13},
 	{"void", 14}, {"isize", 15}, {"usize", 16},
 	{"ActorRef", 21}, // types.TypeActorRef
+	{"str", 12},      // alias to types.TypeString
+	{"ptr", 0},        // placeholder for generic pointer base
+	{"null", 0},
+	{"alloc", 0},
+	{"free", 0},
+	{"memcpy", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated
@@ -125,14 +131,34 @@ func (st *SymbolTable) Define(nameID uint32, kind SymKind, flags SymFlags, declN
 
 	// Check for duplicate in current scope
 	if prevIdx, found := scope.get(nameID); found {
-		_ = prevIdx // we would use prevIdx to get the previous declaration node for the hint
-		// But currently we don't have the source file context here to format the hint perfectly,
-		// so we'll just return a standard diagnostic.
+		// If both the previous symbol and the new symbol are functions, allow overloading.
+		if st.Symbols[prevIdx].Kind == SymFunc && kind == SymFunc {
+			// Traverse the NextOverload chain to find the last overloaded function
+			currIdx := prevIdx
+			for {
+				if st.Symbols[currIdx].NextOverload == 0 {
+					break
+				}
+				currIdx = st.Symbols[currIdx].NextOverload
+			}
+
+			symIdx := uint32(len(st.Symbols))
+			st.Symbols = append(st.Symbols, Symbol{
+				NameID:       nameID,
+				Kind:         kind,
+				Flags:        flags,
+				TypeID:       0, // unresolved initially
+				DeclNode:     declNode,
+				ScopeID:      scopeIdx,
+				NextOverload: 0,
+			})
+			st.Symbols[currIdx].NextOverload = symIdx
+			return symIdx, nil
+		}
+
 		diag := &diagnostics.Diagnostic{
 			Severity: diagnostics.SeverityError,
 			Code:     2001,
-			// Since we just have the AST node index, we assume the caller will attach the Pos later,
-			// or we can just leave it empty here since this is internal logic.
 			Message:  "symbol already defined in this scope",
 		}
 		return 0, diag
@@ -140,12 +166,13 @@ func (st *SymbolTable) Define(nameID uint32, kind SymKind, flags SymFlags, declN
 
 	symIdx := uint32(len(st.Symbols))
 	st.Symbols = append(st.Symbols, Symbol{
-		NameID:   nameID,
-		Kind:     kind,
-		Flags:    flags,
-		TypeID:   0, // unresolved initially
-		DeclNode: declNode,
-		ScopeID:  scopeIdx,
+		NameID:       nameID,
+		Kind:         kind,
+		Flags:        flags,
+		TypeID:       0, // unresolved initially
+		DeclNode:     declNode,
+		ScopeID:      scopeIdx,
+		NextOverload: 0,
 	})
 
 	scope.put(nameID, symIdx)

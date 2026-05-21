@@ -54,7 +54,7 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 
 			if colType != types.TypeUnknown {
 				entry := tc.types.Entry(colType)
-				if entry.Kind != types.KindArray && entry.Kind != types.KindSlice && colType != types.TypeString {
+				if entry.Kind != types.KindArray && entry.Kind != types.KindSlice && entry.Kind != types.KindPointer && colType != types.TypeString {
 					// Hack to ignore generic function instantiation
 					if entry.Kind == types.KindFunction || colType == types.TypeUnknown {
 						// skip
@@ -89,14 +89,57 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 			tc.checkStmt(obj)
 			objType := tc.infer.TypeOf(obj)
 			
-			// Mock struct checking. In full AXIOM, we lookup the struct's fields.
-			// The node.Payload has the field NameID.
+			isStructAccess := false
 			if objType != types.TypeUnknown {
 				entry := tc.types.Entry(objType)
-				if entry.Kind != types.KindStruct {
+				if entry.Kind == types.KindPointer {
+					objType = tc.types.PointerElem(objType)
+					entry = tc.types.Entry(objType)
+				}
+				if entry.Kind == types.KindStruct {
+					isStructAccess = true
+				}
+			}
+
+			if !isStructAccess {
+				isResolvedSym := false
+				symIdx := node.Payload
+				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+					sym := tc.symtable.SymbolAt(symIdx)
+					if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst || sym.Kind == SymModule {
+						isResolvedSym = true
+					}
+				}
+				if !isResolvedSym && objType != types.TypeUnknown {
 					tc.errorf(nodeIdx, 3025, "cannot access field on non-struct type %d", objType)
 				}
-				// Assume the field exists for now if it's a struct or module
+			} else {
+				// Verify that the field or method exists on the struct
+				structInfo := tc.types.StructInfo(objType)
+				fieldNameID := uint32(node.Payload)
+				found := false
+				for _, field := range structInfo.Fields {
+					if field.NameID == fieldNameID {
+						found = true
+						break
+					}
+				}
+				if !found && tc.ifaces != nil {
+					methods := tc.ifaces.getMethodsOfStruct(objType)
+					for _, method := range methods {
+						if method.NameID == fieldNameID {
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					fieldName := ""
+					if fieldNameID != 0 {
+						fieldName = tc.intern.Get(fieldNameID)
+					}
+					tc.errorf(nodeIdx, 3026, "struct type %d has no field or method '%s'", objType, fieldName)
+				}
 			}
 		}
 
@@ -129,6 +172,10 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				} else if exprEntry.Kind == types.KindPointer && targetType.IsInteger() {
 					valid = true
 				} else if exprType.IsInteger() && targetEntry.Kind == types.KindPointer {
+					valid = true
+				} else if exprEntry.Kind == types.KindPointer && targetType == types.TypeString {
+					valid = true
+				} else if exprType == types.TypeString && targetEntry.Kind == types.KindPointer {
 					valid = true
 				}
 				

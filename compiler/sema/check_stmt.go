@@ -46,7 +46,7 @@ func (tc *TypeChecker) errorf(nodeIdx uint32, code int, format string, args ...a
 		Severity: diagnostics.SeverityError,
 		Code:     uint32(code),
 		Message:  fmt.Sprintf(format, args...),
-		Pos:      diagnostics.Pos{}, // Mock pos for now
+		Pos:      nodePos(tc.ast, nodeIdx),
 	})
 }
 
@@ -56,7 +56,7 @@ func (tc *TypeChecker) warnf(nodeIdx uint32, code int, format string, args ...an
 		Severity: diagnostics.SeverityWarning,
 		Code:     uint32(code),
 		Message:  fmt.Sprintf(format, args...),
-		Pos:      diagnostics.Pos{}, // Mock pos for now
+		Pos:      nodePos(tc.ast, nodeIdx),
 	})
 }
 
@@ -172,6 +172,9 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 	case ast.NodeFuncDecl:
 		prevReturn := tc.currentFuncReturnType
 		prevAsync := tc.inAsyncFn
+		prevInsideLoop := tc.insideLoop
+
+		tc.insideLoop = false
 
 		if node.Flags&uint16(ast.FlagIsAsync) != 0 {
 			tc.inAsyncFn = true
@@ -202,6 +205,7 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 		
 		tc.currentFuncReturnType = prevReturn
 		tc.inAsyncFn = prevAsync
+		tc.insideLoop = prevInsideLoop
 
 	case ast.NodeVarDecl:
 		// Trigger inference engine to evaluate type/init
@@ -262,13 +266,12 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 			child = tc.ast.Nodes[child].NextSibling
 		}
 
-	case ast.NodeForStmt:
+	case ast.NodeForStmt, ast.NodeWhileStmt:
 		prevInsideLoop := tc.insideLoop
 		tc.insideLoop = true
 		
 		// simplified: iterator is second child after the variable
 		// but in our AST, for x in iter: FirstChild is x, NextSibling is iter.
-		// Not strictly defined, but let's assume it.
 		// For now just traverse.
 		child := node.FirstChild
 		for child != 0 {
@@ -431,16 +434,26 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 		tc.checkExpr(nodeIdx)
 
 	case ast.NodeIdent:
-		// The node might be a 'break' or 'continue' token, but we don't have NodeBreakStmt in AST.
-		// Let's assume there's NodeIdent with Payload representing break/continue keywords for now.
-		// Since nr.Resolve() changes node.Payload to SymID, we must check if it's NOT a SymID or just handle it if it fails.
-		// For tests that skip nr.Resolve(), Payload is NameID.
-		if int(node.Payload) <= tc.intern.Len() && node.Payload != 0 {
-			name := string(tc.intern.Get(node.Payload))
-			if name == "break" || name == "continue" {
-				if !tc.insideLoop {
-					tc.errorf(nodeIdx, 3013, "break/continue outside loop")
+		var name string
+		if len(tc.ast.Tokens) > 0 && tc.ast.Nodes[nodeIdx].TokenIdx < uint32(len(tc.ast.Tokens)) {
+			name = string(tc.ast.NodeText(nodeIdx))
+		} else {
+			payload := tc.ast.Nodes[nodeIdx].Payload
+			if payload != 0 && int(payload) <= tc.intern.Len() {
+				name = string(tc.intern.Get(payload))
+			}
+			if name != "break" && name != "continue" {
+				if payload != 0 && int(payload) < len(tc.symtable.Symbols) {
+					nameID := tc.symtable.Symbols[payload].NameID
+					if nameID != 0 && int(nameID) <= tc.intern.Len() {
+						name = string(tc.intern.Get(nameID))
+					}
 				}
+			}
+		}
+		if name == "break" || name == "continue" {
+			if !tc.insideLoop {
+				tc.errorf(nodeIdx, 3013, "break/continue outside loop")
 			}
 		}
 

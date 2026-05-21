@@ -1,6 +1,7 @@
 package sema
 
 import (
+	"fmt"
 	"github.com/axiom-lang/axiom/compiler/types"
 )
 
@@ -96,21 +97,31 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 
 	var methods []types.MethodSig
 
+	fmt.Printf("[DEBUG] getMethodsOfStruct called for struct %d\n", structType)
+	for idx, sym := range chk.symtable.Symbols {
+		if sym.Kind == SymFunc {
+			fmt.Printf("  [DEBUG] SymFunc idx=%d NameID=%d TypeID=%d\n", idx, sym.NameID, sym.TypeID)
+		}
+	}
+
 	for _, sym := range chk.symtable.Symbols {
 		if sym.Kind == SymFunc {
-			fInfo := chk.types.FuncInfo(types.TypeID(sym.TypeID))
-			if len(fInfo.Params) > 0 {
-				firstParamType := fInfo.Params[0]
-				// Check if first parameter is exactly the struct type, or a ref to it.
-				// For simplicity, we only match exact struct type right now.
-				if chk.baseTypeEquals(firstParamType, structType) {
-					// Add method without the first 'self' parameter
-					m := types.MethodSig{
-						NameID: sym.NameID,
-						Params: append([]types.TypeID(nil), fInfo.Params[1:]...),
-						Return: fInfo.Return,
+			tID := types.TypeID(sym.TypeID)
+			if tID != types.TypeUnknown && chk.types.Entry(tID).Kind == types.KindFunction {
+				fInfo := chk.types.FuncInfo(tID)
+				if len(fInfo.Params) > 0 {
+					firstParamType := fInfo.Params[0]
+					// Check if first parameter is exactly the struct type, or a ref to it.
+					// For simplicity, we only match exact struct type right now.
+					if chk.baseTypeEquals(firstParamType, structType) {
+						// Add method without the first 'self' parameter
+						m := types.MethodSig{
+							NameID: sym.NameID,
+							Params: append([]types.TypeID(nil), fInfo.Params[1:]...),
+							Return: fInfo.Return,
+						}
+						methods = append(methods, m)
 					}
-					methods = append(methods, m)
 				}
 			}
 		}
@@ -122,14 +133,12 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 
 func (chk *Interfaces) baseTypeEquals(t1, target types.TypeID) bool {
 	// Strip reference/pointer modifiers if any
-	// Right now we assume strict equality for simplicity,
-	// but normally &T should match T for method receivers.
 	entry := chk.types.Entry(t1)
-	if entry.Kind == types.KindRef || entry.Kind == types.KindPointer {
-		// If it's a ref/ptr, we would need to check its base type.
-		// Since we don't have PointerInfo easily accessible here without knowing its structure,
-		// we'll just check exact type. Wait, we can use Extra for pointer base type maybe?
-		// Actually, let's just do strict equality for MVP.
+	if entry.Kind == types.KindPointer {
+		return chk.types.PointerElem(t1) == target
+	}
+	if entry.Kind == types.KindRef {
+		return types.TypeID(entry.Extra) == target
 	}
 	return t1 == target
 }

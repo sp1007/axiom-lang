@@ -157,6 +157,23 @@ func (g *ExprGen) emitCharLit(idx uint32, node *ast.AstNode) string {
 // emitIdent emits an identifier, mangled if it's a module-level symbol.
 func (g *ExprGen) emitIdent(idx uint32, node *ast.AstNode) string {
 	text := string(g.Tree.TokenText(node.TokenIdx))
+	if text == "null" {
+		return "NULL"
+	}
+	symIdx := node.Payload
+	if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+		sym := g.Symbols.SymbolAt(symIdx)
+		switch sym.Kind {
+		case sema.SymConst:
+			return MangleGlobalName("", text)
+		case sema.SymVar:
+			if sym.ScopeID == 0 {
+				return MangleGlobalName("", text)
+			}
+		case sema.SymFunc:
+			return MangleFuncName("", text)
+		}
+	}
 	return text
 }
 
@@ -295,6 +312,14 @@ func (g *ExprGen) emitIndex(idx uint32, node *ast.AstNode) string {
 	arr := g.Emit(children[0])
 	index := g.Emit(children[1])
 
+	colType := g.NodeType(children[0])
+	if colType != types.TypeUnknown {
+		entry := g.Table.Entry(colType)
+		if entry.Kind == types.KindPointer {
+			return fmt.Sprintf("((%s)[%s])", arr, index)
+		}
+	}
+
 	if g.Unsafe {
 		return fmt.Sprintf("(%s).ptr[%s]", arr, index)
 	}
@@ -312,6 +337,17 @@ func (g *ExprGen) emitCast(idx uint32, node *ast.AstNode) string {
 
 	inner := g.Emit(children[0])
 	targetType := types.TypeID(node.Payload)
+
+	if targetType == types.TypeString {
+		srcType := g.NodeType(children[0])
+		if srcType != types.TypeUnknown {
+			srcEntry := g.Table.Entry(srcType)
+			if srcEntry.Kind == types.KindPointer {
+				return fmt.Sprintf("((ax_string){.ptr = (const ax_u8*)(%s), .len = strlen((const char*)(%s))})", inner, inner)
+			}
+		}
+	}
+
 	ctype := CTypeName(targetType, g.Table, g.Intern, g.Queue)
 	return fmt.Sprintf("((%s)(%s))", ctype, inner)
 }
@@ -487,4 +523,78 @@ func escapeForC(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// NodeType returns the TypeID of a given AST node, recursively resolving it if necessary.
+func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
+	if nodeIdx == ast.NullIdx {
+		return types.TypeUnknown
+	}
+	node := g.Tree.Node(nodeIdx)
+	switch node.Kind {
+	case ast.NodeIdent:
+		symIdx := node.Payload
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			return types.TypeID(sym.TypeID)
+		}
+	case ast.NodeCastExpr, ast.NodeDerefExpr, ast.NodeStructLit, ast.NodeArrayLit:
+		return types.TypeID(node.Payload)
+	case ast.NodeFieldExpr:
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			objType := g.NodeType(children[0])
+			if objType != types.TypeUnknown {
+				entry := g.Table.Entry(objType)
+				if entry.Kind == types.KindPointer {
+					objType = g.Table.PointerElem(objType)
+					entry = g.Table.Entry(objType)
+				}
+				if entry.Kind == types.KindStruct {
+					structInfo := g.Table.StructInfo(objType)
+					fieldNameID := node.Payload
+					for _, f := range structInfo.Fields {
+						if f.NameID == fieldNameID {
+							return f.TypeID
+						}
+					}
+					fieldName := string(g.Tree.TokenText(node.TokenIdx))
+					for _, f := range structInfo.Fields {
+						if resolveName(f.NameID, g.Intern) == fieldName {
+							return f.TypeID
+						}
+					}
+				}
+			}
+		}
+	case ast.NodeIndexExpr:
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			colType := g.NodeType(children[0])
+			if colType != types.TypeUnknown {
+				entry := g.Table.Entry(colType)
+				if entry.Kind == types.KindPointer {
+					return g.Table.PointerElem(colType)
+				}
+				if entry.Kind == types.KindSlice {
+					return g.Table.SliceElem(colType)
+				}
+			}
+		}
+	case ast.NodeCallExpr:
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			calleeType := g.NodeType(children[0])
+			if calleeType != types.TypeUnknown {
+				entry := g.Table.Entry(calleeType)
+				if entry.Kind == types.KindFunction {
+					funcInfo := g.Table.FuncInfo(calleeType)
+					return funcInfo.Return
+				} else if entry.Kind == types.KindStruct {
+					return calleeType
+				}
+			}
+		}
+	}
+	return types.TypeUnknown
 }

@@ -74,10 +74,11 @@ const (
 // Stored in a flat array for cache-friendly access.
 // Memory layout: 20 bytes (32-bit fields x 5 = 20, plus uint8 + uint16 = 3 bytes, padded to 24 on some arches, but fields themselves are tightly packed).
 type Symbol struct {
-	NameID   uint32   // interned name (index into InternPool)
-	Kind     SymKind  // what kind of entity
-	Flags    SymFlags // boolean properties
-	TypeID   uint32   // index into TypeTable (0 = unresolved)
-	DeclNode uint32   // index into AstTree.Nodes (source location, 0 = builtin)
-	ScopeID  uint32   // which scope this symbol belongs to
+	NameID       uint32   // interned name (index into InternPool)
+	Kind         SymKind  // what kind of entity
+	Flags        SymFlags // boolean properties
+	TypeID       uint32   // index into TypeTable (0 = unresolved)
+	DeclNode     uint32   // index into AstTree.Nodes (source location, 0 = builtin)
+	ScopeID      uint32   // which scope this symbol belongs to
+	NextOverload uint32   // index of next overloaded function in same scope (0 = none)
 }

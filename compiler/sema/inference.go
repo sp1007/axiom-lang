@@ -39,7 +39,7 @@ func (ie *InferenceEngine) errorf(nodeIdx uint32, code int, format string, args 
 		Severity: diagnostics.SeverityError,
 		Code:     uint32(code),
 		Message:  fmt.Sprintf(format, args...),
-		Pos:      diagnostics.Pos{}, // Mock pos for now
+		Pos:      nodePos(ie.ast, nodeIdx),
 	})
 }
 
@@ -51,11 +51,79 @@ func (ie *InferenceEngine) TypeOf(nodeIdx uint32) types.TypeID {
 	return ie.inferNode(nodeIdx, types.TypeUnknown)
 }
 
+// preInferFuncSignature infers only the parameter types and return type of a function.
+func (ie *InferenceEngine) preInferFuncSignature(nodeIdx uint32) {
+	node := &ie.ast.Nodes[nodeIdx]
+	var paramTypes []types.TypeID
+	var retType types.TypeID = types.TypeUnknown
+
+	symIdx := node.Payload
+	hasExistingType := false
+	if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+		sym := ie.symtable.SymbolAt(symIdx)
+		if sym.TypeID != 0 && sym.TypeID != uint32(types.TypeUnknown) {
+			existingTypeID := types.TypeID(sym.TypeID)
+			entry := ie.types.Entry(existingTypeID)
+			if entry.Kind == types.KindFunction {
+				hasExistingType = true
+			}
+		}
+	}
+
+	if !hasExistingType {
+		// Walk children once to infer parameter and return types
+		hasReturnTypeExpr := false
+		child := node.FirstChild
+		for child != 0 {
+			childNode := &ie.ast.Nodes[child]
+			if childNode.Kind == ast.NodeParamDecl {
+				pType := ie.inferNode(child, types.TypeUnknown)
+				paramTypes = append(paramTypes, pType)
+			} else if childNode.Kind == ast.NodeTypeExpr || childNode.Kind == ast.NodeGenericType {
+				retType = ie.inferNode(child, types.TypeUnknown)
+				hasReturnTypeExpr = true
+			}
+			child = childNode.NextSibling
+		}
+
+		if !hasReturnTypeExpr {
+			retType = types.TypeVoid
+		}
+
+		// Register the function type in the TypeTable
+		funcTypeID := ie.types.RegisterFunction(paramTypes, retType, nil)
+
+		// Store type on the function's symbol
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			sym.TypeID = uint32(funcTypeID)
+		}
+	}
+}
+
 // Infer walks the AST and infers types for all nodes.
 func (ie *InferenceEngine) Infer() []diagnostics.Diagnostic {
 	if ie.ast == nil || ie.ast.NodeCount() == 0 {
 		return ie.errors
 	}
+
+	// Phase 1: Pre-infer all struct definitions
+	for i := 0; i < len(ie.ast.Nodes); i++ {
+		node := &ie.ast.Nodes[i]
+		if node.Kind == ast.NodeStructDecl {
+			ie.inferNode(uint32(i), types.TypeUnknown)
+		}
+	}
+
+	// Phase 2: Pre-infer all function signatures
+	for i := 0; i < len(ie.ast.Nodes); i++ {
+		node := &ie.ast.Nodes[i]
+		if node.Kind == ast.NodeFuncDecl {
+			ie.preInferFuncSignature(uint32(i))
+		}
+	}
+
+	// Phase 3: Perform normal type inference
 	ie.inferNode(0, types.TypeUnknown)
 	return ie.errors
 }
@@ -200,6 +268,54 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		}
 		resultType = paramType
 
+	case ast.NodeConstDecl:
+		// ConstDecl children: optional type annotation, then init expr.
+		var expectedType types.TypeID = types.TypeUnknown
+		
+		symIdx := node.Payload
+		var sym *Symbol
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym = ie.symtable.SymbolAt(symIdx)
+			expectedType = types.TypeID(sym.TypeID)
+		}
+
+		var typeNode, initExpr uint32
+		child := node.FirstChild
+		for child != 0 {
+			if ie.ast.Nodes[child].Kind == ast.NodeTypeExpr || ie.ast.Nodes[child].Kind == ast.NodeGenericType {
+				typeNode = child
+			} else {
+				initExpr = child
+			}
+			child = ie.ast.Nodes[child].NextSibling
+		}
+
+		if typeNode != 0 {
+			expectedType = ie.inferNode(typeNode, types.TypeUnknown)
+			if sym != nil {
+				sym.TypeID = uint32(expectedType)
+			}
+		}
+
+		if initExpr != 0 {
+			inferred := ie.inferNode(initExpr, expectedType)
+			
+			if expectedType != types.TypeUnknown && expectedType != 0 {
+				if !ie.isAssignableTo(inferred, expectedType) {
+					ie.errorf(nodeIdx, 3001, "type mismatch: expected %d, found %d", expectedType, inferred)
+				}
+				resultType = expectedType
+			} else {
+				resultType = inferred
+				expectedType = inferred
+				if sym != nil {
+					sym.TypeID = uint32(inferred)
+				}
+			}
+		} else {
+			resultType = expectedType
+		}
+
 	case ast.NodeVarDecl:
 		// VarDecl children: optional type annotation, then init expr.
 		// For simplification in AST: FirstChild is init expr if no type ref, etc.
@@ -319,10 +435,18 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			}
 			
 			// Normal indexing (fallback)
-			ie.inferNode(collection, types.TypeUnknown)
+			collectionType := ie.inferNode(collection, types.TypeUnknown)
 			idx := ie.ast.Nodes[collection].NextSibling
 			if idx != 0 {
 				ie.inferNode(idx, types.TypeUnknown)
+			}
+			if collectionType != types.TypeUnknown {
+				cEntry := ie.types.Entry(collectionType)
+				if cEntry.Kind == types.KindPointer {
+					resultType = ie.types.PointerElem(collectionType)
+				} else if cEntry.Kind == types.KindSlice {
+					resultType = ie.types.SliceElem(collectionType)
+				}
 			}
 		}
 
@@ -350,19 +474,54 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 
 	case ast.NodeFieldExpr:
 		obj := node.FirstChild
+		isStructAccess := false
 		if obj != 0 {
 			objType := ie.inferNode(obj, types.TypeUnknown)
 			if objType != types.TypeUnknown {
 				entry := ie.types.Entry(objType)
+				if entry.Kind == types.KindPointer {
+					objType = ie.types.PointerElem(objType)
+					entry = ie.types.Entry(objType)
+				}
 				if entry.Kind == types.KindStruct {
+					isStructAccess = true
 					structInfo := ie.types.StructInfo(objType)
 					fieldNameID := uint32(node.Payload)
+					found := false
 					for _, field := range structInfo.Fields {
 						if field.NameID == fieldNameID {
 							resultType = field.TypeID
+							found = true
 							break
 						}
 					}
+					if !found && ie.ifaces != nil {
+						methods := ie.ifaces.getMethodsOfStruct(objType)
+						fmt.Printf("[DEBUG] FieldExpr lookup: field/method NameID %d on struct type %d. fieldFound = %t\n", fieldNameID, objType, found)
+						fmt.Printf("[DEBUG] Methods registered for struct %d (NameIDs): ", objType)
+						for _, m := range methods {
+							fmt.Printf("%d, ", m.NameID)
+						}
+						fmt.Println()
+						for _, method := range methods {
+							if method.NameID == fieldNameID {
+								resultType = ie.types.RegisterFunction(method.Params, method.Return, nil)
+								found = true
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if !isStructAccess {
+			// If NameResolver resolved this field expression to a module/global symbol:
+			symIdx := node.Payload
+			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+				sym := ie.symtable.SymbolAt(symIdx)
+				if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst {
+					resultType = types.TypeID(sym.TypeID)
 				}
 			}
 		}
@@ -382,8 +541,8 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			if op == 1 { // ==
 				t1 := ie.inferNode(lhs, types.TypeUnknown)
 				t2 := ie.inferNode(rhs, types.TypeUnknown)
-				if t1 != t2 && !ie.types.CanImplicitCast(t1, t2) && !ie.types.CanImplicitCast(t2, t1) {
-					// allowed to have mismatch if they are implicit castable, else error
+				if t1 != t2 && !ie.types.CanImplicitCast(t1, t2) && !ie.types.CanImplicitCast(t2, t1) && !(t1.IsNumeric() && t2.IsNumeric()) {
+					// allowed to have mismatch if they are implicit castable, or both are numeric, else error
 					ie.errorf(nodeIdx, 3001, "type mismatch: cannot compare %d and %d", t1, t2)
 				}
 				resultType = types.TypeBool
@@ -486,6 +645,50 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		} else {
 			ie.errorf(nodeIdx, 3002, "cannot infer type of 'nil' without context")
 			resultType = types.TypeUnknown
+		}
+
+	case ast.NodeUnaryExpr:
+		op := node.Flags
+		operand := node.FirstChild
+		if operand != 0 {
+			operandType := ie.inferNode(operand, expected)
+			if op == 2 { // not
+				resultType = types.TypeBool
+			} else { // - or ~
+				resultType = operandType
+			}
+		}
+
+	case ast.NodeCastExpr:
+		expr := node.FirstChild
+		var targetType types.TypeID = types.TypeUnknown
+		if expr != 0 {
+			ie.inferNode(expr, types.TypeUnknown)
+			targetNodeIdx := ie.ast.Nodes[expr].NextSibling
+			if targetNodeIdx != 0 {
+				targetType = ie.inferNode(targetNodeIdx, types.TypeUnknown)
+			}
+		}
+		if targetType != types.TypeUnknown {
+			node.Payload = uint32(targetType)
+			resultType = targetType
+		} else {
+			resultType = types.TypeID(node.Payload)
+		}
+
+	case ast.NodeGenericType:
+		baseNodeIdx := node.FirstChild
+		if baseNodeIdx != 0 {
+			baseNode := &ie.ast.Nodes[baseNodeIdx]
+			name := string(ie.ast.TokenText(baseNode.TokenIdx))
+
+			if name == "ptr" {
+				argNodeIdx := baseNode.NextSibling
+				if argNodeIdx != 0 {
+					innerTypeID := ie.inferNode(argNodeIdx, types.TypeUnknown)
+					resultType = ie.types.RegisterPointer(innerTypeID)
+				}
+			}
 		}
 
 	default:

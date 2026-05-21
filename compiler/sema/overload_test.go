@@ -58,6 +58,45 @@ func TestOverloadCoercible(t *testing.T) {
 	}
 }
 
+func TestOverloadSameScope(t *testing.T) {
+	pool, st, tt, or := setupOverloadTest()
+	fooID := pool.Intern([]byte("foo"))
+	
+	// Create fn foo(x: i32)
+	symIdx1, err1 := st.Define(fooID, sema.SymFunc, 0, 0)
+	if err1 != nil {
+		t.Fatalf("unexpected define error: %v", err1)
+	}
+	funcTypeID1 := tt.RegisterFunction([]types.TypeID{types.TypeI32}, types.TypeVoid, nil)
+	st.SymbolAt(symIdx1).TypeID = uint32(funcTypeID1)
+
+	// Create fn foo(x: string) in the same scope
+	symIdx2, err2 := st.Define(fooID, sema.SymFunc, 0, 0)
+	if err2 != nil {
+		t.Fatalf("unexpected duplicate error for fn overload: %v", err2)
+	}
+	funcTypeID2 := tt.RegisterFunction([]types.TypeID{types.TypeString}, types.TypeVoid, nil)
+	st.SymbolAt(symIdx2).TypeID = uint32(funcTypeID2)
+	
+	// Resolve foo(x: string)
+	res, err := or.Resolve(fooID, []types.TypeID{types.TypeString})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err.Message)
+	}
+	if res.SymbolID != symIdx2 {
+		t.Errorf("expected symbol %d (string overload), got %d", symIdx2, res.SymbolID)
+	}
+	
+	// Resolve foo(x: i32)
+	res, err = or.Resolve(fooID, []types.TypeID{types.TypeI32})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err.Message)
+	}
+	if res.SymbolID != symIdx1 {
+		t.Errorf("expected symbol %d (i32 overload), got %d", symIdx1, res.SymbolID)
+	}
+}
+
 func TestOverloadAmbiguous(t *testing.T) {
 	pool, st, tt, or := setupOverloadTest()
 	fooID := pool.Intern([]byte("foo"))

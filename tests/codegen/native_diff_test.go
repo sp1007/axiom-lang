@@ -162,19 +162,96 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 
 	resolver := sema.NewNameResolver(tree, intern, symbols, table, nil)
 	if errs := resolver.Resolve(); hasErrors(errs) {
-		return fmt.Errorf("name resolution errors: %v", errs)
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		return fmt.Errorf("name resolution errors:\n%s", formatted)
 	}
 
 	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Type Inference...")
 	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
 	if errs := infer.Infer(); hasErrors(errs) {
-		return fmt.Errorf("type inference errors: %v", errs)
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		var typeDump strings.Builder
+		for idx := 0; idx < table.Count(); idx++ {
+			entry := table.Entry(types.TypeID(idx))
+			kindStr := ""
+			switch entry.Kind {
+			case types.KindPrimitive:
+				kindStr = types.TypeID(idx).String()
+			case types.KindStruct:
+				structName := "anonymous_struct"
+				if entry.NameID != 0 {
+					structName = string(intern.Get(entry.NameID))
+				}
+				structInfo := table.StructInfo(types.TypeID(idx))
+				var fields []string
+				for _, f := range structInfo.Fields {
+					fields = append(fields, fmt.Sprintf("%s: %d", string(intern.Get(f.NameID)), f.TypeID))
+				}
+				kindStr = fmt.Sprintf("struct %s {%s}", structName, strings.Join(fields, ", "))
+			case types.KindFunction:
+				fInfo := table.FuncInfo(types.TypeID(idx))
+				var params []string
+				for _, p := range fInfo.Params {
+					params = append(params, fmt.Sprintf("%d", p))
+				}
+				kindStr = fmt.Sprintf("fn[%s] -> %d", strings.Join(params, ", "), fInfo.Return)
+			case types.KindPointer:
+				kindStr = fmt.Sprintf("ptr[%d]", table.PointerElem(types.TypeID(idx)))
+			case types.KindSlice:
+				kindStr = fmt.Sprintf("slice[%d]", table.SliceElem(types.TypeID(idx)))
+			default:
+				kindStr = fmt.Sprintf("kind %v", entry.Kind)
+			}
+			typeDump.WriteString(fmt.Sprintf("  type[%d]: %s\n", idx, kindStr))
+		}
+		return fmt.Errorf("type inference errors:\n%s\nRegistered types:\n%s", formatted, typeDump.String())
 	}
 
 	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Type Checking...")
 	tc := sema.NewTypeChecker(tree, intern, symbols, table, infer)
 	if errs := tc.Check(); hasErrors(errs) {
-		return fmt.Errorf("type check errors: %v", errs)
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		var typeDump strings.Builder
+		for idx := 0; idx < table.Count(); idx++ {
+			entry := table.Entry(types.TypeID(idx))
+			kindStr := ""
+			switch entry.Kind {
+			case types.KindPrimitive:
+				kindStr = types.TypeID(idx).String()
+			case types.KindStruct:
+				structName := "anonymous_struct"
+				if entry.NameID != 0 {
+					structName = string(intern.Get(entry.NameID))
+				}
+				structInfo := table.StructInfo(types.TypeID(idx))
+				var fields []string
+				for _, f := range structInfo.Fields {
+					fields = append(fields, fmt.Sprintf("%s: %d", string(intern.Get(f.NameID)), f.TypeID))
+				}
+				kindStr = fmt.Sprintf("struct %s {%s}", structName, strings.Join(fields, ", "))
+			case types.KindFunction:
+				fInfo := table.FuncInfo(types.TypeID(idx))
+				var params []string
+				for _, p := range fInfo.Params {
+					params = append(params, fmt.Sprintf("%d", p))
+				}
+				kindStr = fmt.Sprintf("fn[%s] -> %d", strings.Join(params, ", "), fInfo.Return)
+			case types.KindPointer:
+				kindStr = fmt.Sprintf("ptr[%d]", table.PointerElem(types.TypeID(idx)))
+			case types.KindSlice:
+				kindStr = fmt.Sprintf("slice[%d]", table.SliceElem(types.TypeID(idx)))
+			default:
+				kindStr = fmt.Sprintf("kind %v", entry.Kind)
+			}
+			typeDump.WriteString(fmt.Sprintf("  type[%d]: %s\n", idx, kindStr))
+		}
+		return fmt.Errorf("type check errors:\n%s\nRegistered types:\n%s", formatted, typeDump.String())
 	}
 
 	fmt.Fprintln(os.Stderr, "[COMPILER] Running CTGC and Ownership...")
