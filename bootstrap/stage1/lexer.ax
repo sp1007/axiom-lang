@@ -1,0 +1,556 @@
+// bootstrap/stage1/lexer.ax
+// AXIOM Lexer written in AXIOM itself.
+
+import std.string
+
+// Custom monomorphic token vector to avoid generic monomorphization dependency
+pub struct TokenVec:
+    data: ptr[Token]
+    len: i64
+    cap: i64
+
+pub fn new_token_vec() -> TokenVec:
+    return TokenVec(data: null as ptr[Token], len: 0, cap: 0)
+
+pub fn push(mut self: TokenVec, t: Token):
+    if self.len == self.cap:
+        let new_cap = if self.cap == 0 { 16 } else { self.cap * 2 }
+        let new_data = @alloc(new_cap * 8) as ptr[Token] // Token size is 8 bytes
+        if self.data != null as ptr[Token]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = t
+    self.len = self.len + 1
+
+// Custom monomorphic integer vector for indent/newline tracking
+pub struct IntVec:
+    data: ptr[i32]
+    len: i64
+    cap: i64
+
+pub fn new_int_vec() -> IntVec:
+    return IntVec(data: null as ptr[i32], len: 0, cap: 0)
+
+pub fn push(mut self: IntVec, val: i32):
+    if self.len == self.cap:
+        let new_cap = if self.cap == 0 { 16 } else { self.cap * 2 }
+        let new_data = @alloc(new_cap * 4) as ptr[i32] // i32 size is 4 bytes
+        if self.data != null as ptr[i32]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 4)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = val
+    self.len = self.len + 1
+
+pub fn pop(mut self: IntVec) -> i32:
+    if self.len == 0:
+        return 0
+    self.len = self.len - 1
+    return self.data[self.len]
+
+pub fn top(self: IntVec) -> i32:
+    if self.len == 0:
+        return 0
+    return self.data[self.len - 1]
+
+// The Lexer struct
+pub struct Lexer:
+    src: str
+    len: i64
+    pos: i64
+    tokens: TokenVec
+    indent_stack: IntVec
+    newline_offsets: IntVec
+
+pub fn new_lexer(src: str) -> Lexer:
+    mut indent_stack := new_int_vec()
+    indent_stack.push(0) // base indentation level is 0
+    return Lexer(
+        src: src,
+        len: std.string.len(src),
+        pos: 0,
+        tokens: new_token_vec(),
+        indent_stack: indent_stack,
+        newline_offsets: new_int_vec(),
+    )
+
+pub fn peek1(self: Lexer) -> u8:
+    if self.pos + 1 < self.len:
+        return self.src[self.pos + 1] as u8
+    return 0 as u8
+
+pub fn emit(mut self: Lexer, kind: u8, offset: i64, length: i64):
+    self.tokens.push(Token(
+        kind: kind,
+        padding: 0 as u8,
+        len: length as u16,
+        offset: offset as u32,
+    ))
+
+fn lookup_keyword(s: str) -> u8:
+    if s == "and": return TK_AND
+    if s == "as": return TK_AS
+    if s == "async": return TK_ASYNC
+    if s == "await": return TK_AWAIT
+    if s == "const": return TK_CONST
+    if s == "defer": return TK_DEFER
+    if s == "elif": return TK_ELIF
+    if s == "else": return TK_ELSE
+    if s == "extern": return TK_EXTERN
+    if s == "false": return TK_FALSE
+    if s == "fn": return TK_FN
+    if s == "for": return TK_FOR
+    if s == "Future": return TK_FUTURE
+    if s == "if": return TK_IF
+    if s == "import": return TK_IMPORT
+    if s == "in": return TK_IN
+    if s == "interface": return TK_INTERFACE
+    if s == "Isolated": return TK_ISOLATED
+    if s == "lent": return TK_LENT
+    if s == "let": return TK_LET
+    if s == "match": return TK_MATCH
+    if s == "mut": return TK_MUT
+    if s == "nil": return TK_NIL
+    if s == "not": return TK_NOT
+    if s == "or": return TK_OR
+    if s == "packed": return TK_PACKED
+    if s == "pub": return TK_PUB
+    if s == "return": return TK_RETURN
+    if s == "spawn": return TK_SPAWN
+    if s == "struct": return TK_STRUCT
+    if s == "true": return TK_TRUE
+    if s == "type": return TK_TYPE
+    if s == "unsafe": return TK_UNSAFE
+    if s == "while": return TK_WHILE
+    return TK_IDENT
+
+fn is_ident_start(b: u8) -> bool:
+    return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
+
+fn is_ident_continue(b: u8) -> bool:
+    return is_ident_start(b) || (b >= 48 && b <= 57)
+
+pub fn scan_ident(mut self: Lexer):
+    let start = self.pos
+    self.pos = self.pos + 1
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if is_ident_continue(b):
+            self.pos = self.pos + 1
+        else:
+            break
+    let text = std.string.slice(self.src, start, self.pos)
+    let kind = lookup_keyword(text)
+    self.emit(kind, start, self.pos - start)
+
+fn is_dec_digit(b: u8) -> bool:
+    return b >= 48 && b <= 57
+
+fn is_hex_digit(b: u8) -> bool:
+    return is_dec_digit(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70)
+
+fn is_oct_digit(b: u8) -> bool:
+    return b >= 48 && b <= 55
+
+fn is_bin_digit(b: u8) -> bool:
+    return b == 48 || b == 49
+
+pub fn scan_dec_digits(mut self: Lexer):
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if is_dec_digit(b) || b == 95:
+            self.pos = self.pos + 1
+        else:
+            break
+
+pub fn scan_hex_digits(mut self: Lexer):
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if is_hex_digit(b) || b == 95:
+            self.pos = self.pos + 1
+        else:
+            break
+
+pub fn scan_oct_digits(mut self: Lexer):
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if is_oct_digit(b) || b == 95:
+            self.pos = self.pos + 1
+        else:
+            break
+
+pub fn scan_bin_digits(mut self: Lexer):
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if is_bin_digit(b) || b == 95:
+            self.pos = self.pos + 1
+        else:
+            break
+
+pub fn scan_number(mut self: Lexer):
+    let start = self.pos
+    let b = self.src[self.pos] as u8
+
+    if b == 48 && self.pos + 1 < self.len: // '0'
+        let next = self.src[self.pos + 1] as u8
+        if next == 120 || next == 88: // 'x', 'X'
+            self.pos = self.pos + 2
+            self.scan_hex_digits()
+            self.emit(TK_INT_LIT, start, self.pos - start)
+            return
+        elif next == 111 || next == 79: // 'o', 'O'
+            self.pos = self.pos + 2
+            self.scan_oct_digits()
+            self.emit(TK_INT_LIT, start, self.pos - start)
+            return
+        elif next == 98 || next == 66: // 'b', 'B'
+            self.pos = self.pos + 2
+            self.scan_bin_digits()
+            self.emit(TK_INT_LIT, start, self.pos - start)
+            return
+
+    self.scan_dec_digits()
+
+    // Check for float: decimal point followed by digit
+    if self.pos < self.len && self.src[self.pos] as u8 == 46: // '.'
+        if self.pos + 1 < self.len:
+            let next = self.src[self.pos + 1] as u8
+            if is_dec_digit(next):
+                self.pos = self.pos + 1 // consume '.'
+                self.scan_dec_digits()
+                // Optional exponent
+                if self.pos < self.len:
+                    let exp = self.src[self.pos] as u8
+                    if exp == 101 || exp == 69: // 'e', 'E'
+                        self.pos = self.pos + 1
+                        if self.pos < self.len:
+                            let sign = self.src[self.pos] as u8
+                            if sign == 43 || sign == 45: // '+', '-'
+                                self.pos = self.pos + 1
+                        self.scan_dec_digits()
+                self.emit(TK_FLOAT_LIT, start, self.pos - start)
+                return
+
+    self.emit(TK_INT_LIT, start, self.pos - start)
+
+pub fn scan_string(mut self: Lexer):
+    let start = self.pos
+    self.pos = self.pos + 1 // skip opening '"'
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if b == 34: // '"'
+            self.pos = self.pos + 1 // skip closing '"'
+            self.emit(TK_STRING_LIT, start, self.pos - start)
+            return
+        if b == 92: // '\'
+            self.pos = self.pos + 1 // skip backslash
+            if self.pos < self.len:
+                self.pos = self.pos + 1 // skip escaped char
+            continue
+        if b == 10: // '\n'
+            // Unterminated string
+            self.emit(TK_STRING_LIT, start, self.pos - start)
+            return
+        self.pos = self.pos + 1
+
+    self.emit(TK_STRING_LIT, start, self.pos - start)
+
+pub fn scan_char(mut self: Lexer):
+    let start = self.pos
+    self.pos = self.pos + 1 // skip opening '\''
+    if self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if b == 92: // '\'
+            self.pos = self.pos + 1 // skip backslash
+            if self.pos < self.len:
+                self.pos = self.pos + 1 // skip escaped char
+        elif b != 39: // '\''
+            self.pos = self.pos + 1
+
+    if self.pos < self.len && self.src[self.pos] as u8 == 39:
+        self.pos = self.pos + 1
+    self.emit(TK_CHAR_LIT, start, self.pos - start)
+
+pub fn scan_line_comment(mut self: Lexer):
+    self.pos = self.pos + 2 // skip //
+    while self.pos < self.len && self.src[self.pos] as u8 != 10: // '\n'
+        self.pos = self.pos + 1
+
+pub fn scan_operator_or_punct(mut self: Lexer):
+    let start = self.pos
+    let b = self.src[self.pos] as u8
+
+    if self.pos + 1 < self.len:
+        let next = self.src[self.pos + 1] as u8
+        if b == 61 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_EQ_EQ, start, 2)
+            return
+        if b == 33 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_BANG_EQ, start, 2)
+            return
+        if b == 60 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_LT_EQ, start, 2)
+            return
+        if b == 62 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_GT_EQ, start, 2)
+            return
+        if b == 42 && next == 42:
+            self.pos = self.pos + 2
+            self.emit(TK_STAR_STAR, start, 2)
+            return
+        if b == 60 && next == 60:
+            self.pos = self.pos + 2
+            self.emit(TK_LT_LT, start, 2)
+            return
+        if b == 62 && next == 62:
+            self.pos = self.pos + 2
+            self.emit(TK_GT_GT, start, 2)
+            return
+        if b == 45 && next == 62:
+            self.pos = self.pos + 2
+            self.emit(TK_ARROW, start, 2)
+            return
+        if b == 58 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_COLON_EQ, start, 2)
+            return
+        if b == 43 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_PLUS_EQ, start, 2)
+            return
+        if b == 45 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_MINUS_EQ, start, 2)
+            return
+        if b == 42 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_STAR_EQ, start, 2)
+            return
+        if b == 47 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_SLASH_EQ, start, 2)
+            return
+        if b == 37 && next == 61:
+            self.pos = self.pos + 2
+            self.emit(TK_PERCENT_EQ, start, 2)
+            return
+        if b == 46 && next == 42:
+            self.pos = self.pos + 2
+            self.emit(TK_DOT_STAR, start, 2)
+            return
+
+    if b == 43: // '+'
+        self.pos = self.pos + 1
+        self.emit(TK_PLUS, start, 1)
+        return
+    if b == 45: // '-'
+        self.pos = self.pos + 1
+        self.emit(TK_MINUS, start, 1)
+        return
+    if b == 42: // '*'
+        self.pos = self.pos + 1
+        self.emit(TK_STAR, start, 1)
+        return
+    if b == 47: // '/'
+        self.pos = self.pos + 1
+        self.emit(TK_SLASH, start, 1)
+        return
+    if b == 37: // '%'
+        self.pos = self.pos + 1
+        self.emit(TK_PERCENT, start, 1)
+        return
+    if b == 61: // '='
+        self.pos = self.pos + 1
+        self.emit(TK_EQ, start, 1)
+        return
+    if b == 60: // '<'
+        self.pos = self.pos + 1
+        self.emit(TK_LT, start, 1)
+        return
+    if b == 62: // '>'
+        self.pos = self.pos + 1
+        self.emit(TK_GT, start, 1)
+        return
+    if b == 38: // '&'
+        self.pos = self.pos + 1
+        self.emit(TK_AMP, start, 1)
+        return
+    if b == 124: // '|'
+        self.pos = self.pos + 1
+        self.emit(TK_PIPE, start, 1)
+        return
+    if b == 94: // '^'
+        self.pos = self.pos + 1
+        self.emit(TK_CARET, start, 1)
+        return
+    if b == 126: // '~'
+        self.pos = self.pos + 1
+        self.emit(TK_TILDE, start, 1)
+        return
+    if b == 46: // '.'
+        self.pos = self.pos + 1
+        self.emit(TK_DOT, start, 1)
+        return
+    if b == 44: // ','
+        self.pos = self.pos + 1
+        self.emit(TK_COMMA, start, 1)
+        return
+    if b == 58: // ':'
+        self.pos = self.pos + 1
+        self.emit(TK_COLON, start, 1)
+        return
+    if b == 59: // ';'
+        self.pos = self.pos + 1
+        self.emit(TK_SEMICOLON, start, 1)
+        return
+    if b == 33: // '!'
+        self.pos = self.pos + 1
+        self.emit(TK_BANG, start, 1)
+        return
+    if b == 40: // '('
+        self.pos = self.pos + 1
+        self.emit(TK_L_PAREN, start, 1)
+        return
+    if b == 41: // ')'
+        self.pos = self.pos + 1
+        self.emit(TK_R_PAREN, start, 1)
+        return
+    if b == 91: // '['
+        self.pos = self.pos + 1
+        self.emit(TK_L_BRACKET, start, 1)
+        return
+    if b == 93: // ']'
+        self.pos = self.pos + 1
+        self.emit(TK_R_BRACKET, start, 1)
+        return
+    if b == 123: // '{'
+        self.pos = self.pos + 1
+        self.emit(TK_L_BRACE, start, 1)
+        return
+    if b == 125: // '}'
+        self.pos = self.pos + 1
+        self.emit(TK_R_BRACE, start, 1)
+        return
+
+    self.pos = self.pos + 1
+    self.emit(TK_ERROR, start, 1)
+
+pub fn run(mut self: Lexer):
+    while self.pos < self.len:
+        let b = self.src[self.pos] as u8
+        if b == 32 || b == 13: // ' ' or '\r'
+            self.pos = self.pos + 1
+        elif b == 9: // '\t'
+            self.pos = self.pos + 1
+        elif b == 10: // '\n'
+            let offset = self.pos
+            self.newline_offsets.push(offset as i32)
+            self.emit(TK_NEWLINE, offset, 1)
+            self.pos = self.pos + 1
+        elif b == 47 && self.peek1() == 47: // '//'
+            self.scan_line_comment()
+        elif b >= 48 && b <= 57: // '0'..'9'
+            self.scan_number()
+        elif b == 34: // '"'
+            self.scan_string()
+        elif b == 39: // '\''
+            self.scan_char()
+        elif is_ident_start(b):
+            self.scan_ident()
+        else:
+            self.scan_operator_or_punct()
+
+    self.emit(TK_EOF, self.pos, 0)
+
+fn find_line_start(src: str, pos: i64) -> i64:
+    mut i := pos - 1
+    while i >= 0:
+        if src[i] as u8 == 10: // '\n'
+            return i + 1
+        i = i - 1
+    return 0
+
+pub fn find_next_content_offset(self: Lexer, start_idx: i64) -> i64:
+    mut j := start_idx
+    while j < self.tokens.len:
+        let tok = self.tokens.data[j]
+        if tok.kind == TK_NEWLINE:
+            j = j + 1
+            continue
+        if tok.kind == TK_EOF:
+            return -1
+        let line_start = find_line_start(self.src, tok.offset as i64)
+        return line_start
+    return -1
+
+fn count_leading_spaces(src: str, offset: i64, len: i64) -> i64:
+    mut count := 0
+    mut i := offset
+    while i < len:
+        if src[i] as u8 == 32: // ' '
+            count = count + 1
+        else:
+            break
+        i = i + 1
+    return count
+
+pub fn process_indentation(mut self: Lexer) -> TokenVec:
+    mut out := new_token_vec()
+    mut stack := new_int_vec()
+    stack.push(0)
+
+    mut i := 0
+    while i < self.tokens.len:
+        let tok = self.tokens.data[i]
+
+        if tok.kind != TK_NEWLINE:
+            if tok.kind == TK_EOF:
+                while stack.top() > 0:
+                    out.push(Token(kind: TK_DEDENT, padding: 0 as u8, len: 0 as u16, offset: tok.offset))
+                    stack.pop()
+                out.push(tok)
+                i = i + 1
+                continue
+            out.push(tok)
+            i = i + 1
+            continue
+
+        let next_start = self.find_next_content_offset(i + 1)
+        if next_start < 0:
+            out.push(tok)
+            i = i + 1
+            continue
+
+        let next_indent = count_leading_spaces(self.src, next_start, self.len)
+        let current_indent = stack.top()
+
+        if next_indent > current_indent:
+            stack.push(next_indent as i32)
+            out.push(tok) // keep NEWLINE
+            out.push(Token(kind: TK_INDENT, padding: 0 as u8, len: 0 as u16, offset: tok.offset))
+        elif next_indent < current_indent:
+            out.push(tok) // keep NEWLINE
+            while stack.top() > next_indent as i32:
+                out.push(Token(kind: TK_DEDENT, padding: 0 as u8, len: 0 as u16, offset: tok.offset))
+                stack.pop()
+        else:
+            out.push(tok)
+
+        i = i + 1
+
+    if stack.data != null as ptr[i32]:
+        @free(stack.data as ptr[u8])
+
+    return out
+
+pub fn tokenize(mut self: Lexer) -> TokenVec:
+    self.run()
+    let processed = self.process_indentation()
+    return processed

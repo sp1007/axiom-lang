@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
+	"github.com/axiom-lang/axiom/compiler/sema"
 	"github.com/axiom-lang/axiom/ir/air"
 )
 
@@ -181,6 +182,14 @@ func (fl *funcLowering) lowerIdent(node *ast.AstNode) uint32 {
 		nameID = fl.mb.intern.Intern(text)
 	}
 
+	// Only look up in fl.locals if the symbol is a local variable, parameter, or constant
+	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
+		sym := fl.mb.symbols.SymbolAt(node.Payload)
+		if sym.Kind != sema.SymVar && sym.Kind != sema.SymParam && sym.Kind != sema.SymConst {
+			return 0
+		}
+	}
+
 	if reg, ok := fl.locals[nameID]; ok {
 		return reg
 	}
@@ -318,6 +327,15 @@ func (fl *funcLowering) lowerCallExpr(idx uint32, node *ast.AstNode) uint32 {
 
 	// First child is the callee expression
 	calleeNode := fl.mb.tree.Node(child)
+	if calleeNode.Kind == ast.NodeIdent {
+		symIdx := calleeNode.Payload
+		if symIdx != 0 && int(symIdx) < len(fl.mb.symbols.Symbols) {
+			sym := fl.mb.symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymStruct {
+				return fl.lowerStructConstructorCall(idx, node, sym.TypeID)
+			}
+		}
+	}
 	calleeReg := fl.lowerExpr(child, calleeNode)
 
 	// Remaining children are arguments
@@ -332,7 +350,7 @@ func (fl *funcLowering) lowerCallExpr(idx uint32, node *ast.AstNode) uint32 {
 		arg = argNode.NextSibling
 	}
 	// Patch arg count at argStart (stored in Extras[argStart])
-	_ = argStart // arg encoding: Src2 = argStart, Extras[argStart] = count
+	fl.fb.SetExtra(argStart, argCount)
 
 	// Determine return type
 	typeID := uint16(0)
@@ -613,4 +631,49 @@ func (fl *funcLowering) lowerArrayLit(idx uint32, node *ast.AstNode) uint32 {
 	}
 
 	return arrReg
+}
+
+func (fl *funcLowering) lowerStructConstructorCall(idx uint32, node *ast.AstNode, typeID uint32) uint32 {
+	structReg := fl.fb.FreshReg()
+	fl.fb.Emit(air.AirInst{
+		Opcode: air.OpAlloc,
+		TypeID: uint16(typeID),
+		Dest:   structReg,
+	})
+
+	callee := node.FirstChild
+	if callee == ast.NullIdx {
+		return structReg
+	}
+	child := fl.mb.tree.Node(callee).NextSibling
+	fieldIdx := uint32(0)
+	for child != ast.NullIdx {
+		cn := fl.mb.tree.Node(child)
+		if cn.Kind == ast.NodeNamedArg {
+			valChild := cn.FirstChild
+			if valChild != ast.NullIdx {
+				valNode := fl.mb.tree.Node(valChild)
+				valReg := fl.lowerExpr(valChild, valNode)
+				fl.fb.Emit(air.AirInst{
+					Opcode: air.OpSetField,
+					Src1:   structReg,
+					Src2:   fieldIdx,
+					Dest:   valReg,
+				})
+			}
+			fieldIdx++
+		} else {
+			valReg := fl.lowerExpr(child, cn)
+			fl.fb.Emit(air.AirInst{
+				Opcode: air.OpSetField,
+				Src1:   structReg,
+				Src2:   fieldIdx,
+				Dest:   valReg,
+			})
+			fieldIdx++
+		}
+		child = cn.NextSibling
+	}
+
+	return structReg
 }

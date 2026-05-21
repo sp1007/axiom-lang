@@ -36,9 +36,12 @@ func (fl *funcLowering) registerParams(funcIdx uint32, funcNode *ast.AstNode) {
 	for child != ast.NullIdx {
 		cn := fl.mb.tree.Node(child)
 		if cn.Kind == ast.NodeParamDecl {
-			// Derive name ID from token
-			text := fl.mb.tree.TokenText(cn.TokenIdx)
-			nameID := fl.mb.intern.Intern(text)
+			// Derive name ID from token or payload
+			nameID := cn.Payload
+			if nameID == 0 {
+				text := fl.mb.tree.TokenText(cn.TokenIdx)
+				nameID = fl.mb.intern.Intern(text)
+			}
 
 			// Create a register for the parameter
 			reg := fl.fb.FreshReg()
@@ -167,20 +170,43 @@ func (fl *funcLowering) lowerVarDecl(idx uint32, node *ast.AstNode) {
 
 // lowerAssign lowers an assignment statement: x = expr
 func (fl *funcLowering) lowerAssign(idx uint32, node *ast.AstNode) {
-	// Assignment in SSA: create a new register for the target
-	// The name ID is in node.Payload
-	nameID := node.Payload
+	lhsIdx := node.FirstChild
+	if lhsIdx == ast.NullIdx {
+		return
+	}
+	lhsNode := fl.mb.tree.Node(lhsIdx)
+
+	// The LHS is usually an identifier
+	nameID := lhsNode.Payload
 	if nameID == 0 {
-		// Fallback: try from token text
-		text := fl.mb.tree.TokenText(node.TokenIdx)
+		text := fl.mb.tree.TokenText(lhsNode.TokenIdx)
 		nameID = fl.mb.intern.Intern(text)
 	}
 
-	// Lower the RHS expression
-	child := node.FirstChild
-	if child != ast.NullIdx {
-		cn := fl.mb.tree.Node(child)
-		valReg := fl.lowerExpr(child, cn)
+	rhsIdx := lhsNode.NextSibling
+	if rhsIdx == ast.NullIdx {
+		return
+	}
+	rhsNode := fl.mb.tree.Node(rhsIdx)
+	valReg := fl.lowerExpr(rhsIdx, rhsNode)
+
+	// Determine type
+	typeID := uint16(3) // default i32
+	if lhsNode.Payload != 0 && int(lhsNode.Payload) < len(fl.mb.symbols.Symbols) {
+		sym := fl.mb.symbols.SymbolAt(lhsNode.Payload)
+		if sym.TypeID != 0 {
+			typeID = uint16(sym.TypeID)
+		}
+	}
+
+	if existingReg, ok := fl.locals[nameID]; ok {
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpCopy,
+			TypeID: typeID,
+			Dest:   existingReg,
+			Src1:   valReg,
+		})
+	} else {
 		fl.locals[nameID] = valReg
 	}
 }
@@ -245,11 +271,9 @@ func (fl *funcLowering) lowerIf(idx uint32, node *ast.AstNode) {
 	// Else/elif block
 	fl.fb.SwitchTo(elseBlock)
 	fl.terminated = false
-	hasElse := false
 	for child != ast.NullIdx {
 		cn = fl.mb.tree.Node(child)
 		if cn.Kind == ast.NodeElseClause || cn.Kind == ast.NodeElifClause {
-			hasElse = true
 			elseBody := cn.FirstChild
 			if elseBody != ast.NullIdx {
 				ecn := fl.mb.tree.Node(elseBody)
@@ -267,11 +291,7 @@ func (fl *funcLowering) lowerIf(idx uint32, node *ast.AstNode) {
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: mergeBlock})
 		fl.fb.AddEdge(elseBlock, mergeBlock)
 	}
-	if !hasElse {
-		// Empty else falls through
-		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: mergeBlock})
-		fl.fb.AddEdge(elseBlock, mergeBlock)
-	}
+
 
 	// Merge block
 	fl.fb.SwitchTo(mergeBlock)
@@ -417,15 +437,14 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 			Dest:   oneReg,
 			Src1:   1,
 		})
-		newIterReg := fl.fb.FreshReg()
+		iterReg := fl.locals[nameID]
 		fl.fb.Emit(air.AirInst{
 			Opcode: air.OpIAdd,
 			TypeID: uint16(3),
-			Dest:   newIterReg,
-			Src1:   fl.locals[nameID],
+			Dest:   iterReg,
+			Src1:   iterReg,
 			Src2:   oneReg,
 		})
-		fl.locals[nameID] = newIterReg
 
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
 		fl.fb.AddEdge(bodyBlock, condBlock)
@@ -445,6 +464,17 @@ func (fl *funcLowering) lowerDestroy(idx uint32, node *ast.AstNode) {
 			Opcode: air.OpDestroy,
 			Src1:   valReg,
 		})
+	} else {
+		symID := node.Payload
+		if symID != 0 && int(symID) < len(fl.mb.symbols.Symbols) {
+			sym := fl.mb.symbols.SymbolAt(symID)
+			if reg, ok := fl.locals[sym.NameID]; ok {
+				fl.fb.Emit(air.AirInst{
+					Opcode: air.OpDestroy,
+					Src1:   reg,
+				})
+			}
+		}
 	}
 }
 

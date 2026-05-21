@@ -295,12 +295,16 @@ func (p *Parser) parseFuncBody(node uint32) {
 
 	p.expect(lexer.TokenLParen)
 	for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		param := p.parseParam()
 		if param != 0 {
 			p.tree.AppendChild(node, param)
 		}
 		if !p.check(lexer.TokenRParen) {
 			p.expect(lexer.TokenComma)
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 	p.expect(lexer.TokenRParen)
@@ -362,12 +366,16 @@ func (p *Parser) parseGenericParams() uint32 {
 	node := p.tree.AddNode(ast.NodeGenericParams, p.tokenIdx(tok))
 	p.expect(lexer.TokenLBracket)
 	for !p.check(lexer.TokenRBracket) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		gp := p.parseGenericParam()
 		if gp != 0 {
 			p.tree.AppendChild(node, gp)
 		}
 		if !p.check(lexer.TokenRBracket) {
 			p.expect(lexer.TokenComma)
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 	p.expect(lexer.TokenRBracket)
@@ -401,12 +409,16 @@ func (p *Parser) parseEffectAnnotation() uint32 {
 	p.expect(lexer.TokenColon)
 	p.expect(lexer.TokenLBracket)
 	for !p.check(lexer.TokenRBracket) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		t := p.parseTypeExpr()
 		if t != 0 {
 			p.tree.AppendChild(node, t)
 		}
 		if !p.check(lexer.TokenRBracket) {
 			p.expect(lexer.TokenComma)
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 	p.expect(lexer.TokenRBracket)
@@ -429,7 +441,7 @@ func (p *Parser) parseImportDecl() uint32 {
 		return node
 	}
 	pathID := p.pool.Intern(p.tokenText(pathTok))
-	for p.check(lexer.TokenDot) {
+	for p.checkRaw(lexer.TokenDot) {
 		p.consume()
 		seg, ok2 := p.expect(lexer.TokenIdent)
 		if !ok2 {
@@ -440,9 +452,10 @@ func (p *Parser) parseImportDecl() uint32 {
 	}
 	p.tree.SetPayload(node, pathID)
 
-	if p.check(lexer.TokenLBrace) {
+	if p.checkRaw(lexer.TokenLBrace) {
 		p.consume()
 		for !p.check(lexer.TokenRBrace) && !p.check(lexer.TokenEOF) {
+			prevPos := p.pos
 			nameTok, ok3 := p.expect(lexer.TokenIdent)
 			if ok3 {
 				nameNode := p.tree.AddNode(ast.NodeIdent, p.tokenIdx(nameTok))
@@ -451,6 +464,9 @@ func (p *Parser) parseImportDecl() uint32 {
 			}
 			if !p.check(lexer.TokenRBrace) {
 				p.expect(lexer.TokenComma)
+			}
+			if p.pos == prevPos {
+				p.consume()
 			}
 		}
 		p.expect(lexer.TokenRBrace)
@@ -500,6 +516,7 @@ func (p *Parser) parseStructDecl(isPub bool) uint32 {
 	p.consume() // consume INDENT
 
 	for !p.check(lexer.TokenDedent) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		inner := p.peek()
 		switch inner.Kind {
 		case lexer.TokenFn:
@@ -536,6 +553,9 @@ func (p *Parser) parseStructDecl(isPub bool) uint32 {
 			if f != 0 {
 				p.tree.AppendChild(node, f)
 			}
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 
@@ -607,9 +627,13 @@ func (p *Parser) parseInterfaceDecl(isPub bool) uint32 {
 	p.consume() // consume INDENT
 
 	for !p.check(lexer.TokenDedent) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		sig := p.parseMethodSig()
 		if sig != 0 {
 			p.tree.AppendChild(node, sig)
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 
@@ -644,12 +668,16 @@ func (p *Parser) parseMethodSig() uint32 {
 
 	p.expect(lexer.TokenLParen)
 	for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+		prevPos := p.pos
 		param := p.parseParam()
 		if param != 0 {
 			p.tree.AppendChild(node, param)
 		}
 		if !p.check(lexer.TokenRParen) {
 			p.expect(lexer.TokenComma)
+		}
+		if p.pos == prevPos {
+			p.consume()
 		}
 	}
 	p.expect(lexer.TokenRParen)
@@ -728,12 +756,16 @@ func (p *Parser) parseTypeVariant() uint32 {
 	if p.checkRaw(lexer.TokenLParen) {
 		p.consume()
 		for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+			prevPos := p.pos
 			t := p.parseTypeExpr()
 			if t != 0 {
 				p.tree.AppendChild(node, t)
 			}
 			if !p.check(lexer.TokenRParen) {
 				p.expect(lexer.TokenComma)
+			}
+			if p.pos == prevPos {
+				p.consume()
 			}
 		}
 		p.expect(lexer.TokenRParen)
@@ -806,6 +838,8 @@ func (p *Parser) parseStmt() uint32 {
 	switch tok.Kind {
 	case lexer.TokenLet, lexer.TokenMut:
 		return p.parseVarDecl()
+	case lexer.TokenImport:
+		return p.parseImportDecl()
 	case lexer.TokenReturn:
 		return p.parseReturnStmt()
 	case lexer.TokenIf:
@@ -1028,12 +1062,16 @@ func (p *Parser) parsePattern() uint32 {
 			p.tree.SetPayload(node, p.pool.Intern(text))
 			p.consume() // (
 			for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+				prevPos := p.pos
 				inner := p.parsePattern()
 				if inner != 0 {
 					p.tree.AppendChild(node, inner)
 				}
 				if !p.check(lexer.TokenRParen) {
 					p.expect(lexer.TokenComma)
+				}
+				if p.pos == prevPos {
+					p.consume()
 				}
 			}
 			p.expect(lexer.TokenRParen)
@@ -1052,6 +1090,7 @@ func (p *Parser) parsePattern() uint32 {
 		p.consume()
 		node := p.tree.AddNode(ast.NodeTuplePat, p.tokenIdx(tok))
 		for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+			prevPos := p.pos
 			inner := p.parsePattern()
 			if inner != 0 {
 				p.tree.AppendChild(node, inner)
@@ -1059,12 +1098,16 @@ func (p *Parser) parsePattern() uint32 {
 			if !p.check(lexer.TokenRParen) {
 				p.expect(lexer.TokenComma)
 			}
+			if p.pos == prevPos {
+				p.consume()
+			}
 		}
 		p.expect(lexer.TokenRParen)
 		return node
 
 	default:
 		p.errorf(tok, "expected pattern, got %s", tok.Kind)
+		p.consume() // Ensure progress to avoid infinite loop
 		return 0
 	}
 }
@@ -1117,7 +1160,7 @@ func (p *Parser) parseAssignOrExprStmt() uint32 {
 		return 0
 	}
 
-	tok := p.peek()
+	tok := p.peekRaw()
 	switch tok.Kind {
 	case lexer.TokenEq, lexer.TokenPlusEq, lexer.TokenMinusEq,
 		lexer.TokenStarEq, lexer.TokenSlashEq, lexer.TokenPercentEq:
@@ -1156,12 +1199,16 @@ func (p *Parser) parseTypeExpr() uint32 {
 			p.tree.AppendChild(genNode, node)
 			p.consume() // [
 			for !p.check(lexer.TokenRBracket) && !p.check(lexer.TokenEOF) {
+				prevPos := p.pos
 				t := p.parseTypeExpr()
 				if t != 0 {
 					p.tree.AppendChild(genNode, t)
 				}
 				if !p.check(lexer.TokenRBracket) {
 					p.expect(lexer.TokenComma)
+				}
+				if p.pos == prevPos {
+					p.consume()
 				}
 			}
 			p.expect(lexer.TokenRBracket)
@@ -1208,12 +1255,16 @@ func (p *Parser) parseTypeExpr() uint32 {
 		node := p.tree.AddNode(ast.NodeFuncType, p.tokenIdx(tok))
 		p.expect(lexer.TokenLParen)
 		for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+			prevPos := p.pos
 			t := p.parseTypeExpr()
 			if t != 0 {
 				p.tree.AppendChild(node, t)
 			}
 			if !p.check(lexer.TokenRParen) {
 				p.expect(lexer.TokenComma)
+			}
+			if p.pos == prevPos {
+				p.consume()
 			}
 		}
 		p.expect(lexer.TokenRParen)
@@ -1239,7 +1290,7 @@ func (p *Parser) parseTypeExpr() uint32 {
 // parseExpr parses an expression. This is a minimal stub that handles atoms and
 // common postfix operators. The full Pratt parser is implemented in p03-t05.
 func (p *Parser) parseExpr() uint32 {
-	return p.parseExprAtom()
+	return p.parseExprWithPrec(bpNone)
 }
 
 func (p *Parser) parseExprAtom() uint32 {
@@ -1308,12 +1359,16 @@ func (p *Parser) parseExprAtom() uint32 {
 			callNode := p.tree.AddNode(ast.NodeCallExpr, p.tokenIdx(callTok))
 			p.tree.AppendChild(callNode, node)
 			for !p.check(lexer.TokenRParen) && !p.check(lexer.TokenEOF) {
+				prevPos := p.pos
 				arg := p.parseExprAtom()
 				if arg != 0 {
 					p.tree.AppendChild(callNode, arg)
 				}
 				if !p.check(lexer.TokenRParen) {
 					p.expect(lexer.TokenComma)
+				}
+				if p.pos == prevPos {
+					p.consume()
 				}
 			}
 			p.expect(lexer.TokenRParen)

@@ -104,6 +104,28 @@ func EmitEpilogue(frame *StackFrame) []MachInst {
 	return insts
 }
 
+type dstBehavior int
+
+const (
+	dstUnused dstBehavior = iota
+	dstWriteOnly
+	dstReadWrite
+	dstReadOnly
+)
+
+func getDstBehavior(op MachOpKind) dstBehavior {
+	switch op {
+	case MachMov, MachMovImm, MachXorZero, MachSetCC, MachMovzxB, MachPop, MachLoad:
+		return dstWriteOnly
+	case MachAdd, MachSub, MachImul, MachNeg, MachNot, MachAnd, MachOr, MachXor, MachShl, MachSar:
+		return dstReadWrite
+	case MachCmp, MachTest, MachStore:
+		return dstReadOnly
+	default:
+		return dstUnused
+	}
+}
+
 // InsertSpillCode inserts load/store instructions for spilled registers.
 // It scans all MachInsts and replaces VReg references to spilled regs
 // with loads from / stores to their stack slots.
@@ -111,28 +133,27 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 	var result []MachInst
 
 	for _, inst := range insts {
-		// Check if any operand references a spilled register
-		// For spilled Src1: insert a load before the instruction
+		// 1. If Src1 is spilled, load it into scratch register R10
 		if inst.Src1.Kind == OpndVReg {
 			if alloc, ok := allocs[inst.Src1.VReg]; ok && alloc.Spilled {
-				// Load from spill slot into a scratch register
 				offset := frame.SpillOffset(alloc.SpillIdx)
 				result = append(result, MachInst{
 					Op:   MachLoad,
-					Dst:  Phys(R11), // scratch register
+					Dst:  Phys(R10), // scratch register for Src1
 					Src1: Phys(RBP),
 					Src2: Imm(int64(offset)),
 				})
-				inst.Src1 = Phys(R11)
+				inst.Src1 = Phys(R10)
 			}
 		}
 
+		// 2. Src2 loading (seldom used as VReg, but kept for robustness)
 		if inst.Src2.Kind == OpndVReg {
 			if alloc, ok := allocs[inst.Src2.VReg]; ok && alloc.Spilled {
 				offset := frame.SpillOffset(alloc.SpillIdx)
 				result = append(result, MachInst{
 					Op:   MachLoad,
-					Dst:  Phys(R10), // second scratch register
+					Dst:  Phys(R10), // fallback scratch
 					Src1: Phys(RBP),
 					Src2: Imm(int64(offset)),
 				})
@@ -140,19 +161,70 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 			}
 		}
 
-		result = append(result, inst)
-
-		// Check if Dst is spilled: insert a store after the instruction
+		// 3. Handle spilled Dst based on its read/write characteristics
+		dstSpilled := false
+		var dstAlloc RegAllocation
 		if inst.Dst.Kind == OpndVReg {
 			if alloc, ok := allocs[inst.Dst.VReg]; ok && alloc.Spilled {
-				offset := frame.SpillOffset(alloc.SpillIdx)
+				dstSpilled = true
+				dstAlloc = alloc
+			}
+		}
+
+		if dstSpilled {
+			behavior := getDstBehavior(inst.Op)
+			offset := frame.SpillOffset(dstAlloc.SpillIdx)
+
+			switch behavior {
+			case dstReadOnly:
+				// Load Dst into scratch register R11 before instruction
+				result = append(result, MachInst{
+					Op:   MachLoad,
+					Dst:  Phys(R11), // scratch register for Dst
+					Src1: Phys(RBP),
+					Src2: Imm(int64(offset)),
+				})
+				inst.Dst = Phys(R11)
+				result = append(result, inst)
+				// Do NOT store after the instruction
+
+			case dstReadWrite:
+				// Load Dst into scratch register R11 before instruction
+				result = append(result, MachInst{
+					Op:   MachLoad,
+					Dst:  Phys(R11),
+					Src1: Phys(RBP),
+					Src2: Imm(int64(offset)),
+				})
+				inst.Dst = Phys(R11)
+				result = append(result, inst)
+				// Store R11 back after instruction
 				result = append(result, MachInst{
 					Op:   MachStore,
 					Dst:  Phys(RBP),
-					Src1: Phys(R11), // value was written to scratch
+					Src1: Phys(R11),
 					Src2: Imm(int64(offset)),
 				})
+
+			case dstWriteOnly:
+				// Do NOT load before instruction, just overwrite R11
+				inst.Dst = Phys(R11)
+				result = append(result, inst)
+				// Store R11 back after instruction
+				result = append(result, MachInst{
+					Op:   MachStore,
+					Dst:  Phys(RBP),
+					Src1: Phys(R11),
+					Src2: Imm(int64(offset)),
+				})
+
+			default:
+				// dstUnused or other label instruction: just emit inst as is
+				result = append(result, inst)
 			}
+		} else {
+			// Dst is not spilled, just emit the instruction
+			result = append(result, inst)
 		}
 	}
 

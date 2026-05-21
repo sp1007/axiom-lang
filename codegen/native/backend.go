@@ -1,7 +1,12 @@
 package native
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/axiom-lang/axiom/codegen/native/x86"
+	"github.com/axiom-lang/axiom/compiler/ast"
+	"github.com/axiom-lang/axiom/compiler/types"
 	"github.com/axiom-lang/axiom/ir/air"
 	"github.com/axiom-lang/axiom/ir/opt"
 )
@@ -17,6 +22,8 @@ import (
 type NativeBackend struct {
 	Target   Target
 	OptLevel opt.OptLevel
+	Pool     *ast.InternPool
+	Table    *types.TypeTable
 }
 
 // NewNativeBackend creates a new native backend for the given target.
@@ -28,7 +35,7 @@ func NewNativeBackend(target Target) *NativeBackend {
 }
 
 // Compile generates native object code from an AirModule.
-// Returns the raw bytes of the object file (ELF64 for Linux, etc.).
+// Returns the raw bytes of the object file (ELF64 for Linux, PE/COFF for Windows, Mach-O for macOS).
 func (b *NativeBackend) Compile(mod *air.AirModule) ([]byte, error) {
 	// Step 1: Run optimization pipeline
 	pipeline := opt.DefaultPipeline(b.OptLevel, false)
@@ -36,32 +43,136 @@ func (b *NativeBackend) Compile(mod *air.AirModule) ([]byte, error) {
 
 	// Step 2: For each function, run the codegen pipeline
 	abi := x86.NewABI(b.Target.ABI.String())
-	elf := x86.NewELF64Writer()
 
-	for fi := range mod.Funcs {
-		fn := &mod.Funcs[fi]
-		if fn.IsExtern {
-			continue
+	switch b.Target.BinaryFormat() {
+	case BinPE:
+		coff := x86.NewCOFFWriter()
+		var allCode []byte
+		var funcOffsets []uint32
+		var funcSyms []x86.ELF64Sym
+		var funcRelocs [][]x86.Relocation
+
+		// Map to keep track of added symbol indices by their name string
+		symIndices := make(map[string]int)
+
+		// First register all extern functions as undefined external symbols
+		for fi := range mod.Funcs {
+			fn := &mod.Funcs[fi]
+			if fn.IsExtern {
+				name := b.resolveSymName(fn.Name)
+				symIdx := coff.AddSymbol(name, 0, 0, true)
+				symIndices[name] = symIdx
+			}
 		}
 
-		code, sym := b.compileFunc(fn, abi)
-		elf.SetText(code) // For MVP: single function per object
-		elf.AddSymbol(sym)
-	}
+		for fi := range mod.Funcs {
+			fn := &mod.Funcs[fi]
+			if fn.IsExtern {
+				continue
+			}
 
-	return elf.Serialize(), nil
+			code, sym, relocs := b.compileFunc(fn, abi)
+			funcOffsets = append(funcOffsets, uint32(len(allCode)))
+			funcSyms = append(funcSyms, sym)
+			funcRelocs = append(funcRelocs, relocs)
+			allCode = append(allCode, code...)
+		}
+
+		textSecIdx := coff.AddSection(".text", x86.IMAGE_SCN_CNT_CODE|x86.IMAGE_SCN_MEM_EXECUTE|x86.IMAGE_SCN_MEM_READ, allCode)
+		for i, sym := range funcSyms {
+			symIdx := coff.AddSymbol(sym.Name, textSecIdx, funcOffsets[i], sym.Binding == x86.STB_GLOBAL)
+			symIndices[sym.Name] = symIdx
+		}
+
+		// Add relocations for external calls
+		for i, relocs := range funcRelocs {
+			funcOffset := funcOffsets[i]
+			for _, r := range relocs {
+				targetName := b.resolveSymName(r.SymName)
+				symIdx, exists := symIndices[targetName]
+				if !exists {
+					symIdx = coff.AddSymbol(targetName, 0, 0, true)
+					symIndices[targetName] = symIdx
+				}
+
+				var relocType uint16 = x86.IMAGE_REL_AMD64_REL32
+				if r.Kind == x86.RelocAbs64 {
+					relocType = x86.IMAGE_REL_AMD64_ADDR64
+				}
+
+				relocOffset := int(funcOffset) + r.Offset
+				coff.AddReloc(textSecIdx, relocOffset, symIdx, relocType)
+			}
+		}
+
+		return coff.Serialize(), nil
+
+	case BinMachO:
+		macho := x86.NewMachOWriter()
+		for fi := range mod.Funcs {
+			fn := &mod.Funcs[fi]
+			if fn.IsExtern {
+				continue
+			}
+
+			code, sym, _ := b.compileFunc(fn, abi)
+			macho.SetText(code) // For MVP: single function per object
+			macho.AddSymbol(sym)
+		}
+		return macho.Serialize(), nil
+
+	default: // BinELF
+		elf := x86.NewELF64Writer()
+		for fi := range mod.Funcs {
+			fn := &mod.Funcs[fi]
+			if fn.IsExtern {
+				continue
+			}
+
+			code, sym, _ := b.compileFunc(fn, abi)
+			elf.SetText(code) // For MVP: single function per object
+			elf.AddSymbol(sym)
+		}
+		return elf.Serialize(), nil
+	}
+}
+
+// resolveSymName resolves a symbol ID to a string, using InternPool if available.
+func (b *NativeBackend) resolveSymName(symID uint32) string {
+	if symID == 0 {
+		return "main"
+	}
+	if symID == 4294967295 {
+		return "malloc"
+	}
+	if symID == 4294967294 {
+		return "free"
+	}
+	if b.Pool != nil && int(symID) <= b.Pool.Len() {
+		name := b.Pool.Get(symID)
+		if len(name) > 0 {
+			if name == "main" || name == "printf" || name == "malloc" || name == "free" {
+				return name
+			}
+			if strings.HasPrefix(name, "_AX_") {
+				return name
+			}
+			return "_AX_" + name
+		}
+	}
+	return fmt.Sprintf("_AX_f%d", symID)
 }
 
 // compileFunc runs the full codegen pipeline for a single function.
-func (b *NativeBackend) compileFunc(fn *air.AirFunc, abi x86.ABI) ([]byte, x86.ELF64Sym) {
+func (b *NativeBackend) compileFunc(fn *air.AirFunc, abi x86.ABI) ([]byte, x86.ELF64Sym, []x86.Relocation) {
 	// Step 1: Instruction selection (AIR → MachInst with VRegs)
-	machInsts := x86.Select(fn)
+	machInsts := x86.Select(fn, abi, b.Table)
 
 	// Step 2: Liveness analysis
 	intervals := x86.ComputeLiveness(machInsts)
 
 	// Step 3: Register allocation
-	availRegs := x86.AllocatableGPRs()
+	availRegs := allocatableCalleeSaved(abi)
 	allocResult := x86.LinearScanAlloc(intervals, availRegs)
 
 	// Step 4: Compute stack frame
@@ -76,8 +187,9 @@ func (b *NativeBackend) compileFunc(fn *air.AirFunc, abi x86.ABI) ([]byte, x86.E
 	emitter.EmitFunction(machInsts, &frame)
 
 	// Build symbol
+	name := b.resolveSymName(fn.Name)
 	sym := x86.ELF64Sym{
-		Name:    "main", // TODO: resolve from intern pool
+		Name:    name,
 		Value:   0,
 		Size:    uint64(emitter.CodeSize()),
 		Binding: x86.STB_GLOBAL,
@@ -85,7 +197,7 @@ func (b *NativeBackend) compileFunc(fn *air.AirFunc, abi x86.ABI) ([]byte, x86.E
 		Section: 1, // .text
 	}
 
-	return emitter.Code, sym
+	return emitter.Code, sym, emitter.Relocs
 }
 
 // computeUsedCalleeSaved determines which callee-saved registers were
@@ -107,4 +219,14 @@ func computeUsedCalleeSaved(result x86.RegAllocResult, abi x86.ABI) []x86.PhysRe
 		}
 	}
 	return used
+}
+
+func allocatableCalleeSaved(abi x86.ABI) []x86.PhysReg {
+	var regs []x86.PhysReg
+	for _, r := range abi.CalleeSavedRegs() {
+		if r != x86.RBP && r != x86.RSP {
+			regs = append(regs, r)
+		}
+	}
+	return regs
 }

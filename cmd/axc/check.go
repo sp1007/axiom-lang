@@ -50,7 +50,7 @@ func runCheck(args []string) {
 	if *verbose {
 		fmt.Fprintln(os.Stderr, "[axc] stage: lexer")
 	}
-	tokens, _, lexErrs := lexer.Lex(src)
+	tokens, lt, lexErrs := lexer.Lex(src)
 	allDiags = append(allDiags, lexErrs...)
 
 	// Parser
@@ -97,10 +97,87 @@ func runCheck(args []string) {
 			effects := sema.NewEffectChecker(tree, pool, symtab, tt, infer)
 			effectErrs := effects.Check()
 			allDiags = append(allDiags, effectErrs...)
+
+			// Run CTGC and Ownership pipeline diagnostics
+			var checkHasErrors bool
+			for _, d := range allDiags {
+				if d.Severity == diagnostics.SeverityError {
+					checkHasErrors = true
+					break
+				}
+			}
+			if !checkHasErrors {
+				if *verbose {
+					fmt.Fprintln(os.Stderr, "[axc] stage: arena pass")
+				}
+				ap := sema.NewArenaPass(tree, pool, symtab)
+				arenaDiags := ap.Process()
+				allDiags = append(allDiags, arenaDiags...)
+
+				if *verbose {
+					fmt.Fprintln(os.Stderr, "[axc] stage: ownership checker")
+				}
+				oc := sema.NewOwnershipChecker(tree, pool, symtab, tt)
+				ownershipDiags := oc.Check()
+				allDiags = append(allDiags, ownershipDiags...)
+
+				var ownershipHasErrors bool
+				for _, d := range allDiags {
+					if d.Severity == diagnostics.SeverityError {
+						ownershipHasErrors = true
+						break
+					}
+				}
+
+				if !ownershipHasErrors {
+					if *verbose {
+						fmt.Fprintln(os.Stderr, "[axc] stage: escape analysis & ctgc & alias reuse")
+					}
+					ea := sema.NewEscapeAnalysis(tree, pool, symtab, tt)
+
+					root := tree.Node(0)
+					child := root.FirstChild
+					for child != ast.NullIdx {
+						childNode := tree.Node(child)
+						if childNode.Kind == ast.NodeFuncDecl {
+							funcSym := childNode.Payload
+							if funcSym != 0 {
+								cg := oc.FunctionGraphs[funcSym]
+								moved := oc.FunctionMoved[funcSym]
+								if cg != nil {
+									// Escape Analysis
+									ea.AnalyzeFunction(child, cg)
+
+									// CTGC Injection
+									ctgc := sema.NewCTGCPass(tree, symtab, moved)
+									ctgc.InjectDestroys(child)
+									ctgc.InjectEarlyReturnDestroys(child)
+
+									// Alias Reuse
+									ar := sema.NewAliasReuse(tree, symtab, cg)
+									ar.Optimize(child)
+								}
+							}
+						}
+						child = childNode.NextSibling
+					}
+				}
+			}
 		}
 	}
 
 	allDiags = deduplicate(allDiags)
+	
+	if lt != nil {
+		for i := range allDiags {
+			if allDiags[i].Pos.Line == 0 {
+				line, col := lt.LineCol(allDiags[i].Pos.Offset)
+				allDiags[i].Pos.Line = line
+				allDiags[i].Pos.Col = col
+			}
+		}
+	}
+
 	sortDiags(allDiags)
 
 	fmtOpts := diagnostics.DefaultFormatOptions()

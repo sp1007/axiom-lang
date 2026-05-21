@@ -83,27 +83,54 @@ func buildUseCount(fn *air.AirFunc) map[uint32]int {
 			continue
 		}
 
+		// OpCall has arguments stored in fn.Extras
+		if inst.Opcode == air.OpCall {
+			argStart := inst.Src2
+			argCount := uint32(0)
+			if argStart < uint32(len(fn.Extras)) {
+				argCount = fn.Extras[argStart]
+			}
+			for idx := uint32(0); idx < argCount; idx++ {
+				argReg := fn.Extras[argStart+1+idx]
+				if argReg != 0 {
+					uses[argReg]++
+				}
+			}
+			// Src1 is target, Src2 is Extras index - neither are register uses
+			continue
+		}
+
+		// For OpIConst / OpFConst, Src1 is an immediate value, not a register.
+		if inst.Opcode == air.OpIConst || inst.Opcode == air.OpFConst {
+			continue
+		}
+
+		// For OpJump, Src1 is a block ID target, not a register.
+		if inst.Opcode == air.OpJump {
+			continue
+		}
+
+		// For OpBranch, Src1 is the condition register, but Src2 and Dest are block IDs.
+		if inst.Opcode == air.OpBranch {
+			if inst.Src1 != 0 {
+				uses[inst.Src1]++
+			}
+			continue
+		}
+
+		// If Dest is used as an operand (OpStore, OpSetField), count it as a use
+		if inst.Dest != 0 && (inst.Opcode == air.OpStore || inst.Opcode == air.OpSetField) {
+			uses[inst.Dest]++
+		}
+
 		// Count Src1 usage
 		if inst.Src1 != 0 {
 			uses[inst.Src1]++
 		}
 
-		// Count Src2 usage (skip for branch/jump where Src2 is a block target)
+		// Count Src2 usage
 		if inst.Src2 != 0 {
-			if inst.Opcode != air.OpBranch && inst.Opcode != air.OpJump {
-				uses[inst.Src2]++
-			}
-		}
-
-		// For branch: Src1 (condition) is a register use, Src2 and Dest are block targets
-		if inst.Opcode == air.OpBranch {
-			// Src1 is the condition register (already counted above)
-			// Src2 and Dest are block targets, not register uses
-		}
-
-		// For return: Src1 is the return value register
-		if inst.Opcode == air.OpReturn {
-			// Already counted above
+			uses[inst.Src2]++
 		}
 	}
 

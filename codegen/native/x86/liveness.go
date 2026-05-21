@@ -78,7 +78,7 @@ func isTwoOperandRead(op MachOpKind) bool {
 	case MachAdd, MachSub, MachImul, MachAnd, MachOr, MachXor,
 		MachShl, MachSar, MachNeg, MachNot:
 		return true
-	case MachCmp, MachTest:
+	case MachCmp, MachTest, MachStore:
 		return true
 	default:
 		return false

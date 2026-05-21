@@ -117,6 +117,13 @@ func (b *AirFuncBuilder) EmitExtra(val uint32) uint32 {
 	return idx
 }
 
+// SetExtra updates an existing extra operand at the given index.
+func (b *AirFuncBuilder) SetExtra(idx uint32, val uint32) {
+	if int(idx) < len(b.extras) {
+		b.extras[idx] = val
+	}
+}
+
 // FreshReg allocates a new SSA register ID.
 func (b *AirFuncBuilder) FreshReg() uint32 {
 	r := b.nextReg

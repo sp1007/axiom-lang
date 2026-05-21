@@ -58,7 +58,17 @@ func (e *Emitter) EmitFunction(insts []MachInst, frame *StackFrame) {
 
 	// Emit body
 	for _, inst := range insts {
-		e.emitMachInst(inst)
+		if inst.Op == MachRet {
+			// Emit epilogue before returning
+			for _, epInst := range EmitEpilogue(frame) {
+				if epInst.Op != MachRet {
+					e.emitMachInst(epInst)
+				}
+			}
+			e.emit(EncodeRet())
+		} else {
+			e.emitMachInst(inst)
+		}
 	}
 
 	// Resolve internal fixups
@@ -214,13 +224,19 @@ func (e *Emitter) emitMachInst(inst MachInst) {
 		}
 
 	case MachCall:
-		// Record relocation for the call target
-		e.Fixups = append(e.Fixups, Fixup{
-			Offset:   len(e.Code) + 1,
-			LabelID:  uint32(inst.Src1.Imm),
-			InstSize: 5,
-		})
-		e.emit(EncodeCallRel32(0)) // placeholder
+		disp := int32(0)
+		if inst.Src1.Imm == 0 {
+			// Recursive call to current function (starts at 0)
+			disp = -int32(len(e.Code) + 5)
+		} else {
+			// Record relocation for the call target
+			e.Fixups = append(e.Fixups, Fixup{
+				Offset:   len(e.Code) + 1,
+				LabelID:  uint32(inst.Src1.Imm),
+				InstSize: 5,
+			})
+		}
+		e.emit(EncodeCallRel32(disp))
 
 	case MachLoad:
 		dst := e.resolveReg(inst.Dst)
@@ -267,7 +283,14 @@ func (e *Emitter) resolveFixups() {
 	for _, fix := range e.Fixups {
 		target, ok := e.Labels[fix.LabelID]
 		if !ok {
-			continue // external symbol — needs linker relocation
+			// external symbol — needs linker relocation
+			e.Relocs = append(e.Relocs, Relocation{
+				Offset:   fix.Offset,
+				Kind:     RelocPC32,
+				SymName:  fix.LabelID,
+				Addend:   -4,
+			})
+			continue
 		}
 
 		// Compute PC-relative offset

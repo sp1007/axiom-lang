@@ -45,7 +45,7 @@ func TestPhysReg_String(t *testing.T) {
 
 func TestAllocatableGPRs(t *testing.T) {
 	regs := x86.AllocatableGPRs()
-	if len(regs) != 14 { t.Errorf("expected 14 allocatable GPRs, got %d", len(regs)) }
+	if len(regs) != 12 { t.Errorf("expected 12 allocatable GPRs, got %d", len(regs)) }
 	for _, r := range regs {
 		if r == x86.RSP || r == x86.RBP {
 			t.Errorf("RSP/RBP should not be allocatable, found %s", r)

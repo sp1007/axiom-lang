@@ -146,5 +146,8 @@ func usesReg(inst *air.AirInst, reg uint32) bool {
 	if inst.Src2 == reg && !inst.Opcode.IsControl() {
 		return true
 	}
+	if inst.Dest == reg && (inst.Opcode == air.OpStore || inst.Opcode == air.OpSetField) {
+		return true
+	}
 	return false
 }

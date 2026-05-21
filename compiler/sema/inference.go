@@ -74,26 +74,131 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		}
 
 	case ast.NodeFuncDecl:
-		// A real compiler would resolve parameter types and return type from their TypeRef children.
-		// For now we assume the symbol table already has the function type registered, 
-		// or we mock the return type for testing.
-		// Let's set a mock return type if not set (in a real scenario, type checking does this).
-		prevReturn := ie.currentReturn
+		var paramTypes []types.TypeID
+		var retType types.TypeID = types.TypeUnknown
 		
-		// Determine return type (mock logic for tests)
-		if expected != types.TypeUnknown {
-			ie.currentReturn = expected
+		symIdx := node.Payload
+		hasExistingType := false
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			if sym.TypeID != 0 && sym.TypeID != uint32(types.TypeUnknown) {
+				existingTypeID := types.TypeID(sym.TypeID)
+				entry := ie.types.Entry(existingTypeID)
+				if entry.Kind == types.KindFunction {
+					funcInfo := ie.types.FuncInfo(existingTypeID)
+					paramTypes = funcInfo.Params
+					retType = funcInfo.Return
+					hasExistingType = true
+				}
+			}
+		}
+
+		if !hasExistingType {
+			// Walk children once to infer parameter and return types
+			hasReturnTypeExpr := false
+			child := node.FirstChild
+			for child != 0 {
+				childNode := &ie.ast.Nodes[child]
+				if childNode.Kind == ast.NodeParamDecl {
+					pType := ie.inferNode(child, types.TypeUnknown)
+					paramTypes = append(paramTypes, pType)
+				} else if childNode.Kind == ast.NodeTypeExpr || childNode.Kind == ast.NodeGenericType {
+					retType = ie.inferNode(child, types.TypeUnknown)
+					hasReturnTypeExpr = true
+				}
+				child = childNode.NextSibling
+			}
+			
+			if !hasReturnTypeExpr {
+				retType = types.TypeVoid
+			}
+			
+			// Register the function type in the TypeTable
+			funcTypeID := ie.types.RegisterFunction(paramTypes, retType, nil)
+			
+			// Store type on the function's symbol
+			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+				sym := ie.symtable.SymbolAt(symIdx)
+				sym.TypeID = uint32(funcTypeID)
+			}
+			resultType = funcTypeID
 		} else {
-			ie.currentReturn = types.TypeUnknown
+			resultType = types.TypeID(ie.symtable.SymbolAt(symIdx).TypeID)
+		}
+
+		prevReturn := ie.currentReturn
+		ie.currentReturn = retType
+
+		// Infer function body and other children
+		child := node.FirstChild
+		for child != 0 {
+			childNode := &ie.ast.Nodes[child]
+			if childNode.Kind != ast.NodeParamDecl && childNode.Kind != ast.NodeTypeExpr {
+				ie.inferNode(child, types.TypeUnknown)
+			}
+			child = childNode.NextSibling
+		}
+
+		ie.currentReturn = prevReturn
+
+	case ast.NodeStructDecl:
+		symIdx := node.Payload
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			if sym.TypeID == 0 || sym.TypeID == uint32(types.TypeUnknown) {
+				var fields []types.FieldEntry
+				child := node.FirstChild
+				for child != 0 {
+					childNode := &ie.ast.Nodes[child]
+					if childNode.Kind == ast.NodeFieldDecl {
+						fSymIdx := childNode.Payload
+						if fSymIdx != 0 && int(fSymIdx) < len(ie.symtable.Symbols) {
+							fSym := ie.symtable.SymbolAt(fSymIdx)
+							var fieldType types.TypeID = types.TypeUnknown
+							fTypeNode := childNode.FirstChild
+							if fTypeNode != 0 {
+								fieldType = ie.inferNode(fTypeNode, types.TypeUnknown)
+							}
+							fSym.TypeID = uint32(fieldType)
+							fields = append(fields, types.FieldEntry{
+								NameID: fSym.NameID,
+								TypeID: fieldType,
+							})
+						}
+					}
+					child = childNode.NextSibling
+				}
+
+				nameID := sym.NameID
+				typeID := ie.types.RegisterStruct(nameID, fields, nil)
+				sym.TypeID = uint32(typeID)
+				resultType = typeID
+			} else {
+				resultType = types.TypeID(sym.TypeID)
+			}
 		}
 
 		child := node.FirstChild
 		for child != 0 {
-			ie.inferNode(child, types.TypeUnknown)
-			child = ie.ast.Nodes[child].NextSibling
+			childNode := &ie.ast.Nodes[child]
+			if childNode.Kind != ast.NodeFieldDecl {
+				ie.inferNode(child, types.TypeUnknown)
+			}
+			child = childNode.NextSibling
 		}
-		
-		ie.currentReturn = prevReturn
+
+	case ast.NodeParamDecl:
+		symIdx := node.Payload
+		var paramType types.TypeID = types.TypeUnknown
+		typeNode := node.FirstChild
+		if typeNode != 0 {
+			paramType = ie.inferNode(typeNode, types.TypeUnknown)
+		}
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			sym.TypeID = uint32(paramType)
+		}
+		resultType = paramType
 
 	case ast.NodeVarDecl:
 		// VarDecl children: optional type annotation, then init expr.
@@ -243,6 +348,25 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			}
 		}
 
+	case ast.NodeFieldExpr:
+		obj := node.FirstChild
+		if obj != 0 {
+			objType := ie.inferNode(obj, types.TypeUnknown)
+			if objType != types.TypeUnknown {
+				entry := ie.types.Entry(objType)
+				if entry.Kind == types.KindStruct {
+					structInfo := ie.types.StructInfo(objType)
+					fieldNameID := uint32(node.Payload)
+					for _, field := range structInfo.Fields {
+						if field.NameID == fieldNameID {
+							resultType = field.TypeID
+							break
+						}
+					}
+				}
+			}
+		}
+
 	case ast.NodeBinaryExpr:
 		lhs := node.FirstChild
 		rhs := uint32(0)
@@ -312,6 +436,13 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 					
 					if argCount != len(funcInfo.Params) {
 						ie.errorf(nodeIdx, 3003, "argument count mismatch: expected %d, got %d", len(funcInfo.Params), argCount)
+					}
+				} else if entry.Kind == types.KindStruct {
+					resultType = calleeTypeID
+					arg := ie.ast.Nodes[callee].NextSibling
+					for arg != 0 {
+						ie.inferNode(arg, types.TypeUnknown)
+						arg = ie.ast.Nodes[arg].NextSibling
 					}
 				}
 			}

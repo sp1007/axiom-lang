@@ -37,6 +37,18 @@ type constVal struct {
 
 // foldFunc performs constant folding on a single function.
 func foldFunc(fn *air.AirFunc) bool {
+	// Identify registers defined more than once (mutated/non-SSA)
+	defCounts := make(map[uint32]int, len(fn.Insts))
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpNop {
+			continue
+		}
+		if inst.Dest != 0 && inst.Opcode != air.OpBranch {
+			defCounts[inst.Dest]++
+		}
+	}
+
 	// Build a map of register → known constant value
 	vals := make(map[uint32]constVal, len(fn.Insts))
 	changed := false
@@ -47,7 +59,11 @@ func foldFunc(fn *air.AirFunc) bool {
 		// Record constants
 		if inst.Opcode == air.OpIConst || inst.Opcode == air.OpFConst {
 			if inst.Dest != 0 {
-				vals[inst.Dest] = constVal{known: true, val: inst.Src1}
+				if defCounts[inst.Dest] <= 1 {
+					vals[inst.Dest] = constVal{known: true, val: inst.Src1}
+				} else {
+					vals[inst.Dest] = constVal{known: false}
+				}
 			}
 			continue
 		}
@@ -68,7 +84,11 @@ func foldFunc(fn *air.AirFunc) bool {
 					inst.Opcode = air.OpIConst
 					inst.Src1 = result
 					inst.Src2 = 0
-					vals[inst.Dest] = constVal{known: true, val: result}
+					if defCounts[inst.Dest] <= 1 {
+						vals[inst.Dest] = constVal{known: true, val: result}
+					} else {
+						vals[inst.Dest] = constVal{known: false}
+					}
 					changed = true
 					continue
 				}
@@ -84,7 +104,11 @@ func foldFunc(fn *air.AirFunc) bool {
 					inst.Opcode = air.OpIConst
 					inst.Src1 = result
 					inst.Src2 = 0
-					vals[inst.Dest] = constVal{known: true, val: result}
+					if defCounts[inst.Dest] <= 1 {
+						vals[inst.Dest] = constVal{known: true, val: result}
+					} else {
+						vals[inst.Dest] = constVal{known: false}
+					}
 					changed = true
 					continue
 				}

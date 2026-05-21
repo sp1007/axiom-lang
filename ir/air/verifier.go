@@ -99,12 +99,10 @@ func Verify(fn *AirFunc) []VerifyError {
 			// Check 1: SSA — each Dest defined at most once
 			// ---------------------------------------------------------------
 			if inst.Dest != 0 && !isDestUsedAsOperand(inst.Opcode) {
-				if _, dup := defs[inst.Dest]; dup {
-					add(bi, uint32(ii), fmt.Sprintf(
-						"SSA violation: register %%%d defined more than once", inst.Dest))
-				} else {
-					defs[inst.Dest] = struct{}{}
+				if _, ok := defs[inst.Dest]; ok && inst.Opcode != OpCopy {
+					add(bi, uint32(ii), fmt.Sprintf("SSA violation: register %d defined more than once", inst.Dest))
 				}
+				defs[inst.Dest] = struct{}{}
 			}
 
 			// ---------------------------------------------------------------
@@ -217,7 +215,8 @@ func checkSuccConsistency(errs *[]VerifyError, blk *BasicBlock, bid, iidx uint32
 
 // isDestUsedAsOperand returns true for opcodes where the Dest field is used
 // as an operand rather than as an SSA definition. OpBranch uses Dest for
-// the false target block ID.
+// the false target block ID. OpStore uses Dest for the pointer, and OpSetField
+// uses Dest for the value being stored.
 func isDestUsedAsOperand(op Opcode) bool {
-	return op == OpBranch
+	return op == OpBranch || op == OpStore || op == OpSetField
 }

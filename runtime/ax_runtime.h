@@ -148,10 +148,11 @@ AX_SLICE_DECL(ax_byte, ax_slice_byte);
  * a C main() that initializes the runtime and calls ax_main().
  * ================================================================ */
 #ifdef AX_EMIT_MAIN
-extern int ax_main(int argc, char** argv);
+extern int ax_main();
 
 int main(int argc, char** argv) {
     ax_set_program_name(argc > 0 ? argv[0] : "<axiom>");
     return ax_main(argc, argv);
 }
 #endif
+

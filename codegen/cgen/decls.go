@@ -30,6 +30,7 @@ type DeclEmitter struct {
 	typedefs []string // struct/sum/slice definitions
 	protos   []string // function prototypes
 	globals  []string // global variable declarations
+	hasMain  bool
 }
 
 // NewDeclEmitter creates a DeclEmitter with the given compilation context.
@@ -81,7 +82,11 @@ func (e *DeclEmitter) ProcessModule() {
 //  4. Global variable declarations
 //  5. Function prototypes
 func (e *DeclEmitter) EmitTo(w io.Writer) {
+	if e.hasMain {
+		fmt.Fprintln(w, "#define AX_EMIT_MAIN")
+	}
 	fmt.Fprintln(w, `#include "ax_runtime.h"`)
+	fmt.Fprintln(w, `#include "ax_stdlib.h"`)
 	fmt.Fprintln(w)
 
 	// Forward declarations
@@ -124,7 +129,7 @@ func (e *DeclEmitter) EmitTo(w io.Writer) {
 // processStruct processes a struct declaration node.
 func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 	nameID := e.nodeNameID(idx)
-	name := e.resolveName(nameID)
+	name := e.resolveName(nameID, idx)
 
 	// Forward declaration
 	e.forwards = append(e.forwards, fmt.Sprintf("struct ax_%s;", name))
@@ -136,9 +141,18 @@ func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 		childNode := e.tree.Node(child)
 		if childNode.Kind == ast.NodeFieldDecl {
 			fNameID := e.nodeNameID(child)
-			fName := e.resolveName(fNameID)
-			// Field's TypeID is stored in the Payload
-			fTypeID := types.TypeID(childNode.Payload)
+			fName := e.resolveName(fNameID, child)
+			
+			// Resolve Field's TypeID from the symbol table if available,
+			// otherwise fallback to the payload directly (for mock tests).
+			fTypeID := types.TypeID(0)
+			symIdx := childNode.Payload
+			if symIdx != 0 && e.symbols != nil && int(symIdx) < len(e.symbols.Symbols) && e.symbols.SymbolAt(symIdx).Kind == sema.SymField {
+				fTypeID = types.TypeID(e.symbols.SymbolAt(symIdx).TypeID)
+			} else {
+				fTypeID = types.TypeID(childNode.Payload)
+			}
+			
 			fCType := CTypeName(fTypeID, e.table, e.intern, e.queue)
 			fields = append(fields, fieldInfo{name: fName, ctype: fCType})
 		}
@@ -158,7 +172,10 @@ func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 // processFunc processes a function declaration node and emits a prototype.
 func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 	nameID := e.nodeNameID(idx)
-	name := e.resolveName(nameID)
+	name := e.resolveName(nameID, idx)
+	if name == "main" {
+		e.hasMain = true
+	}
 
 	// Determine return type from the symbol's TypeID
 	var retType string
@@ -185,7 +202,7 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 
 	// Visibility
 	visibility := ""
-	if node.Flags&ast.FlagIsPub == 0 && node.Flags&ast.FlagIsExtern == 0 {
+	if name != "main" && node.Flags&ast.FlagIsPub == 0 && node.Flags&ast.FlagIsExtern == 0 {
 		visibility = "static "
 	}
 
@@ -202,7 +219,7 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 // processConst processes a const declaration.
 func (e *DeclEmitter) processConst(idx uint32, node *ast.AstNode) {
 	nameID := e.nodeNameID(idx)
-	name := e.resolveName(nameID)
+	name := e.resolveName(nameID, idx)
 
 	symIdx := node.Payload
 	ctype := "ax_i32" // default
@@ -263,7 +280,7 @@ func (e *DeclEmitter) buildFuncParams(node *ast.AstNode, fi *types.FuncType) []s
 		childNode := e.tree.Node(child)
 		if childNode.Kind == ast.NodeParamDecl {
 			pNameID := e.nodeNameID(child)
-			paramNames = append(paramNames, e.resolveName(pNameID))
+			paramNames = append(paramNames, e.resolveName(pNameID, child))
 		}
 		child = childNode.NextSibling
 	}
@@ -288,13 +305,27 @@ func (e *DeclEmitter) buildFuncParams(node *ast.AstNode, fi *types.FuncType) []s
 // For declarations, the name is the interned form of the node's primary token text.
 func (e *DeclEmitter) nodeNameID(idx uint32) uint32 {
 	node := e.tree.Node(idx)
-	tokenText := e.tree.TokenText(node.TokenIdx)
-	return e.intern.Intern(tokenText)
+	if node.Kind == ast.NodeFieldDecl {
+		// For NodeFieldDecl, Payload might contain the TypeID, not symIdx.
+		// Return 0 to fallback to the token text as the name.
+		return 0
+	}
+	symIdx := node.Payload
+	if symIdx != 0 && e.symbols != nil && int(symIdx) < len(e.symbols.Symbols) {
+		sym := e.symbols.SymbolAt(symIdx)
+		return sym.NameID
+	}
+	return node.Payload
 }
 
-// resolveName converts a NameID back to a string.
-func (e *DeclEmitter) resolveName(nameID uint32) string {
+// resolveName converts a NameID back to a string, falling back to TokenText if 0.
+func (e *DeclEmitter) resolveName(nameID uint32, nodeIdx uint32) string {
 	if nameID == 0 {
+		node := e.tree.Node(nodeIdx)
+		txt := string(e.tree.TokenText(node.TokenIdx))
+		if txt != "" {
+			return txt
+		}
 		return "_anon"
 	}
 	return e.intern.Get(nameID)

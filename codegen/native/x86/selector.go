@@ -1,6 +1,7 @@
 package x86
 
 import (
+	"github.com/axiom-lang/axiom/compiler/types"
 	"github.com/axiom-lang/axiom/ir/air"
 )
 
@@ -99,9 +100,21 @@ func LabelOp(id uint32) MachOperand {
 	return MachOperand{Kind: OpndLabel, Label: id}
 }
 
+type instructionSelector struct {
+	fn                *air.AirFunc
+	abi               ABI
+	table             *types.TypeTable
+	paramIdxProcessed int
+}
+
 // Select translates an AirFunc into a list of MachInst per basic block.
 // Virtual registers map 1:1 to AIR registers.
-func Select(fn *air.AirFunc) []MachInst {
+func Select(fn *air.AirFunc, abi ABI, table *types.TypeTable) []MachInst {
+	sel := &instructionSelector{
+		fn:    fn,
+		abi:   abi,
+		table: table,
+	}
 	var result []MachInst
 
 	// If blocks have instruction indices, emit per-block
@@ -111,14 +124,14 @@ func Select(fn *air.AirFunc) []MachInst {
 			result = append(result, MachInst{Op: MachLabel, Dst: LabelOp(blk.ID)})
 			for _, idx := range blk.Instrs {
 				if int(idx) < len(fn.Insts) {
-					result = append(result, selectInst(&fn.Insts[idx])...)
+					result = append(result, sel.selectInst(&fn.Insts[idx])...)
 				}
 			}
 		}
 	} else {
 		// Flat instruction list
 		for i := range fn.Insts {
-			result = append(result, selectInst(&fn.Insts[i])...)
+			result = append(result, sel.selectInst(&fn.Insts[i])...)
 		}
 	}
 
@@ -135,7 +148,7 @@ func hasBlockInstrs(fn *air.AirFunc) bool {
 }
 
 // selectInst translates a single AIR instruction into one or more MachInsts.
-func selectInst(inst *air.AirInst) []MachInst {
+func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 	switch inst.Opcode {
 	case air.OpNop:
 		return nil
@@ -151,6 +164,26 @@ func selectInst(inst *air.AirInst) []MachInst {
 		return []MachInst{{Op: MachMovImm, Dst: VReg(inst.Dest), Src1: Imm(int64(inst.Src1))}}
 
 	case air.OpCopy, air.OpMove:
+		// Check if this is the initial parameter copy instruction
+		if sel.paramIdxProcessed < len(sel.fn.Params) && inst.Src1 == uint32(sel.paramIdxProcessed + 1) {
+			paramIdx := sel.paramIdxProcessed
+			sel.paramIdxProcessed++
+
+			var phys PhysReg = RegNone
+			if types.TypeID(sel.fn.Params[paramIdx]).IsFloat() {
+				if paramIdx < len(sel.abi.FloatArgRegs()) {
+					phys = sel.abi.FloatArgRegs()[paramIdx]
+				}
+			} else {
+				if paramIdx < len(sel.abi.IntArgRegs()) {
+					phys = sel.abi.IntArgRegs()[paramIdx]
+				}
+			}
+
+			if phys != RegNone {
+				return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(phys)}}
+			}
+		}
 		return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
 
 	case air.OpIAdd:
@@ -269,25 +302,79 @@ func selectInst(inst *air.AirInst) []MachInst {
 		}
 
 	case air.OpCall:
-		mi := MachInst{Op: MachCall, Src1: Imm(int64(inst.Src1))}
-		if inst.Dest != 0 {
-			return []MachInst{
-				mi,
-				{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(RAX)},
+		var insts []MachInst
+
+		// If there is an argument list index in Src2
+		argStart := inst.Src2
+		argCount := uint32(0)
+		if argStart < uint32(len(sel.fn.Extras)) {
+			argCount = sel.fn.Extras[argStart]
+		}
+
+		// Win64 requires 32-byte shadow space before CALL
+		if sel.abi.Name() == "win64" {
+			insts = append(insts, MachInst{
+				Op:   MachSub,
+				Dst:  Phys(RSP),
+				Src1: Imm(32),
+			})
+		}
+
+		// Copy arguments to GPR physical registers based on ABI
+		for i := uint32(0); i < argCount; i++ {
+			argReg := sel.fn.Extras[argStart+1+i]
+			var phys PhysReg = RegNone
+			if i < uint32(len(sel.abi.IntArgRegs())) {
+				phys = sel.abi.IntArgRegs()[i]
+			}
+			if phys != RegNone {
+				insts = append(insts, MachInst{
+					Op:   MachMov,
+					Dst:  Phys(phys),
+					Src1: VReg(argReg),
+				})
 			}
 		}
-		return []MachInst{mi}
+
+		// Emit the call itself
+		insts = append(insts, MachInst{
+			Op:   MachCall,
+			Src1: Imm(int64(inst.Src1)),
+		})
+
+		// Restore shadow space for Win64
+		if sel.abi.Name() == "win64" {
+			insts = append(insts, MachInst{
+				Op:   MachAdd,
+				Dst:  Phys(RSP),
+				Src1: Imm(32),
+			})
+		}
+
+		// Copy return value if needed
+		if inst.Dest != 0 {
+			insts = append(insts, MachInst{
+				Op:   MachMov,
+				Dst:  VReg(inst.Dest),
+				Src1: Phys(sel.abi.ReturnReg()),
+			})
+		}
+
+		return insts
 
 	case air.OpAlloc:
-		// External call to malloc
+		size, _ := sel.typeSizeAndAlign(inst.TypeID)
+		arg0 := sel.abi.IntArgRegs()[0]
 		return []MachInst{
+			{Op: MachMovImm, Dst: Phys(arg0), Src1: Imm(int64(size))},
 			{Op: MachCall, Src1: Imm(-1)}, // placeholder for malloc
 			{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(RAX)},
 		}
 
-	case air.OpFree:
+	case air.OpFree, air.OpDestroy:
+		arg0 := sel.abi.IntArgRegs()[0]
 		return []MachInst{
-			{Op: MachMov, Dst: Phys(RDI), Src1: VReg(inst.Src1)},
+			{Op: MachMov, Dst: Phys(arg0), Src1: VReg(inst.Src1)},
 			{Op: MachCall, Src1: Imm(-2)}, // placeholder for free
 		}
 
@@ -296,6 +383,30 @@ func selectInst(inst *air.AirInst) []MachInst {
 
 	case air.OpStore:
 		return []MachInst{{Op: MachStore, Dst: VReg(inst.Src2), Src1: VReg(inst.Src1)}}
+
+	case air.OpGetField:
+		structType := sel.getRegisterType(inst.Src1)
+		disp := sel.fieldOffset(structType, inst.Src2)
+		return []MachInst{
+			{
+				Op:   MachLoad,
+				Dst:  VReg(inst.Dest),
+				Src1: VReg(inst.Src1),
+				Src2: Imm(int64(disp)),
+			},
+		}
+
+	case air.OpSetField:
+		structType := sel.getRegisterType(inst.Src1)
+		disp := sel.fieldOffset(structType, inst.Src2)
+		return []MachInst{
+			{
+				Op:   MachStore,
+				Dst:  VReg(inst.Src1),
+				Src1: VReg(inst.Dest),
+				Src2: Imm(int64(disp)),
+			},
+		}
 
 	default:
 		return []MachInst{{Op: MachNop}}
@@ -309,4 +420,77 @@ func selectCmp(inst *air.AirInst, cc CondCode) []MachInst {
 		{Op: MachSetCC, CC: cc, Dst: VReg(inst.Dest)},
 		{Op: MachMovzxB, Dst: VReg(inst.Dest), Src1: VReg(inst.Dest)},
 	}
+}
+
+func (sel *instructionSelector) getRegisterType(reg uint32) uint16 {
+	if reg == 0 {
+		return 0
+	}
+	for i := range sel.fn.Insts {
+		inst := &sel.fn.Insts[i]
+		if inst.Dest == reg {
+			return inst.TypeID
+		}
+	}
+	return 0
+}
+
+func (sel *instructionSelector) typeSizeAndAlign(typeID uint16) (uint32, uint32) {
+	if typeID == 0 {
+		return 8, 8 // default pointer size
+	}
+	if sel.table == nil {
+		return 8, 8 // fallback
+	}
+	entry := sel.table.Entry(types.TypeID(typeID))
+	if entry.Size != 0 {
+		return entry.Size, entry.Align
+	}
+
+	switch entry.Kind {
+	case types.KindPrimitive:
+		return entry.Size, entry.Align
+	case types.KindStruct:
+		// Compute struct layout dynamically
+		info := sel.table.StructInfo(types.TypeID(typeID))
+		offset := uint32(0)
+		maxAlign := uint32(1)
+		for i := range info.Fields {
+			f := &info.Fields[i]
+			fSize, fAlign := sel.typeSizeAndAlign(uint16(f.TypeID))
+			if fAlign == 0 {
+				fAlign = 8
+			}
+			// Align offset
+			offset = (offset + fAlign - 1) & ^(fAlign - 1)
+			f.Offset = offset
+			offset += fSize
+			if fAlign > maxAlign {
+				maxAlign = fAlign
+			}
+		}
+		// Align total size
+		size := (offset + maxAlign - 1) & ^(maxAlign - 1)
+		if size == 0 {
+			size = 8 // non-empty struct minimum size
+		}
+		// Cache size/align in the entry
+		entry.Size = size
+		entry.Align = maxAlign
+		return size, maxAlign
+	default:
+		return 8, 8 // fallback pointer size
+	}
+}
+
+func (sel *instructionSelector) fieldOffset(structTypeID uint16, fieldIdx uint32) uint32 {
+	sel.typeSizeAndAlign(structTypeID) // Ensure layout is computed
+	if sel.table == nil {
+		return fieldIdx * 8 // fallback
+	}
+	info := sel.table.StructInfo(types.TypeID(structTypeID))
+	if int(fieldIdx) < len(info.Fields) {
+		return info.Fields[fieldIdx].Offset
+	}
+	return fieldIdx * 8 // fallback
 }

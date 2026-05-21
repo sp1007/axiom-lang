@@ -88,13 +88,21 @@ func (p *Pipeline) emitFuncDefs(w io.Writer) {
 // emitFuncDef emits a single function definition (signature + body).
 func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 	// Extract function name
-	nameText := string(p.tree.TokenText(node.TokenIdx))
+	nameText := ""
+	symIdx := node.Payload
+	if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
+		sym := p.symbols.SymbolAt(symIdx)
+		nameText = p.intern.Get(sym.NameID)
+	} else if node.Payload != 0 {
+		nameText = p.intern.Get(node.Payload)
+	} else {
+		nameText = string(p.tree.TokenText(node.TokenIdx))
+	}
 
 	// Build return type and parameters from the symbol table
 	retType := "void"
 	var paramStrs []string
 
-	symIdx := node.Payload
 	if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
 		sym := p.symbols.SymbolAt(symIdx)
 		if sym.TypeID != 0 {
@@ -110,7 +118,16 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 				for c != ast.NullIdx {
 					cn := p.tree.Node(c)
 					if cn.Kind == ast.NodeParamDecl {
-						pName := string(p.tree.TokenText(cn.TokenIdx))
+						pSymIdx := cn.Payload
+						pName := ""
+						if pSymIdx != 0 && int(pSymIdx) < len(p.symbols.Symbols) {
+							pSym := p.symbols.SymbolAt(pSymIdx)
+							pName = p.intern.Get(pSym.NameID)
+						} else if cn.Payload != 0 {
+							pName = p.intern.Get(cn.Payload)
+						} else {
+							pName = string(p.tree.TokenText(cn.TokenIdx))
+						}
 						paramNames = append(paramNames, pName)
 					}
 					c = cn.NextSibling
@@ -131,7 +148,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 
 	// Visibility prefix
 	visibility := ""
-	if node.Flags&ast.FlagIsPub == 0 && node.Flags&ast.FlagIsExtern == 0 {
+	if nameText != "main" && node.Flags&ast.FlagIsPub == 0 && node.Flags&ast.FlagIsExtern == 0 {
 		visibility = "static "
 	}
 

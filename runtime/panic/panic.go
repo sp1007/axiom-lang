@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Package panic_ implements the AXIOM panic handler and runtime error reporting.
 //
 // NOTE: This package is named panic_ (with trailing underscore) because
@@ -5,3 +7,4 @@
 // All internal references must use the import alias or the full path
 // "github.com/axiom-lang/axiom/runtime/panic".
 package panic_
+

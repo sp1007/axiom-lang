@@ -125,10 +125,10 @@ var Win64IntArgRegs = [4]PhysReg{RCX, RDX, R8, R9}
 var Win64CalleeSaved = [7]PhysReg{RBX, RBP, RDI, RSI, R12, R13, R14}
 
 // AllocatableGPRs returns the GPRs available for register allocation
-// (excludes RSP and RBP which are reserved for stack/frame).
+// (excludes RSP and RBP which are reserved for stack/frame, and R10, R11 which are scratch).
 func AllocatableGPRs() []PhysReg {
 	return []PhysReg{
 		RAX, RCX, RDX, RBX, RSI, RDI,
-		R8, R9, R10, R11, R12, R13, R14, R15,
+		R8, R9, R12, R13, R14, R15,
 	}
 }

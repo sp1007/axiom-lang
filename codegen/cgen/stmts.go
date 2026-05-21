@@ -160,12 +160,37 @@ func (g *StmtGen) EmitFuncBody(bodyNodeIdx uint32) {
 // emitVarDecl generates: type name = initializer;
 func (g *StmtGen) emitVarDecl(idx uint32, node *ast.AstNode) {
 	name := string(g.Tree.TokenText(node.TokenIdx))
-	typeID := types.TypeID(node.Payload)
+	symIdx := node.Payload
+	var typeID types.TypeID
+	useSym := false
+	if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+		sym := g.Symbols.SymbolAt(symIdx)
+		if sym.Kind == sema.SymVar || sym.Kind == sema.SymParam || sym.Kind == sema.SymConst {
+			useSym = true
+			typeID = types.TypeID(sym.TypeID)
+			name = resolveName(sym.NameID, g.Intern)
+		}
+	}
+	if !useSym {
+		typeID = types.TypeID(node.Payload)
+	}
 	ctype := CTypeName(typeID, g.Table, g.Intern, g.Queue)
 
-	// Check for initializer (first child is the init expression)
-	if node.FirstChild != ast.NullIdx {
-		initExpr := g.ExprGen.Emit(node.FirstChild)
+	// Find initExpr by scanning children and skipping NodeTypeExpr and NodeGenericType
+	var initExprIdx uint32 = ast.NullIdx
+	child := node.FirstChild
+	for child != ast.NullIdx {
+		childKind := g.Tree.Node(child).Kind
+		if childKind != ast.NodeTypeExpr && childKind != ast.NodeGenericType {
+			initExprIdx = child
+			break
+		}
+		child = g.Tree.Node(child).NextSibling
+	}
+
+	// Check for initializer
+	if initExprIdx != ast.NullIdx {
+		initExpr := g.ExprGen.Emit(initExprIdx)
 		g.W.Linef("%s %s = %s;", ctype, name, initExpr)
 	} else {
 		// Default zero initialization
@@ -338,6 +363,13 @@ func (g *StmtGen) emitDestroy(idx uint32, node *ast.AstNode) {
 	if node.FirstChild != ast.NullIdx {
 		expr := g.ExprGen.Emit(node.FirstChild)
 		g.W.Linef("ax_free(%s);", expr)
+	} else {
+		symID := node.Payload
+		if symID != 0 && g.Symbols != nil && int(symID) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symID)
+			name := resolveName(sym.NameID, g.Intern)
+			g.W.Linef("ax_free(%s);", name)
+		}
 	}
 }
 

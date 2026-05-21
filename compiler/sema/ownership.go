@@ -27,17 +27,24 @@ type OwnershipChecker struct {
 	currentFunc uint32
 
 	errors []diagnostics.Diagnostic
+
+	// FunctionGraphs maps function symID to its computed ConnectionGraph
+	FunctionGraphs map[uint32]*ConnectionGraph
+	// FunctionMoved maps function symID to its computed moved set
+	FunctionMoved map[uint32]map[uint32]bool
 }
 
 // NewOwnershipChecker creates a new OwnershipChecker.
 func NewOwnershipChecker(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable, tt *types.TypeTable) *OwnershipChecker {
 	return &OwnershipChecker{
-		ast:      tree,
-		intern:   intern,
-		symtable: st,
-		types:    tt,
-		graph:    NewConnectionGraph(),
-		moved:    make(map[uint32]bool),
+		ast:            tree,
+		intern:         intern,
+		symtable:       st,
+		types:          tt,
+		graph:          NewConnectionGraph(),
+		moved:          make(map[uint32]bool),
+		FunctionGraphs: make(map[uint32]*ConnectionGraph),
+		FunctionMoved:  make(map[uint32]map[uint32]bool),
 	}
 }
 
@@ -134,6 +141,18 @@ func (oc *OwnershipChecker) checkFuncDecl(nodeIdx uint32) {
 
 	oc.checkChildren(nodeIdx)
 
+	// Save computed graph and moved set before restoring previous ones
+	funcSym := node.Payload
+	if funcSym != 0 {
+		oc.FunctionGraphs[funcSym] = oc.graph
+		// Deep copy the moved map to ensure it isn't mutated later
+		movedCopy := make(map[uint32]bool)
+		for k, v := range oc.moved {
+			movedCopy[k] = v
+		}
+		oc.FunctionMoved[funcSym] = movedCopy
+	}
+
 	oc.currentFunc = prevFunc
 	oc.graph = prevGraph
 	oc.moved = prevMoved
@@ -222,9 +241,15 @@ func (oc *OwnershipChecker) checkReturn(nodeIdx uint32) {
 		if childNode.Kind == ast.NodeIdent {
 			symID := childNode.Payload
 			if symID != 0 {
-				if srcNode, ok := oc.graph.NodeOfSym(symID); ok {
-					// Return slot is node 0 (added in checkFuncDecl)
-					oc.graph.AddEdge(srcNode, 0, EdgeEscapesTo)
+				if int(symID) < len(oc.symtable.Symbols) {
+					sym := oc.symtable.SymbolAt(symID)
+					typeID := types.TypeID(sym.TypeID)
+					if !typeID.IsPrimitive() {
+						if srcNode, ok := oc.graph.NodeOfSym(symID); ok {
+							// Return slot is node 0 (added in checkFuncDecl)
+							oc.graph.AddEdge(srcNode, 0, EdgeEscapesTo)
+						}
+					}
 				}
 			}
 		}

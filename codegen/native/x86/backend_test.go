@@ -17,7 +17,7 @@ func TestSelect_SimpleReturn(t *testing.T) {
 	fb.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 1})
 	fn := fb.Build()
 
-	insts := x86.Select(fn)
+	insts := x86.Select(fn, x86.NewABI("sysv"), nil)
 	if len(insts) == 0 {
 		t.Fatal("expected non-empty MachInst list")
 	}
@@ -50,7 +50,7 @@ func TestSelect_ZeroConst(t *testing.T) {
 	fb.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 1})
 	fn := fb.Build()
 
-	insts := x86.Select(fn)
+	insts := x86.Select(fn, x86.NewABI("sysv"), nil)
 	foundXorZero := false
 	for _, inst := range insts {
 		if inst.Op == x86.MachXorZero {
@@ -70,7 +70,7 @@ func TestSelect_Add(t *testing.T) {
 	fb.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 3})
 	fn := fb.Build()
 
-	insts := x86.Select(fn)
+	insts := x86.Select(fn, x86.NewABI("sysv"), nil)
 	foundAdd := false
 	for _, inst := range insts {
 		if inst.Op == x86.MachAdd {
@@ -90,7 +90,7 @@ func TestSelect_Div(t *testing.T) {
 	fb.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 3})
 	fn := fb.Build()
 
-	insts := x86.Select(fn)
+	insts := x86.Select(fn, x86.NewABI("sysv"), nil)
 	foundCqo := false
 	foundIdiv := false
 	for _, inst := range insts {
@@ -117,7 +117,7 @@ func TestSelect_Comparison(t *testing.T) {
 	fb.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 3})
 	fn := fb.Build()
 
-	insts := x86.Select(fn)
+	insts := x86.Select(fn, x86.NewABI("sysv"), nil)
 	foundCmp := false
 	foundSetCC := false
 	for _, inst := range insts {

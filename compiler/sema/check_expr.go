@@ -122,7 +122,15 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				} else if exprType == types.TypeBool && targetType.IsInteger() {
 					valid = true
 				}
-				// More cast logic like pointer<->pointer would go here
+				exprEntry := tc.types.Entry(exprType)
+				targetEntry := tc.types.Entry(targetType)
+				if exprEntry.Kind == types.KindPointer && targetEntry.Kind == types.KindPointer {
+					valid = true
+				} else if exprEntry.Kind == types.KindPointer && targetType.IsInteger() {
+					valid = true
+				} else if exprType.IsInteger() && targetEntry.Kind == types.KindPointer {
+					valid = true
+				}
 				
 				if !valid {
 					tc.errorf(nodeIdx, 3026, "illegal cast from %d to %d", exprType, targetType)

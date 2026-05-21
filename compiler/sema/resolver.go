@@ -132,8 +132,10 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		nr.resolveChildren(nodeIdx)
 		
 		nameID := node.Payload
-		// Simplification: check flags for mut
-		flags := SymFlags(0) // parse flag parsing not fully integrated here
+		flags := SymFlags(0)
+		if node.Flags&uint16(ast.FlagIsMut) != 0 {
+			flags |= SymFlagMut
+		}
 		node.Payload = nr.defineSymbol(nameID, SymVar, flags, nodeIdx)
 
 	case ast.NodeConstDecl:

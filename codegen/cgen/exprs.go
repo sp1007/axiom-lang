@@ -234,6 +234,29 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 	if funcNode.Kind == ast.NodeIdent {
 		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
 
+		// Check if it's actually a struct constructor call
+		symIdx := funcNode.Payload
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymStruct {
+				structType := types.TypeID(sym.TypeID)
+				ctype := CTypeName(structType, g.Table, g.Intern, g.Queue)
+				var fields []string
+				for i := 1; i < len(children); i++ {
+					childIdx := children[i]
+					childNode := g.Tree.Node(childIdx)
+					if childNode.Kind == ast.NodeNamedArg {
+						fieldName := string(g.Tree.TokenText(childNode.TokenIdx))
+						if childNode.FirstChild != ast.NullIdx {
+							value := g.Emit(childNode.FirstChild)
+							fields = append(fields, fmt.Sprintf(".%s=%s", fieldName, value))
+						}
+					}
+				}
+				return fmt.Sprintf("((%s){%s})", ctype, strings.Join(fields, ", "))
+			}
+		}
+
 		// Check builtin table first
 		if call := EmitBuiltinCall(funcName, args); call != "" {
 			return call
