@@ -1,0 +1,144 @@
+// AXIOM Standard Library — std::mem
+//
+// Memory utilities: size_of, align_of, Arena allocator.
+
+/// Returns the size of type T in bytes (compiler intrinsic).
+pub fn size_of[T]() -> i64 {
+    @compiler_intrinsic("size_of")
+}
+
+/// Returns the alignment of type T in bytes (compiler intrinsic).
+pub fn align_of[T]() -> i64 {
+    @compiler_intrinsic("align_of")
+}
+
+/// Returns a zeroed value of type T.
+pub fn zeroed[T]() -> T {
+    @compiler_intrinsic("zeroed")
+}
+
+/// Copies n bytes from src to dst.
+pub fn copy(dst: ptr[u8], src: ptr[u8], n: i64) {
+    @memcpy(dst, src, n)
+}
+
+/// Sets n bytes at dst to the given value.
+pub fn set(dst: ptr[u8], value: u8, n: i64) {
+    @memset(dst, value, n)
+}
+
+/// Byte-swap (reverse endianness) for integer types.
+pub fn byte_swap[T](value: T) -> T {
+    @compiler_intrinsic("byte_swap")
+}
+
+// --------------------------------------------------------------------------
+// Arena — Bump-Pointer Allocator
+// --------------------------------------------------------------------------
+
+/// A bump-pointer arena allocator.
+/// Allocations are very fast (just increment a pointer).
+/// Memory is freed all at once when the arena is reset or destroyed.
+pub struct Arena {
+    base: ptr[u8],    // base of memory region
+    bump: ptr[u8],    // current bump pointer
+    limit: ptr[u8],   // end of region
+    size: i64,        // total size in bytes
+}
+
+impl Arena {
+    /// Creates a new arena with the given capacity in bytes.
+    pub fn new(capacity: i64) -> Arena {
+        let base = @alloc(capacity) as ptr[u8]
+        Arena {
+            base: base,
+            bump: base,
+            limit: base + capacity,
+            size: capacity,
+        }
+    }
+
+    /// Allocates space for one value of type T.
+    pub fn alloc[T](mut self) -> ptr[T] {
+        let size = size_of[T]()
+        let align = align_of[T]()
+        let aligned = self.align_up(self.bump, align)
+        if aligned + size > self.limit {
+            panic("arena out of memory")
+        }
+        self.bump = aligned + size
+        aligned as ptr[T]
+    }
+
+    /// Allocates space for an array of N values of type T.
+    pub fn alloc_array[T](mut self, count: i64) -> ptr[T] {
+        let elem_size = size_of[T]()
+        let align = align_of[T]()
+        let total = elem_size * count
+        let aligned = self.align_up(self.bump, align)
+        if aligned + total > self.limit {
+            panic("arena out of memory")
+        }
+        self.bump = aligned + total
+        aligned as ptr[T]
+    }
+
+    /// Returns all memory to the start (without freeing).
+    pub fn reset(mut self) {
+        self.bump = self.base
+    }
+
+    /// Frees the entire arena.
+    pub fn destroy(mut self) {
+        @free(self.base)
+        self.base = null
+        self.bump = null
+        self.limit = null
+    }
+
+    /// Returns bytes remaining.
+    pub fn remaining(self) -> i64 {
+        self.limit - self.bump
+    }
+
+    /// Returns bytes used.
+    pub fn used(self) -> i64 {
+        self.bump - self.base
+    }
+
+    fn align_up(self, ptr: ptr[u8], align: i64) -> ptr[u8] {
+        let addr = ptr as i64
+        let aligned = (addr + align - 1) & !(align - 1)
+        aligned as ptr[u8]
+    }
+}
+
+// --------------------------------------------------------------------------
+// Box[T] — Heap-Allocated Owned Value
+// --------------------------------------------------------------------------
+
+/// A heap-allocated value with single ownership.
+pub struct Box[T] {
+    ptr: ptr[T],
+}
+
+impl[T] Box[T] {
+    /// Allocates a value on the heap.
+    pub fn new(value: T) -> Box[T] {
+        let p = @alloc(size_of[T]()) as ptr[T]
+        *p = value
+        Box { ptr: p }
+    }
+
+    /// Returns a reference to the contained value.
+    pub fn get(self) -> T { *self.ptr }
+
+    /// Sets the contained value.
+    pub fn set(mut self, value: T) { *self.ptr = value }
+
+    /// Frees the box.
+    pub fn drop(mut self) {
+        @free(self.ptr)
+        self.ptr = null
+    }
+}

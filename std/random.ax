@@ -1,0 +1,54 @@
+// AXIOM Standard Library — std::random
+//
+// Pseudo-random number generation (xoshiro256** algorithm).
+
+pub struct Rng {
+    state: [u64; 4],
+}
+
+impl Rng {
+    /// Create a new RNG seeded from system entropy.
+    pub fn new() -> Rng {
+        @compiler_intrinsic("rng_new_seeded")
+    }
+
+    /// Create a new RNG with a specific seed.
+    pub fn from_seed(seed: u64) -> Rng {
+        Rng { state: [seed, seed ^ 0xDEADBEEF, seed ^ 0xCAFEBABE, seed ^ 0x12345678] }
+    }
+
+    /// Generate a random u64.
+    pub fn next_u64(mut self) -> u64 {
+        @compiler_intrinsic("rng_next_u64")
+    }
+
+    /// Generate a random i64 in [min, max].
+    pub fn range_i64(mut self, min: i64, max: i64) -> i64 {
+        let n = self.next_u64()
+        let range = (max - min + 1) as u64
+        min + (n % range) as i64
+    }
+
+    /// Generate a random f64 in [0.0, 1.0).
+    pub fn next_f64(mut self) -> f64 {
+        let n = self.next_u64()
+        (n >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+
+    /// Generate a random bool.
+    pub fn next_bool(mut self) -> bool {
+        self.next_u64() & 1 == 1
+    }
+
+    /// Shuffle a Vec in place.
+    pub fn shuffle[T](mut self, vec: mut Vec[T]) {
+        let n = vec.len()
+        for i in (1..n).rev() {
+            let j = self.range_i64(0, i)
+            // swap vec[i] and vec[j]
+            let tmp = vec.get(i).unwrap()
+            vec.set(i, vec.get(j).unwrap())
+            vec.set(j, tmp)
+        }
+    }
+}

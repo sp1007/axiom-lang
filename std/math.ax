@@ -1,0 +1,110 @@
+// AXIOM Standard Library — std::math
+//
+// Mathematical constants and functions.
+
+/// Mathematical constants
+pub const PI:    f64 = 3.14159265358979323846
+pub const E:     f64 = 2.71828182845904523536
+pub const TAU:   f64 = 6.28318530717958647692
+pub const SQRT2: f64 = 1.41421356237309504880
+pub const LN2:   f64 = 0.69314718055994530942
+pub const LN10:  f64 = 2.30258509299404568402
+
+pub const INF:   f64 = @compiler_intrinsic("f64_inf")
+pub const NAN:   f64 = @compiler_intrinsic("f64_nan")
+
+// --- Extern libm wrappers (f64) ---
+
+pub extern fn sin(x: f64) -> f64
+pub extern fn cos(x: f64) -> f64
+pub extern fn tan(x: f64) -> f64
+pub extern fn asin(x: f64) -> f64
+pub extern fn acos(x: f64) -> f64
+pub extern fn atan(x: f64) -> f64
+pub extern fn atan2(y: f64, x: f64) -> f64
+pub extern fn exp(x: f64) -> f64
+pub extern fn log(x: f64) -> f64
+pub extern fn log2(x: f64) -> f64
+pub extern fn log10(x: f64) -> f64
+pub extern fn sqrt(x: f64) -> f64
+pub extern fn cbrt(x: f64) -> f64
+pub extern fn pow(base: f64, exp: f64) -> f64
+pub extern fn floor(x: f64) -> f64
+pub extern fn ceil(x: f64) -> f64
+pub extern fn round(x: f64) -> f64
+pub extern fn fmod(x: f64, y: f64) -> f64
+pub extern fn fabs(x: f64) -> f64
+
+// --- AXIOM-implemented functions ---
+
+/// Returns the absolute value.
+pub fn abs(x: i64) -> i64 {
+    if x < 0 { -x } else { x }
+}
+
+/// Returns the absolute value (i32).
+pub fn abs_i32(x: i32) -> i32 {
+    if x < 0 { -x } else { x }
+}
+
+/// Returns the minimum of two values.
+pub fn min[T: Ord](a: T, b: T) -> T {
+    if a <= b { a } else { b }
+}
+
+/// Returns the maximum of two values.
+pub fn max[T: Ord](a: T, b: T) -> T {
+    if a >= b { a } else { b }
+}
+
+/// Clamps a value to the range [lo, hi].
+pub fn clamp[T: Ord](x: T, lo: T, hi: T) -> T {
+    if x < lo { lo } else if x > hi { hi } else { x }
+}
+
+/// Integer power (i64).
+pub fn pow_i64(base: i64, exp: i64) -> i64 {
+    let mut result: i64 = 1
+    let mut b = base
+    let mut e = exp
+    while e > 0 {
+        if e % 2 == 1 {
+            result = result * b
+        }
+        b = b * b
+        e = e / 2
+    }
+    result
+}
+
+/// Greatest common divisor.
+pub fn gcd(a: i64, b: i64) -> i64 {
+    let mut x = abs(a)
+    let mut y = abs(b)
+    while y != 0 {
+        let t = y
+        y = x % y
+        x = t
+    }
+    x
+}
+
+/// Least common multiple.
+pub fn lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 { 0 } else { abs(a) / gcd(a, b) * abs(b) }
+}
+
+/// Check if a float is NaN.
+pub fn is_nan(x: f64) -> bool {
+    x != x
+}
+
+/// Check if a float is infinite.
+pub fn is_inf(x: f64) -> bool {
+    x == INF || x == -INF
+}
+
+/// Check if a float is finite (not NaN, not Inf).
+pub fn is_finite(x: f64) -> bool {
+    !is_nan(x) && !is_inf(x)
+}

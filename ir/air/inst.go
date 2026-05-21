@@ -34,46 +34,5 @@ var _ = [1]struct{}{}[16-unsafe.Sizeof(AirInst{})]
 var _ = [1]struct{}{}[unsafe.Sizeof(AirInst{})-16]
 
 // Opcode is the instruction discriminant.
+// Opcodes use class-prefixed hex values. See opcodes.go for definitions.
 type Opcode uint16
-
-const (
-	OpcodeNop        Opcode = iota // no operation
-	OpcodeConst                    // load constant: Dest = immediate value stored in Src1
-	OpcodeAdd                      // Dest = Src1 + Src2
-	OpcodeSub                      // Dest = Src1 - Src2
-	OpcodeMul                      // Dest = Src1 * Src2
-	OpcodeDiv                      // Dest = Src1 / Src2
-	OpcodeMod                      // Dest = Src1 % Src2
-	OpcodeEq                       // Dest = Src1 == Src2
-	OpcodeNe                       // Dest = Src1 != Src2
-	OpcodeLt                       // Dest = Src1 < Src2
-	OpcodeLe                       // Dest = Src1 <= Src2
-	OpcodeGt                       // Dest = Src1 > Src2
-	OpcodeGe                       // Dest = Src1 >= Src2
-	OpcodeAnd                      // Dest = Src1 & Src2 (bitwise)
-	OpcodeOr                       // Dest = Src1 | Src2 (bitwise)
-	OpcodeXor                      // Dest = Src1 ^ Src2
-	OpcodeShl                      // Dest = Src1 << Src2
-	OpcodeShr                      // Dest = Src1 >> Src2
-	OpcodeNeg                      // Dest = -Src1
-	OpcodeNot                      // Dest = ~Src1 (bitwise not)
-	OpcodeLoad                     // Dest = *Src1
-	OpcodeStore                    // *Dest = Src1
-	OpcodeAlloc                    // Dest = alloc(TypeID)
-	OpcodeDealloc                  // dealloc(Src1)
-	OpcodeCall                     // Dest = call Src1(args via Extras)
-	OpcodeReturn                   // return Src1
-	OpcodeJump                     // jump to block Src1
-	OpcodeBranch                   // if Src1 jump Src2 else Dest
-	OpcodePhi                      // SSA phi node
-	OpcodeGetField                 // Dest = Src1.field[Src2]
-	OpcodeSetField                 // Src1.field[Src2] = Dest
-	OpcodeIndex                    // Dest = Src1[Src2]
-	OpcodeSlice                    // Dest = Src1[Src2:Dest] (uses ExtraIdx for end)
-	OpcodeCast                     // Dest = cast(Src1) to TypeID
-	OpcodeSpawn                    // spawn actor with fn Src1
-	OpcodeAwait                    // Dest = await Src1
-	OpcodeDestroyVal               // destroy owned value Src1
-
-	OpcodeCount // sentinel
-)

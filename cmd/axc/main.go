@@ -44,10 +44,15 @@ func main() {
 
 	case "check":
 		runCheck(os.Args[2:])
-		
+
+	case "emit-c":
+		os.Exit(runEmitC(os.Args[2:]))
+
 	case "build":
-		fmt.Fprintln(os.Stderr, "axc: build command not yet implemented")
-		os.Exit(1)
+		os.Exit(runBuild(os.Args[2:]))
+
+	case "dump-air":
+		os.Exit(runDumpAIR(os.Args[2:]))
 
 	case "version":
 		fmt.Println("axc 0.0.1-dev (AXIOM compiler)")
@@ -67,13 +72,24 @@ func printUsage() {
 
 commands:
   build         Compile an AXIOM source file
+  emit-c        Emit C11 code from an AXIOM source file
   dump-tokens   Tokenize a file and print JSON token stream
   dump-ast      Parse a file and print the AST
+  dump-air      Lower to AIR and print text representation
+  check         Type-check an AXIOM source file
   version       Print compiler version
   help          Show this help message
+
+emit-c flags:
+  --output, -o  Write C output to a file (default: stdout)
+
+dump-air flags:
+  --verify      Run AIR verifier (default)
+  --no-verify   Skip AIR verification
 
 dump-tokens flags:
   --compact     One-line JSON output
   --no-text     Omit token text field
   --stats       Print token count summary`)
 }
+

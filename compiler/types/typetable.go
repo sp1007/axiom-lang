@@ -3,23 +3,25 @@ package types
 // TypeTable is the central registry of all types in a compilation unit.
 // It assigns a unique TypeID to every structural type and stores their metadata.
 type TypeTable struct {
-	entries   []TypeEntry
-	structs   []StructType
-	funcs     []FuncType
-	sumtypes  []SumType
-	templates []GenericTemplate
-	interfaces []InterfaceType
+	entries      []TypeEntry
+	structs      []StructType
+	funcs        []FuncType
+	sumtypes     []SumType
+	templates    []GenericTemplate
+	interfaces   []InterfaceType
+	genericInsts []GenericInstInfo
 }
 
 // NewTypeTable creates a new TypeTable pre-populated with primitive types.
 func NewTypeTable() *TypeTable {
 	tt := &TypeTable{
-		entries:   make([]TypeEntry, 0, 256),
-		structs:   make([]StructType, 0, 64),
-		funcs:     make([]FuncType, 0, 64),
-		sumtypes:  make([]SumType, 0, 32),
-		templates: make([]GenericTemplate, 0, 16),
-		interfaces: make([]InterfaceType, 0, 16),
+		entries:      make([]TypeEntry, 0, 256),
+		structs:      make([]StructType, 0, 64),
+		funcs:        make([]FuncType, 0, 64),
+		sumtypes:     make([]SumType, 0, 32),
+		templates:    make([]GenericTemplate, 0, 16),
+		interfaces:   make([]InterfaceType, 0, 16),
+		genericInsts: make([]GenericInstInfo, 0, 32),
 	}
 
 	// 0: Unknown sentinel
@@ -325,4 +327,86 @@ func (tt *TypeTable) CommonType(a, b TypeID) (TypeID, bool) {
 
 	// Otherwise, incompatible (e.g. signed + unsigned, numeric + string)
 	return TypeUnknown, false
+}
+
+// RegisterPointer registers a pointer-to-T type and returns its TypeID.
+// Extra stores the inner TypeID of the pointee.
+func (tt *TypeTable) RegisterPointer(innerTypeID TypeID) TypeID {
+	id := TypeID(len(tt.entries))
+	tt.entries = append(tt.entries, TypeEntry{
+		Kind:  KindPointer,
+		Size:  8, // pointer size (64-bit)
+		Align: 8,
+		Extra: uint32(innerTypeID),
+	})
+	return id
+}
+
+// RegisterSlice registers a slice-of-T type and returns its TypeID.
+// Extra stores the inner TypeID of the element.
+func (tt *TypeTable) RegisterSlice(elemTypeID TypeID) TypeID {
+	id := TypeID(len(tt.entries))
+	tt.entries = append(tt.entries, TypeEntry{
+		Kind:  KindSlice,
+		Size:  24, // ptr + len + cap (3 x 8)
+		Align: 8,
+		Extra: uint32(elemTypeID),
+	})
+	return id
+}
+
+// RegisterGenericInst registers a monomorphized generic instantiation (e.g., Box[i32]).
+// nameID is the interned name of the template (e.g., "Box"), typeArgs are the concrete type arguments.
+// The GenericInstInfo is stored in a separate slice; Extra indexes into it.
+func (tt *TypeTable) RegisterGenericInst(nameID uint32, typeArgs []TypeID) TypeID {
+	instIdx := uint32(len(tt.genericInsts))
+	tt.genericInsts = append(tt.genericInsts, GenericInstInfo{
+		TypeArgs: typeArgs,
+	})
+
+	id := TypeID(len(tt.entries))
+	tt.entries = append(tt.entries, TypeEntry{
+		Kind:   KindGenericInst,
+		NameID: nameID,
+		Size:   0, // depends on instantiation
+		Align:  0,
+		Extra:  instIdx,
+	})
+
+	return id
+}
+
+// GenericInstInfo holds the type arguments for a concrete generic instantiation.
+type GenericInstInfo struct {
+	TypeArgs []TypeID
+}
+
+// GenericInstArgs returns the type arguments for a generic instantiation TypeID.
+// Panics if the type is not a KindGenericInst.
+func (tt *TypeTable) GenericInstArgs(id TypeID) []TypeID {
+	entry := tt.Entry(id)
+	if entry.Kind != KindGenericInst {
+		panic("TypeTable: TypeID is not a generic instantiation")
+	}
+	return tt.genericInsts[entry.Extra].TypeArgs
+}
+
+// PointerElem returns the element TypeID of a pointer type.
+// Panics if the type is not KindPointer.
+func (tt *TypeTable) PointerElem(id TypeID) TypeID {
+	entry := tt.Entry(id)
+	if entry.Kind != KindPointer {
+		panic("TypeTable: TypeID is not a pointer")
+	}
+	return TypeID(entry.Extra)
+}
+
+// SliceElem returns the element TypeID of a slice type.
+// Panics if the type is not KindSlice.
+func (tt *TypeTable) SliceElem(id TypeID) TypeID {
+	entry := tt.Entry(id)
+	if entry.Kind != KindSlice {
+		panic("TypeTable: TypeID is not a slice")
+	}
+	return TypeID(entry.Extra)
 }

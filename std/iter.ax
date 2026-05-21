@@ -1,0 +1,206 @@
+// AXIOM Standard Library — std::iter
+//
+// Iterator protocol and lazy adapters.
+
+/// The core iterator interface.
+pub interface Iterator {
+    type Item
+
+    /// Returns the next element, or None when exhausted.
+    fn next(mut self) -> Option[Item]
+}
+
+// --------------------------------------------------------------------------
+// Iterator Adapters (lazy, zero-allocation)
+// --------------------------------------------------------------------------
+
+/// Transforms each element.
+pub struct Map[I: Iterator, F] {
+    iter: I,
+    f: F,
+}
+
+impl[I: Iterator, U, F: fn(I.Item) -> U] Iterator for Map[I, F] {
+    type Item = U
+    fn next(mut self) -> Option[U] {
+        self.iter.next().map(self.f)
+    }
+}
+
+/// Filters elements by predicate.
+pub struct Filter[I: Iterator, F] {
+    iter: I,
+    pred: F,
+}
+
+impl[I: Iterator, F: fn(I.Item) -> bool] Iterator for Filter[I, F] {
+    type Item = I.Item
+    fn next(mut self) -> Option[I.Item] {
+        loop {
+            match self.iter.next() {
+                Some(v) => if self.pred(v) { return Some(v) },
+                None    => return None,
+            }
+        }
+    }
+}
+
+/// Takes the first N elements.
+pub struct Take[I: Iterator] {
+    iter: I,
+    remaining: i64,
+}
+
+impl[I: Iterator] Iterator for Take[I] {
+    type Item = I.Item
+    fn next(mut self) -> Option[I.Item] {
+        if self.remaining <= 0 {
+            None
+        } else {
+            self.remaining = self.remaining - 1
+            self.iter.next()
+        }
+    }
+}
+
+/// Skips the first N elements.
+pub struct Skip[I: Iterator] {
+    iter: I,
+    remaining: i64,
+}
+
+impl[I: Iterator] Iterator for Skip[I] {
+    type Item = I.Item
+    fn next(mut self) -> Option[I.Item] {
+        while self.remaining > 0 {
+            self.remaining = self.remaining - 1
+            self.iter.next()
+        }
+        self.iter.next()
+    }
+}
+
+/// Adds index to each element.
+pub struct Enumerate[I: Iterator] {
+    iter: I,
+    index: i64,
+}
+
+impl[I: Iterator] Iterator for Enumerate[I] {
+    type Item = (i64, I.Item)
+    fn next(mut self) -> Option[(i64, I.Item)] {
+        match self.iter.next() {
+            Some(v) => {
+                let idx = self.index
+                self.index = self.index + 1
+                Some((idx, v))
+            },
+            None => None,
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Range Iterator
+// --------------------------------------------------------------------------
+
+/// A range of integers [start, end).
+pub struct Range {
+    current: i64,
+    end: i64,
+}
+
+impl Iterator for Range {
+    type Item = i64
+    fn next(mut self) -> Option[i64] {
+        if self.current < self.end {
+            let v = self.current
+            self.current = self.current + 1
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+/// Creates a range [start, end).
+pub fn range(start: i64, end: i64) -> Range {
+    Range { current: start, end: end }
+}
+
+// --------------------------------------------------------------------------
+// Terminal Operations (via extension methods)
+// --------------------------------------------------------------------------
+
+/// Extension methods for any Iterator.
+impl[I: Iterator] I {
+    /// Collects all elements into a Vec.
+    pub fn collect(mut self) -> Vec[I.Item] {
+        let mut result = Vec.new()
+        loop {
+            match self.next() {
+                Some(v) => result.push(v),
+                None    => break,
+            }
+        }
+        result
+    }
+
+    /// Counts the number of elements.
+    pub fn count(mut self) -> i64 {
+        let mut n: i64 = 0
+        while self.next().is_some() { n = n + 1 }
+        n
+    }
+
+    /// Applies a function to each element.
+    pub fn for_each(mut self, f: fn(I.Item)) {
+        loop {
+            match self.next() {
+                Some(v) => f(v),
+                None    => break,
+            }
+        }
+    }
+
+    /// Returns true if any element satisfies the predicate.
+    pub fn any(mut self, pred: fn(I.Item) -> bool) -> bool {
+        loop {
+            match self.next() {
+                Some(v) => if pred(v) { return true },
+                None    => return false,
+            }
+        }
+    }
+
+    /// Returns true if all elements satisfy the predicate.
+    pub fn all(mut self, pred: fn(I.Item) -> bool) -> bool {
+        loop {
+            match self.next() {
+                Some(v) => if !pred(v) { return false },
+                None    => return true,
+            }
+        }
+    }
+
+    /// Finds the first element satisfying the predicate.
+    pub fn find(mut self, pred: fn(I.Item) -> bool) -> Option[I.Item] {
+        loop {
+            match self.next() {
+                Some(v) => if pred(v) { return Some(v) },
+                None    => return None,
+            }
+        }
+    }
+
+    /// Reduces elements using a combining function.
+    pub fn fold[A](mut self, init: A, f: fn(A, I.Item) -> A) -> A {
+        let mut acc = init
+        loop {
+            match self.next() {
+                Some(v) => acc = f(acc, v),
+                None    => return acc,
+            }
+        }
+    }
+}

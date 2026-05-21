@@ -1,0 +1,97 @@
+// AXIOM Standard Library — std::sync
+//
+// Synchronization primitives.
+
+/// Mutual exclusion lock.
+pub struct Mutex[T] {
+    value: T,
+    locked: bool,
+}
+
+impl[T] Mutex[T] {
+    pub fn new(value: T) -> Mutex[T] {
+        Mutex { value: value, locked: false }
+    }
+
+    pub fn lock(mut self) -> MutexGuard[T] {
+        @compiler_intrinsic("mutex_lock")
+    }
+
+    pub fn try_lock(mut self) -> Option[MutexGuard[T]] {
+        @compiler_intrinsic("mutex_try_lock")
+    }
+}
+
+pub struct MutexGuard[T] {
+    mutex: ptr[Mutex[T]],
+}
+
+impl[T] MutexGuard[T] {
+    pub fn get(self) -> T { @compiler_intrinsic("guard_get") }
+    pub fn set(mut self, value: T) { @compiler_intrinsic("guard_set") }
+    // Guard automatically unlocks when dropped
+}
+
+/// Read-write lock.
+pub struct RwLock[T] {
+    value: T,
+    readers: i32,
+    writer: bool,
+}
+
+impl[T] RwLock[T] {
+    pub fn new(value: T) -> RwLock[T] {
+        RwLock { value: value, readers: 0, writer: false }
+    }
+
+    pub fn read(self) -> ReadGuard[T] { @compiler_intrinsic("rwlock_read") }
+    pub fn write(mut self) -> WriteGuard[T] { @compiler_intrinsic("rwlock_write") }
+}
+
+pub struct ReadGuard[T] { lock: ptr[RwLock[T]] }
+pub struct WriteGuard[T] { lock: ptr[RwLock[T]] }
+
+/// Atomic value.
+pub struct Atomic[T] {
+    value: T,
+}
+
+impl[T] Atomic[T] {
+    pub fn new(value: T) -> Atomic[T] { Atomic { value: value } }
+    pub fn load(self) -> T { @compiler_intrinsic("atomic_load") }
+    pub fn store(mut self, value: T) { @compiler_intrinsic("atomic_store") }
+    pub fn swap(mut self, value: T) -> T { @compiler_intrinsic("atomic_swap") }
+    pub fn compare_and_swap(mut self, expected: T, desired: T) -> bool {
+        @compiler_intrinsic("atomic_cas")
+    }
+}
+
+/// MPSC Channel.
+pub struct Channel[T] {
+    // internal implementation
+}
+
+impl[T] Channel[T] {
+    pub fn new() -> (Sender[T], Receiver[T]) {
+        @compiler_intrinsic("channel_new")
+    }
+}
+
+pub struct Sender[T] { id: i64 }
+pub struct Receiver[T] { id: i64 }
+
+impl[T] Sender[T] {
+    pub fn send(self, value: T) -> Result[void, str] {
+        @compiler_intrinsic("channel_send")
+    }
+}
+
+impl[T] Receiver[T] {
+    pub fn recv(mut self) -> Result[T, str] {
+        @compiler_intrinsic("channel_recv")
+    }
+
+    pub fn try_recv(mut self) -> Option[T] {
+        @compiler_intrinsic("channel_try_recv")
+    }
+}

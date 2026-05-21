@@ -1,0 +1,98 @@
+// AXIOM Standard Library — std::net
+//
+// Networking: TCP, UDP, IP addresses.
+
+pub enum IpAddr {
+    V4(u8, u8, u8, u8),
+    V6([u8; 16]),
+}
+
+impl IpAddr {
+    pub fn localhost() -> IpAddr { IpAddr.V4(127, 0, 0, 1) }
+    pub fn any() -> IpAddr { IpAddr.V4(0, 0, 0, 0) }
+}
+
+pub struct SocketAddr {
+    ip: IpAddr,
+    port: u16,
+}
+
+impl SocketAddr {
+    pub fn new(ip: IpAddr, port: u16) -> SocketAddr {
+        SocketAddr { ip: ip, port: port }
+    }
+}
+
+// --------------------------------------------------------------------------
+// TCP
+// --------------------------------------------------------------------------
+
+pub struct TcpStream {
+    fd: i64,
+}
+
+impl TcpStream {
+    pub async fn connect(addr: SocketAddr) -> Result[TcpStream, str] {
+        @compiler_intrinsic("tcp_connect")
+    }
+
+    pub async fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
+        @compiler_intrinsic("tcp_read")
+    }
+
+    pub async fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
+        @compiler_intrinsic("tcp_write")
+    }
+
+    pub fn close(mut self) -> Result[void, str] {
+        @compiler_intrinsic("tcp_close")
+    }
+
+    pub fn peer_addr(self) -> SocketAddr {
+        @compiler_intrinsic("tcp_peer_addr")
+    }
+}
+
+pub struct TcpListener {
+    fd: i64,
+}
+
+impl TcpListener {
+    pub fn bind(addr: SocketAddr) -> Result[TcpListener, str] {
+        @compiler_intrinsic("tcp_bind")
+    }
+
+    pub async fn accept(self) -> Result[TcpStream, str] {
+        @compiler_intrinsic("tcp_accept")
+    }
+
+    pub fn local_addr(self) -> SocketAddr {
+        @compiler_intrinsic("tcp_local_addr")
+    }
+}
+
+// --------------------------------------------------------------------------
+// UDP
+// --------------------------------------------------------------------------
+
+pub struct UdpSocket {
+    fd: i64,
+}
+
+impl UdpSocket {
+    pub fn bind(addr: SocketAddr) -> Result[UdpSocket, str] {
+        @compiler_intrinsic("udp_bind")
+    }
+
+    pub async fn send_to(self, buf: ptr[u8], count: i64, target: SocketAddr) -> Result[i64, str] {
+        @compiler_intrinsic("udp_send_to")
+    }
+
+    pub async fn recv_from(self, buf: ptr[u8], count: i64) -> Result[(i64, SocketAddr), str] {
+        @compiler_intrinsic("udp_recv_from")
+    }
+
+    pub fn close(mut self) -> Result[void, str] {
+        @compiler_intrinsic("udp_close")
+    }
+}

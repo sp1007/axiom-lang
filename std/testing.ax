@@ -1,0 +1,42 @@
+// AXIOM Standard Library — std::testing
+//
+// Test assertions and test runner infrastructure.
+// Functions in this module are available via `use std::testing::*`
+
+/// Assert that a condition is true. Panics with message if false.
+pub fn assert(condition: bool, message: str = "assertion failed") {
+    if !condition {
+        panic(message)
+    }
+}
+
+/// Assert that two values are equal.
+pub fn assert_eq[T: Eq + Display](actual: T, expected: T) {
+    if actual != expected {
+        panic(format("assertion failed: {} != {}", actual, expected))
+    }
+}
+
+/// Assert that two values are not equal.
+pub fn assert_ne[T: Eq + Display](actual: T, expected: T) {
+    if actual == expected {
+        panic(format("assertion failed: {} == {}", actual, expected))
+    }
+}
+
+/// Assert that a value is true.
+pub fn assert_true(value: bool) {
+    assert(value, "expected true, got false")
+}
+
+/// Assert that a value is false.
+pub fn assert_false(value: bool) {
+    assert(!value, "expected false, got true")
+}
+
+/// Assert that a block of code panics.
+pub fn assert_panics(f: fn() -> void) {
+    // Implementation uses setjmp/longjmp internally
+    // The compiler generates special code for this
+    @compiler_intrinsic("assert_panics")
+}

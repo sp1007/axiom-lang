@@ -1,0 +1,58 @@
+// AXIOM Standard Library — std::cli
+//
+// Command-line argument parsing (builder pattern).
+
+pub struct Arg {
+    name: str,
+    short: Option[str],
+    long: Option[str],
+    help: str,
+    required: bool,
+    default_value: Option[str],
+    takes_value: bool,
+}
+
+impl Arg {
+    pub fn new(name: str) -> Arg {
+        Arg { name: name, short: None, long: None, help: "",
+              required: false, default_value: None, takes_value: false }
+    }
+    pub fn short(mut self, s: str) -> Arg { self.short = Some(s); self }
+    pub fn long(mut self, l: str) -> Arg { self.long = Some(l); self }
+    pub fn help(mut self, h: str) -> Arg { self.help = h; self }
+    pub fn required(mut self) -> Arg { self.required = true; self }
+    pub fn default(mut self, v: str) -> Arg { self.default_value = Some(v); self }
+    pub fn takes_value(mut self) -> Arg { self.takes_value = true; self }
+}
+
+pub struct App {
+    name: str,
+    version: str,
+    about: str,
+    args: Vec[Arg],
+}
+
+impl App {
+    pub fn new(name: str) -> App {
+        App { name: name, version: "0.1.0", about: "", args: Vec.new() }
+    }
+    pub fn version(mut self, v: str) -> App { self.version = v; self }
+    pub fn about(mut self, a: str) -> App { self.about = a; self }
+    pub fn arg(mut self, a: Arg) -> App { self.args.push(a); self }
+
+    pub fn parse(self) -> Matches {
+        @compiler_intrinsic("cli_parse")
+    }
+}
+
+pub struct Matches {
+    values: HashMap[str, str],
+    flags: HashSet[str],
+    positional: Vec[str],
+}
+
+impl Matches {
+    pub fn value_of(self, name: str) -> Option[str] { self.values.get(name) }
+    pub fn is_present(self, name: str) -> bool { self.flags.contains(name) }
+    pub fn positional_args(self) -> Vec[str] { self.positional }
+}

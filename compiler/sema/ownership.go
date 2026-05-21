@@ -190,7 +190,16 @@ func (oc *OwnershipChecker) checkAssign(nodeIdx uint32) {
 		symIdx := lhsNode.Payload
 		if symIdx != 0 && int(symIdx) < len(oc.symtable.Symbols) {
 			sym := oc.symtable.SymbolAt(symIdx)
-			if sym.Kind == SymVar && sym.Flags&SymFlagMut == 0 {
+			// Check both symbol-level mut flag AND AST-level FlagIsMut.
+			// The name resolver may not propagate FlagIsMut to SymFlagMut,
+			// so we also check the declaring VarDecl's AST flags.
+			isMut := sym.Flags&SymFlagMut != 0
+			if !isMut {
+				// Search for the VarDecl node that declared this symbol
+				// and check its AST flags
+				isMut = oc.isDeclaredMut(symIdx)
+			}
+			if sym.Kind == SymVar && !isMut {
 				name := oc.symName(symIdx)
 				oc.errorf(nodeIdx, 4002, "cannot assign to immutable variable '%s'", name)
 			}
@@ -295,4 +304,17 @@ func (oc *OwnershipChecker) symName(symIdx uint32) string {
 		return string(name)
 	}
 	return fmt.Sprintf("sym%d", symIdx)
+}
+
+// isDeclaredMut checks whether the VarDecl node for the given symbol
+// has FlagIsMut set in the AST. This is needed because the name resolver
+// may not propagate mut flags to the symbol table.
+func (oc *OwnershipChecker) isDeclaredMut(symIdx uint32) bool {
+	for i := range oc.ast.Nodes {
+		node := &oc.ast.Nodes[i]
+		if node.Kind == ast.NodeVarDecl && node.Payload == symIdx {
+			return node.Flags&ast.FlagIsMut != 0
+		}
+	}
+	return false
 }

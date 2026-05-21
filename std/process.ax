@@ -1,0 +1,92 @@
+// AXIOM Standard Library — std::process
+//
+// Process spawning, environment, CLI args.
+
+pub struct Command {
+    program: str,
+    args: Vec[str],
+    env: HashMap[str, str],
+    cwd: Option[str],
+}
+
+impl Command {
+    pub fn new(program: str) -> Command {
+        Command {
+            program: program,
+            args: Vec.new(),
+            env: HashMap.new(),
+            cwd: None,
+        }
+    }
+
+    pub fn arg(mut self, arg: str) -> Command {
+        self.args.push(arg)
+        self
+    }
+
+    pub fn env(mut self, key: str, value: str) -> Command {
+        self.env.insert(key, value)
+        self
+    }
+
+    pub fn cwd(mut self, dir: str) -> Command {
+        self.cwd = Some(dir)
+        self
+    }
+
+    pub fn spawn(self) -> Result[Child, str] {
+        @compiler_intrinsic("process_spawn")
+    }
+
+    pub fn output(self) -> Result[Output, str] {
+        @compiler_intrinsic("process_output")
+    }
+}
+
+pub struct Child {
+    pid: i64,
+}
+
+impl Child {
+    pub fn wait(self) -> Result[ExitStatus, str] {
+        @compiler_intrinsic("process_wait")
+    }
+    pub fn kill(self) -> Result[void, str] {
+        @compiler_intrinsic("process_kill")
+    }
+}
+
+pub struct ExitStatus {
+    code: i32,
+}
+
+impl ExitStatus {
+    pub fn success(self) -> bool { self.code == 0 }
+    pub fn code(self) -> i32 { self.code }
+}
+
+pub struct Output {
+    status: ExitStatus,
+    stdout: str,
+    stderr: str,
+}
+
+/// Exit the current process.
+pub fn exit(code: i32) {
+    @compiler_intrinsic("process_exit")
+}
+
+/// Abort the current process.
+pub fn abort() {
+    @compiler_intrinsic("process_abort")
+}
+
+/// Get environment variable.
+pub fn env_var(key: str) -> Option[str] {
+    @compiler_intrinsic("env_var")
+}
+
+/// Get command line arguments.
+pub fn args() -> Vec[str] {
+    @compiler_intrinsic("process_args")
+}

@@ -1,0 +1,68 @@
+// AXIOM Standard Library — std::io
+//
+// Input/Output interfaces and File operations.
+
+/// A readable byte stream.
+pub interface Reader {
+    fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str]
+}
+
+/// A writable byte stream.
+pub interface Writer {
+    fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str]
+    fn flush(mut self) -> Result[void, str]
+}
+
+/// File handle.
+pub struct File {
+    handle: i64,
+    path: str,
+    mode: i32,
+}
+
+impl File {
+    pub fn open(path: str) -> Result[File, str] {
+        @compiler_intrinsic("file_open")
+    }
+
+    pub fn create(path: str) -> Result[File, str] {
+        @compiler_intrinsic("file_create")
+    }
+
+    pub fn close(mut self) -> Result[void, str] {
+        @compiler_intrinsic("file_close")
+    }
+
+    pub fn read_all(self) -> Result[str, str] {
+        @compiler_intrinsic("file_read_all")
+    }
+
+    pub fn write_all(mut self, data: str) -> Result[void, str] {
+        @compiler_intrinsic("file_write_all")
+    }
+}
+
+impl Reader for File {
+    fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
+        @compiler_intrinsic("file_read")
+    }
+}
+
+impl Writer for File {
+    fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
+        @compiler_intrinsic("file_write")
+    }
+    fn flush(mut self) -> Result[void, str] {
+        @compiler_intrinsic("file_flush")
+    }
+}
+
+/// Standard input/output/error.
+pub fn stdin()  -> File { @compiler_intrinsic("stdin") }
+pub fn stdout() -> File { @compiler_intrinsic("stdout") }
+pub fn stderr() -> File { @compiler_intrinsic("stderr") }
+
+/// Read a line from stdin.
+pub fn read_line() -> str {
+    @compiler_intrinsic("read_line")
+}

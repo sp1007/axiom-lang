@@ -1,0 +1,87 @@
+// AXIOM Standard Library — std::log
+//
+// Structured logging with levels and sinks.
+
+pub enum LogLevel {
+    Trace = 0,
+    Debug = 1,
+    Info  = 2,
+    Warn  = 3,
+    Error = 4,
+    Fatal = 5,
+}
+
+impl LogLevel {
+    pub fn name(self) -> str {
+        match self {
+            Trace => "TRACE",
+            Debug => "DEBUG",
+            Info  => "INFO",
+            Warn  => "WARN",
+            Error => "ERROR",
+            Fatal => "FATAL",
+        }
+    }
+}
+
+/// A log record.
+pub struct LogRecord {
+    level: LogLevel,
+    message: str,
+    timestamp: u64,     // nanoseconds since epoch
+    module: str,        // source module
+    fields: Vec[(str, str)],  // structured key-value pairs
+}
+
+/// Log sink interface.
+pub interface LogSink {
+    fn write(self, record: LogRecord)
+    fn flush(self)
+}
+
+/// Logger with level filtering.
+pub struct Logger {
+    level: LogLevel,
+    sink: Box[LogSink],
+    fields: Vec[(str, str)],
+}
+
+impl Logger {
+    pub fn new(level: LogLevel, sink: Box[LogSink]) -> Logger {
+        Logger { level: level, sink: sink, fields: Vec.new() }
+    }
+
+    pub fn with_field(mut self, key: str, value: str) -> Logger {
+        self.fields.push((key, value))
+        self
+    }
+
+    pub fn trace(self, msg: str) { self.log(LogLevel.Trace, msg) }
+    pub fn debug(self, msg: str) { self.log(LogLevel.Debug, msg) }
+    pub fn info(self, msg: str)  { self.log(LogLevel.Info, msg) }
+    pub fn warn(self, msg: str)  { self.log(LogLevel.Warn, msg) }
+    pub fn error(self, msg: str) { self.log(LogLevel.Error, msg) }
+    pub fn fatal(self, msg: str) { self.log(LogLevel.Fatal, msg) }
+
+    fn log(self, level: LogLevel, msg: str) {
+        if (level as i32) < (self.level as i32) { return }
+        let record = LogRecord {
+            level: level,
+            message: msg,
+            timestamp: @compiler_intrinsic("monotonic_now_ns"),
+            module: "",
+            fields: self.fields,
+        }
+        self.sink.write(record)
+    }
+}
+
+/// stderr sink (default).
+pub struct StderrSink {}
+
+impl LogSink for StderrSink {
+    fn write(self, record: LogRecord) {
+        eprintln("[{}] {}", record.level.name(), record.message)
+    }
+    fn flush(self) {}
+}

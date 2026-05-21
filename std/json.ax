@@ -1,0 +1,57 @@
+// AXIOM Standard Library — std::json
+//
+// JSON serialization and deserialization.
+
+/// JSON value (dynamic).
+pub enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Str(str),
+    Array(Vec[JsonValue]),
+    Object(HashMap[str, JsonValue]),
+}
+
+impl JsonValue {
+    pub fn is_null(self) -> bool { match self { Null => true, _ => false } }
+    pub fn is_bool(self) -> bool { match self { Bool(_) => true, _ => false } }
+    pub fn is_number(self) -> bool { match self { Number(_) => true, _ => false } }
+    pub fn is_str(self) -> bool { match self { Str(_) => true, _ => false } }
+    pub fn is_array(self) -> bool { match self { Array(_) => true, _ => false } }
+    pub fn is_object(self) -> bool { match self { Object(_) => true, _ => false } }
+
+    pub fn as_bool(self) -> Option[bool] {
+        match self { Bool(v) => Some(v), _ => None }
+    }
+    pub fn as_number(self) -> Option[f64] {
+        match self { Number(v) => Some(v), _ => None }
+    }
+    pub fn as_str(self) -> Option[str] {
+        match self { Str(v) => Some(v), _ => None }
+    }
+}
+
+/// Parse a JSON string into a JsonValue.
+pub fn parse(input: str) -> Result[JsonValue, str] {
+    @compiler_intrinsic("json_parse")
+}
+
+/// Serialize a JsonValue to a compact JSON string.
+pub fn stringify(value: JsonValue) -> str {
+    @compiler_intrinsic("json_stringify")
+}
+
+/// Serialize a JsonValue to a pretty-printed JSON string.
+pub fn stringify_pretty(value: JsonValue, indent: i64) -> str {
+    @compiler_intrinsic("json_stringify_pretty")
+}
+
+/// Interface for types that can be encoded to JSON.
+pub interface JsonEncode {
+    fn to_json(self) -> JsonValue
+}
+
+/// Interface for types that can be decoded from JSON.
+pub interface JsonDecode {
+    fn from_json(value: JsonValue) -> Result[Self, str]
+}

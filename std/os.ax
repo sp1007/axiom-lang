@@ -1,0 +1,118 @@
+// AXIOM Standard Library — std::os
+//
+// OS abstraction: paths, filesystem, signals, platform detection.
+
+// --------------------------------------------------------------------------
+// Platform Constants (set at compile time)
+// --------------------------------------------------------------------------
+
+pub const IS_LINUX:   bool = @compiler_intrinsic("is_linux")
+pub const IS_MACOS:   bool = @compiler_intrinsic("is_macos")
+pub const IS_WINDOWS: bool = @compiler_intrinsic("is_windows")
+pub const OS_NAME:    str  = @compiler_intrinsic("os_name")
+pub const ARCH_NAME:  str  = @compiler_intrinsic("arch_name")
+pub const PATH_SEP:   str  = @compiler_intrinsic("path_separator")
+
+// --------------------------------------------------------------------------
+// PathBuf — Platform-aware path manipulation
+// --------------------------------------------------------------------------
+
+pub struct PathBuf {
+    inner: str,
+}
+
+impl PathBuf {
+    pub fn new(s: str) -> PathBuf { PathBuf { inner: s } }
+
+    pub fn join(self, component: str) -> PathBuf {
+        PathBuf { inner: self.inner + PATH_SEP + component }
+    }
+
+    pub fn parent(self) -> Option[PathBuf] {
+        @compiler_intrinsic("path_parent")
+    }
+
+    pub fn file_name(self) -> Option[str] {
+        @compiler_intrinsic("path_file_name")
+    }
+
+    pub fn extension(self) -> Option[str] {
+        @compiler_intrinsic("path_extension")
+    }
+
+    pub fn with_extension(self, ext: str) -> PathBuf {
+        @compiler_intrinsic("path_with_extension")
+    }
+
+    pub fn is_absolute(self) -> bool {
+        @compiler_intrinsic("path_is_absolute")
+    }
+
+    pub fn to_str(self) -> str { self.inner }
+}
+
+// --------------------------------------------------------------------------
+// Filesystem Operations
+// --------------------------------------------------------------------------
+
+pub struct FileMetadata {
+    size: u64,
+    modified: u64,     // nanoseconds since epoch
+    created: u64,
+    is_file: bool,
+    is_dir: bool,
+    is_symlink: bool,
+    mode: u32,         // Unix permissions
+}
+
+pub fn metadata(path: str) -> Result[FileMetadata, str] {
+    @compiler_intrinsic("fs_metadata")
+}
+
+pub fn exists(path: str) -> bool {
+    metadata(path).is_ok()
+}
+
+pub fn create_dir(path: str) -> Result[void, str] {
+    @compiler_intrinsic("fs_create_dir")
+}
+
+pub fn create_dir_all(path: str) -> Result[void, str] {
+    @compiler_intrinsic("fs_create_dir_all")
+}
+
+pub fn remove_file(path: str) -> Result[void, str] {
+    @compiler_intrinsic("fs_remove_file")
+}
+
+pub fn remove_dir(path: str) -> Result[void, str] {
+    @compiler_intrinsic("fs_remove_dir")
+}
+
+pub fn rename(from: str, to: str) -> Result[void, str] {
+    @compiler_intrinsic("fs_rename")
+}
+
+pub fn copy(from: str, to: str) -> Result[u64, str] {
+    @compiler_intrinsic("fs_copy")
+}
+
+pub fn temp_dir() -> PathBuf {
+    @compiler_intrinsic("fs_temp_dir")
+}
+
+// --------------------------------------------------------------------------
+// Signals
+// --------------------------------------------------------------------------
+
+pub enum Signal {
+    SIGINT,
+    SIGTERM,
+    SIGHUP,
+    SIGUSR1,
+    SIGUSR2,
+}
+
+pub fn trap_signal(sig: Signal, handler: fn()) {
+    @compiler_intrinsic("trap_signal")
+}

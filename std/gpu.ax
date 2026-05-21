@@ -1,0 +1,73 @@
+// AXIOM Standard Library — std::gpu (Stub)
+//
+// GPU compute stubs for future GPU actor integration.
+
+/// GPU device handle.
+pub struct GpuDevice {
+    id: i32,
+    name: str,
+    compute_units: i32,
+    memory_bytes: u64,
+}
+
+impl GpuDevice {
+    /// Enumerate available GPU devices.
+    pub fn enumerate() -> Vec[GpuDevice] {
+        @compiler_intrinsic("gpu_enumerate")
+    }
+
+    /// Get the default GPU device.
+    pub fn default() -> Option[GpuDevice] {
+        let devices = GpuDevice.enumerate()
+        devices.first()
+    }
+}
+
+/// GPU buffer (device memory).
+pub struct GpuBuffer[T] {
+    device: i32,
+    ptr: u64,        // device pointer
+    len: i64,
+    elem_size: i64,
+}
+
+impl[T] GpuBuffer[T] {
+    /// Allocate a buffer on the GPU.
+    pub fn alloc(device: GpuDevice, count: i64) -> Result[GpuBuffer[T], str] {
+        @compiler_intrinsic("gpu_alloc")
+    }
+
+    /// Copy data from CPU to GPU.
+    pub fn upload(mut self, data: ptr[T], count: i64) -> Result[void, str] {
+        @compiler_intrinsic("gpu_upload")
+    }
+
+    /// Copy data from GPU to CPU.
+    pub fn download(self, data: ptr[T], count: i64) -> Result[void, str] {
+        @compiler_intrinsic("gpu_download")
+    }
+
+    /// Free GPU memory.
+    pub fn free(mut self) -> Result[void, str] {
+        @compiler_intrinsic("gpu_free")
+    }
+}
+
+/// GPU kernel (compute shader).
+pub struct GpuKernel {
+    device: i32,
+    handle: u64,
+}
+
+impl GpuKernel {
+    /// Compile a kernel from source.
+    pub fn compile(device: GpuDevice, source: str) -> Result[GpuKernel, str] {
+        @compiler_intrinsic("gpu_compile_kernel")
+    }
+
+    /// Launch the kernel with grid/block dimensions.
+    pub fn launch(self, grid: (i32, i32, i32), block: (i32, i32, i32),
+                  args: ...) -> Result[void, str] {
+        @compiler_intrinsic("gpu_launch")
+    }
+}
