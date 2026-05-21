@@ -150,7 +150,20 @@ AX_SLICE_DECL(ax_byte, ax_slice_byte);
 #ifdef AX_EMIT_MAIN
 extern int ax_main();
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    SetConsoleOutputCP(65001);
+#endif
     ax_set_program_name(argc > 0 ? argv[0] : "<axiom>");
     return ax_main(argc, argv);
 }

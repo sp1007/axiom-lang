@@ -54,6 +54,9 @@ func main() {
 	case "dump-air":
 		os.Exit(runDumpAIR(os.Args[2:]))
 
+	case "fmt":
+		os.Exit(runFmt(os.Args[2:]))
+
 	case "version":
 		fmt.Println("axc 0.0.1-dev (AXIOM compiler)")
 
@@ -73,6 +76,7 @@ func printUsage() {
 commands:
   build         Compile an AXIOM source file
   emit-c        Emit C11 code from an AXIOM source file
+  fmt           Format AXIOM source files canonically
   dump-tokens   Tokenize a file and print JSON token stream
   dump-ast      Parse a file and print the AST
   dump-air      Lower to AIR and print text representation

@@ -47,6 +47,8 @@ func leftBindingPower(kind lexer.TokenKind) int {
 		return bpMul
 	case lexer.TokenStarStar:
 		return bpPower
+	case lexer.TokenDotDot:
+		return 35 // bpRange
 	// Postfix
 	case lexer.TokenDot, lexer.TokenDotStar,
 		lexer.TokenLBracket, lexer.TokenLParen,
@@ -150,7 +152,8 @@ func (p *Parser) parseLED(left uint32, opTok lexer.Token, bp int) uint32 {
 		lexer.TokenPipe, lexer.TokenCaret, lexer.TokenAmp,
 		lexer.TokenLtLt, lexer.TokenGtGt,
 		lexer.TokenPlus, lexer.TokenMinus,
-		lexer.TokenStar, lexer.TokenSlash, lexer.TokenPercent:
+		lexer.TokenStar, lexer.TokenSlash, lexer.TokenPercent,
+		lexer.TokenDotDot:
 		node := p.tree.AddNode(ast.NodeBinaryExpr, p.tokenIdx(opTok))
 		var flags uint16 = 0
 		switch opTok.Kind {
@@ -282,7 +285,7 @@ func (p *Parser) parseParenExpr() uint32 {
 func (p *Parser) parseSpawnExpr() uint32 {
 	tok, _ := p.expect(lexer.TokenSpawn)
 	node := p.tree.AddNode(ast.NodeSpawnExpr, p.tokenIdx(tok))
-	expr := p.parseExprWithPrec(bpPostfix)
+	expr := p.parseExprWithPrec(bpUnary)
 	if expr != 0 {
 		p.tree.AppendChild(node, expr)
 	}
@@ -292,7 +295,7 @@ func (p *Parser) parseSpawnExpr() uint32 {
 func (p *Parser) parseAwaitExpr() uint32 {
 	tok, _ := p.expect(lexer.TokenAwait)
 	node := p.tree.AddNode(ast.NodeAwaitExpr, p.tokenIdx(tok))
-	expr := p.parseExprWithPrec(bpPostfix)
+	expr := p.parseExprWithPrec(bpUnary)
 	if expr != 0 {
 		p.tree.AppendChild(node, expr)
 	}

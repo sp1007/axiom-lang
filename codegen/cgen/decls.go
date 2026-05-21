@@ -177,6 +177,10 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 		e.hasMain = true
 	}
 
+	if node.Flags&ast.FlagIsExtern != 0 && isStdLibFunc(name) {
+		return
+	}
+
 	// Determine return type from the symbol's TypeID
 	var retType string
 	var paramStrs []string
@@ -196,7 +200,9 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 		}
 	}
 
-	if retType == "" {
+	if name == "main" {
+		retType = "ax_i32"
+	} else if retType == "" {
 		retType = "void"
 	}
 
@@ -206,7 +212,7 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 		visibility = "static "
 	}
 
-	mangledName := MangleFuncName("", name) // module prefix empty for now
+	mangledName := GetFuncMangledName(symIdx, name, e.table, e.symbols, e.intern)
 
 	if len(paramStrs) == 0 {
 		e.protos = append(e.protos, fmt.Sprintf("%s%s %s(void);", visibility, retType, mangledName))
@@ -232,6 +238,24 @@ func (e *DeclEmitter) processConst(idx uint32, node *ast.AstNode) {
 
 	mangledName := MangleGlobalName("", name)
 	e.globals = append(e.globals, fmt.Sprintf("extern const %s %s;", ctype, mangledName))
+
+	// Find the initializer expression node
+	var initNode uint32
+	child := node.FirstChild
+	for child != ast.NullIdx {
+		childNode := e.tree.Node(child)
+		if childNode.Kind != ast.NodeTypeExpr && childNode.Kind != ast.NodeGenericParams {
+			initNode = child
+			break
+		}
+		child = childNode.NextSibling
+	}
+
+	if initNode != 0 {
+		eg := NewExprGen(e.table, e.intern, e.symbols, e.tree, e.queue)
+		initValStr := eg.Emit(initNode)
+		e.globals = append(e.globals, fmt.Sprintf("const %s %s = %s;", ctype, mangledName, initValStr))
+	}
 }
 
 // processTypeAlias processes a type alias (sum type) declaration.
@@ -273,27 +297,30 @@ func (e *DeclEmitter) drainTypeDecls() {
 
 // buildFuncParams extracts parameter names from AST and types from FuncType.
 func (e *DeclEmitter) buildFuncParams(node *ast.AstNode, fi *types.FuncType) []string {
-	// Walk AST children to get parameter names
+	// Walk AST children to get parameter names and flags
 	var paramNames []string
+	var paramFlags []uint16
 	child := node.FirstChild
 	for child != ast.NullIdx {
 		childNode := e.tree.Node(child)
 		if childNode.Kind == ast.NodeParamDecl {
 			pNameID := e.nodeNameID(child)
 			paramNames = append(paramNames, e.resolveName(pNameID, child))
+			paramFlags = append(paramFlags, childNode.Flags)
 		}
 		child = childNode.NextSibling
 	}
 
-	// Build param strings combining types and names
+	// Build param strings combining types and names using EmitParamDecl
 	params := make([]string, len(fi.Params))
 	for i, pt := range fi.Params {
-		ctype := CTypeName(pt, e.table, e.intern, e.queue)
 		pname := fmt.Sprintf("p%d", i) // fallback name
+		var flags uint16
 		if i < len(paramNames) {
 			pname = paramNames[i]
+			flags = paramFlags[i]
 		}
-		params[i] = fmt.Sprintf("%s %s", ctype, pname)
+		params[i] = EmitParamDecl(pname, pt, flags, e.table, e.intern, e.queue)
 	}
 	if fi.IsVariadic {
 		params = append(params, "...")
@@ -352,4 +379,121 @@ func MangleGlobalName(moduleName, varName string) string {
 		return "ax_" + varName
 	}
 	return "ax_" + moduleName + "_" + varName
+}
+
+func GetFuncMangledName(symIdx uint32, defaultName string, table *types.TypeTable, symbols *sema.SymbolTable, intern *ast.InternPool) string {
+	if symIdx == 0 || symbols == nil || int(symIdx) >= len(symbols.Symbols) {
+		return "ax_" + defaultName
+	}
+	sym := symbols.SymbolAt(symIdx)
+	if sym.Flags & sema.SymFlagExtern != 0 {
+		return defaultName
+	}
+	if sym.TypeID != 0 {
+		entry := table.Entry(types.TypeID(sym.TypeID))
+		if entry.Kind == types.KindFunction {
+			fi := table.FuncInfo(types.TypeID(sym.TypeID))
+			if len(fi.Params) > 0 {
+				if structName, ok := getReceiverStructName(fi.Params[0], table, intern); ok {
+					return "ax_" + structName + "_" + defaultName
+				}
+			}
+		}
+	}
+	return "ax_" + defaultName
+}
+
+func getReceiverStructName(t1 types.TypeID, table *types.TypeTable, intern *ast.InternPool) (string, bool) {
+	if t1 == types.TypeUnknown || t1 == 0 {
+		return "", false
+	}
+	entry := table.Entry(t1)
+	if entry.Kind == types.KindPointer {
+		return getReceiverStructName(table.PointerElem(t1), table, intern)
+	}
+	if entry.Kind == types.KindRef {
+		return getReceiverStructName(types.TypeID(entry.Extra), table, intern)
+	}
+	if entry.Kind == types.KindStruct {
+		if entry.NameID != 0 {
+			name := intern.Get(entry.NameID)
+			name = strings.ReplaceAll(name, "[", "_")
+			name = strings.ReplaceAll(name, "]", "")
+			name = strings.ReplaceAll(name, ",", "_")
+			name = strings.ReplaceAll(name, " ", "")
+			name = strings.ReplaceAll(name, "*", "ptr")
+			return name, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+var stdLibFuncs = map[string]bool{
+	"fopen":    true,
+	"fclose":   true,
+	"fseek":    true,
+	"ftell":    true,
+	"rewind":   true,
+	"fread":    true,
+	"fwrite":   true,
+	"printf":   true,
+	"puts":     true,
+	"putchar":  true,
+	"getchar":  true,
+	"fgetc":    true,
+	"fgets":    true,
+	"fputc":    true,
+	"fputs":    true,
+	"sprintf":  true,
+	"snprintf": true,
+	"fprintf":  true,
+	"scanf":    true,
+	"fscanf":   true,
+	"sscanf":   true,
+	"malloc":   true,
+	"free":     true,
+	"realloc":  true,
+	"calloc":   true,
+	"exit":     true,
+	"abort":    true,
+	"memset":   true,
+	"memcpy":   true,
+	"memmove":  true,
+	"memcmp":   true,
+	"strlen":   true,
+	"strcmp":   true,
+	"strncmp":  true,
+	"strcpy":   true,
+	"strncpy":  true,
+	"strcat":   true,
+	"strncat":  true,
+	"strchr":   true,
+	"strrchr":  true,
+	"strstr":   true,
+	"atoi":     true,
+	"atol":     true,
+	"atof":     true,
+	"strtol":   true,
+	"strtoul":  true,
+	"abs":      true,
+	"labs":     true,
+	"pow":      true,
+	"sqrt":     true,
+	"sin":      true,
+	"cos":      true,
+	"tan":      true,
+	"asin":     true,
+	"acos":     true,
+	"atan":     true,
+	"atan2":    true,
+	"exp":      true,
+	"log":      true,
+	"log10":    true,
+	"floor":    true,
+	"ceil":     true,
+}
+
+func isStdLibFunc(name string) bool {
+	return stdLibFuncs[name]
 }

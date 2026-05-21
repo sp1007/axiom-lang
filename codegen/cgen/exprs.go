@@ -171,7 +171,7 @@ func (g *ExprGen) emitIdent(idx uint32, node *ast.AstNode) string {
 				return MangleGlobalName("", text)
 			}
 		case sema.SymFunc:
-			return MangleFuncName("", text)
+			return GetFuncMangledName(symIdx, text, g.Table, g.Symbols, g.Intern)
 		}
 	}
 	return text
@@ -189,6 +189,17 @@ func (g *ExprGen) emitBinary(idx uint32, node *ast.AstNode) string {
 
 	// The operator token index is stored in TokenIdx
 	opText := string(g.Tree.TokenText(node.TokenIdx))
+
+	tLeft := g.NodeType(children[0])
+	tRight := g.NodeType(children[1])
+	if tLeft == types.TypeString || tRight == types.TypeString {
+		if opText == "==" {
+			return fmt.Sprintf("ax_str_eq(%s, %s)", left, right)
+		} else if opText == "!=" {
+			return fmt.Sprintf("(!ax_str_eq(%s, %s))", left, right)
+		}
+	}
+
 	cOp := mapBinaryOp(opText)
 
 	// Power operator uses runtime helper
@@ -233,21 +244,59 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		return "/* invalid call expr */"
 	}
 
+	isExtern := false
+	funcNode := g.Tree.Node(children[0])
+	if funcNode.Kind == ast.NodeIdent {
+		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
+		symIdx := funcNode.Payload
+		fmt.Printf("[DEBUG-CGEN-CALL] name=%s symIdx=%d\n", funcName, symIdx)
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			fmt.Printf("[DEBUG-CGEN-CALL]   sym.Kind=%v sym.Flags=%d\n", sym.Kind, sym.Flags)
+			if sym.Kind == sema.SymFunc && (sym.Flags&sema.SymFlagExtern != 0) {
+				isExtern = true
+				fmt.Printf("[DEBUG-CGEN-CALL]   SET isExtern=true!\n")
+			}
+		}
+	}
+
 	// Collect arguments first (needed for both builtin and normal paths)
 	args := make([]string, 0, len(children)-1)
 	for i := 1; i < len(children); i++ {
-		argNode := g.Tree.Node(children[i])
+		argNodeIdx := children[i]
+		argNode := g.Tree.Node(argNodeIdx)
+		var val string
+		var actualIdx uint32
 		if argNode.Kind == ast.NodeNamedArg {
-			if argNode.FirstChild != ast.NullIdx {
-				args = append(args, g.Emit(argNode.FirstChild))
+			actualIdx = argNode.FirstChild
+			if actualIdx != ast.NullIdx {
+				val = g.Emit(actualIdx)
 			}
 		} else {
-			args = append(args, g.Emit(children[i]))
+			actualIdx = argNodeIdx
+			val = g.Emit(actualIdx)
+		}
+
+		if isExtern && actualIdx != ast.NullIdx {
+			argType := g.NodeType(actualIdx)
+			fmt.Printf("[DEBUG-CGEN-CALL]   arg %d kind=%v type=%v\n", i, g.Tree.Node(actualIdx).Kind, argType)
+			if argType == types.TypeString {
+				val = fmt.Sprintf("(const char*)(%s).ptr", val)
+				fmt.Printf("[DEBUG-CGEN-CALL]     wrapped to C string: %s\n", val)
+			}
+		}
+		args = append(args, val)
+	}
+
+	// Check if the callee is a qualified/namespaced built-in call
+	if qualifiedName, ok := g.getQualifiedFieldName(children[0]); ok {
+		if call := EmitBuiltinCall(qualifiedName, args); call != "" {
+			return call
 		}
 	}
 
 	// First child is the function expression (usually an Ident)
-	funcNode := g.Tree.Node(children[0])
+	funcNode = g.Tree.Node(children[0])
 	if funcNode.Kind == ast.NodeIdent {
 		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
 
@@ -280,25 +329,143 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		}
 
 		// Not a builtin — apply standard mangling
-		funcExpr := MangleFuncName("", funcName)
-		return fmt.Sprintf("%s(%s)", funcExpr, strings.Join(args, ", "))
+		funcExpr := GetFuncMangledName(symIdx, funcName, g.Table, g.Symbols, g.Intern)
+		// Adapt arguments!
+		adaptedArgs := make([]string, len(args))
+		for j, val := range args {
+			actualIdx := children[j+1]
+			isImplicitPtr := g.isImplicitPointerC(actualIdx)
+			if g.expectsPointer(symIdx, j) {
+				if !isImplicitPtr {
+					adaptedArgs[j] = "&(" + val + ")"
+				} else {
+					adaptedArgs[j] = val
+				}
+			} else {
+				if isImplicitPtr {
+					adaptedArgs[j] = "*(" + val + ")"
+				} else {
+					adaptedArgs[j] = val
+				}
+			}
+		}
+		return fmt.Sprintf("%s(%s)", funcExpr, strings.Join(adaptedArgs, ", "))
 	}
 
 	// Non-identifier callee (e.g. field call, closure)
+	if funcNode.Kind == ast.NodeFieldExpr {
+		fieldChildren := g.Tree.Children(children[0])
+		if len(fieldChildren) >= 1 {
+			receiverIdx := fieldChildren[0]
+			objType := g.NodeType(receiverIdx)
+			if objType != types.TypeUnknown {
+				entry := g.Table.Entry(objType)
+				baseType := objType
+				if entry.Kind == types.KindPointer {
+					baseType = g.Table.PointerElem(objType)
+					entry = g.Table.Entry(baseType)
+				}
+				if entry.Kind == types.KindStruct {
+					// Method call!
+					fieldNameText := string(g.Tree.TokenText(funcNode.TokenIdx))
+					fieldNameID := g.Intern.Intern([]byte(fieldNameText))
+					
+					methodSymIdx, found := g.findMethodSymbol(baseType, fieldNameID)
+					if found {
+						receiverExpr := g.Emit(receiverIdx)
+						
+						var adaptedReceiver string
+						// Check if parameter 0 (receiver self) expects a pointer!
+						isRecImplicitPtr := g.isImplicitPointerC(receiverIdx)
+						if g.expectsPointer(methodSymIdx, 0) {
+							if !isRecImplicitPtr {
+								adaptedReceiver = "&(" + receiverExpr + ")"
+							} else {
+								adaptedReceiver = receiverExpr
+							}
+						} else {
+							if isRecImplicitPtr {
+								adaptedReceiver = "*(" + receiverExpr + ")"
+							} else {
+								adaptedReceiver = receiverExpr
+							}
+						}
+						
+						// Add receiver as first argument
+						callArgs := []string{adaptedReceiver}
+						
+						// Adapt other arguments!
+						for j, val := range args {
+							actualIdx := children[j+1]
+							isImplicitPtr := g.isImplicitPointerC(actualIdx)
+							if g.expectsPointer(methodSymIdx, j+1) {
+								if !isImplicitPtr {
+									callArgs = append(callArgs, "&("+val+")")
+								} else {
+									callArgs = append(callArgs, val)
+								}
+							} else {
+								if isImplicitPtr {
+									callArgs = append(callArgs, "*("+val+")")
+								} else {
+									callArgs = append(callArgs, val)
+								}
+							}
+						}
+						
+						mangledName := GetFuncMangledName(methodSymIdx, fieldNameText, g.Table, g.Symbols, g.Intern)
+						return fmt.Sprintf("%s(%s)", mangledName, strings.Join(callArgs, ", "))
+					} else {
+						// Fallback: if method symbol not found (e.g. mock test)
+						structName := "anon_struct"
+						if entry.NameID != 0 {
+							structName = string(g.Intern.Get(entry.NameID))
+						}
+						receiverExpr := g.Emit(receiverIdx)
+						callArgs := []string{receiverExpr}
+						callArgs = append(callArgs, args...)
+						
+						mangledName := "ax_" + structName + "_" + fieldNameText
+						return fmt.Sprintf("%s(%s)", mangledName, strings.Join(callArgs, ", "))
+					}
+				}
+			}
+		}
+	}
+
 	funcExpr := g.Emit(children[0])
 	return fmt.Sprintf("%s(%s)", funcExpr, strings.Join(args, ", "))
 }
 
 
-// emitField emits a field access expression: obj.field
+// emitField emits a field access expression: obj.field or obj->field
 func (g *ExprGen) emitField(idx uint32, node *ast.AstNode) string {
 	children := g.Tree.Children(idx)
 	if len(children) < 1 {
 		return "/* invalid field expr */"
 	}
 
+	// Check if this is a module-level field access
+	lhsIdx := children[0]
+	lhsNode := g.Tree.Node(lhsIdx)
+	if lhsNode.Payload != 0 && g.Symbols != nil && int(lhsNode.Payload) < len(g.Symbols.Symbols) {
+		lhsSym := g.Symbols.SymbolAt(lhsNode.Payload)
+		if lhsSym.Kind == sema.SymModule {
+			moduleName := string(g.Intern.Get(lhsSym.NameID))
+			fieldName := string(g.Tree.TokenText(node.TokenIdx))
+			
+			// Replace dots with underscores in module name
+			mangledModule := strings.ReplaceAll(moduleName, ".", "_")
+			return "ax_" + mangledModule + "_" + fieldName
+		}
+	}
+
 	obj := g.Emit(children[0])
 	fieldName := string(g.Tree.TokenText(node.TokenIdx))
+
+	if g.isPointerInC(children[0]) {
+		return fmt.Sprintf("%s->%s", obj, fieldName)
+	}
 	return fmt.Sprintf("%s.%s", obj, fieldName)
 }
 
@@ -337,6 +504,7 @@ func (g *ExprGen) emitCast(idx uint32, node *ast.AstNode) string {
 
 	inner := g.Emit(children[0])
 	targetType := types.TypeID(node.Payload)
+	fmt.Printf("[DEBUG-CGEN] emitCast nodeIdx=%d payload=%d targetType=%d\n", idx, node.Payload, targetType)
 
 	if targetType == types.TypeString {
 		srcType := g.NodeType(children[0])
@@ -506,20 +674,52 @@ func computeByteLen(content string) int {
 // escapeForC escapes a string for use inside a C string literal.
 func escapeForC(s string) string {
 	var b strings.Builder
-	for _, c := range s {
-		switch c {
-		case '"':
+	i := 0
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n', 't', 'r', '\\', '"', '\'', '0':
+				b.WriteByte('\\')
+				b.WriteByte(s[i+1])
+				i += 2
+			case 'x':
+				if i+4 <= len(s) {
+					b.WriteString(s[i : i+4])
+					i += 4
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte('x')
+					i += 2
+				}
+			case 'u':
+				if i+6 <= len(s) {
+					b.WriteString(s[i : i+6])
+					i += 6
+				} else {
+					b.WriteByte('\\')
+					b.WriteByte('u')
+					i += 2
+				}
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(s[i+1])
+				i += 2
+			}
+		} else if s[i] == '"' {
 			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
+			i++
+		} else if s[i] == '\n' {
 			b.WriteString(`\n`)
-		case '\r':
+			i++
+		} else if s[i] == '\r' {
 			b.WriteString(`\r`)
-		case '\t':
+			i++
+		} else if s[i] == '\t' {
 			b.WriteString(`\t`)
-		default:
-			b.WriteRune(c)
+			i++
+		} else {
+			b.WriteByte(s[i])
+			i++
 		}
 	}
 	return b.String()
@@ -532,6 +732,16 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 	}
 	node := g.Tree.Node(nodeIdx)
 	switch node.Kind {
+	case ast.NodeStringLit:
+		return types.TypeString
+	case ast.NodeIntLit:
+		return types.TypeI64
+	case ast.NodeFloatLit:
+		return types.TypeF64
+	case ast.NodeBoolLit:
+		return types.TypeBool
+	case ast.NodeCharLit:
+		return types.TypeChar8
 	case ast.NodeIdent:
 		symIdx := node.Payload
 		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
@@ -597,4 +807,167 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 		}
 	}
 	return types.TypeUnknown
+}
+
+func (g *ExprGen) findMethodSymbol(structType types.TypeID, methodNameID uint32) (uint32, bool) {
+	for idx, sym := range g.Symbols.Symbols {
+		if sym.Kind == sema.SymFunc && sym.NameID == methodNameID {
+			tID := types.TypeID(sym.TypeID)
+			if tID != types.TypeUnknown {
+				entry := g.Table.Entry(tID)
+				if entry.Kind == types.KindFunction {
+					fi := g.Table.FuncInfo(tID)
+					if len(fi.Params) > 0 {
+						firstParamType := fi.Params[0]
+						if g.baseTypeEquals(firstParamType, structType) {
+							return uint32(idx), true
+						}
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func (g *ExprGen) baseTypeEquals(t1, target types.TypeID) bool {
+	entry := g.Table.Entry(t1)
+	if entry.Kind == types.KindPointer {
+		return g.Table.PointerElem(t1) == target
+	}
+	if entry.Kind == types.KindRef {
+		return types.TypeID(entry.Extra) == target
+	}
+	return t1 == target
+}
+
+func (g *ExprGen) getQualifiedFieldName(nodeIdx uint32) (string, bool) {
+	if nodeIdx == ast.NullIdx {
+		return "", false
+	}
+	node := g.Tree.Node(nodeIdx)
+	if node.Kind == ast.NodeIdent {
+		return string(g.Tree.TokenText(node.TokenIdx)), true
+	}
+	if node.Kind == ast.NodeFieldExpr {
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			lhs, ok := g.getQualifiedFieldName(children[0])
+			if ok {
+				rhs := string(g.Tree.TokenText(node.TokenIdx))
+				return lhs + "." + rhs, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
+	if symIdx == 0 || g.Symbols == nil || int(symIdx) >= len(g.Symbols.Symbols) {
+		return false
+	}
+	sym := g.Symbols.SymbolAt(symIdx)
+	if sym.DeclNode == 0 {
+		return false
+	}
+	// Traverse the children of sym.DeclNode to find the parameter nodes.
+	paramCount := 0
+	child := g.Tree.Node(sym.DeclNode).FirstChild
+	for child != ast.NullIdx {
+		childNode := g.Tree.Node(child)
+		if childNode.Kind == ast.NodeParamDecl {
+			if paramCount == paramIdx {
+				isLent := (childNode.Flags & ast.FlagIsLent) != 0
+				isMut := (childNode.Flags & ast.FlagIsMut) != 0
+				
+				if isLent {
+					return true
+				}
+				if isMut {
+					// Check if type is a struct or generic struct
+					if sym.TypeID != 0 {
+						entry := g.Table.Entry(types.TypeID(sym.TypeID))
+						if entry.Kind == types.KindFunction {
+							fi := g.Table.FuncInfo(types.TypeID(sym.TypeID))
+							if paramIdx < len(fi.Params) {
+								pt := fi.Params[paramIdx]
+								ptEntry := g.Table.Entry(pt)
+								if ptEntry.Kind == types.KindStruct || ptEntry.Kind == types.KindGenericInst {
+									return true
+								}
+							}
+						}
+					}
+				}
+				return false
+			}
+			paramCount++
+		}
+		child = childNode.NextSibling
+	}
+	return false
+}
+
+func (g *ExprGen) isPointerInC(nodeIdx uint32) bool {
+	if nodeIdx == ast.NullIdx {
+		return false
+	}
+	node := g.Tree.Node(nodeIdx)
+	objType := g.NodeType(nodeIdx)
+	if objType != types.TypeUnknown {
+		entry := g.Table.Entry(objType)
+		if entry.Kind == types.KindPointer || entry.Kind == types.KindRef {
+			return true
+		}
+	}
+	
+	if node.Kind == ast.NodeIdent {
+		symIdx := node.Payload
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymParam && sym.DeclNode != 0 {
+				paramFlags := g.Tree.Node(sym.DeclNode).Flags
+				isLent := (paramFlags & ast.FlagIsLent) != 0
+				isMut := (paramFlags & ast.FlagIsMut) != 0
+				if isLent {
+					return true
+				} else if isMut && objType != types.TypeUnknown {
+					entry := g.Table.Entry(objType)
+					if entry.Kind == types.KindStruct || entry.Kind == types.KindGenericInst {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (g *ExprGen) isImplicitPointerC(nodeIdx uint32) bool {
+	if nodeIdx == ast.NullIdx {
+		return false
+	}
+	node := g.Tree.Node(nodeIdx)
+	objType := g.NodeType(nodeIdx)
+	
+	if node.Kind == ast.NodeIdent {
+		symIdx := node.Payload
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymParam && sym.DeclNode != 0 {
+				paramFlags := g.Tree.Node(sym.DeclNode).Flags
+				isLent := (paramFlags & ast.FlagIsLent) != 0
+				isMut := (paramFlags & ast.FlagIsMut) != 0
+				if isLent {
+					return true
+				} else if isMut && objType != types.TypeUnknown {
+					entry := g.Table.Entry(objType)
+					if entry.Kind == types.KindStruct || entry.Kind == types.KindGenericInst {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }

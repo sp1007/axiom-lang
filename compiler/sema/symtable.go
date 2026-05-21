@@ -32,6 +32,8 @@ var builtins = []builtinType{
 	{"alloc", 0},
 	{"free", 0},
 	{"memcpy", 0},
+	{"print", 0},
+	{"println", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated

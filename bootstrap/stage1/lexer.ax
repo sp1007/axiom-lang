@@ -383,6 +383,10 @@ pub fn scan_operator_or_punct(mut self: Lexer):
             self.pos = self.pos + 2
             self.emit(TK_DOT_STAR, start, 2)
             return
+        if b == 46 and next == 46:
+            self.pos = self.pos + 2
+            self.emit(TK_DOT_DOT, start, 2)
+            return
 
     if b == 43: // '+'
         self.pos = self.pos + 1
@@ -486,7 +490,10 @@ pub fn run(mut self: Lexer):
         if b == 32 or b == 13: // ' ' or '\r'
             self.pos = self.pos + 1
         elif b == 64: // '@'
-            self.pos = self.pos + 1
+            if self.pos + 1 < self.len and is_ident_start(self.src[self.pos+1] as u8):
+                self.pos = self.pos + 1
+            else:
+                self.scan_operator_or_punct()
         elif b == 9: // '\t'
             self.pos = self.pos + 1
         elif b == 10: // '\n'

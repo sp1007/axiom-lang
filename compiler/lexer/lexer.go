@@ -340,7 +340,7 @@ var twoCharOps = map[string]TokenKind{
 	"**": TokenStarStar, "<<": TokenLtLt, ">>": TokenGtGt,
 	"->": TokenArrow, ":=": TokenColonEq,
 	"+=": TokenPlusEq, "-=": TokenMinusEq, "*=": TokenStarEq,
-	"/=": TokenSlashEq, "%=": TokenPercentEq, ".*": TokenDotStar,
+	"/=": TokenSlashEq, "%=": TokenPercentEq, ".*": TokenDotStar, "..": TokenDotDot,
 }
 
 // Single-character operator/punctuation lookup table.

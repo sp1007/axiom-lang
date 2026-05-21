@@ -87,11 +87,24 @@ func (ie *InferenceEngine) preInferFuncSignature(nodeIdx uint32) {
 		}
 
 		if !hasReturnTypeExpr {
-			retType = types.TypeVoid
+			isMain := false
+			if node.TokenIdx+1 < uint32(len(ie.ast.Tokens)) {
+				if string(ie.ast.TokenText(node.TokenIdx+1)) == "main" {
+					isMain = true
+				}
+			}
+			if isMain {
+				retType = types.TypeI32
+			} else {
+				retType = types.TypeVoid
+			}
 		}
 
 		// Register the function type in the TypeTable
 		funcTypeID := ie.types.RegisterFunction(paramTypes, retType, nil)
+		if node.Flags&uint16(ast.FlagIsAsync) != 0 {
+			ie.types.FuncInfo(funcTypeID).IsAsync = true
+		}
 
 		// Store type on the function's symbol
 		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
@@ -178,11 +191,24 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			}
 			
 			if !hasReturnTypeExpr {
-				retType = types.TypeVoid
+				isMain := false
+				if node.TokenIdx+1 < uint32(len(ie.ast.Tokens)) {
+					if string(ie.ast.TokenText(node.TokenIdx+1)) == "main" {
+						isMain = true
+					}
+				}
+				if isMain {
+					retType = types.TypeI32
+				} else {
+					retType = types.TypeVoid
+				}
 			}
 			
 			// Register the function type in the TypeTable
 			funcTypeID := ie.types.RegisterFunction(paramTypes, retType, nil)
+			if node.Flags&uint16(ast.FlagIsAsync) != 0 {
+				ie.types.FuncInfo(funcTypeID).IsAsync = true
+			}
 			
 			// Store type on the function's symbol
 			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
@@ -380,7 +406,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		}
 
 	case ast.NodeIfStmt:
-		// Very simplified if-stmt inference
+		// Traverses cond, thenBranch, and all subsequent elif/else clauses.
 		cond := node.FirstChild
 		if cond != 0 {
 			ie.inferNode(cond, types.TypeBool)
@@ -390,22 +416,41 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 				thenType := ie.inferNode(thenBranch, expected)
 				resultType = thenType
 				
-				elseBranch := ie.ast.Nodes[thenBranch].NextSibling
-				if elseBranch != 0 {
-					elseType := ie.inferNode(elseBranch, expected)
-					common, ok := ie.types.CommonType(thenType, elseType)
-					if !ok {
-						ie.errorf(nodeIdx, 3004, "branches of if expression have incompatible types")
-						resultType = types.TypeUnknown
-					} else {
-						resultType = common
+				sibling := ie.ast.Nodes[thenBranch].NextSibling
+				for sibling != 0 {
+					siblingType := ie.inferNode(sibling, expected)
+					if resultType != types.TypeUnknown && siblingType != types.TypeUnknown {
+						common, ok := ie.types.CommonType(resultType, siblingType)
+						if !ok {
+							ie.errorf(nodeIdx, 3004, "branches of if expression have incompatible types")
+							resultType = types.TypeUnknown
+						} else {
+							resultType = common
+						}
 					}
+					sibling = ie.ast.Nodes[sibling].NextSibling
 				}
 			}
 		}
 
+	case ast.NodeElifClause:
+		cond := node.FirstChild
+		if cond != 0 {
+			ie.inferNode(cond, types.TypeBool)
+			body := ie.ast.Nodes[cond].NextSibling
+			if body != 0 {
+				resultType = ie.inferNode(body, expected)
+			}
+		}
+
+	case ast.NodeElseClause:
+		body := node.FirstChild
+		if body != 0 {
+			resultType = ie.inferNode(body, expected)
+		}
+
 	case ast.NodeIndexExpr:
-		collection := node.FirstChild
+		collection := ie.ast.Nodes[nodeIdx].FirstChild
 		if collection != 0 {
 			if ie.ast.Nodes[collection].Kind == ast.NodeIdent {
 				symIdx := ie.ast.Nodes[collection].Payload
@@ -425,7 +470,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 							instSymIdx, diags := ie.mono.InstantiateFunction(symIdx, typeArgs)
 							ie.errors = append(ie.errors, diags...)
 							
-							node.Payload = instSymIdx // save instantiated symIdx
+							ie.ast.SetPayload(nodeIdx, instSymIdx) // save instantiated symIdx
 							instSym := ie.symtable.SymbolAt(instSymIdx)
 							resultType = types.TypeID(instSym.TypeID)
 							break
@@ -603,6 +648,20 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 						ie.inferNode(arg, types.TypeUnknown)
 						arg = ie.ast.Nodes[arg].NextSibling
 					}
+				} else {
+					// Fallback for non-callable known types (e.g. primitive call error)
+					arg := ie.ast.Nodes[callee].NextSibling
+					for arg != 0 {
+						ie.inferNode(arg, types.TypeUnknown)
+						arg = ie.ast.Nodes[arg].NextSibling
+					}
+				}
+			} else {
+				// Fallback for unknown callee types (e.g. alloc, free, memcpy calls)
+				arg := ie.ast.Nodes[callee].NextSibling
+				for arg != 0 {
+					ie.inferNode(arg, types.TypeUnknown)
+					arg = ie.ast.Nodes[arg].NextSibling
 				}
 			}
 		}
@@ -660,20 +719,22 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		}
 
 	case ast.NodeCastExpr:
-		expr := node.FirstChild
+		expr := ie.ast.Nodes[nodeIdx].FirstChild
 		var targetType types.TypeID = types.TypeUnknown
 		if expr != 0 {
 			ie.inferNode(expr, types.TypeUnknown)
 			targetNodeIdx := ie.ast.Nodes[expr].NextSibling
 			if targetNodeIdx != 0 {
 				targetType = ie.inferNode(targetNodeIdx, types.TypeUnknown)
+				targetNode := &ie.ast.Nodes[targetNodeIdx]
+				fmt.Printf("[DEBUG] NodeCastExpr nodeIdx=%d targetNodeIdx=%d Kind=%s Payload=%d targetType=%d\n", nodeIdx, targetNodeIdx, targetNode.Kind, targetNode.Payload, targetType)
 			}
 		}
 		if targetType != types.TypeUnknown {
-			node.Payload = uint32(targetType)
+			ie.ast.SetPayload(nodeIdx, uint32(targetType))
 			resultType = targetType
 		} else {
-			resultType = types.TypeID(node.Payload)
+			resultType = types.TypeID(ie.ast.Nodes[nodeIdx].Payload)
 		}
 
 	case ast.NodeGenericType:
@@ -687,6 +748,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 				if argNodeIdx != 0 {
 					innerTypeID := ie.inferNode(argNodeIdx, types.TypeUnknown)
 					resultType = ie.types.RegisterPointer(innerTypeID)
+					fmt.Printf("[DEBUG] Inference NodeGenericType: base='%s' argNodeIdx=%d innerTypeID=%d resultType=%d\n", name, argNodeIdx, innerTypeID, resultType)
 				}
 			}
 		}

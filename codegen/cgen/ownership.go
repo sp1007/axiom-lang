@@ -78,6 +78,9 @@ func EmitParamDecl(
 	isMut := (flags & ast.FlagIsMut) != 0
 	isSink := (flags & ast.FlagIsSink) != 0
 
+	entry := table.Entry(typeID)
+	isStruct := entry.Kind == types.KindStruct || entry.Kind == types.KindGenericInst
+
 	if isLent && isMut {
 		// Mutable borrow: non-const pointer
 		return fmt.Sprintf("%s* %s", ctype, name)
@@ -85,6 +88,10 @@ func EmitParamDecl(
 	if isLent {
 		// Immutable borrow: const pointer
 		return fmt.Sprintf("const %s* %s", ctype, name)
+	}
+	if isMut && isStruct {
+		// Mutable struct/generic struct parameter: pass by pointer to enable mutation
+		return fmt.Sprintf("%s* %s", ctype, name)
 	}
 	if isSink {
 		// Sink: pass by value (C copy semantics = ownership transfer)

@@ -79,7 +79,9 @@ func (p *Pipeline) emitFuncDefs(w io.Writer) {
 	for child != ast.NullIdx {
 		node := p.tree.Node(child)
 		if node.Kind == ast.NodeFuncDecl {
-			p.emitFuncDef(w, child, node)
+			if node.Flags&ast.FlagIsExtern == 0 {
+				p.emitFuncDef(w, child, node)
+			}
 		}
 		child = node.NextSibling
 	}
@@ -112,8 +114,9 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 				fi := p.table.FuncInfo(types.TypeID(sym.TypeID))
 				retType = CTypeName(fi.Return, p.table, p.intern, queue)
 
-				// Collect parameter names from AST children
+				// Collect parameter names and flags from AST children
 				var paramNames []string
+				var paramFlags []uint16
 				c := node.FirstChild
 				for c != ast.NullIdx {
 					cn := p.tree.Node(c)
@@ -129,18 +132,20 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 							pName = string(p.tree.TokenText(cn.TokenIdx))
 						}
 						paramNames = append(paramNames, pName)
+						paramFlags = append(paramFlags, cn.Flags)
 					}
 					c = cn.NextSibling
 				}
 
-				// Build parameter strings
+				// Build parameter strings using EmitParamDecl
 				for i, pt := range fi.Params {
-					ctype := CTypeName(pt, p.table, p.intern, queue)
 					pname := fmt.Sprintf("p%d", i)
+					var flags uint16
 					if i < len(paramNames) {
 						pname = paramNames[i]
+						flags = paramFlags[i]
 					}
-					paramStrs = append(paramStrs, fmt.Sprintf("%s %s", ctype, pname))
+					paramStrs = append(paramStrs, EmitParamDecl(pname, pt, flags, p.table, p.intern, queue))
 				}
 			}
 		}
@@ -152,12 +157,16 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 		visibility = "static "
 	}
 
-	mangledName := MangleFuncName("", nameText)
+	mangledName := GetFuncMangledName(symIdx, nameText, p.table, p.symbols, p.intern)
 
 	// Emit function signature
 	paramsStr := "void"
 	if len(paramStrs) > 0 {
 		paramsStr = strings.Join(paramStrs, ", ")
+	}
+
+	if nameText == "main" {
+		retType = "ax_i32"
 	}
 
 	fmt.Fprintf(w, "\n%s%s %s(%s) {\n", visibility, retType, mangledName, paramsStr)
@@ -170,6 +179,11 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 		queue := NewTypeDeclQueue()
 		sg := NewStmtGen(iw, p.table, p.intern, p.symbols, p.tree, queue)
 		sg.EmitFuncBody(bodyIdx)
+		if nameText == "main" {
+			iw.Line("return 0;")
+		}
+	} else if nameText == "main" {
+		fmt.Fprintln(w, "    return 0;")
 	}
 
 	fmt.Fprintln(w, "}")

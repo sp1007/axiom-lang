@@ -19,7 +19,7 @@ func TestInterfaces_ImplicitImplementation(t *testing.T) {
 
 	// 2. Register Interface (Printable)
 	ifaceNameID := pool.Intern([]byte("Printable"))
-	printMethodNameID := pool.Intern([]byte("print"))
+	printMethodNameID := pool.Intern([]byte("my_print"))
 	ifaceTypeID := tt.RegisterInterface(ifaceNameID, []types.MethodSig{
 		{NameID: printMethodNameID, Params: []types.TypeID{}, Return: types.TypeVoid},
 	})
@@ -50,7 +50,7 @@ func TestInterfaces_MissingMethod(t *testing.T) {
 	structTypeID := tt.RegisterStruct(structNameID, nil, nil)
 
 	ifaceNameID := pool.Intern([]byte("Printable"))
-	printMethodNameID := pool.Intern([]byte("print"))
+	printMethodNameID := pool.Intern([]byte("my_print"))
 	ifaceTypeID := tt.RegisterInterface(ifaceNameID, []types.MethodSig{
 		{NameID: printMethodNameID, Params: []types.TypeID{}, Return: types.TypeVoid},
 	})
@@ -76,7 +76,7 @@ func TestInterfaces_WrongSignature(t *testing.T) {
 	structTypeID := tt.RegisterStruct(structNameID, nil, nil)
 
 	ifaceNameID := pool.Intern([]byte("Printable"))
-	printMethodNameID := pool.Intern([]byte("print"))
+	printMethodNameID := pool.Intern([]byte("my_print"))
 	ifaceTypeID := tt.RegisterInterface(ifaceNameID, []types.MethodSig{
 		{NameID: printMethodNameID, Params: []types.TypeID{}, Return: types.TypeVoid},
 	})

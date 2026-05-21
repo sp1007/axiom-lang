@@ -94,7 +94,17 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 	case ast.NodeFuncDecl:
 		// Payload is nameID
 		nameID := node.Payload
-		symIdx := nr.defineSymbol(nameID, SymFunc, 0, nodeIdx)
+		var flags SymFlags
+		if node.Flags&uint16(ast.FlagIsPub) != 0 {
+			flags |= SymFlagPub
+		}
+		if node.Flags&uint16(ast.FlagIsExtern) != 0 {
+			flags |= SymFlagExtern
+		}
+		if node.Flags&uint16(ast.FlagIsAsync) != 0 {
+			flags |= SymFlagAsync
+		}
+		symIdx := nr.defineSymbol(nameID, SymFunc, flags, nodeIdx)
 		node.Payload = symIdx
 
 		// Push function scope
@@ -309,9 +319,10 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 	case ast.NodeTypeExpr:
 		if node.Payload != 0 {
 			nameID := node.Payload
+			name := nr.intern.Get(nameID)
 			symIdx, found := nr.symtable.Resolve(nameID)
+			fmt.Printf("[DEBUG] Resolver NodeTypeExpr: name='%s' nameID=%d found=%t symIdx=%d\n", name, nameID, found, symIdx)
 			if !found {
-				name := nr.intern.Get(nameID)
 				nr.errorf(nodeIdx, 2010, "undefined type: '%s'", name)
 			} else {
 				node.Payload = symIdx

@@ -55,6 +55,8 @@ var builtinTable = map[string]BuiltinInfo{
 	"str_slice":       {Kind: BuiltinDirect, CName: "ax_str_slice"},
 	"str_concat":      {Kind: BuiltinDirect, CName: "ax_str_concat"},
 	"str_eq":          {Kind: BuiltinDirect, CName: "ax_str_eq"},
+	"std.string.slice": {Kind: BuiltinDirect, CName: "ax_str_slice"},
+	"std.string.len":   {Kind: BuiltinDirect, CName: "ax_str_len"},
 
 	// ---------- Conversions ----------
 	"to_str": {Kind: BuiltinTyped, CName: "ax_"},  // ax_{i64,f64,bool}_to_str
@@ -81,6 +83,7 @@ var builtinTable = map[string]BuiltinInfo{
 	// ---------- Memory ----------
 	"size_of":  {Kind: BuiltinDirect, CName: "sizeof"},
 	"align_of": {Kind: BuiltinDirect, CName: "_Alignof"},
+	"memcpy":   {Kind: BuiltinDirect, CName: "memcpy"},
 
 	// ---------- Vec ----------
 	"vec_new":    {Kind: BuiltinDirect, CName: "ax_vec_new"},

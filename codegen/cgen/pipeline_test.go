@@ -101,12 +101,12 @@ func TestPipeline_SingleFuncNoBody(t *testing.T) {
 	}
 
 	// Should have the prototype in the declarations section
-	if !strings.Contains(output, "void ax_main(void);") {
+	if !strings.Contains(output, "ax_i32 ax_main(void);") {
 		t.Errorf("missing function prototype:\n%s", output)
 	}
 
 	// Should have the function definition
-	if !strings.Contains(output, "void ax_main(void) {") {
+	if !strings.Contains(output, "ax_i32 ax_main(void) {") {
 		t.Errorf("missing function definition:\n%s", output)
 	}
 }
@@ -459,7 +459,7 @@ func TestPipeline_MultipleFunctions(t *testing.T) {
 	}
 
 	// Both should have definitions
-	if !strings.Contains(output, "void ax_main(void) {") {
+	if !strings.Contains(output, "ax_i32 ax_main(void) {") {
 		t.Errorf("missing main definition:\n%s", output)
 	}
 	if !strings.Contains(output, "ax_i32 ax_add(ax_i32 a, ax_i32 b) {") {

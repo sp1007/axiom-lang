@@ -108,6 +108,8 @@ const (
 	TokenEOF   // end of file
 	TokenError // lexer error: bad character or malformed literal
 
+	TokenDotDot // ..
+
 	TokenKindCount // sentinel — total count; must remain last
 )
 
@@ -225,6 +227,7 @@ var tokenKindNames = [TokenKindCount]string{
 	// Control tokens
 	TokenEOF:   "EOF",
 	TokenError: "ERROR",
+	TokenDotDot:    "'..'",
 }
 
 // Keywords maps identifier text to the corresponding keyword TokenKind.
