@@ -14,7 +14,9 @@ pub fn new_token_vec() -> TokenVec:
 
 pub fn push(mut self: TokenVec, t: Token):
     if self.len == self.cap:
-        let new_cap = if self.cap == 0 { 16 } else { self.cap * 2 }
+        mut new_cap := 16
+        if self.cap != 0:
+            new_cap = self.cap * 2
         let new_data = @alloc(new_cap * 8) as ptr[Token] // Token size is 8 bytes
         if self.data != null as ptr[Token]:
             @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
@@ -35,7 +37,9 @@ pub fn new_int_vec() -> IntVec:
 
 pub fn push(mut self: IntVec, val: i32):
     if self.len == self.cap:
-        let new_cap = if self.cap == 0 { 16 } else { self.cap * 2 }
+        mut new_cap := 16
+        if self.cap != 0:
+            new_cap = self.cap * 2
         let new_data = @alloc(new_cap * 4) as ptr[i32] // i32 size is 4 bytes
         if self.data != null as ptr[i32]:
             @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 4)
@@ -506,9 +510,17 @@ pub fn process_indentation(mut self: Lexer) -> TokenVec:
     mut stack := new_int_vec()
     stack.push(0)
 
+    mut nesting_depth := 0
     mut i := 0
     while i < self.tokens.len:
         let tok = self.tokens.data[i]
+
+        if tok.kind == TK_L_PAREN or tok.kind == TK_L_BRACKET or tok.kind == TK_L_BRACE:
+            nesting_depth = nesting_depth + 1
+        elif tok.kind == TK_R_PAREN or tok.kind == TK_R_BRACKET or tok.kind == TK_R_BRACE:
+            nesting_depth = nesting_depth - 1
+            if nesting_depth < 0:
+                nesting_depth = 0
 
         if tok.kind != TK_NEWLINE:
             if tok.kind == TK_EOF:
@@ -519,6 +531,10 @@ pub fn process_indentation(mut self: Lexer) -> TokenVec:
                 i = i + 1
                 continue
             out.push(tok)
+            i = i + 1
+            continue
+
+        if nesting_depth > 0:
             i = i + 1
             continue
 

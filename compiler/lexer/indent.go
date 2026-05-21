@@ -22,9 +22,20 @@ func ProcessIndentation(src []byte, tokens []Token, lt *LineTable) ([]Token, []d
 	var diags []diagnostics.Diagnostic
 	stack := indentStack{levels: []int{0}}
 
+	nestingDepth := 0
 	i := 0
 	for i < len(tokens) {
 		tok := tokens[i]
+
+		// Track nesting depth of parentheses, brackets, and braces
+		if tok.Kind == TokenLParen || tok.Kind == TokenLBracket || tok.Kind == TokenLBrace {
+			nestingDepth++
+		} else if tok.Kind == TokenRParen || tok.Kind == TokenRBracket || tok.Kind == TokenRBrace {
+			nestingDepth--
+			if nestingDepth < 0 {
+				nestingDepth = 0
+			}
+		}
 
 		// Non-NEWLINE tokens pass through directly
 		if tok.Kind != TokenNewline {
@@ -39,6 +50,12 @@ func ProcessIndentation(src []byte, tokens []Token, lt *LineTable) ([]Token, []d
 				continue
 			}
 			out = append(out, tok)
+			i++
+			continue
+		}
+
+		// Skip NEWLINE token inside parenthesis/brackets/braces
+		if nestingDepth > 0 {
 			i++
 			continue
 		}
