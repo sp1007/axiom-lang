@@ -51,3 +51,37 @@ size_t ax_alloc_size(void* ptr) {
     if (!ptr) return 0;
     return (size_t)ax_get_header(ptr)->size;
 }
+
+/* --------------------------------------------------------------------------
+ * AXIOM-native Allocator Segment Manager Global State Shim
+ * -------------------------------------------------------------------------- */
+#include <stdint.h>
+
+#define AXIOM_MAX_SEGMENTS 4096
+
+// Must match the memory layout of AXIOM's Segment structure
+typedef struct {
+    char*           base;
+    char*           bump;
+    char*           limit;
+    int32_t         sclass;
+    void*           next;
+    uint32_t        magic;
+} AxiomSegment;
+
+static AxiomSegment axiom_segment_slab[AXIOM_MAX_SEGMENTS];
+static int64_t      axiom_segment_slab_used = 0;
+static void*        axiom_free_segment_pool = NULL;
+
+int64_t* std_mem_alloc_get_slab_used(void) {
+    return &axiom_segment_slab_used;
+}
+
+void* std_mem_alloc_get_slab(void) {
+    return axiom_segment_slab;
+}
+
+void** std_mem_alloc_get_free_pool(void) {
+    return &axiom_free_segment_pool;
+}
+

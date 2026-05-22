@@ -8,6 +8,12 @@
 #include "platform_ext.h"
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
+
 /* --------------------------------------------------------------------------
  * p14-t05: NUMA Stubs (Non-NUMA fallback)
  * -------------------------------------------------------------------------- */
@@ -24,10 +30,8 @@ void* ax_numa_alloc(size_t size, int node_id) {
     (void)node_id;
     /* Fall back to regular OS allocation */
 #ifdef _WIN32
-    #include <windows.h>
     return VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-    #include <sys/mman.h>
     void* p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return (p == (void*)-1) ? NULL : p;

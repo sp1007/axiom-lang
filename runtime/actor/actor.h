@@ -186,6 +186,16 @@ void ax_actor_table_destroy(void);
  */
 uint32_t ax_actor_count(void);
 
+/**
+ * Check if the actor is in AX_ACTOR_RUNNING state.
+ */
+int ax_actor_is_running(AxActor* actor);
+
+/**
+ * Check if the actor has pending messages.
+ */
+int ax_actor_has_messages(AxActor* actor);
+
 #ifdef __cplusplus
 }
 #endif

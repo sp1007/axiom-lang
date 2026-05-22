@@ -112,9 +112,7 @@ func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		return "struct ax_iface_" + resolveName(entry.NameID, intern)
 
 	case types.KindArray:
-		// Fixed-size arrays: Extra stores element TypeID.
-		// Size is stored in the entry itself (total bytes).
-		inner := CTypeName(types.TypeID(entry.Extra), table, intern, queue)
+		inner := CTypeName(table.ArrayElem(id), table, intern, queue)
 		return inner // arrays are passed by pointer in C; declaration handles the size
 
 	case types.KindGeneric:
@@ -163,9 +161,17 @@ func structDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool,
 	var b strings.Builder
 	fmt.Fprintf(&b, "struct %s {\n", name)
 	for _, f := range info.Fields {
-		ftype := CTypeName(f.TypeID, table, intern, queue)
+		fEntry := table.Entry(f.TypeID)
 		fname := resolveName(f.NameID, intern)
-		fmt.Fprintf(&b, "    %s %s;\n", ftype, fname)
+		if fEntry.Kind == types.KindArray {
+			elemID := table.ArrayElem(f.TypeID)
+			elemC := CTypeName(elemID, table, intern, queue)
+			length := table.ArrayLength(f.TypeID)
+			fmt.Fprintf(&b, "    %s %s[%d];\n", elemC, fname, length)
+		} else {
+			ftype := CTypeName(f.TypeID, table, intern, queue)
+			fmt.Fprintf(&b, "    %s %s;\n", ftype, fname)
+		}
 	}
 	b.WriteString("};\n")
 	return b.String()

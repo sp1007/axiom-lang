@@ -1,0 +1,174 @@
+// bootstrap/stage1/ast.ax
+// AST structure definitions for the self-hosted AXIOM compiler frontend.
+
+// NodeKind enum constants (matching compiler/ast/node.go exactly)
+pub const NODE_INVALID: u8 = 0
+pub const NODE_PROGRAM: u8 = 1
+pub const NODE_FUNC_DECL: u8 = 2
+pub const NODE_STRUCT_DECL: u8 = 3
+pub const NODE_INTERFACE_DECL: u8 = 4
+pub const NODE_IMPORT_DECL: u8 = 5
+pub const NODE_CONST_DECL: u8 = 6
+pub const NODE_TYPE_ALIAS_DECL: u8 = 7
+
+pub const NODE_PARAM_DECL: u8 = 8
+pub const NODE_FIELD_DECL: u8 = 9
+pub const NODE_METHOD_SIG: u8 = 10
+pub const NODE_VARIANT_DECL: u8 = 11
+
+pub const NODE_BLOCK: u8 = 12
+pub const NODE_VAR_DECL: u8 = 13
+pub const NODE_ASSIGN_STMT: u8 = 14
+pub const NODE_RETURN_STMT: u8 = 15
+pub const NODE_IF_STMT: u8 = 16
+pub const NODE_ELIF_CLAUSE: u8 = 17
+pub const NODE_ELSE_CLAUSE: u8 = 18
+pub const NODE_FOR_STMT: u8 = 19
+pub const NODE_WHILE_STMT: u8 = 20
+pub const NODE_MATCH_STMT: u8 = 21
+pub const NODE_MATCH_ARM: u8 = 22
+pub const NODE_DEFER_STMT: u8 = 23
+pub const NODE_UNSAFE_BLOCK: u8 = 24
+pub const NODE_ARENA_BLOCK: u8 = 25
+
+pub const NODE_BINARY_EXPR: u8 = 26
+pub const NODE_UNARY_EXPR: u8 = 27
+pub const NODE_CALL_EXPR: u8 = 28
+pub const NODE_INDEX_EXPR: u8 = 29
+pub const NODE_FIELD_EXPR: u8 = 30
+pub const NODE_CAST_EXPR: u8 = 31
+pub const NODE_DEREF_EXPR: u8 = 32
+pub const NODE_SPAWN_EXPR: u8 = 33
+pub const NODE_AWAIT_EXPR: u8 = 34
+pub const NODE_CLOSURE_EXPR: u8 = 35
+
+pub const NODE_INT_LIT: u8 = 36
+pub const NODE_FLOAT_LIT: u8 = 37
+pub const NODE_STRING_LIT: u8 = 38
+pub const NODE_CHAR_LIT: u8 = 39
+pub const NODE_BOOL_LIT: u8 = 40
+pub const NODE_NIL_LIT: u8 = 41
+pub const NODE_IDENT: u8 = 42
+pub const NODE_ARRAY_LIT: u8 = 43
+pub const NODE_STRUCT_LIT: u8 = 44
+pub const NODE_NAMED_ARG: u8 = 45
+
+pub const NODE_TYPE_EXPR: u8 = 46
+pub const NODE_PTR_TYPE: u8 = 47
+pub const NODE_SLICE_TYPE: u8 = 48
+pub const NODE_ARRAY_TYPE: u8 = 49
+pub const NODE_FUNC_TYPE: u8 = 50
+pub const NODE_GENERIC_TYPE: u8 = 51
+pub const NODE_ISOLATED_TYPE: u8 = 52
+pub const NODE_FUTURE_TYPE: u8 = 53
+pub const NODE_SUM_TYPE: u8 = 54
+
+pub const NODE_WILDCARD_PAT: u8 = 55
+pub const NODE_LITERAL_PAT: u8 = 56
+pub const NODE_BINDING_PAT: u8 = 57
+pub const NODE_VARIANT_PAT: u8 = 58
+pub const NODE_TUPLE_PAT: u8 = 59
+
+pub const NODE_GENERIC_PARAMS: u8 = 60
+pub const NODE_GENERIC_PARAM: u8 = 61
+
+pub const NODE_EFFECT_ANNOTATION: u8 = 62
+pub const NODE_ERROR: u8 = 63
+
+pub const NODE_DESTROY_STMT: u8 = 64
+pub const NODE_ALIAS_STMT: u8 = 65
+
+// Flags constants (matching compiler/ast/node.go exactly)
+pub const FLAG_IS_PUB: u16 = 1
+pub const FLAG_IS_MUT: u16 = 2
+pub const FLAG_IS_ASYNC: u16 = 4
+pub const FLAG_IS_EXTERN: u16 = 8
+pub const FLAG_IS_SINK: u16 = 16
+pub const FLAG_IS_LENT: u16 = 32
+pub const FLAG_IS_PACKED: u64 = 64
+pub const FLAG_ESCAPES_TO_HEAP: u16 = 128
+pub const FLAG_USES_ARENA: u16 = 256
+pub const FLAG_IS_GENERIC: u16 = 512
+pub const FLAG_IS_MOVED: u16 = 1024
+
+pub const NULL_IDX: u32 = 0
+
+// Flat AST node. Exactly 24 bytes.
+pub struct AstNode:
+    kind: u8
+    padding: u8
+    flags: u16
+    token_idx: u32
+    first_child: u32
+    next_sibling: u32
+    payload: u32
+    extra_idx: u32
+
+// Custom monomorphic node vector to avoid generic monomorphization dependency
+pub struct NodeVec:
+    data: ptr[AstNode]
+    len: i64
+    cap: i64
+
+pub fn new_node_vec() -> NodeVec:
+    return NodeVec(data: null as ptr[AstNode], len: 0, cap: 0)
+
+pub fn push(mut self: NodeVec, node: AstNode) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[AstNode] // Node size is 24 bytes
+        if self.data != null as ptr[AstNode]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = node
+    self.len = self.len + 1
+    return idx
+
+// AstTree holds the parsed compilation unit.
+pub struct AstTree:
+    nodes: NodeVec
+    extras: IntVec // Custom monomorphic IntVec used from lexer.ax
+    src: str
+    tokens: TokenVec
+
+pub fn new_ast_tree(src: str, tokens: TokenVec) -> AstTree:
+    mut nodes := new_node_vec()
+    // Append root program node at index 0
+    nodes.push(AstNode(
+        kind: NODE_PROGRAM,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        token_idx: 0 as u32,
+        first_child: NULL_IDX,
+        next_sibling: NULL_IDX,
+        payload: 0 as u32,
+        extra_idx: 0 as u32,
+    ))
+    return AstTree(
+        nodes: nodes,
+        extras: new_int_vec(),
+        src: src,
+        tokens: tokens,
+    )
+
+pub fn add_node(mut self: AstTree, kind: u8, token_idx: u32) -> u32:
+    return self.nodes.push(AstNode(
+        kind: kind,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        token_idx: token_idx,
+        first_child: NULL_IDX,
+        next_sibling: NULL_IDX,
+        payload: 0 as u32,
+        extra_idx: 0 as u32,
+    ))
+
+pub fn add_extra(mut self: AstTree, val: i32) -> u32:
+    let idx = self.extras.len as u32
+    self.extras.push(val)
+    return idx

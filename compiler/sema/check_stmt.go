@@ -266,13 +266,46 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 			child = tc.ast.Nodes[child].NextSibling
 		}
 
-	case ast.NodeForStmt, ast.NodeWhileStmt:
+	case ast.NodeWhileStmt:
+		prevInsideLoop := tc.insideLoop
+		tc.insideLoop = true
+		child := node.FirstChild
+		for child != 0 {
+			tc.checkStmt(child)
+			child = tc.ast.Nodes[child].NextSibling
+		}
+		tc.insideLoop = prevInsideLoop
+
+	case ast.NodeForStmt:
 		prevInsideLoop := tc.insideLoop
 		tc.insideLoop = true
 		
-		// simplified: iterator is second child after the variable
-		// but in our AST, for x in iter: FirstChild is x, NextSibling is iter.
-		// For now just traverse.
+		iterExpr := node.FirstChild
+		var elemType types.TypeID = types.TypeI32
+		
+		if iterExpr != 0 {
+			tc.checkStmt(iterExpr)
+			iterType := tc.infer.TypeOf(iterExpr)
+			if iterType != types.TypeUnknown {
+				entry := tc.types.Entry(iterType)
+				if entry.Kind == types.KindSlice {
+					elemType = tc.types.SliceElem(iterType)
+				} else if entry.Kind == types.KindPointer {
+					ptrElem := tc.types.PointerElem(iterType)
+					ptrEntry := tc.types.Entry(ptrElem)
+					if ptrEntry.Kind == types.KindArray {
+						elemType = tc.types.ArrayElem(ptrElem)
+					}
+				}
+			}
+		}
+		
+		symIdx := node.Payload
+		if symIdx != 0 && tc.symtable != nil && int(symIdx) < len(tc.symtable.Symbols) {
+			sym := tc.symtable.SymbolAt(symIdx)
+			sym.TypeID = uint32(elemType)
+		}
+		
 		child := node.FirstChild
 		for child != 0 {
 			tc.checkStmt(child)

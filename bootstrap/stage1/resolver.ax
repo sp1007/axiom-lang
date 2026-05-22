@@ -1,0 +1,534 @@
+// bootstrap/stage1/resolver.ax
+// Name resolution pass and Symbol Table implementation for self-hosted compiler.
+
+import std.string
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+
+// SymKind constants
+pub const SYM_VAR: u8 = 0
+pub const SYM_FUNC: u8 = 1
+pub const SYM_STRUCT: u8 = 2
+pub const SYM_INTERFACE: u8 = 3
+pub const SYM_TYPE_ALIAS: u8 = 4
+pub const SYM_VARIANT: u8 = 5
+pub const SYM_PARAM: u8 = 6
+pub const SYM_FIELD: u8 = 7
+pub const SYM_GENERIC_PARAM: u8 = 8
+pub const SYM_MODULE: u8 = 9
+pub const SYM_BUILTIN_TYPE: u8 = 10
+pub const SYM_ENUM_VARIANT: u8 = 11
+pub const SYM_CONST: u8 = 12
+
+// SymFlags constants
+pub const SYM_FLAG_PUB: u16 = 1
+pub const SYM_FLAG_MUT: u16 = 2
+pub const SYM_FLAG_EXTERN: u16 = 4
+pub const SYM_FLAG_SINK: u16 = 8
+pub const SYM_FLAG_LENT: u16 = 16
+pub const SYM_FLAG_ASYNC: u16 = 32
+pub const SYM_FLAG_PURE: u16 = 64
+pub const SYM_FLAG_MOVED: u16 = 128
+pub const SYM_FLAG_USED: u16 = 256
+pub const SYM_FLAG_COMPTIME: u16 = 512
+pub const SYM_FLAG_GENERIC: u16 = 1024
+
+// ScopeKind constants
+pub const SCOPE_GLOBAL: u8 = 0
+pub const SCOPE_FUNCTION: u8 = 1
+pub const SCOPE_BLOCK: u8 = 2
+pub const SCOPE_CLOSURE: u8 = 3
+pub const SCOPE_LOOP: u8 = 4
+
+// Flat Symbol Representation
+pub struct Symbol:
+    name_id: u32
+    kind: u8
+    padding: u8
+    flags: u16
+    type_id: u32
+    decl_node: u32
+    scope_id: u32
+    next_overload: u32
+
+// Scope Entry for hash table
+pub struct ScopeEntry:
+    name_id: u32
+    symbol_idx: u32
+
+// Scope representation using open addressing hash map
+pub struct Scope:
+    kind: u8
+    padding1: u8
+    padding2: u16
+    parent_id: u32
+    depth: u32
+    entries: ptr[ScopeEntry]
+    count: u32
+    capacity: u32
+
+pub fn init_scope(mut self: Scope, kind: u8, parent_id: u32, depth: u32, capacity: u32):
+    self.kind = kind
+    self.parent_id = parent_id
+    self.depth = depth
+    self.capacity = capacity
+    self.count = 0 as u32
+    self.entries = @alloc(capacity as i64 * 8) as ptr[ScopeEntry] // ScopeEntry is 8 bytes
+    // Zero initialize
+    mut i := 0 as i64
+    while i < capacity as i64:
+        self.entries[i] = ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
+        i = i + 1
+
+fn hash_fnv1a(v: u32) -> u32:
+    mut hash := 2166136261 as u32
+    hash = hash ^ (v & 255 as u32)
+    hash = hash * 16777619 as u32
+    hash = hash ^ ((v >> 8 as u32) & 255 as u32)
+    hash = hash * 16777619 as u32
+    hash = hash ^ ((v >> 16 as u32) & 255 as u32)
+    hash = hash * 16777619 as u32
+    hash = hash ^ ((v >> 24 as u32) & 255 as u32)
+    hash = hash * 16777619 as u32
+    return hash
+
+pub fn scope_put(mut self: Scope, name_id: u32, symbol_idx: u32):
+    if self.count * 4 as u32 > self.capacity * 3 as u32:
+        self.scope_grow()
+    self.scope_insert(name_id, symbol_idx)
+    self.count = self.count + 1 as u32
+
+fn scope_insert(self: Scope, name_id: u32, symbol_idx: u32):
+    let mask = self.capacity - 1 as u32
+    mut idx = hash_fnv1a(name_id) & mask
+    while true:
+        if self.entries[idx].name_id == 0 as u32:
+            self.entries[idx].name_id = name_id
+            self.entries[idx].symbol_idx = symbol_idx
+            return
+        idx = (idx + 1 as u32) & mask
+
+pub fn scope_get(self: Scope, name_id: u32) -> ScopeEntry:
+    if self.capacity == 0 as u32:
+        return ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
+    let mask = self.capacity - 1 as u32
+    mut idx = hash_fnv1a(name_id) & mask
+    let start_idx = idx
+    while true:
+        let entry = self.entries[idx]
+        if entry.name_id == 0 as u32:
+            return ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
+        if entry.name_id == name_id:
+            return entry
+        idx = (idx + 1 as u32) & mask
+        if idx == start_idx:
+            break
+    return ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
+
+fn scope_grow(mut self: Scope):
+    let old_entries = self.entries
+    let old_capacity = self.capacity
+    let new_cap = old_capacity * 2 as u32
+    self.capacity = new_cap
+    self.entries = @alloc(new_cap as i64 * 8) as ptr[ScopeEntry]
+    mut i := 0 as i64
+    while i < new_cap as i64:
+        self.entries[i] = ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
+        i = i + 1
+
+    i = 0 as i64
+    while i < old_capacity as i64:
+        let entry = old_entries[i]
+        if entry.name_id != 0 as u32:
+            self.scope_insert(entry.name_id, entry.symbol_idx)
+        i = i + 1
+    @free(old_entries as ptr[u8])
+
+// Monomorphic vectors for symbol table
+pub struct SymbolVec:
+    data: ptr[Symbol]
+    len: i64
+    cap: i64
+
+pub fn new_symbol_vec() -> SymbolVec:
+    return SymbolVec(data: null as ptr[Symbol], len: 0, cap: 0)
+
+pub fn push(mut self: SymbolVec, sym: Symbol) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[Symbol] // Symbol is 24 bytes
+        if self.data != null as ptr[Symbol]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = sym
+    self.len = self.len + 1
+    return idx
+
+pub struct ScopeVec:
+    data: ptr[Scope]
+    len: i64
+    cap: i64
+
+pub fn new_scope_vec() -> ScopeVec:
+    return ScopeVec(data: null as ptr[Scope], len: 0, cap: 0)
+
+pub fn push(mut self: ScopeVec, scope: Scope) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 32) as ptr[Scope] // Scope is 32 bytes
+        if self.data != null as ptr[Scope]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = scope
+    self.len = self.len + 1
+    return idx
+
+pub struct U32Vec:
+    pub data: ptr[u32]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_u32_vec() -> U32Vec:
+    return U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+
+pub fn push(mut self: U32Vec, val: u32) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 4) as ptr[u32] // u32 is 4 bytes
+        if self.data != null as ptr[u32]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 4)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = val
+    self.len = self.len + 1
+    return idx
+
+pub fn pop(mut self: U32Vec) -> u32:
+    if self.len == 0:
+        return 0 as u32
+    self.len = self.len - 1
+    return self.data[self.len]
+
+pub fn append_unique(mut self: U32Vec, val: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.len:
+        if self.data[i] == val:
+            return i as u32
+        i = i + 1
+    return self.push(val)
+
+pub struct SymbolTable:
+    symbols: SymbolVec
+    scopes: ScopeVec
+    stack: U32Vec
+
+pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
+    mut st := SymbolTable(
+        symbols: new_symbol_vec(),
+        scopes: new_scope_vec(),
+        stack: new_u32_vec(),
+    )
+
+    // Prepopulate global scope
+    mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
+    global_scope.init_scope(SCOPE_GLOBAL, 0 as u32, 0 as u32, 64 as u32)
+    st.scopes.push(global_scope)
+    st.stack.push(0 as u32)
+
+    // Define builtins
+    st.define_builtin("i8", 1, intern)
+    st.define_builtin("i16", 2, intern)
+    st.define_builtin("i32", 3, intern)
+    st.define_builtin("i64", 4, intern)
+    st.define_builtin("u8", 5, intern)
+    st.define_builtin("u16", 6, intern)
+    st.define_builtin("u32", 7, intern)
+    st.define_builtin("u64", 8, intern)
+    st.define_builtin("f32", 9, intern)
+    st.define_builtin("f64", 10, intern)
+    st.define_builtin("bool", 11, intern)
+    st.define_builtin("string", 12, intern)
+    st.define_builtin("char8", 13, intern)
+    st.define_builtin("void", 14, intern)
+    st.define_builtin("isize", 15, intern)
+    st.define_builtin("usize", 16, intern)
+    st.define_builtin("ActorRef", 21, intern)
+    st.define_builtin("str", 12, intern)
+    st.define_builtin("ptr", 0, intern)
+    st.define_builtin("null", 0, intern)
+    st.define_builtin("alloc", 0, intern)
+    st.define_builtin("free", 0, intern)
+    st.define_builtin("memcpy", 0, intern)
+    st.define_builtin("memset", 0, intern)
+    st.define_builtin("print", 0, intern)
+    st.define_builtin("println", 0, intern)
+    st.define_builtin("compiler_intrinsic", 0, intern)
+    st.define_builtin("assert", 0, intern)
+
+    return st
+
+pub fn define_builtin(mut self: SymbolTable, name: str, type_id: u32, mut intern: InternPool):
+    let name_id = intern.intern_string(name)
+    let sym_idx = self.symbols.len as u32
+    self.symbols.push(Symbol(
+        name_id: name_id,
+        kind: SYM_BUILTIN_TYPE,
+        flags: SYM_FLAG_PUB,
+        type_id: type_id,
+        decl_node: 0 as u32,
+        scope_id: 0 as u32,
+        next_overload: 0 as u32,
+    ))
+    self.scopes.data[0].scope_put(name_id, sym_idx)
+
+pub fn push_scope(mut self: SymbolTable, kind: u8) -> u32:
+    let parent_id = self.current_scope()
+    let depth = self.current_depth() + 1 as u32
+    mut new_scope := Scope(kind: kind, padding1: 0 as u8, padding2: 0 as u16, parent_id: parent_id, depth: depth, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
+    new_scope.init_scope(kind, parent_id, depth, 16 as u32)
+    let idx = self.scopes.push(new_scope)
+    self.stack.push(idx)
+    return idx
+
+pub fn pop_scope(mut self: SymbolTable):
+    self.stack.pop()
+
+pub fn current_scope(self: SymbolTable) -> u32:
+    return self.stack.data[self.stack.len - 1]
+
+pub fn current_depth(self: SymbolTable) -> u32:
+    return (self.stack.len - 1) as u32
+
+pub fn define(mut self: SymbolTable, name_id: u32, kind: u8, flags: u16, decl_node: u32) -> u32:
+    let scope_idx = self.current_scope()
+    // printf("[DEBUG-RESOLVER-DEFINE] name_id=%d, kind=%d, scope_idx=%d, len=%d\n", name_id as i64, kind as i64, scope_idx as i64, self.symbols.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // Check duplicate in current scope
+    let prev = self.scopes.data[scope_idx].scope_get(name_id)
+    if prev.name_id != 0 as u32:
+        // printf("  [COLLISION] prev.name_id=%d, prev.symbol_idx=%d\n", prev.name_id as i64, prev.symbol_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // Support function overloading
+        if self.symbols.data[prev.symbol_idx].kind == SYM_FUNC and kind == SYM_FUNC:
+            mut curr_idx := prev.symbol_idx
+            while true:
+                if self.symbols.data[curr_idx].next_overload == 0 as u32:
+                    break
+                curr_idx = self.symbols.data[curr_idx].next_overload
+            let sym_idx = self.symbols.len as u32
+            self.symbols.push(Symbol(
+                name_id: name_id,
+                kind: kind,
+                flags: flags,
+                type_id: 0 as u32,
+                decl_node: decl_node,
+                scope_id: scope_idx,
+                next_overload: 0 as u32,
+            ))
+            self.symbols.data[curr_idx].next_overload = sym_idx
+            return sym_idx
+        return prev.symbol_idx // Already defined, return previous
+    let sym_idx = self.symbols.len as u32
+    self.symbols.push(Symbol(
+        name_id: name_id,
+        kind: kind,
+        flags: flags,
+        type_id: 0 as u32,
+        decl_node: decl_node,
+        scope_id: scope_idx,
+        next_overload: 0 as u32,
+    ))
+    self.scopes.data[scope_idx].scope_put(name_id, sym_idx)
+    return sym_idx
+
+pub fn resolve(self: SymbolTable, name_id: u32) -> u32:
+    mut i := self.stack.len - 1
+    while i >= 0:
+        let scope_idx = self.stack.data[i]
+        let entry = self.scopes.data[scope_idx].scope_get(name_id)
+        if entry.name_id != 0 as u32:
+            return entry.symbol_idx
+        i = i - 1
+    return 0 as u32
+
+pub struct NameResolver:
+    tree: AstTree
+    intern: InternPool
+    symtable: SymbolTable
+
+pub fn new_name_resolver(tree: AstTree, intern: InternPool, symtable: SymbolTable) -> NameResolver:
+    return NameResolver(tree: tree, intern: intern, symtable: symtable)
+
+pub fn resolve(mut self: NameResolver):
+    if self.tree.nodes.len == 0:
+        return
+    self.resolve_node(0 as u32)
+
+pub fn resolve_children(mut self: NameResolver, node_idx: u32):
+    let node = self.tree.nodes.data[node_idx]
+    mut child := node.first_child
+    while child != 0 as u32:
+        self.resolve_node(child)
+        child = self.tree.nodes.data[child].next_sibling
+
+pub fn resolve_node(mut self: NameResolver, node_idx: u32):
+    let kind = self.tree.nodes.data[node_idx].kind
+    let flags = self.tree.nodes.data[node_idx].flags
+
+    if kind == NODE_PROGRAM:
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_FUNC_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        mut sym_flags := 0 as u16
+        if (flags & FLAG_IS_PUB) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_PUB
+        if (flags & FLAG_IS_EXTERN) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_EXTERN
+        if (flags & FLAG_IS_ASYNC) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_ASYNC
+
+        let sym_idx = self.symtable.define(name_id, SYM_FUNC, sym_flags, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+
+        self.symtable.push_scope(SCOPE_FUNCTION)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_PARAM_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_PARAM, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_STRUCT_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_STRUCT, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.symtable.push_scope(SCOPE_BLOCK)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_FIELD_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_FIELD, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_INTERFACE_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_INTERFACE, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.symtable.push_scope(SCOPE_BLOCK)
+        let self_name_id = self.intern.intern_string("Self")
+        self.symtable.define(self_name_id, SYM_TYPE_ALIAS, 0 as u16, node_idx)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_VAR_DECL:
+        self.resolve_children(node_idx)
+        let name_id = self.tree.nodes.data[node_idx].payload
+        mut sym_flags := 0 as u16
+        if (flags & FLAG_IS_MUT) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_MUT
+        let sym_idx = self.symtable.define(name_id, SYM_VAR, sym_flags, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+
+    elif kind == NODE_CONST_DECL:
+        self.resolve_children(node_idx)
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_CONST, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+
+    elif kind == NODE_TYPE_ALIAS_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_TYPE_ALIAS, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.symtable.push_scope(SCOPE_BLOCK)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_VARIANT_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_VARIANT, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_IF_STMT or kind == NODE_ELIF_CLAUSE or kind == NODE_ELSE_CLAUSE or kind == NODE_MATCH_ARM or kind == NODE_ARENA_BLOCK or kind == NODE_UNSAFE_BLOCK or kind == NODE_WHILE_STMT:
+        self.symtable.push_scope(SCOPE_BLOCK)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_FOR_STMT:
+        self.symtable.push_scope(SCOPE_LOOP)
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_VAR, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_CLOSURE_EXPR:
+        self.symtable.push_scope(SCOPE_CLOSURE)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
+    elif kind == NODE_IDENT:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let name = self.intern.get(name_id)
+        if name != "break" and name != "continue":
+            let sym_idx = self.symtable.resolve(name_id)
+            if sym_idx != 0 as u32:
+                self.tree.nodes.data[node_idx].payload = sym_idx
+                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_TYPE_EXPR:
+        if self.tree.nodes.data[node_idx].payload != 0 as u32:
+            let name_id = self.tree.nodes.data[node_idx].payload
+            let sym_idx = self.symtable.resolve(name_id)
+            if sym_idx != 0 as u32:
+                self.tree.nodes.data[node_idx].payload = sym_idx
+                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_BINDING_PAT:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_VAR, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+
+    elif kind == NODE_VARIANT_PAT:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.resolve(name_id)
+        if sym_idx != 0 as u32:
+            self.tree.nodes.data[node_idx].payload = sym_idx
+            self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        self.resolve_children(node_idx)
+
+    else:
+        self.resolve_children(node_idx)
+
+pub fn free_symtable(mut self: SymbolTable):
+    mut i := 0 as i64
+    while i < self.scopes.len:
+        let scope = self.scopes.data[i]
+        if scope.entries != null as ptr[ScopeEntry]:
+            @free(scope.entries as ptr[u8])
+        i = i + 1
+    if self.symbols.data != null as ptr[Symbol]:
+        @free(self.symbols.data as ptr[u8])
+    if self.scopes.data != null as ptr[Scope]:
+        @free(self.scopes.data as ptr[u8])
+    if self.stack.data != null as ptr[u32]:
+        @free(self.stack.data as ptr[u8])

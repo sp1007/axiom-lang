@@ -160,6 +160,9 @@ func (g *ExprGen) emitIdent(idx uint32, node *ast.AstNode) string {
 	if text == "null" {
 		return "NULL"
 	}
+	if text == "continue" || text == "break" {
+		return text
+	}
 	symIdx := node.Payload
 	if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
 		sym := g.Symbols.SymbolAt(symIdx)
@@ -217,8 +220,13 @@ func (g *ExprGen) emitUnary(idx uint32, node *ast.AstNode) string {
 		return "/* invalid unary expr */"
 	}
 
-	operand := g.Emit(children[0])
 	opText := string(g.Tree.TokenText(node.TokenIdx))
+
+	if opText == "&" {
+		return g.emitAddressOf(children[0])
+	}
+
+	operand := g.Emit(children[0])
 
 	switch opText {
 	case "not":
@@ -235,10 +243,159 @@ func (g *ExprGen) emitUnary(idx uint32, node *ast.AstNode) string {
 	}
 }
 
+// emitAddressOf generates a safe address-of C expression for the given node, prepending bounds checks if necessary.
+func (g *ExprGen) emitAddressOf(nodeIdx uint32) string {
+	if g.isImplicitPointerC(nodeIdx) {
+		return g.Emit(nodeIdx)
+	}
+	checks := g.collectBoundsChecks(nodeIdx)
+	if len(checks) > 0 {
+		wasUnsafe := g.Unsafe
+		g.Unsafe = true
+		unsafeOperand := g.Emit(nodeIdx)
+		g.Unsafe = wasUnsafe
+
+		exprs := append(checks, "&("+unsafeOperand+")")
+		return fmt.Sprintf("((%s))", strings.Join(exprs, ", "))
+	}
+	return "&(" + g.Emit(nodeIdx) + ")"
+}
+
+// collectBoundsChecks recursively collects bounds-check C expression strings for all NodeIndexExpr found in a subtree.
+func (g *ExprGen) collectBoundsChecks(nodeIdx uint32) []string {
+	if nodeIdx == ast.NullIdx {
+		return nil
+	}
+	node := g.Tree.Node(nodeIdx)
+	var checks []string
+
+	// Recurse into children first to get bounds checks in depth-first/left-to-right order
+	children := g.Tree.Children(nodeIdx)
+	for _, childIdx := range children {
+		checks = append(checks, g.collectBoundsChecks(childIdx)...)
+	}
+
+	if node.Kind == ast.NodeIndexExpr {
+		idxChildren := g.Tree.Children(nodeIdx)
+		if len(idxChildren) >= 2 {
+			arrIdx := idxChildren[0]
+			indexIdx := idxChildren[1]
+
+			wasUnsafe := g.Unsafe
+			g.Unsafe = true
+			arr := g.Emit(arrIdx)
+			index := g.Emit(indexIdx)
+			g.Unsafe = wasUnsafe
+
+			colType := g.NodeType(arrIdx)
+			if colType != types.TypeUnknown {
+				entry := g.Table.Entry(colType)
+				if entry.Kind == types.KindArray {
+					length := g.Table.ArrayLength(colType)
+					checks = append(checks, fmt.Sprintf("ax_bounds_check((ax_u64)(%s), (ax_u64)(%d))", index, length))
+				} else if entry.Kind == types.KindPointer {
+					// Pointers have no bounds check
+				} else {
+					checks = append(checks, fmt.Sprintf("ax_bounds_check((ax_u64)(%s), (%s).len)", index, arr))
+				}
+			} else {
+				checks = append(checks, fmt.Sprintf("ax_bounds_check((ax_u64)(%s), (%s).len)", index, arr))
+			}
+		}
+	}
+
+	return checks
+}
+
+
+func (g *ExprGen) tryEmitCompilerIntrinsic(nodeIdx uint32, node *ast.AstNode) (string, bool) {
+	children := g.Tree.Children(nodeIdx)
+	if len(children) < 1 {
+		return "", false
+	}
+
+	calleeIdx := children[0]
+	calleeNode := g.Tree.Node(calleeIdx)
+
+	// Case 1: compiler_intrinsic("is_windows")
+	if calleeNode.Kind == ast.NodeIdent {
+		name := string(g.Tree.TokenText(calleeNode.TokenIdx))
+		if name == "compiler_intrinsic" {
+			if len(children) >= 2 {
+				argNode := g.Tree.Node(children[1])
+				if argNode.Kind == ast.NodeStringLit {
+					argStr := string(g.Tree.TokenText(argNode.TokenIdx))
+					// Normalize string literal by stripping quotes
+					argStr = strings.Trim(argStr, `"` + `'`)
+					if argStr == "is_windows" {
+						return "1", true
+					}
+				}
+			}
+		}
+	}
+
+	// Case 2: compiler_intrinsic("size_of")[T]()
+	if calleeNode.Kind == ast.NodeIndexExpr {
+		indexChildren := g.Tree.Children(calleeIdx)
+		if len(indexChildren) >= 2 {
+			innerCallIdx := indexChildren[0]
+			innerCallNode := g.Tree.Node(innerCallIdx)
+			if innerCallNode.Kind == ast.NodeCallExpr {
+				innerCallChildren := g.Tree.Children(innerCallIdx)
+				if len(innerCallChildren) >= 2 {
+					innerCalleeIdx := innerCallChildren[0]
+					innerCalleeNode := g.Tree.Node(innerCalleeIdx)
+					if innerCalleeNode.Kind == ast.NodeIdent {
+						innerCalleeName := string(g.Tree.TokenText(innerCalleeNode.TokenIdx))
+						if innerCalleeName == "compiler_intrinsic" {
+							argNode := g.Tree.Node(innerCallChildren[1])
+							if argNode.Kind == ast.NodeStringLit {
+								argStr := string(g.Tree.TokenText(argNode.TokenIdx))
+								argStr = strings.Trim(argStr, `"` + `'`)
+								if argStr == "size_of" {
+									// We found it! Now determine target type
+									typeNodeIdx := indexChildren[1]
+									var targetType types.TypeID = types.TypeUnknown
+									
+									typeNode := g.Tree.Node(typeNodeIdx)
+									if typeNode.Kind == ast.NodeTypeExpr {
+										symIdx := typeNode.Payload
+										if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+											sym := g.Symbols.SymbolAt(symIdx)
+											targetType = types.TypeID(sym.TypeID)
+										}
+									} else {
+										targetType = g.NodeType(typeNodeIdx)
+									}
+
+									if targetType != types.TypeUnknown && g.Table != nil {
+										ctype := CTypeName(targetType, g.Table, g.Intern, g.Queue)
+										return fmt.Sprintf("sizeof(%s)", ctype), true
+									}
+									// Fallback if type not fully known
+									targetTypeName := string(g.Tree.TokenText(typeNode.TokenIdx))
+									return fmt.Sprintf("sizeof(%s)", targetTypeName), true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", false
+}
+
 // emitCall emits a function call expression.
 // Checks the builtin table first; if the function is a recognized built-in,
 // emits a direct call to the C runtime function.
 func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
+	if intrinsicVal, ok := g.tryEmitCompilerIntrinsic(idx, node); ok {
+		return intrinsicVal
+	}
+
 	children := g.Tree.Children(idx)
 	if len(children) < 1 {
 		return "/* invalid call expr */"
@@ -335,9 +492,10 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		for j, val := range args {
 			actualIdx := children[j+1]
 			isImplicitPtr := g.isImplicitPointerC(actualIdx)
+			isPointer := g.isPointerInC(actualIdx)
 			if g.expectsPointer(symIdx, j) {
-				if !isImplicitPtr {
-					adaptedArgs[j] = "&(" + val + ")"
+				if !isPointer {
+					adaptedArgs[j] = g.emitAddressOf(actualIdx)
 				} else {
 					adaptedArgs[j] = val
 				}
@@ -377,9 +535,10 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 						var adaptedReceiver string
 						// Check if parameter 0 (receiver self) expects a pointer!
 						isRecImplicitPtr := g.isImplicitPointerC(receiverIdx)
+						isRecPointer := g.isPointerInC(receiverIdx)
 						if g.expectsPointer(methodSymIdx, 0) {
-							if !isRecImplicitPtr {
-								adaptedReceiver = "&(" + receiverExpr + ")"
+							if !isRecPointer {
+								adaptedReceiver = g.emitAddressOf(receiverIdx)
 							} else {
 								adaptedReceiver = receiverExpr
 							}
@@ -398,9 +557,10 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 						for j, val := range args {
 							actualIdx := children[j+1]
 							isImplicitPtr := g.isImplicitPointerC(actualIdx)
+							isPointer := g.isPointerInC(actualIdx)
 							if g.expectsPointer(methodSymIdx, j+1) {
-								if !isImplicitPtr {
-									callArgs = append(callArgs, "&("+val+")")
+								if !isPointer {
+									callArgs = append(callArgs, g.emitAddressOf(actualIdx))
 								} else {
 									callArgs = append(callArgs, val)
 								}
@@ -485,6 +645,14 @@ func (g *ExprGen) emitIndex(idx uint32, node *ast.AstNode) string {
 		if entry.Kind == types.KindPointer {
 			return fmt.Sprintf("((%s)[%s])", arr, index)
 		}
+		if entry.Kind == types.KindArray {
+			length := g.Table.ArrayLength(colType)
+			if g.Unsafe {
+				return fmt.Sprintf("((%s)[%s])", arr, index)
+			}
+			return fmt.Sprintf("(ax_bounds_check((ax_u64)(%s), (ax_u64)(%d)), (%s)[%s])",
+				index, length, arr, index)
+		}
 	}
 
 	if g.Unsafe {
@@ -506,9 +674,22 @@ func (g *ExprGen) emitCast(idx uint32, node *ast.AstNode) string {
 	targetType := types.TypeID(node.Payload)
 	fmt.Printf("[DEBUG-CGEN] emitCast nodeIdx=%d payload=%d targetType=%d\n", idx, node.Payload, targetType)
 
+	srcType := g.NodeType(children[0])
+	if srcType != types.TypeUnknown && g.Table != nil {
+		srcEntry := g.Table.Entry(srcType)
+		if srcType == types.TypeString || srcEntry.Kind == types.KindSlice {
+			if targetType != types.TypeUnknown {
+				targetEntry := g.Table.Entry(targetType)
+				if targetEntry.Kind == types.KindPointer {
+					ctype := CTypeName(targetType, g.Table, g.Intern, g.Queue)
+					return fmt.Sprintf("((%s)(%s.ptr))", ctype, inner)
+				}
+			}
+		}
+	}
+
 	if targetType == types.TypeString {
-		srcType := g.NodeType(children[0])
-		if srcType != types.TypeUnknown {
+		if srcType != types.TypeUnknown && g.Table != nil {
 			srcEntry := g.Table.Entry(srcType)
 			if srcEntry.Kind == types.KindPointer {
 				return fmt.Sprintf("((ax_string){.ptr = (const ax_u8*)(%s), .len = strlen((const char*)(%s))})", inner, inner)
@@ -528,6 +709,14 @@ func (g *ExprGen) emitDeref(idx uint32, node *ast.AstNode) string {
 	}
 
 	ref := g.Emit(children[0])
+	childType := g.NodeType(children[0])
+	if childType != types.TypeUnknown {
+		childEntry := g.Table.Entry(childType)
+		if childEntry.Kind == types.KindPointer {
+			return fmt.Sprintf("(*(%s))", ref)
+		}
+	}
+
 	targetType := types.TypeID(node.Payload)
 	ctype := CTypeName(targetType, g.Table, g.Intern, g.Queue)
 
@@ -789,6 +978,9 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 				if entry.Kind == types.KindSlice {
 					return g.Table.SliceElem(colType)
 				}
+				if entry.Kind == types.KindArray {
+					return g.Table.ArrayElem(colType)
+				}
 			}
 		}
 	case ast.NodeCallExpr:
@@ -867,6 +1059,12 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 		return false
 	}
 	sym := g.Symbols.SymbolAt(symIdx)
+	var symName string
+	if sym.NameID != 0 {
+		symName = g.Intern.Get(sym.NameID)
+	} else {
+		symName = "<unnamed>"
+	}
 	if sym.DeclNode == 0 {
 		return false
 	}
@@ -881,6 +1079,7 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 				isMut := (childNode.Flags & ast.FlagIsMut) != 0
 				
 				if isLent {
+					fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (LENT) -> true\n", symName, symIdx, paramIdx)
 					return true
 				}
 				if isMut {
@@ -893,10 +1092,19 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 								pt := fi.Params[paramIdx]
 								ptEntry := g.Table.Entry(pt)
 								if ptEntry.Kind == types.KindStruct || ptEntry.Kind == types.KindGenericInst {
+									fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT STRUCT) -> true\n", symName, symIdx, paramIdx)
 									return true
+								} else {
+									fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT NON-STRUCT kind=%v) -> false\n", symName, symIdx, paramIdx, ptEntry.Kind)
 								}
+							} else {
+								fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT paramIdx out of range %d) -> false\n", symName, symIdx, paramIdx, len(fi.Params))
 							}
+						} else {
+							fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT not function type kind=%v) -> false\n", symName, symIdx, paramIdx, entry.Kind)
 						}
+					} else {
+						fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT TypeID is 0) -> false\n", symName, symIdx, paramIdx)
 					}
 				}
 				return false

@@ -1,0 +1,87 @@
+// AXIOM Standard Library — std/reactor_test.ax
+//
+// Unit tests for AXIOM-native platform Event Loop Reactor.
+
+extern "C" fn puts(s: str) -> i32
+extern "C" fn printf(fmt: str, a1: i64) -> i32
+
+// FFI to check future completion from C runtime
+extern "C" fn ax_future_free(f: ptr[void])
+
+fn test_ioloop_lifecycle():
+    mut loop_inst := ioloop(backend_fd: 0, running: 0, events_processed: 0, pending_count: 0)
+    assert(loop_inst.init() == 0)
+    assert(loop_inst.backend_fd == -1)
+    assert(loop_inst.pending_count == 0 as u32)
+
+    // Check register
+    let mock_fut = ax_future_new(1 as u32)
+    let req = IORequest(
+        fd: 10 as i32,
+        events: IO_READ,
+        future: mock_fut,
+        buffer: null as ptr[void],
+        buf_size: 128 as u64,
+        actor_id: 99 as u64
+    )
+
+    assert(loop_inst.register(&req) == 0)
+    assert(loop_inst.pending_count == 1 as u32)
+    assert(loop_inst.pending[0].fd == 10)
+    assert(loop_inst.pending[0].events == IO_READ)
+
+    // Unregister
+    assert(loop_inst.unregister(10 as i32) == 0)
+    assert(loop_inst.pending_count == 0 as u32)
+
+    ax_future_free(mock_fut)
+    loop_inst.destroy()
+    puts("  PASS: test_ioloop_lifecycle")
+
+fn test_async_io_simulation():
+    mut loop_inst := ioloop(backend_fd: 0, running: 0, events_processed: 0, pending_count: 0)
+    loop_inst.init()
+
+    let buf: ptr[void] = null as ptr[void]
+    
+    // Trigger async read
+    let fut_read = io_read_async(&loop_inst, 5 as i32, buf, 1024 as u64, 42 as u64)
+    assert(fut_read != null as ptr[void])
+    assert(loop_inst.pending_count == 1 as u32)
+
+    // Trigger async write
+    let fut_write = io_write_async(&loop_inst, 6 as i32, buf, 2048 as u64, 42 as u64)
+    assert(fut_write != null as ptr[void])
+    assert(loop_inst.pending_count == 2 as u32)
+
+    // Check future state before poll (must be pending = 0)
+    let fl_read = fut_read as ptr[FutureLayout]
+    let fl_write = fut_write as ptr[FutureLayout]
+    assert(fl_read.state == 0)
+    assert(fl_write.state == 0)
+
+    // Poll the loop
+    let processed = loop_inst.poll(100 as i32)
+    assert(processed == 2)
+    assert(loop_inst.events_processed == 2 as u64)
+
+    // Check future state after poll (must be ready = 1)
+    assert(fl_read.state == 1)
+    assert(fl_write.state == 1)
+
+    // Verify resolved result values (must match buf_size)
+    let read_result_ptr = fl_read.result as ptr[u64]
+    let write_result_ptr = fl_write.result as ptr[u64]
+    assert(read_result_ptr.* == 1024 as u64)
+    assert(write_result_ptr.* == 2048 as u64)
+
+    ax_future_free(fut_read)
+    ax_future_free(fut_write)
+    loop_inst.destroy()
+    puts("  PASS: test_async_io_simulation")
+
+pub fn main():
+    puts("Running AXIOM-native Reactor unit tests...")
+    test_ioloop_lifecycle()
+    test_async_io_simulation()
+    puts("All AXIOM-native Reactor tests passed!")

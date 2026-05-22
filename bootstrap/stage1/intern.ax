@@ -1,0 +1,181 @@
+// bootstrap/stage1/intern.ax
+// Open-addressing string interning pool for AXIOM compiler frontend.
+
+pub struct InternEntry:
+    hash: u32
+    padding: u32
+    start: u32
+    len: u32
+    id: u32
+    dummy: u32
+
+pub fn fnv1a(s: str) -> u32:
+    mut h := 2166136261 as u32
+    let length = std.string.len(s)
+    mut i := 0
+    while i < length:
+        h = h ^ (s[i] as u32)
+        h = h * 16777619 as u32
+        i = i + 1
+    return h
+
+pub struct InternPool:
+    arena: ptr[u8]
+    arena_len: i64
+    arena_cap: i64
+    table: ptr[InternEntry]
+    table_size: i64 // power of 2
+    ids: ptr[InternEntry]
+    count: i64
+
+pub fn new_intern_pool() -> InternPool:
+    let table_size = 512 as i64
+    let table = @alloc(table_size * 24) as ptr[InternEntry] // InternEntry size is 24 bytes
+    mut i := 0
+    while i < table_size:
+        table[i] = InternEntry(hash: 0 as u32, padding: 0 as u32, start: 0 as u32, len: 0 as u32, id: 0 as u32, dummy: 0 as u32)
+        i = i + 1
+    let ids = @alloc(256 * 24) as ptr[InternEntry]
+    return InternPool(
+        arena: null as ptr[u8],
+        arena_len: 0,
+        arena_cap: 0,
+        table: table,
+        table_size: table_size,
+        ids: ids,
+        count: 0,
+    )
+
+fn alloc_str_from_raw(data: ptr[u8], len: i64) -> str:
+    // Raw copy to string representation
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, data, len)
+    buf[len] = 0 as u8
+    return buf as str
+
+pub fn get_str(self: InternPool, id: u32) -> str:
+    if id == 0 as u32 or id > self.count as u32:
+        return ""
+    let entry = self.ids[id as i64 - 1]
+    let start_ptr = (self.arena as i64 + entry.start as i64) as ptr[u8]
+    return alloc_str_from_raw(start_ptr, entry.len as i64)
+
+pub fn get(self: InternPool, id: u32) -> str:
+    return self.get_str(id)
+
+pub fn intern(mut self: InternPool, s: str) -> u32:
+    let length = std.string.len(s)
+    if length == 0:
+        return 0 as u32
+
+    let h = fnv1a(s)
+    let mask = self.table_size - 1
+    mut idx = (h as i64) & mask
+
+    while true:
+        let entry = self.table[idx]
+        if entry.id == 0 as u32:
+            // Insert slot
+            return self.insert_at(idx, s, h)
+        if entry.hash == h and entry.len as i64 == length:
+            // Check if string matches exactly
+            mut is_match := true
+            mut i := 0
+            while i < length:
+                if self.arena[entry.start as i64 + i] != s[i] as u8:
+                    is_match = false
+                    break
+                i = i + 1
+            if is_match:
+                return entry.id
+        idx = (idx + 1) & mask
+
+    return 0 as u32
+
+pub fn intern_string(mut self: InternPool, s: str) -> u32:
+    return self.intern(s)
+
+fn insert_at(mut self: InternPool, slot: i64, s: str, h: u32) -> u32:
+    let length = std.string.len(s)
+    
+    // Check if we need to resize ids table
+    // For simplicity, just grow by doubling if it exceeds current limit
+    // We assume max count starts at 256. Let's make it robust:
+    if self.count > 0 and self.count % 256 == 0:
+        let new_ids = @alloc((self.count + 256) * 24) as ptr[InternEntry]
+        @memcpy(new_ids as ptr[u8], self.ids as ptr[u8], self.count * 24)
+        @free(self.ids as ptr[u8])
+        self.ids = new_ids
+
+    // Resize arena if needed
+    if self.arena_len + length >= self.arena_cap:
+        mut new_cap := 1024 as i64
+        if self.arena_cap != 0:
+            new_cap = self.arena_cap * 2
+        if new_cap < self.arena_len + length:
+            new_cap = self.arena_len + length + 1024
+        let new_arena = @alloc(new_cap) as ptr[u8]
+        if self.arena != null as ptr[u8]:
+            @memcpy(new_arena, self.arena, self.arena_len)
+            @free(self.arena)
+        self.arena = new_arena
+        self.arena_cap = new_cap
+
+    let start = self.arena_len
+    mut i := 0
+    while i < length:
+        self.arena[start + i] = s[i] as u8
+        i = i + 1
+    self.arena_len = self.arena_len + length
+
+    let new_id = (self.count + 1) as u32
+    let entry = InternEntry(
+        hash: h,
+        padding: 0 as u32,
+        start: start as u32,
+        len: length as u32,
+        id: new_id,
+        dummy: 0 as u32,
+    )
+
+    self.table[slot] = entry
+    self.ids[self.count] = entry
+    self.count = self.count + 1
+
+    // If load factor exceeds 70%, we grow the hash table
+    if (self.count * 100) / self.table_size > 70:
+        self.grow_table()
+
+    return new_id
+
+fn grow_table(mut self: InternPool):
+    let old_size = self.table_size
+    let new_size = old_size * 2
+    let new_table = @alloc(new_size * 24) as ptr[InternEntry]
+    mut i := 0
+    while i < new_size:
+        new_table[i] = InternEntry(hash: 0 as u32, padding: 0 as u32, start: 0 as u32, len: 0 as u32, id: 0 as u32, dummy: 0 as u32)
+        i = i + 1
+
+    let mask = new_size - 1
+    i = 0
+    while i < old_size:
+        let entry = self.table[i]
+        if entry.id != 0 as u32:
+            mut idx = (entry.hash as i64) & mask
+            while new_table[idx].id != 0 as u32:
+                idx = (idx + 1) & mask
+            new_table[idx] = entry
+        i = i + 1
+
+    @free(self.table as ptr[u8])
+    self.table = new_table
+    self.table_size = new_size
+
+pub fn free_pool(mut self: InternPool):
+    if self.arena != null as ptr[u8]:
+        @free(self.arena)
+    if self.table != null as ptr[InternEntry]:
+        @free(self.table as ptr[u8])
+    if self.ids != null as ptr[InternEntry]:
+        @free(self.ids as ptr[u8])

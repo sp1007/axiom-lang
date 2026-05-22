@@ -2,6 +2,8 @@ package sema
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/diagnostics"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -9,13 +11,14 @@ import (
 
 // InferenceEngine performs local Hindley-Milner type inference on the AST.
 type InferenceEngine struct {
-	ast       *ast.AstTree
-	symtable  *SymbolTable
-	types     *types.TypeTable
-	mono      *Monomorphizer
-	nodeTypes map[uint32]types.TypeID
-	errors    []diagnostics.Diagnostic
-	ifaces    *Interfaces
+	ast             *ast.AstTree
+	symtable        *SymbolTable
+	types           *types.TypeTable
+	mono            *Monomorphizer
+	nodeTypes       map[uint32]types.TypeID
+	errors          []diagnostics.Diagnostic
+	ifaces          *Interfaces
+	structsInferred map[types.TypeID]bool
 	
 	// Track current function's return type for 'return' statement checking
 	currentReturn types.TypeID
@@ -24,12 +27,13 @@ type InferenceEngine struct {
 // NewInferenceEngine creates a new InferenceEngine.
 func NewInferenceEngine(tree *ast.AstTree, st *SymbolTable, tt *types.TypeTable, mono *Monomorphizer) *InferenceEngine {
 	return &InferenceEngine{
-		ast:       tree,
-		symtable:  st,
-		types:     tt,
-		mono:      mono,
-		nodeTypes: make(map[uint32]types.TypeID),
-		ifaces:    NewInterfaces(st, tt),
+		ast:             tree,
+		symtable:        st,
+		types:           tt,
+		mono:            mono,
+		nodeTypes:       make(map[uint32]types.TypeID),
+		ifaces:          NewInterfaces(st, tt),
+		structsInferred: make(map[types.TypeID]bool),
 	}
 }
 
@@ -118,6 +122,22 @@ func (ie *InferenceEngine) preInferFuncSignature(nodeIdx uint32) {
 func (ie *InferenceEngine) Infer() []diagnostics.Diagnostic {
 	if ie.ast == nil || ie.ast.NodeCount() == 0 {
 		return ie.errors
+	}
+
+	// Phase 0.5: Pre-register all empty struct symbols so that self-referential/cyclic references can resolve their pointer types
+	for i := 0; i < len(ie.ast.Nodes); i++ {
+		node := &ie.ast.Nodes[i]
+		if node.Kind == ast.NodeStructDecl {
+			symIdx := node.Payload
+			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+				sym := ie.symtable.SymbolAt(symIdx)
+				if sym.TypeID == 0 || sym.TypeID == uint32(types.TypeUnknown) {
+					nameID := sym.NameID
+					typeID := ie.types.RegisterStruct(nameID, nil, nil)
+					sym.TypeID = uint32(typeID)
+				}
+			}
+		}
 	}
 
 	// Phase 1: Pre-infer all struct definitions
@@ -239,36 +259,38 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		symIdx := node.Payload
 		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
 			sym := ie.symtable.SymbolAt(symIdx)
-			if sym.TypeID == 0 || sym.TypeID == uint32(types.TypeUnknown) {
-				var fields []types.FieldEntry
-				child := node.FirstChild
-				for child != 0 {
-					childNode := &ie.ast.Nodes[child]
-					if childNode.Kind == ast.NodeFieldDecl {
-						fSymIdx := childNode.Payload
-						if fSymIdx != 0 && int(fSymIdx) < len(ie.symtable.Symbols) {
-							fSym := ie.symtable.SymbolAt(fSymIdx)
-							var fieldType types.TypeID = types.TypeUnknown
-							fTypeNode := childNode.FirstChild
-							if fTypeNode != 0 {
-								fieldType = ie.inferNode(fTypeNode, types.TypeUnknown)
+			typeID := types.TypeID(sym.TypeID)
+			if typeID != 0 && typeID != types.TypeUnknown {
+				if !ie.structsInferred[typeID] {
+					ie.structsInferred[typeID] = true
+					var fields []types.FieldEntry
+					child := node.FirstChild
+					for child != 0 {
+						childNode := &ie.ast.Nodes[child]
+						if childNode.Kind == ast.NodeFieldDecl {
+							fSymIdx := childNode.Payload
+							if fSymIdx != 0 && int(fSymIdx) < len(ie.symtable.Symbols) {
+								fSym := ie.symtable.SymbolAt(fSymIdx)
+								var fieldType types.TypeID = types.TypeUnknown
+								fTypeNode := childNode.FirstChild
+								if fTypeNode != 0 {
+									fieldType = ie.inferNode(fTypeNode, types.TypeUnknown)
+								}
+								fSym.TypeID = uint32(fieldType)
+								fields = append(fields, types.FieldEntry{
+									NameID: fSym.NameID,
+									TypeID: fieldType,
+								})
+								fmt.Printf("[DEBUG] StructDecl typeID=%d append field NameID=%d TypeID=%d\n", typeID, fSym.NameID, fieldType)
 							}
-							fSym.TypeID = uint32(fieldType)
-							fields = append(fields, types.FieldEntry{
-								NameID: fSym.NameID,
-								TypeID: fieldType,
-							})
 						}
+						child = childNode.NextSibling
 					}
-					child = childNode.NextSibling
+					// Update the existing registered struct's fields directly!
+					sInfo := ie.types.StructInfo(typeID)
+					sInfo.Fields = fields
 				}
-
-				nameID := sym.NameID
-				typeID := ie.types.RegisterStruct(nameID, fields, nil)
-				sym.TypeID = uint32(typeID)
 				resultType = typeID
-			} else {
-				resultType = types.TypeID(sym.TypeID)
 			}
 		}
 
@@ -491,6 +513,8 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 					resultType = ie.types.PointerElem(collectionType)
 				} else if cEntry.Kind == types.KindSlice {
 					resultType = ie.types.SliceElem(collectionType)
+				} else if cEntry.Kind == types.KindArray {
+					resultType = ie.types.ArrayElem(collectionType)
 				}
 			}
 		}
@@ -515,6 +539,35 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			if resultType == types.TypeUnknown {
 				resultType = innerType
 			}
+		}
+
+	case ast.NodePtrType:
+		innerNodeIdx := node.FirstChild
+		if innerNodeIdx != 0 {
+			innerTypeID := ie.inferNode(innerNodeIdx, types.TypeUnknown)
+			resultType = ie.types.RegisterPointer(innerTypeID)
+		}
+
+	case ast.NodeSliceType:
+		innerNodeIdx := node.FirstChild
+		if innerNodeIdx != 0 {
+			innerTypeID := ie.inferNode(innerNodeIdx, types.TypeUnknown)
+			resultType = ie.types.RegisterSlice(innerTypeID)
+		}
+
+	case ast.NodeArrayType:
+		innerNodeIdx := node.FirstChild
+		if innerNodeIdx != 0 {
+			innerTypeID := ie.inferNode(innerNodeIdx, types.TypeUnknown)
+			sizeNodeIdx := ie.ast.Nodes[innerNodeIdx].NextSibling
+			var length uint32 = 1
+			if sizeNodeIdx != 0 {
+				sizeText := string(ie.ast.TokenText(ie.ast.Nodes[sizeNodeIdx].TokenIdx))
+				var parsedLen uint64
+				fmt.Sscanf(sizeText, "%d", &parsedLen)
+				length = uint32(parsedLen)
+			}
+			resultType = ie.types.RegisterArray(innerTypeID, length)
 		}
 
 	case ast.NodeFieldExpr:
@@ -610,6 +663,16 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 	case ast.NodeCallExpr:
 		callee := node.FirstChild
 		if callee != 0 {
+			if ie.isCompilerIntrinsicSizeOf(callee) {
+				resultType = types.TypeU64
+				arg := ie.ast.Nodes[callee].NextSibling
+				for arg != 0 {
+					ie.inferNode(arg, types.TypeUnknown)
+					arg = ie.ast.Nodes[arg].NextSibling
+				}
+				ie.nodeTypes[nodeIdx] = resultType
+				return resultType
+			}
 			calleeTypeID := ie.inferNode(callee, types.TypeUnknown)
 			if calleeTypeID != types.TypeUnknown {
 				entry := ie.types.Entry(calleeTypeID)
@@ -711,18 +774,24 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		operand := node.FirstChild
 		if operand != 0 {
 			operandType := ie.inferNode(operand, expected)
+			fmt.Printf("[DEBUG] Inference NodeUnaryExpr: op=%d operandType=%d\n", op, operandType)
 			if op == 2 { // not
 				resultType = types.TypeBool
+			} else if op == 4 { // & (address-of)
+				resultType = ie.types.RegisterPointer(operandType)
 			} else { // - or ~
 				resultType = operandType
 			}
+			fmt.Printf("[DEBUG] Inference NodeUnaryExpr resultType=%d\n", resultType)
 		}
 
 	case ast.NodeCastExpr:
 		expr := ie.ast.Nodes[nodeIdx].FirstChild
 		var targetType types.TypeID = types.TypeUnknown
 		if expr != 0 {
-			ie.inferNode(expr, types.TypeUnknown)
+			exprKind := ie.ast.Nodes[expr].Kind
+			exprType := ie.inferNode(expr, types.TypeUnknown)
+			fmt.Printf("[DEBUG] CastExpr child expr nodeIdx=%d Kind=%s Type=%d\n", expr, exprKind, exprType)
 			targetNodeIdx := ie.ast.Nodes[expr].NextSibling
 			if targetNodeIdx != 0 {
 				targetType = ie.inferNode(targetNodeIdx, types.TypeUnknown)
@@ -753,6 +822,21 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			}
 		}
 
+	case ast.NodeDerefExpr:
+		child := node.FirstChild
+		if child != 0 {
+			childType := ie.inferNode(child, types.TypeUnknown)
+			if childType != types.TypeUnknown {
+				entry := ie.types.Entry(childType)
+				if entry.Kind == types.KindPointer {
+					resultType = ie.types.PointerElem(childType)
+				} else {
+					resultType = childType
+				}
+			}
+		}
+		ie.ast.SetPayload(nodeIdx, uint32(resultType))
+
 	default:
 		// Recurse for anything else
 		child := node.FirstChild
@@ -775,4 +859,41 @@ func (ie *InferenceEngine) isAssignableTo(from, to types.TypeID) bool {
 		return ok
 	}
 	return ie.types.IsAssignableTo(from, to)
+}
+
+func (ie *InferenceEngine) isCompilerIntrinsicSizeOf(callee uint32) bool {
+	node := ie.ast.Nodes[callee]
+	if node.Kind != ast.NodeIndexExpr {
+		return false
+	}
+	children := ie.ast.Children(callee)
+	if len(children) < 2 {
+		return false
+	}
+	innerCall := children[0]
+	innerNode := ie.ast.Nodes[innerCall]
+	if innerNode.Kind != ast.NodeCallExpr {
+		return false
+	}
+	innerChildren := ie.ast.Children(innerCall)
+	if len(innerChildren) < 2 {
+		return false
+	}
+	identIdx := innerChildren[0]
+	identNode := ie.ast.Nodes[identIdx]
+	if identNode.Kind != ast.NodeIdent {
+		return false
+	}
+	name := string(ie.ast.NodeText(identIdx))
+	if name != "compiler_intrinsic" && name != "@compiler_intrinsic" {
+		return false
+	}
+	argIdx := innerChildren[1]
+	argNode := ie.ast.Nodes[argIdx]
+	if argNode.Kind != ast.NodeStringLit {
+		return false
+	}
+	argStr := string(ie.ast.NodeText(argIdx))
+	argStr = strings.Trim(argStr, `"` + `'`)
+	return argStr == "size_of"
 }

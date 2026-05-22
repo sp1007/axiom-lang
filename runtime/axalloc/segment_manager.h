@@ -20,7 +20,7 @@ extern "C" {
 
 #define SEGMENT_SIZE (64 * 1024)   /* 64KB per segment */
 #define MAX_SEGMENTS 4096          /* max total segments in pool */
-#define SEGMENT_MAGIC 0xAX5E6000   /* magic value for validation */
+#define SEGMENT_MAGIC 0xAF5E6000   /* magic value for validation */
 
 typedef struct Segment {
     char*           base;       /* start of usable memory */

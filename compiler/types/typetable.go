@@ -10,6 +10,7 @@ type TypeTable struct {
 	templates    []GenericTemplate
 	interfaces   []InterfaceType
 	genericInsts []GenericInstInfo
+	arrays       []ArrayType
 }
 
 // NewTypeTable creates a new TypeTable pre-populated with primitive types.
@@ -22,6 +23,7 @@ func NewTypeTable() *TypeTable {
 		templates:    make([]GenericTemplate, 0, 16),
 		interfaces:   make([]InterfaceType, 0, 16),
 		genericInsts: make([]GenericInstInfo, 0, 32),
+		arrays:       make([]ArrayType, 0, 32),
 	}
 
 	// 0: Unknown sentinel
@@ -366,6 +368,34 @@ func (tt *TypeTable) RegisterSlice(elemTypeID TypeID) TypeID {
 	return id
 }
 
+// RegisterArray registers a fixed-size array-of-T type and returns its TypeID.
+func (tt *TypeTable) RegisterArray(elemTypeID TypeID, length uint32) TypeID {
+	for idx, entry := range tt.entries {
+		if entry.Kind == KindArray {
+			arrInfo := tt.arrays[entry.Extra]
+			if arrInfo.ElemType == elemTypeID && arrInfo.Length == length {
+				return TypeID(idx)
+			}
+		}
+	}
+	arrIdx := uint32(len(tt.arrays))
+	tt.arrays = append(tt.arrays, ArrayType{
+		ElemType: elemTypeID,
+		Length:   length,
+	})
+
+	elemSize := tt.Entry(elemTypeID).Size
+	elemAlign := tt.Entry(elemTypeID).Align
+	id := TypeID(len(tt.entries))
+	tt.entries = append(tt.entries, TypeEntry{
+		Kind:  KindArray,
+		Size:  length * elemSize,
+		Align: elemAlign,
+		Extra: arrIdx,
+	})
+	return id
+}
+
 // RegisterGenericInst registers a monomorphized generic instantiation (e.g., Box[i32]).
 // nameID is the interned name of the template (e.g., "Box"), typeArgs are the concrete type arguments.
 // The GenericInstInfo is stored in a separate slice; Extra indexes into it.
@@ -420,4 +450,30 @@ func (tt *TypeTable) SliceElem(id TypeID) TypeID {
 		panic("TypeTable: TypeID is not a slice")
 	}
 	return TypeID(entry.Extra)
+}
+
+// ArrayType holds metadata for fixed-size array types.
+type ArrayType struct {
+	ElemType TypeID
+	Length   uint32
+}
+
+// ArrayElem returns the element TypeID of an array type.
+// Panics if the type is not KindArray.
+func (tt *TypeTable) ArrayElem(id TypeID) TypeID {
+	entry := tt.Entry(id)
+	if entry.Kind != KindArray {
+		panic("TypeTable: TypeID is not an array")
+	}
+	return tt.arrays[entry.Extra].ElemType
+}
+
+// ArrayLength returns the length of an array type.
+// Panics if the type is not KindArray.
+func (tt *TypeTable) ArrayLength(id TypeID) uint32 {
+	entry := tt.Entry(id)
+	if entry.Kind != KindArray {
+		panic("TypeTable: TypeID is not an array")
+	}
+	return tt.arrays[entry.Extra].Length
 }

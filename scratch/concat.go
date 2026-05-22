@@ -1,0 +1,61 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+func main() {
+	workspaceDir := "."
+	tokenPath := filepath.Join(workspaceDir, "bootstrap/stage1/token.ax")
+	lexerPath := filepath.Join(workspaceDir, "bootstrap/stage1/lexer.ax")
+	astPath := filepath.Join(workspaceDir, "bootstrap/stage1/ast.ax")
+	internPath := filepath.Join(workspaceDir, "bootstrap/stage1/intern.ax")
+	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
+	resolverPath := filepath.Join(workspaceDir, "bootstrap/stage1/resolver.ax")
+	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
+	airPath := filepath.Join(workspaceDir, "bootstrap/stage1/air.ax")
+	airBuilderPath := filepath.Join(workspaceDir, "bootstrap/stage1/air_builder.ax")
+	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
+
+	paths := []string{tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath, airPath, airBuilderPath, mainPath}
+	
+	var imports []string
+	var body []string
+	for _, p := range paths {
+		content, err := os.ReadFile(p)
+		if err != nil {
+			fmt.Printf("Error reading %s: %v\n", p, err)
+			os.Exit(1)
+		}
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "import ") {
+				imports = append(imports, line)
+			} else {
+				body = append(body, line)
+			}
+		}
+	}
+	importMap := make(map[string]bool)
+	var uniqueImports []string
+	for _, imp := range imports {
+		trimmed := strings.TrimSpace(imp)
+		if !importMap[trimmed] {
+			importMap[trimmed] = true
+			uniqueImports = append(uniqueImports, imp)
+		}
+	}
+	result := strings.Join(uniqueImports, "\n") + "\n\n" + strings.Join(body, "\n")
+	
+	outputPath := filepath.Join(workspaceDir, "bootstrap/stage1/tmp_concatenated_air.ax")
+	err := os.WriteFile(outputPath, []byte(result), 0644)
+	if err != nil {
+		fmt.Printf("Error writing output: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Successfully generated tmp_concatenated_air.ax")
+}

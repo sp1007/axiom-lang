@@ -83,7 +83,13 @@ func (t *AstTree) AddExtra(values ...uint32) uint32 {
 
 // TokenText recovers the source text for the given token index.
 func (t *AstTree) TokenText(tokenIdx uint32) []byte {
+	if tokenIdx >= uint32(len(t.Tokens)) {
+		return nil
+	}
 	tok := t.Tokens[tokenIdx]
+	if tok.Offset+uint32(tok.Len) > uint32(len(t.Source)) {
+		return nil
+	}
 	return t.Source[tok.Offset : tok.Offset+uint32(tok.Len)]
 }
 

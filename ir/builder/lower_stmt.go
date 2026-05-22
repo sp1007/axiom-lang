@@ -357,15 +357,27 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 	bodyBlock := fl.fb.NewBlock()
 	exitBlock := fl.fb.NewBlock()
 
-	// Get loop variable name
-	text := fl.mb.tree.TokenText(node.TokenIdx)
-	nameID := fl.mb.intern.Intern(text)
+	// Get loop variable name/symbol from payload
+	symIdx := node.Payload
+	var nameID uint32
+	var typeID uint16 = 3 // default i32
+
+	if symIdx != 0 && fl.mb.symbols != nil && int(symIdx) < len(fl.mb.symbols.Symbols) {
+		sym := fl.mb.symbols.SymbolAt(symIdx)
+		nameID = sym.NameID
+		if sym.TypeID != 0 {
+			typeID = uint16(sym.TypeID)
+		}
+	} else {
+		// Fallback
+		nameID = symIdx
+	}
 
 	// Initialize loop variable to 0
 	iterReg := fl.fb.FreshReg()
 	fl.fb.Emit(air.AirInst{
 		Opcode: air.OpIConst,
-		TypeID: uint16(3), // i32
+		TypeID: typeID,
 		Dest:   iterReg,
 		Src1:   0,
 	})
@@ -433,14 +445,14 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 		oneReg := fl.fb.FreshReg()
 		fl.fb.Emit(air.AirInst{
 			Opcode: air.OpIConst,
-			TypeID: uint16(3), // i32
+			TypeID: typeID,
 			Dest:   oneReg,
 			Src1:   1,
 		})
 		iterReg := fl.locals[nameID]
 		fl.fb.Emit(air.AirInst{
 			Opcode: air.OpIAdd,
-			TypeID: uint16(3),
+			TypeID: typeID,
 			Dest:   iterReg,
 			Src1:   iterReg,
 			Src2:   oneReg,

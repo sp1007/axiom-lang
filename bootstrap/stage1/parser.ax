@@ -1,0 +1,548 @@
+// bootstrap/stage1/parser.ax
+// AXIOM Recursive Descent + Pratt parser written in AXIOM itself.
+
+import std.string
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+// Pratt binding power constants
+pub const BP_NONE: i32 = 0
+pub const BP_OR: i32 = 10
+pub const BP_AND: i32 = 20
+pub const BP_NOT: i32 = 30
+pub const BP_CMP: i32 = 40
+pub const BP_BIT_OR: i32 = 50
+pub const BP_BIT_XOR: i32 = 60
+pub const BP_BIT_AND: i32 = 70
+pub const BP_SHIFT: i32 = 80
+pub const BP_ADD: i32 = 90
+pub const BP_MUL: i32 = 100
+pub const BP_POWER: i32 = 110
+pub const BP_UNARY: i32 = 120
+pub const BP_POSTFIX: i32 = 130
+
+pub struct Parser:
+    tokens: TokenVec
+    pos: i64
+    tree: AstTree
+    pool: InternPool
+    src: str
+    diags_count: i64
+
+pub fn new_parser(tokens: TokenVec, src: str, pool: InternPool) -> Parser:
+    return Parser(
+        tokens: tokens,
+        pos: 0,
+        tree: new_ast_tree(src, tokens),
+        pool: pool,
+        src: src,
+        diags_count: 0,
+    )
+
+pub fn peek(mut self: Parser) -> Token:
+    // Skip bare NEWLINEs
+    while self.pos < self.tokens.len and self.tokens.data[self.pos].kind == TK_NEWLINE:
+        self.pos = self.pos + 1
+    if self.pos >= self.tokens.len:
+        return Token(kind: TK_EOF, padding: 0 as u8, len: 0 as u16, offset: 0 as u32)
+    return self.tokens.data[self.pos]
+
+pub fn peek_raw(self: Parser) -> Token:
+    if self.pos >= self.tokens.len:
+        return Token(kind: TK_EOF, padding: 0 as u8, len: 0 as u16, offset: 0 as u32)
+    return self.tokens.data[self.pos]
+
+pub fn peek_at(self: Parser, offset: i64) -> Token:
+    mut pos := self.pos + offset
+    while pos < self.tokens.len and self.tokens.data[pos].kind == TK_NEWLINE:
+        pos = pos + 1
+    if pos >= self.tokens.len:
+        return Token(kind: TK_EOF, padding: 0 as u8, len: 0 as u16, offset: 0 as u32)
+    return self.tokens.data[pos]
+
+pub fn consume(mut self: Parser) -> Token:
+    let tok = self.peek()
+    if self.pos < self.tokens.len:
+        self.pos = self.pos + 1
+    return tok
+
+pub fn check(mut self: Parser, kind: u8) -> bool:
+    return self.peek().kind == kind
+
+pub fn check_raw(self: Parser, kind: u8) -> bool:
+    return self.peek_raw().kind == kind
+
+pub fn errorf(mut self: Parser, tok: Token, msg: str):
+    self.diags_count = self.diags_count + 1
+    // Simple diagnostic printing
+    printf("error: %s at offset %d\n", (msg as ptr[u8]) as i64, tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+pub fn expect(mut self: Parser, kind: u8) -> Token:
+    let tok = self.peek()
+    if tok.kind != kind:
+        self.errorf(tok, "unexpected token")
+        return tok
+    return self.consume()
+
+pub fn expect_newline(mut self: Parser):
+    if self.pos < self.tokens.len and self.tokens.data[self.pos].kind == TK_NEWLINE:
+        self.pos = self.pos + 1
+        return
+    let raw = self.peek_raw()
+    if raw.kind != TK_EOF and raw.kind != TK_DEDENT:
+        self.errorf(raw, "expected newline")
+
+pub fn token_idx(self: Parser, tok: Token) -> u32:
+    mut lo := 0 as i64
+    mut hi := self.tokens.len
+    while lo < hi:
+        let mid = (lo + hi) / 2
+        if self.tokens.data[mid].offset < tok.offset:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo < self.tokens.len:
+        return lo as u32
+    return 0 as u32
+
+pub fn token_text(self: Parser, tok: Token) -> str:
+    if tok.len == 0 as u16:
+        return ""
+    let start_ptr = ((self.src as ptr[u8]) as i64 + tok.offset as i64) as ptr[u8]
+    return alloc_str_from_raw(start_ptr, tok.len as i64)
+
+pub fn append_child(mut self: Parser, parent: u32, child: u32):
+    if self.tree.nodes.data[parent].first_child == NULL_IDX:
+        self.tree.nodes.data[parent].first_child = child
+        return
+    mut cur := self.tree.nodes.data[parent].first_child
+    while self.tree.nodes.data[cur].next_sibling != NULL_IDX:
+        cur = self.tree.nodes.data[cur].next_sibling
+    self.tree.nodes.data[cur].next_sibling = child
+
+pub fn set_payload(mut self: Parser, node: u32, payload: u32):
+    self.tree.nodes.data[node].payload = payload
+
+pub fn set_flags(mut self: Parser, node: u32, flags: u16):
+    self.tree.nodes.data[node].flags = self.tree.nodes.data[node].flags | flags
+
+fn left_binding_power(kind: u8) -> i32:
+    if kind == TK_OR:
+        return BP_OR
+    if kind == TK_AND:
+        return BP_AND
+    if kind == TK_EQ_EQ or kind == TK_BANG_EQ or kind == TK_LT or kind == TK_GT or kind == TK_LT_EQ or kind == TK_GT_EQ:
+        return BP_CMP
+    if kind == TK_PIPE:
+        return BP_BIT_OR
+    if kind == TK_CARET:
+        return BP_BIT_XOR
+    if kind == TK_AMP:
+        return BP_BIT_AND
+    if kind == TK_LT_LT or kind == TK_GT_GT:
+        return BP_SHIFT
+    if kind == TK_PLUS or kind == TK_MINUS:
+        return BP_ADD
+    if kind == TK_STAR or kind == TK_SLASH or kind == TK_PERCENT:
+        return BP_MUL
+    if kind == TK_STAR_STAR:
+        return BP_POWER
+    if kind == TK_DOT_DOT:
+        return 35 // range
+    if kind == TK_DOT or kind == TK_DOT_STAR or kind == TK_L_BRACKET or kind == TK_L_PAREN or kind == TK_AS:
+        return BP_POSTFIX
+    return BP_NONE
+
+pub fn parse_expr_with_prec(mut self: Parser, min_bp: i32) -> u32:
+    mut left := self.parse_nud()
+    if left == 0 as u32:
+        return 0 as u32
+    while true:
+        let tok = self.peek_raw()
+        let bp = left_binding_power(tok.kind)
+        if bp <= min_bp:
+            break
+        left = self.parse_led(left, tok, bp)
+        if left == 0 as u32:
+            break
+    return left
+
+pub fn parse_nud(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind == TK_IDENT:
+        self.consume()
+        let node = self.tree.add_node(NODE_IDENT, self.token_idx(tok))
+        let text = self.token_text(tok)
+        let name_id = self.pool.intern(text)
+        @free(text as ptr[u8])
+        self.set_payload(node, name_id)
+        return node
+    if tok.kind == TK_INT_LIT:
+        self.consume()
+        return self.tree.add_node(NODE_INT_LIT, self.token_idx(tok))
+    if tok.kind == TK_FLOAT_LIT:
+        self.consume()
+        return self.tree.add_node(NODE_FLOAT_LIT, self.token_idx(tok))
+    if tok.kind == TK_STRING_LIT:
+        self.consume()
+        return self.tree.add_node(NODE_STRING_LIT, self.token_idx(tok))
+    if tok.kind == TK_CHAR_LIT:
+        self.consume()
+        return self.tree.add_node(NODE_CHAR_LIT, self.token_idx(tok))
+    if tok.kind == TK_TRUE or tok.kind == TK_FALSE:
+        self.consume()
+        return self.tree.add_node(NODE_BOOL_LIT, self.token_idx(tok))
+    if tok.kind == TK_NIL:
+        self.consume()
+        return self.tree.add_node(NODE_NIL_LIT, self.token_idx(tok))
+    if tok.kind == TK_MINUS or tok.kind == TK_TILDE or tok.kind == TK_AMP:
+        self.consume()
+        let node = self.tree.add_node(NODE_UNARY_EXPR, self.token_idx(tok))
+        let operand = self.parse_expr_with_prec(BP_UNARY)
+        if operand != 0 as u32:
+            self.append_child(node, operand)
+        return node
+    if tok.kind == TK_NOT:
+        self.consume()
+        let node = self.tree.add_node(NODE_UNARY_EXPR, self.token_idx(tok))
+        let operand = self.parse_expr_with_prec(BP_NOT)
+        if operand != 0 as u32:
+            self.append_child(node, operand)
+        return node
+    if tok.kind == TK_L_PAREN:
+        self.consume() // '('
+        let inner = self.parse_expr_with_prec(BP_NONE)
+        self.expect(TK_R_PAREN)
+        return inner
+
+    self.errorf(tok, "expected expression nud")
+    self.consume()
+    return 0 as u32
+
+pub fn parse_led(mut self: Parser, left: u32, op_tok: Token, bp: i32) -> u32:
+    self.consume() // consume operator
+    if (op_tok.kind == TK_OR or op_tok.kind == TK_AND or
+        op_tok.kind == TK_EQ_EQ or op_tok.kind == TK_BANG_EQ or
+        op_tok.kind == TK_LT or op_tok.kind == TK_GT or op_tok.kind == TK_LT_EQ or op_tok.kind == TK_GT_EQ or
+        op_tok.kind == TK_PIPE or op_tok.kind == TK_CARET or op_tok.kind == TK_AMP or
+        op_tok.kind == TK_LT_LT or op_tok.kind == TK_GT_GT or
+        op_tok.kind == TK_PLUS or op_tok.kind == TK_MINUS or
+        op_tok.kind == TK_STAR or op_tok.kind == TK_SLASH or op_tok.kind == TK_PERCENT or
+        op_tok.kind == TK_DOT_DOT):
+        let node = self.tree.add_node(NODE_BINARY_EXPR, self.token_idx(op_tok))
+        mut flags := 0 as u16
+        if (op_tok.kind == TK_EQ_EQ or op_tok.kind == TK_BANG_EQ or
+            op_tok.kind == TK_LT or op_tok.kind == TK_GT or
+            op_tok.kind == TK_LT_EQ or op_tok.kind == TK_GT_EQ):
+            flags = 1 as u16
+        elif op_tok.kind == TK_AND or op_tok.kind == TK_OR:
+            flags = 2 as u16
+        if flags != 0 as u16:
+            self.set_flags(node, flags)
+        self.append_child(node, left)
+        let right = self.parse_expr_with_prec(bp)
+        if right != 0 as u32:
+            self.append_child(node, right)
+        return node
+    if op_tok.kind == TK_STAR_STAR:
+        let node = self.tree.add_node(NODE_BINARY_EXPR, self.token_idx(op_tok))
+        self.append_child(node, left)
+        let right = self.parse_expr_with_prec(bp - 1)
+        if right != 0 as u32:
+            self.append_child(node, right)
+        return node
+    if op_tok.kind == TK_DOT:
+        let tok = self.peek()
+        let field_tok = self.expect(TK_IDENT)
+        let node = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
+        self.append_child(node, left)
+        let text = self.token_text(field_tok)
+        self.set_payload(node, self.pool.intern(text))
+        @free(text as ptr[u8])
+        let field_name = self.tree.add_node(NODE_IDENT, self.token_idx(field_tok))
+        self.append_child(node, field_name)
+        return node
+    if op_tok.kind == TK_DOT_STAR:
+        let node = self.tree.add_node(NODE_DEREF_EXPR, self.token_idx(op_tok))
+        self.append_child(node, left)
+        return node
+    if op_tok.kind == TK_L_BRACKET:
+        let node = self.tree.add_node(NODE_INDEX_EXPR, self.token_idx(op_tok))
+        self.append_child(node, left)
+        let idx = self.parse_expr_with_prec(BP_NONE)
+        if idx != 0 as u32:
+            self.append_child(node, idx)
+        self.expect(TK_R_BRACKET)
+        return node
+    if op_tok.kind == TK_L_PAREN:
+        return self.parse_call_args(left, op_tok)
+    if op_tok.kind == TK_AS:
+        let node = self.tree.add_node(NODE_CAST_EXPR, self.token_idx(op_tok))
+        self.append_child(node, left)
+        let type_node = self.parse_type_expr()
+        if type_node != 0 as u32:
+            self.append_child(node, type_node)
+        return node
+
+    return left
+
+pub fn parse_call_args(mut self: Parser, callee: u32, lparen: Token) -> u32:
+    let node = self.tree.add_node(NODE_CALL_EXPR, self.token_idx(lparen))
+    self.append_child(node, callee)
+    while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        if self.check(TK_IDENT) and self.peek_at(1 as i64).kind == TK_COLON:
+            let arg_node = self.tree.add_node(NODE_NAMED_ARG, self.token_idx(self.peek()))
+            let name_tok = self.consume()
+            self.consume() // :
+            let text = self.token_text(name_tok)
+            let name_id = self.pool.intern(text)
+            @free(text as ptr[u8])
+            self.set_payload(arg_node, name_id)
+            let expr = self.parse_expr_with_prec(BP_NONE)
+            if expr != 0 as u32:
+                self.append_child(arg_node, expr)
+            self.append_child(node, arg_node)
+        else:
+            let expr = self.parse_expr_with_prec(BP_NONE)
+            if expr != 0 as u32:
+                self.append_child(node, expr)
+        if not self.check(TK_R_PAREN):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_PAREN)
+    return node
+
+pub fn parse_stmt(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind == TK_LET or tok.kind == TK_MUT:
+        return self.parse_var_decl()
+    if tok.kind == TK_RETURN:
+        return self.parse_return_stmt()
+    if tok.kind == TK_IF:
+        return self.parse_if_stmt()
+    if tok.kind == TK_WHILE:
+        return self.parse_while_loop()
+    if tok.kind == TK_FOR:
+        return self.parse_for_loop()
+
+    return self.parse_expr_stmt()
+
+pub fn parse_var_decl(mut self: Parser) -> u32:
+    let tok = self.consume() // let/mut
+    let node = self.tree.add_node(NODE_VAR_DECL, self.token_idx(tok))
+    if tok.kind == TK_MUT:
+        self.set_flags(node, FLAG_IS_MUT as u16)
+    let name_tok = self.expect(TK_IDENT)
+    let text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    if self.check(TK_COLON):
+        self.consume() // ':'
+        let t = self.parse_type_expr()
+        if t != 0 as u32:
+            self.append_child(node, t)
+    if self.check(TK_EQ) or self.check(TK_COLON_EQ):
+        self.consume()
+        let val = self.parse_expr_with_prec(BP_NONE)
+        if val != 0 as u32:
+            self.append_child(node, val)
+    self.expect_newline()
+    return node
+
+pub fn parse_return_stmt(mut self: Parser) -> u32:
+    let tok = self.expect(TK_RETURN)
+    let node = self.tree.add_node(NODE_RETURN_STMT, self.token_idx(tok))
+    let raw = self.peek_raw()
+    if raw.kind != TK_NEWLINE and raw.kind != TK_DEDENT and raw.kind != TK_EOF:
+        let val = self.parse_expr_with_prec(BP_NONE)
+        if val != 0 as u32:
+            self.append_child(node, val)
+    self.expect_newline()
+    return node
+
+pub fn parse_if_stmt(mut self: Parser) -> u32:
+    let tok = self.expect(TK_IF)
+    let node = self.tree.add_node(NODE_IF_STMT, self.token_idx(tok))
+    let cond = self.parse_expr_with_prec(BP_NONE)
+    if cond != 0 as u32:
+        self.append_child(node, cond)
+    self.expect(TK_COLON)
+    let body = self.parse_block()
+    if body != 0 as u32:
+        self.append_child(node, body)
+
+    if self.check(TK_ELSE):
+        let else_tok = self.consume()
+        let else_node = self.tree.add_node(NODE_ELSE_CLAUSE, self.token_idx(else_tok))
+        self.expect(TK_COLON)
+        let else_body = self.parse_block()
+        if else_body != 0 as u32:
+            self.append_child(else_node, else_body)
+        self.append_child(node, else_node)
+
+    return node
+
+pub fn parse_while_loop(mut self: Parser) -> u32:
+    let tok = self.expect(TK_WHILE)
+    let node = self.tree.add_node(NODE_WHILE_STMT, self.token_idx(tok))
+    let cond = self.parse_expr_with_prec(BP_NONE)
+    if cond != 0 as u32:
+        self.append_child(node, cond)
+    self.expect(TK_COLON)
+    let body = self.parse_block()
+    if body != 0 as u32:
+        self.append_child(node, body)
+    return node
+
+pub fn parse_for_loop(mut self: Parser) -> u32:
+    let tok = self.expect(TK_FOR)
+    let node = self.tree.add_node(NODE_FOR_STMT, self.token_idx(tok))
+    let var_tok = self.expect(TK_IDENT)
+    let text = self.token_text(var_tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    self.expect(TK_IN)
+    let iter = self.parse_expr_with_prec(BP_NONE)
+    if iter != 0 as u32:
+        self.append_child(node, iter)
+    self.expect(TK_COLON)
+    let body = self.parse_block()
+    if body != 0 as u32:
+        self.append_child(node, body)
+    return node
+
+pub fn parse_expr_stmt(mut self: Parser) -> u32:
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr == 0 as u32:
+        return 0 as u32
+    let tok = self.peek_raw()
+    if (tok.kind == TK_EQ or tok.kind == TK_PLUS_EQ or tok.kind == TK_MINUS_EQ or
+        tok.kind == TK_STAR_EQ or tok.kind == TK_SLASH_EQ or tok.kind == TK_PERCENT_EQ):
+        self.consume()
+        let node = self.tree.add_node(NODE_ASSIGN_STMT, self.token_idx(tok))
+        self.append_child(node, expr)
+        let rhs = self.parse_expr_with_prec(BP_NONE)
+        if rhs != 0 as u32:
+            self.append_child(node, rhs)
+        self.expect_newline()
+        return node
+    self.expect_newline()
+    return expr
+
+pub fn parse_block(mut self: Parser) -> u32:
+    let tok = self.expect(TK_INDENT)
+    let node = self.tree.add_node(NODE_BLOCK, self.token_idx(tok))
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let stmt = self.parse_stmt()
+        if stmt != 0 as u32:
+            self.append_child(node, stmt)
+        if self.pos == prev_pos:
+            self.pos = self.pos + 1
+    self.expect(TK_DEDENT)
+    return node
+
+pub fn parse_type_expr(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind == TK_IDENT:
+        self.consume()
+        let node = self.tree.add_node(NODE_TYPE_EXPR, self.token_idx(tok))
+        let text = self.token_text(tok)
+        self.set_payload(node, self.pool.intern(text))
+        @free(text as ptr[u8])
+        return node
+    if tok.kind == TK_STAR:
+        self.consume()
+        let node = self.tree.add_node(NODE_PTR_TYPE, self.token_idx(tok))
+        if self.check(TK_MUT):
+            self.consume()
+            self.set_flags(node, FLAG_IS_MUT as u16)
+        let inner = self.parse_type_expr()
+        if inner != 0 as u32:
+            self.append_child(node, inner)
+        return node
+    if tok.kind == TK_L_BRACKET:
+        self.consume()
+        let node = self.tree.add_node(NODE_SLICE_TYPE, self.token_idx(tok))
+        let inner = self.parse_type_expr()
+        if inner != 0 as u32:
+            self.append_child(node, inner)
+        self.expect(TK_R_BRACKET)
+        return node
+
+    self.errorf(tok, "expected type expression")
+    return 0 as u32
+
+pub fn parse_func_decl(mut self: Parser, is_pub: bool) -> u32:
+    let fn_tok = self.expect(TK_FN)
+    let node = self.tree.add_node(NODE_FUNC_DECL, self.token_idx(fn_tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+
+    self.expect(TK_L_PAREN)
+    while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let param_tok = self.peek()
+        let param = self.tree.add_node(NODE_PARAM_DECL, self.token_idx(param_tok))
+        if self.check(TK_MUT):
+            self.consume()
+            self.set_flags(param, FLAG_IS_MUT as u16)
+        let param_name = self.expect(TK_IDENT)
+        let param_text = self.token_text(param_name)
+        self.set_payload(param, self.pool.intern(param_text))
+        @free(param_text as ptr[u8])
+        self.expect(TK_COLON)
+        let t = self.parse_type_expr()
+        if t != 0 as u32:
+            self.append_child(param, t)
+        self.append_child(node, param)
+
+        if not self.check(TK_R_PAREN):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+
+    self.expect(TK_R_PAREN)
+
+    if self.check(TK_ARROW):
+        self.consume()
+        let ret = self.parse_type_expr()
+        if ret != 0 as u32:
+            self.append_child(node, ret)
+
+    self.expect(TK_COLON)
+    let body = self.parse_block()
+    if body != 0 as u32:
+        self.append_child(node, body)
+
+    return node
+
+pub fn parse_program(mut self: Parser):
+    while not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let tok = self.peek()
+        mut decl := 0 as u32
+        if tok.kind == TK_PUB:
+            self.consume()
+            let next = self.peek()
+            if next.kind == TK_FN:
+                decl = self.parse_func_decl(true)
+        elif tok.kind == TK_FN:
+            decl = self.parse_func_decl(false)
+        else:
+            self.errorf(tok, "expected top level declaration")
+            self.consume()
+
+        if decl != 0 as u32:
+            self.append_child(0 as u32, decl)
+
+        if self.pos == prev_pos:
+            self.consume()

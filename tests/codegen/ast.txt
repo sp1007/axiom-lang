@@ -1,0 +1,1209 @@
+Program
+  FuncDecl [extern] name="fn" @1
+    ParamDecl name="s" @2
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    ParamDecl name="c" @5
+      TypeExpr @6
+    ParamDecl name="n" @7
+      TypeExpr @8
+    GenericType
+      TypeExpr @3
+      TypeExpr @4
+  FuncDecl [extern] name="fn" @9
+    ParamDecl name="type_tag" @10
+      TypeExpr @11
+    GenericType
+      TypeExpr @3
+      TypeExpr @4
+  FuncDecl [extern] name="fn" @12
+    ParamDecl name="f" @13
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    ParamDecl name="result" @14
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    ParamDecl name="size" @15
+      TypeExpr @8
+  FuncDecl [extern] name="fn" @16
+    ParamDecl name="f" @13
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    TypeExpr @6
+  ConstDecl [pub] @17
+    TypeExpr @11
+    CastExpr
+      IntLit value="1"
+      TypeExpr @11
+  ConstDecl [pub] @18
+    TypeExpr @11
+    CastExpr
+      IntLit value="2"
+      TypeExpr @11
+  ConstDecl [pub] @19
+    TypeExpr @11
+    CastExpr
+      IntLit value="4"
+      TypeExpr @11
+  ConstDecl [pub] @20
+    TypeExpr @11
+    CastExpr
+      IntLit value="8"
+      TypeExpr @11
+  StructDecl [pub] name="struct" @21
+    FieldDecl [pub] name="fd" @22
+      TypeExpr @6
+    FieldDecl [pub] name="events" @23
+      TypeExpr @11
+    FieldDecl [pub] name="future" @24
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    FieldDecl [pub] name="buffer" @25
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    FieldDecl [pub] name="buf_size" @26
+      TypeExpr @8
+    FieldDecl [pub] name="actor_id" @27
+      TypeExpr @8
+  StructDecl [pub] name="struct" @28
+    FieldDecl [pub] name="backend_fd" @29
+      TypeExpr @6
+    FieldDecl [pub] name="running" @30
+      TypeExpr @6
+    FieldDecl [pub] name="events_processed" @31
+      TypeExpr @8
+    FieldDecl [pub] name="pending" @32
+      ArrayType
+        TypeExpr @21
+        IntLit value="1024"
+    FieldDecl [pub] name="pending_count" @33
+      TypeExpr @11
+  StructDecl [pub] name="struct" @34
+    FieldDecl [pub] name="state" @35
+      TypeExpr @6
+    FieldDecl [pub] name="result" @14
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    FieldDecl [pub] name="result_size" @36
+      TypeExpr @8
+    FieldDecl [pub] name="error" @37
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    FieldDecl [pub] name="type_tag" @10
+      TypeExpr @11
+    FieldDecl [pub] name="coroutine" @38
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    FieldDecl [pub] name="resume_point" @39
+      TypeExpr @6
+    FieldDecl [pub] name="waiter_actor" @40
+      TypeExpr @8
+  FuncDecl [pub] name="fn" @41
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    TypeExpr @6
+    Block
+      VarDecl @43
+        CastExpr
+          UnaryExpr [async] op="&"
+            Ident name="self" @42
+          GenericType
+            TypeExpr @3
+            TypeExpr @4
+      VarDecl @44
+        CallExpr
+          IndexExpr
+            CallExpr
+              Ident name="compiler_intrinsic" @45
+              StringLit value="\"size_of\""
+            Ident name="ioloop" @28
+      CallExpr
+        Ident name="memset" @1
+        Ident name="p" @43
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+        CastExpr
+          Ident name="sz" @44
+          TypeExpr @8
+      AssignStmt op="="
+        FieldExpr @29
+          Ident name="self" @42
+          Ident name="backend_fd"
+        UnaryExpr [pub] op="-"
+          CastExpr
+            IntLit value="1"
+            TypeExpr @6
+      AssignStmt op="="
+        FieldExpr @30
+          Ident name="self" @42
+          Ident name="running"
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+      ReturnStmt
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+  FuncDecl [pub] name="fn" @46
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    Block
+      AssignStmt op="="
+        FieldExpr @30
+          Ident name="self" @42
+          Ident name="running"
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+      AssignStmt op="="
+        FieldExpr @33
+          Ident name="self" @42
+          Ident name="pending_count"
+        CastExpr
+          IntLit value="0"
+          TypeExpr @11
+  FuncDecl [pub] name="fn" @47
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    ParamDecl name="req" @48
+      GenericType
+        TypeExpr @3
+        TypeExpr @21
+    TypeExpr @6
+    Block
+      IfStmt
+        BinaryExpr [pub] op=">="
+          FieldExpr @33
+            Ident name="self" @42
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="1024"
+            TypeExpr @11
+        Block
+          ReturnStmt
+            UnaryExpr [pub] op="-"
+              CastExpr
+                IntLit value="1"
+                TypeExpr @6
+      VarDecl @49
+        FieldExpr @33
+          Ident name="self" @42
+          Ident name="pending_count"
+      AssignStmt op="="
+        FieldExpr @22
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="fd"
+        FieldExpr @22
+          Ident name="req" @48
+          Ident name="fd"
+      AssignStmt op="="
+        FieldExpr @23
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="events"
+        FieldExpr @23
+          Ident name="req" @48
+          Ident name="events"
+      AssignStmt op="="
+        FieldExpr @24
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="future"
+        FieldExpr @24
+          Ident name="req" @48
+          Ident name="future"
+      AssignStmt op="="
+        FieldExpr @25
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="buffer"
+        FieldExpr @25
+          Ident name="req" @48
+          Ident name="buffer"
+      AssignStmt op="="
+        FieldExpr @26
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="buf_size"
+        FieldExpr @26
+          Ident name="req" @48
+          Ident name="buf_size"
+      AssignStmt op="="
+        FieldExpr @27
+          IndexExpr
+            FieldExpr @32
+              Ident name="self" @42
+              Ident name="pending"
+            CastExpr
+              Ident name="target_idx" @49
+              TypeExpr @50
+          Ident name="actor_id"
+        FieldExpr @27
+          Ident name="req" @48
+          Ident name="actor_id"
+      AssignStmt op="="
+        FieldExpr @33
+          Ident name="self" @42
+          Ident name="pending_count"
+        BinaryExpr op="+"
+          FieldExpr @33
+            Ident name="self" @42
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="1"
+            TypeExpr @11
+      ReturnStmt
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+  FuncDecl [pub] name="fn" @51
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    ParamDecl name="fd" @22
+      TypeExpr @6
+    TypeExpr @6
+    Block
+      VarDecl [mut] @52
+        CastExpr
+          IntLit value="0"
+          TypeExpr @11
+      VarDecl [mut] @53
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+      VarDecl [mut] @54
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+      WhileStmt
+        BinaryExpr [mut] op="and"
+          BinaryExpr [pub] op="<"
+            Ident name="i" @52
+            FieldExpr @33
+              Ident name="self" @42
+              Ident name="pending_count"
+          BinaryExpr [pub] op="=="
+            Ident name="stop_loop" @54
+            CastExpr
+              IntLit value="0"
+              TypeExpr @6
+        Block
+          IfStmt
+            BinaryExpr [pub] op="=="
+              FieldExpr @22
+                IndexExpr
+                  FieldExpr @32
+                    Ident name="self" @42
+                    Ident name="pending"
+                  CastExpr
+                    Ident name="i" @52
+                    TypeExpr @50
+                Ident name="fd"
+              Ident name="fd" @22
+            Block
+              AssignStmt op="="
+                Ident name="found" @53
+                CastExpr
+                  IntLit value="1"
+                  TypeExpr @6
+              AssignStmt op="="
+                Ident name="stop_loop" @54
+                CastExpr
+                  IntLit value="1"
+                  TypeExpr @6
+          IfStmt
+            BinaryExpr [pub] op="=="
+              Ident name="found" @53
+              CastExpr
+                IntLit value="0"
+                TypeExpr @6
+            Block
+              AssignStmt op="="
+                Ident name="i" @52
+                BinaryExpr op="+"
+                  Ident name="i" @52
+                  CastExpr
+                    IntLit value="1"
+                    TypeExpr @11
+      IfStmt
+        BinaryExpr [pub] op="!="
+          Ident name="found" @53
+          CastExpr
+            IntLit value="0"
+            TypeExpr @6
+        Block
+          VarDecl [mut] @55
+            Ident name="i" @52
+          WhileStmt
+            BinaryExpr [pub] op="<"
+              Ident name="j" @55
+              BinaryExpr op="-"
+                FieldExpr @33
+                  Ident name="self" @42
+                  Ident name="pending_count"
+                CastExpr
+                  IntLit value="1"
+                  TypeExpr @11
+            Block
+              AssignStmt op="="
+                FieldExpr @22
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="fd"
+                FieldExpr @22
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="fd"
+              AssignStmt op="="
+                FieldExpr @23
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="events"
+                FieldExpr @23
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="events"
+              AssignStmt op="="
+                FieldExpr @24
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="future"
+                FieldExpr @24
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="future"
+              AssignStmt op="="
+                FieldExpr @25
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="buffer"
+                FieldExpr @25
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="buffer"
+              AssignStmt op="="
+                FieldExpr @26
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="buf_size"
+                FieldExpr @26
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="buf_size"
+              AssignStmt op="="
+                FieldExpr @27
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      Ident name="j" @55
+                      TypeExpr @50
+                  Ident name="actor_id"
+                FieldExpr @27
+                  IndexExpr
+                    FieldExpr @32
+                      Ident name="self" @42
+                      Ident name="pending"
+                    CastExpr
+                      BinaryExpr op="+"
+                        Ident name="j" @55
+                        CastExpr
+                          IntLit value="1"
+                          TypeExpr @11
+                      TypeExpr @50
+                  Ident name="actor_id"
+              AssignStmt op="="
+                Ident name="j" @55
+                BinaryExpr op="+"
+                  Ident name="j" @55
+                  CastExpr
+                    IntLit value="1"
+                    TypeExpr @11
+          AssignStmt op="="
+            FieldExpr @33
+              Ident name="self" @42
+              Ident name="pending_count"
+            BinaryExpr op="-"
+              FieldExpr @33
+                Ident name="self" @42
+                Ident name="pending_count"
+              CastExpr
+                IntLit value="1"
+                TypeExpr @11
+          ReturnStmt
+            CastExpr
+              IntLit value="0"
+              TypeExpr @6
+      ReturnStmt
+        UnaryExpr [pub] op="-"
+          CastExpr
+            IntLit value="1"
+            TypeExpr @6
+  FuncDecl [pub] name="fn" @56
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    ParamDecl name="timeout_ms" @57
+      TypeExpr @6
+    TypeExpr @6
+    Block
+      VarDecl [mut] @58
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+      VarDecl [mut] @52
+        CastExpr
+          IntLit value="0"
+          TypeExpr @11
+      WhileStmt
+        BinaryExpr [pub] op="<"
+          Ident name="i" @52
+          FieldExpr @33
+            Ident name="self" @42
+            Ident name="pending_count"
+        Block
+          VarDecl @59
+            FieldExpr @24
+              IndexExpr
+                FieldExpr @32
+                  Ident name="self" @42
+                  Ident name="pending"
+                CastExpr
+                  Ident name="i" @52
+                  TypeExpr @50
+              Ident name="future"
+          IfStmt
+            BinaryExpr [pub] op="!="
+              Ident name="fut" @59
+              CastExpr
+                Ident name="null" @60
+                GenericType
+                  TypeExpr @3
+                  TypeExpr @4
+            Block
+              IfStmt
+                BinaryExpr [pub] op="=="
+                  CallExpr
+                    Ident name="ax_future_is_ready" @16
+                    Ident name="fut" @59
+                  CastExpr
+                    IntLit value="0"
+                    TypeExpr @6
+                Block
+                  VarDecl @15
+                    FieldExpr @26
+                      IndexExpr
+                        FieldExpr @32
+                          Ident name="self" @42
+                          Ident name="pending"
+                        CastExpr
+                          Ident name="i" @52
+                          TypeExpr @50
+                      Ident name="buf_size"
+                  VarDecl @61
+                    CastExpr
+                      UnaryExpr [async] op="&"
+                        Ident name="size" @15
+                      GenericType
+                        TypeExpr @3
+                        TypeExpr @4
+                  CallExpr
+                    Ident name="ax_future_resolve" @12
+                    Ident name="fut" @59
+                    Ident name="res_ptr" @61
+                    CastExpr
+                      IntLit value="8"
+                      TypeExpr @8
+                  AssignStmt op="="
+                    Ident name="processed" @58
+                    BinaryExpr op="+"
+                      Ident name="processed" @58
+                      CastExpr
+                        IntLit value="1"
+                        TypeExpr @6
+          AssignStmt op="="
+            Ident name="i" @52
+            BinaryExpr op="+"
+              Ident name="i" @52
+              CastExpr
+                IntLit value="1"
+                TypeExpr @11
+      AssignStmt op="="
+        FieldExpr @31
+          Ident name="self" @42
+          Ident name="events_processed"
+        BinaryExpr op="+"
+          FieldExpr @31
+            Ident name="self" @42
+            Ident name="events_processed"
+          CastExpr
+            Ident name="processed" @58
+            TypeExpr @8
+      ReturnStmt
+        Ident name="processed" @58
+  FuncDecl [pub] name="fn" @62
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    Block
+      AssignStmt op="="
+        FieldExpr @30
+          Ident name="self" @42
+          Ident name="running"
+        CastExpr
+          IntLit value="1"
+          TypeExpr @6
+      WhileStmt
+        BinaryExpr [mut] op="and"
+          BinaryExpr [pub] op="!="
+            FieldExpr @30
+              Ident name="self" @42
+              Ident name="running"
+            CastExpr
+              IntLit value="0"
+              TypeExpr @6
+          BinaryExpr [pub] op=">"
+            FieldExpr @33
+              Ident name="self" @42
+              Ident name="pending_count"
+            CastExpr
+              IntLit value="0"
+              TypeExpr @11
+        Block
+          CallExpr
+            FieldExpr @56
+              Ident name="self" @42
+              Ident name="poll"
+            CastExpr
+              IntLit value="100"
+              TypeExpr @6
+  FuncDecl [pub] name="fn" @63
+    ParamDecl [mut] name="mut" @42
+      TypeExpr @28
+    Block
+      AssignStmt op="="
+        FieldExpr @30
+          Ident name="self" @42
+          Ident name="running"
+        CastExpr
+          IntLit value="0"
+          TypeExpr @6
+  FuncDecl [pub] name="fn" @64
+    ParamDecl name="loop_ptr" @65
+      GenericType
+        TypeExpr @3
+        TypeExpr @28
+    ParamDecl name="fd" @22
+      TypeExpr @6
+    ParamDecl name="buf" @66
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    ParamDecl name="size" @15
+      TypeExpr @8
+    ParamDecl name="actor_id" @27
+      TypeExpr @8
+    GenericType
+      TypeExpr @3
+      TypeExpr @4
+    Block
+      VarDecl @13
+        CallExpr
+          Ident name="ax_future_new" @9
+          CastExpr
+            IntLit value="0"
+            TypeExpr @11
+      IfStmt
+        BinaryExpr [pub] op="=="
+          Ident name="f" @13
+          CastExpr
+            Ident name="null" @60
+            GenericType
+              TypeExpr @3
+              TypeExpr @4
+        Block
+          ReturnStmt
+            CastExpr
+              Ident name="null" @60
+              GenericType
+                TypeExpr @3
+                TypeExpr @4
+      VarDecl @67
+        CastExpr
+          Ident name="f" @13
+          GenericType
+            TypeExpr @3
+            TypeExpr @34
+      AssignStmt op="="
+        FieldExpr @40
+          Ident name="fut_layout" @67
+          Ident name="waiter_actor"
+        Ident name="actor_id" @27
+      VarDecl @48
+        CallExpr
+          Ident name="IORequest" @21
+          NamedArg @22
+            Ident name="fd" @22
+          NamedArg @23
+            Ident name="IO_READ" @17
+          NamedArg @24
+            Ident name="f" @13
+          NamedArg @25
+            Ident name="buf" @66
+          NamedArg @26
+            Ident name="size" @15
+          NamedArg @27
+            Ident name="actor_id" @27
+      CallExpr
+        FieldExpr @47
+          Ident name="loop_ptr" @65
+          Ident name="register"
+        UnaryExpr [async] op="&"
+          Ident name="req" @48
+      ReturnStmt
+        Ident name="f" @13
+  FuncDecl [pub] name="fn" @68
+    ParamDecl name="loop_ptr" @65
+      GenericType
+        TypeExpr @3
+        TypeExpr @28
+    ParamDecl name="fd" @22
+      TypeExpr @6
+    ParamDecl name="buf" @66
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+    ParamDecl name="size" @15
+      TypeExpr @8
+    ParamDecl name="actor_id" @27
+      TypeExpr @8
+    GenericType
+      TypeExpr @3
+      TypeExpr @4
+    Block
+      VarDecl @13
+        CallExpr
+          Ident name="ax_future_new" @9
+          CastExpr
+            IntLit value="0"
+            TypeExpr @11
+      IfStmt
+        BinaryExpr [pub] op="=="
+          Ident name="f" @13
+          CastExpr
+            Ident name="null" @60
+            GenericType
+              TypeExpr @3
+              TypeExpr @4
+        Block
+          ReturnStmt
+            CastExpr
+              Ident name="null" @60
+              GenericType
+                TypeExpr @3
+                TypeExpr @4
+      VarDecl @67
+        CastExpr
+          Ident name="f" @13
+          GenericType
+            TypeExpr @3
+            TypeExpr @34
+      AssignStmt op="="
+        FieldExpr @40
+          Ident name="fut_layout" @67
+          Ident name="waiter_actor"
+        Ident name="actor_id" @27
+      VarDecl @48
+        CallExpr
+          Ident name="IORequest" @21
+          NamedArg @22
+            Ident name="fd" @22
+          NamedArg @23
+            Ident name="IO_WRITE" @18
+          NamedArg @24
+            Ident name="f" @13
+          NamedArg @25
+            Ident name="buf" @66
+          NamedArg @26
+            Ident name="size" @15
+          NamedArg @27
+            Ident name="actor_id" @27
+      CallExpr
+        FieldExpr @47
+          Ident name="loop_ptr" @65
+          Ident name="register"
+        UnaryExpr [async] op="&"
+          Ident name="req" @48
+      ReturnStmt
+        Ident name="f" @13
+  FuncDecl [extern] name="fn" @69
+    ParamDecl name="s" @2
+      TypeExpr @70
+    TypeExpr @6
+  FuncDecl [extern] name="fn" @71
+    ParamDecl name="fmt" @72
+      TypeExpr @70
+    ParamDecl name="a1" @73
+      TypeExpr @50
+    TypeExpr @6
+  FuncDecl [extern] name="fn" @74
+    ParamDecl name="f" @13
+      GenericType
+        TypeExpr @3
+        TypeExpr @4
+  FuncDecl name="fn" @75
+    Block
+      VarDecl [mut] @76
+        CallExpr
+          Ident name="ioloop" @28
+          NamedArg @29
+            IntLit value="0"
+          NamedArg @30
+            IntLit value="0"
+          NamedArg @31
+            IntLit value="0"
+          NamedArg @33
+            IntLit value="0"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          CallExpr
+            FieldExpr @41
+              Ident name="loop_inst" @76
+              Ident name="init"
+          IntLit value="0"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @29
+            Ident name="loop_inst" @76
+            Ident name="backend_fd"
+          UnaryExpr [pub] op="-"
+            IntLit value="1"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @33
+            Ident name="loop_inst" @76
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="0"
+            TypeExpr @11
+      VarDecl @78
+        CallExpr
+          Ident name="ax_future_new" @9
+          CastExpr
+            IntLit value="1"
+            TypeExpr @11
+      VarDecl @48
+        CallExpr
+          Ident name="IORequest" @21
+          NamedArg @22
+            CastExpr
+              IntLit value="10"
+              TypeExpr @6
+          NamedArg @23
+            Ident name="IO_READ" @17
+          NamedArg @24
+            Ident name="mock_fut" @78
+          NamedArg @25
+            CastExpr
+              Ident name="null" @60
+              GenericType
+                TypeExpr @3
+                TypeExpr @4
+          NamedArg @26
+            CastExpr
+              IntLit value="128"
+              TypeExpr @8
+          NamedArg @27
+            CastExpr
+              IntLit value="99"
+              TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          CallExpr
+            FieldExpr @47
+              Ident name="loop_inst" @76
+              Ident name="register"
+            UnaryExpr [async] op="&"
+              Ident name="req" @48
+          IntLit value="0"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @33
+            Ident name="loop_inst" @76
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="1"
+            TypeExpr @11
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @22
+            IndexExpr
+              FieldExpr @32
+                Ident name="loop_inst" @76
+                Ident name="pending"
+              IntLit value="0"
+            Ident name="fd"
+          IntLit value="10"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @23
+            IndexExpr
+              FieldExpr @32
+                Ident name="loop_inst" @76
+                Ident name="pending"
+              IntLit value="0"
+            Ident name="events"
+          Ident name="IO_READ" @17
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          CallExpr
+            FieldExpr @51
+              Ident name="loop_inst" @76
+              Ident name="unregister"
+            CastExpr
+              IntLit value="10"
+              TypeExpr @6
+          IntLit value="0"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @33
+            Ident name="loop_inst" @76
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="0"
+            TypeExpr @11
+      CallExpr
+        Ident name="ax_future_free" @74
+        Ident name="mock_fut" @78
+      CallExpr
+        FieldExpr @46
+          Ident name="loop_inst" @76
+          Ident name="destroy"
+      CallExpr
+        Ident name="puts" @69
+        StringLit value="\"  PASS: test_ioloop_lifecycle\""
+  FuncDecl name="fn" @79
+    Block
+      VarDecl [mut] @76
+        CallExpr
+          Ident name="ioloop" @28
+          NamedArg @29
+            IntLit value="0"
+          NamedArg @30
+            IntLit value="0"
+          NamedArg @31
+            IntLit value="0"
+          NamedArg @33
+            IntLit value="0"
+      CallExpr
+        FieldExpr @41
+          Ident name="loop_inst" @76
+          Ident name="init"
+      VarDecl @66
+        GenericType
+          TypeExpr @3
+          TypeExpr @4
+        CastExpr
+          Ident name="null" @60
+          GenericType
+            TypeExpr @3
+            TypeExpr @4
+      VarDecl @80
+        CallExpr
+          Ident name="io_read_async" @64
+          UnaryExpr [async] op="&"
+            Ident name="loop_inst" @76
+          CastExpr
+            IntLit value="5"
+            TypeExpr @6
+          Ident name="buf" @66
+          CastExpr
+            IntLit value="1024"
+            TypeExpr @8
+          CastExpr
+            IntLit value="42"
+            TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="!="
+          Ident name="fut_read" @80
+          CastExpr
+            Ident name="null" @60
+            GenericType
+              TypeExpr @3
+              TypeExpr @4
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @33
+            Ident name="loop_inst" @76
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="1"
+            TypeExpr @11
+      VarDecl @81
+        CallExpr
+          Ident name="io_write_async" @68
+          UnaryExpr [async] op="&"
+            Ident name="loop_inst" @76
+          CastExpr
+            IntLit value="6"
+            TypeExpr @6
+          Ident name="buf" @66
+          CastExpr
+            IntLit value="2048"
+            TypeExpr @8
+          CastExpr
+            IntLit value="42"
+            TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="!="
+          Ident name="fut_write" @81
+          CastExpr
+            Ident name="null" @60
+            GenericType
+              TypeExpr @3
+              TypeExpr @4
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @33
+            Ident name="loop_inst" @76
+            Ident name="pending_count"
+          CastExpr
+            IntLit value="2"
+            TypeExpr @11
+      VarDecl @82
+        CastExpr
+          Ident name="fut_read" @80
+          GenericType
+            TypeExpr @3
+            TypeExpr @34
+      VarDecl @83
+        CastExpr
+          Ident name="fut_write" @81
+          GenericType
+            TypeExpr @3
+            TypeExpr @34
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @35
+            Ident name="fl_read" @82
+            Ident name="state"
+          IntLit value="0"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @35
+            Ident name="fl_write" @83
+            Ident name="state"
+          IntLit value="0"
+      VarDecl @58
+        CallExpr
+          FieldExpr @56
+            Ident name="loop_inst" @76
+            Ident name="poll"
+          CastExpr
+            IntLit value="100"
+            TypeExpr @6
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          Ident name="processed" @58
+          IntLit value="2"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @31
+            Ident name="loop_inst" @76
+            Ident name="events_processed"
+          CastExpr
+            IntLit value="2"
+            TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @35
+            Ident name="fl_read" @82
+            Ident name="state"
+          IntLit value="1"
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          FieldExpr @35
+            Ident name="fl_write" @83
+            Ident name="state"
+          IntLit value="1"
+      VarDecl @84
+        CastExpr
+          FieldExpr @14
+            Ident name="fl_read" @82
+            Ident name="result"
+          GenericType
+            TypeExpr @3
+            TypeExpr @8
+      VarDecl @85
+        CastExpr
+          FieldExpr @14
+            Ident name="fl_write" @83
+            Ident name="result"
+          GenericType
+            TypeExpr @3
+            TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          DerefExpr
+            Ident name="read_result_ptr" @84
+          CastExpr
+            IntLit value="1024"
+            TypeExpr @8
+      CallExpr
+        Ident name="assert" @77
+        BinaryExpr [pub] op="=="
+          DerefExpr
+            Ident name="write_result_ptr" @85
+          CastExpr
+            IntLit value="2048"
+            TypeExpr @8
+      CallExpr
+        Ident name="ax_future_free" @74
+        Ident name="fut_read" @80
+      CallExpr
+        Ident name="ax_future_free" @74
+        Ident name="fut_write" @81
+      CallExpr
+        FieldExpr @46
+          Ident name="loop_inst" @76
+          Ident name="destroy"
+      CallExpr
+        Ident name="puts" @69
+        StringLit value="\"  PASS: test_async_io_simulation\""
+  FuncDecl [pub] name="fn" @86
+    Block
+      CallExpr
+        Ident name="puts" @69
+        StringLit value="\"Running AXIOM-native Reactor unit tests..."
+      CallExpr
+        Ident name="test_ioloop_lifecycle" @75
+      CallExpr
+        Ident name="test_async_io_simulation" @79
+      CallExpr
+        Ident name="puts" @69
+        StringLit value="\"All AXIOM-native Reactor tests passed!\""

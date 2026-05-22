@@ -109,9 +109,19 @@ func (p *Parser) parseNUD() uint32 {
 	case lexer.TokenNil:
 		p.consume()
 		return p.tree.AddNode(ast.NodeNilLit, p.tokenIdx(tok))
-	case lexer.TokenMinus, lexer.TokenTilde:
+	case lexer.TokenMinus, lexer.TokenTilde, lexer.TokenAmp:
 		p.consume()
 		node := p.tree.AddNode(ast.NodeUnaryExpr, p.tokenIdx(tok))
+		var flags uint16 = 0
+		switch tok.Kind {
+		case lexer.TokenMinus:
+			flags = 1
+		case lexer.TokenTilde:
+			flags = 3
+		case lexer.TokenAmp:
+			flags = 4
+		}
+		p.tree.SetFlags(node, flags)
 		operand := p.parseExprWithPrec(bpUnary)
 		if operand != 0 {
 			p.tree.AppendChild(node, operand)
@@ -120,6 +130,7 @@ func (p *Parser) parseNUD() uint32 {
 	case lexer.TokenNot:
 		p.consume()
 		node := p.tree.AddNode(ast.NodeUnaryExpr, p.tokenIdx(tok))
+		p.tree.SetFlags(node, 2)
 		operand := p.parseExprWithPrec(bpNot)
 		if operand != 0 {
 			p.tree.AppendChild(node, operand)

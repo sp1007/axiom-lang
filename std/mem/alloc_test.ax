@@ -1,0 +1,112 @@
+// AXIOM Standard Library — std::mem::alloc_test
+//
+// Standalone unit tests for AXIOM-native allocator.
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+fn test_size_class_for():
+    assert(ax_size_class_for(0) == 0)
+    assert(ax_size_class_for(1) == 1) // user_size 1 + header 8 = 9 (<= 16) -> sc 1
+    assert(ax_size_class_for(8) == 1) // 8 + 8 = 16 (<= 16) -> sc 1
+    assert(ax_size_class_for(9) == 2) // 9 + 8 = 17 (<= 32) -> sc 2
+    assert(ax_size_class_for(56) == 3) // 56 + 8 = 64 (<= 64) -> sc 3
+    assert(ax_size_class_for(57) == 4) // 57 + 8 = 65 (<= 128) -> sc 4
+    assert(ax_size_class_for(4088) == 9) // 4088 + 8 = 4096 (<= 4096) -> sc 9
+    assert(ax_size_class_for(4089) == 10) // 4089 + 8 = 4097 (> 4096) -> sc 10
+    puts("  PASS: test_size_class_for")
+
+fn test_free_list_push_pop():
+    // Allocate a buffer on the OS stack/heap for raw blocks
+    let raw = ax_os_alloc(256) as ptr[u8]
+    assert(raw != null as ptr[u8])
+    
+    let block0 = raw
+    let block1 = (raw as i64 + 32) as ptr[u8]
+    let block2 = (raw as i64 + 64) as ptr[u8]
+    
+    mut list := FreeList(head: null as ptr[FreeSlot], count: 0)
+    
+    ax_free_list_push(&list, block0)
+    ax_free_list_push(&list, block1)
+    ax_free_list_push(&list, block2)
+    assert(list.count == 3)
+    
+    let b2 = ax_free_list_pop(&list)
+    let b1 = ax_free_list_pop(&list)
+    let b0 = ax_free_list_pop(&list)
+    
+    assert(b2 == block2)
+    assert(b1 == block1)
+    assert(b0 == block0)
+    assert(list.count == 0)
+    
+    let b_null = ax_free_list_pop(&list)
+    assert(b_null == null as ptr[u8])
+    
+    ax_os_free(raw as ptr[void], 256)
+    puts("  PASS: test_free_list_push_pop")
+
+fn test_segment_bump_alloc():
+    ax_segment_manager_init()
+    
+    let seg = ax_segment_acquire(2) // SIZE_CLASS_32
+    assert(seg != null as ptr[Segment])
+    
+    let b1 = ax_segment_bump_alloc(seg, 2)
+    assert(b1 != null as ptr[u8])
+    
+    let b2 = ax_segment_bump_alloc(seg, 2)
+    assert(b2 != null as ptr[u8])
+    assert((b2 as i64 - b1 as i64) == 32)
+    
+    ax_segment_release(seg)
+    ax_segment_manager_shutdown()
+    puts("  PASS: test_segment_bump_alloc")
+
+fn test_actor_heap_lifecycle_and_alloc():
+    ax_segment_manager_init()
+    
+    let heap = ax_actor_heap_create(42 as u64)
+    assert(heap != null as ptr[ActorHeap])
+    assert(heap.actor_id == 42 as u64)
+    assert(heap.magic == ACTOR_HEAP_MAGIC)
+    
+    // Allocate different size classes
+    let p1 = ax_actor_alloc(heap, 4) // 4 + 8 = 12 -> sc 1 (16 bytes)
+    assert(p1 != null as ptr[u8])
+    
+    let p2 = ax_actor_alloc(heap, 20) // 20 + 8 = 28 -> sc 2 (32 bytes)
+    assert(p2 != null as ptr[u8])
+    
+    let p3 = ax_actor_alloc(heap, 5000) // sc 10 (large alloc)
+    assert(p3 != null as ptr[u8])
+    
+    // Check total allocation stats
+    // sc 1 = 16, sc 2 = 32, sc 10 = 5000
+    // total allocated metadata should reflect sc sizes (16 + 32) and large alloc (5000)
+    assert(heap.total_allocated == (16 as u64 + 32 as u64 + 5000 as u64))
+    assert(heap.alloc_count == 3 as u64)
+    
+    ax_actor_free(heap, p1)
+    ax_actor_free(heap, p2)
+    ax_actor_free(heap, p3)
+    
+    // Check that gen_id is invalidated (0)
+    let hdr1 = (p1 as i64 - 8) as ptr[AxHeader]
+    assert(hdr1.gen_id == 0 as u32)
+    
+    let hdr2 = (p2 as i64 - 8) as ptr[AxHeader]
+    assert(hdr2.gen_id == 0 as u32)
+    
+    ax_actor_heap_destroy(heap)
+    ax_segment_manager_shutdown()
+    puts("  PASS: test_actor_heap_lifecycle_and_alloc")
+
+pub fn main():
+    puts("Running AXIOM-native Allocator unit tests...")
+    test_size_class_for()
+    test_free_list_push_pop()
+    test_segment_bump_alloc()
+    test_actor_heap_lifecycle_and_alloc()
+    puts("All AXIOM-native Allocator tests passed!")

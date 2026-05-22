@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define ACTOR_HEAP_MAGIC 0xAC70HEAP
+#define ACTOR_HEAP_MAGIC 0xAC704EA0
 
 typedef struct {
     uint64_t     actor_id;                      /* owning actor ID */

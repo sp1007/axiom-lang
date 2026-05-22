@@ -1,0 +1,196 @@
+// AXIOM Standard Library — std/scheduler.ax
+//
+// M:N Adaptive Work-Stealing Scheduler thread pool implementation in AXIOM.
+// Maps N actors/coroutines onto M worker threads using Chase-Lev queues.
+
+// Actor external functions
+extern "C" fn ax_actor_lookup(id: u64) -> ptr[void]
+extern "C" fn ax_actor_step(actor: ptr[void]) -> i32
+extern "C" fn ax_actor_is_running(actor: ptr[void]) -> i32
+extern "C" fn ax_actor_has_messages(actor: ptr[void]) -> i32
+
+// --------------------------------------------------------------------------
+// Run Queue (Chase-Lev Work-Stealing Deque)
+// --------------------------------------------------------------------------
+
+pub struct runq:
+    pub buffer: [u64; 4096]
+    pub top: u64
+    pub bottom: u64
+
+pub fn init(mut self: runq):
+    let p = (&self.buffer) as ptr[void]
+    memset(p, 0 as i32, 4096 as u64 * 8 as u64)
+    self.top = 0 as u64
+    self.bottom = 0 as u64
+
+pub fn push(mut self: runq, id: u64) -> i32:
+    let b = self.bottom
+    let t = self.top
+    if b - t >= 4096 as u64:
+        return -1 as i32
+    self.buffer[(b % 4096 as u64) as i64] = id
+    self.bottom = b + 1 as u64
+    return 0 as i32
+
+pub fn pop(mut self: runq) -> u64:
+    mut b := self.bottom
+    if b == 0 as u64:
+        return 0 as u64
+    
+    b = b - 1 as u64
+    self.bottom = b
+    let t = self.top
+    
+    if t <= b:
+        return self.buffer[(b % 4096 as u64) as i64]
+        
+    if t == b:
+        self.bottom = t + 1 as u64
+        self.top = t + 1 as u64
+        return self.buffer[(b % 4096 as u64) as i64]
+        
+    self.bottom = t
+    return 0 as u64
+
+pub fn steal(mut self: runq) -> u64:
+    let t = self.top
+    let b = self.bottom
+    if t >= b:
+        return 0 as u64
+        
+    let id = self.buffer[(t % 4096 as u64) as i64]
+    self.top = t + 1 as u64
+    return id
+
+pub fn empty(lent self: runq) -> i32:
+    if self.top >= self.bottom:
+        return 1 as i32
+    return 0 as i32
+
+// --------------------------------------------------------------------------
+// Worker Thread Struct
+// --------------------------------------------------------------------------
+
+pub struct worker:
+    pub id: u32
+    pub runq: runq
+    pub tasks_executed: u64
+    pub steals_attempted: u64
+    pub steals_succeeded: u64
+    pub running: i32
+
+// --------------------------------------------------------------------------
+// Scheduler Stats Struct
+// --------------------------------------------------------------------------
+
+pub struct SchedulerStats:
+    pub worker_count: u32
+    pub total_submitted: u64
+    pub total_executed: u64
+    pub total_steals: u64
+
+// --------------------------------------------------------------------------
+// Scheduler Struct
+// --------------------------------------------------------------------------
+
+pub struct scheduler:
+    pub workers: [worker; 256]
+    pub worker_count: u32
+    pub running: i32
+    pub total_submitted: u64
+
+pub fn init(mut self: scheduler, worker_count: u32) -> i32:
+    if worker_count == 0 as u32 or worker_count > 256 as u32:
+        return -1 as i32
+
+    let p = (&self) as ptr[void]
+    let sz = @compiler_intrinsic("size_of")[scheduler]()
+    memset(p, 0 as i32, sz as u64)
+    
+    self.worker_count = worker_count
+    self.running = 0 as i32
+
+    mut i := 0 as u32
+    while i < worker_count:
+        self.workers[i as i64].id = i
+        self.workers[i as i64].runq.init()
+        self.workers[i as i64].running = 0 as i32
+        i = i + 1 as u32
+
+    return 0 as i32
+
+pub fn submit(mut self: scheduler, actor_id: u64) -> i32:
+    if actor_id == 0 as u64:
+        return -1 as i32
+
+    let target = (self.total_submitted % (self.worker_count as u64)) as u32
+    let res = self.workers[target as i64].runq.push(actor_id)
+    if res == 0 as i32:
+        self.total_submitted = self.total_submitted + 1 as u64
+    return res
+
+pub fn run(mut self: scheduler) -> i32:
+    self.running = 1 as i32
+    
+    mut i := 0 as u32
+    while i < self.worker_count:
+        self.workers[i as i64].running = 1 as i32
+        i = i + 1 as u32
+
+    mut j := 0 as u32
+    while j < self.worker_count:
+        self.worker_loop(&self.workers[j as i64])
+        j = j + 1 as u32
+
+    return 0 as i32
+
+fn worker_loop(mut self: scheduler, w: ptr[worker]):
+    while w.running != 0 as i32:
+        mut id := w.runq.pop()
+        
+        if id == 0 as u64:
+            mut i := 0 as u32
+            mut stop_loop := 0 as i32
+            while i < self.worker_count and stop_loop == 0 as i32:
+                if i != w.id:
+                    w.steals_attempted = w.steals_attempted + 1 as u64
+                    let stolen_id = self.workers[i as i64].runq.steal()
+                    if stolen_id != 0 as u64:
+                        id = stolen_id
+                        w.steals_succeeded = w.steals_succeeded + 1 as u64
+                        stop_loop = 1 as i32
+                i = i + 1 as u32
+
+        if id == 0 as u64:
+            return
+
+        let actor_ptr = ax_actor_lookup(id)
+        if actor_ptr != null as ptr[void]:
+            while ax_actor_step(actor_ptr) != 0 as i32:
+                w.tasks_executed = w.tasks_executed + 1 as u64
+
+            if ax_actor_is_running(actor_ptr) != 0 as i32 and ax_actor_has_messages(actor_ptr) != 0 as i32:
+                w.runq.push(id)
+
+pub fn shutdown(mut self: scheduler):
+    self.running = 0 as i32
+    mut i := 0 as u32
+    while i < self.worker_count:
+        self.workers[i as i64].running = 0 as i32
+        i = i + 1 as u32
+
+pub fn stats(lent self: scheduler, stats: ptr[SchedulerStats]):
+    if stats == null as ptr[SchedulerStats]:
+        return
+
+    stats.worker_count = self.worker_count
+    stats.total_submitted = self.total_submitted
+    stats.total_executed = 0 as u64
+    stats.total_steals = 0 as u64
+
+    mut i := 0 as u32
+    while i < self.worker_count:
+        stats.total_executed = stats.total_executed + self.workers[i as i64].tasks_executed
+        stats.total_steals = stats.total_steals + self.workers[i as i64].steals_succeeded
+        i = i + 1 as u32

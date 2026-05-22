@@ -1,5 +1,5 @@
-// bootstrap/stage1/main.ax
-// Test harness entry point for AXIOM self-hosted Lexer
+// bootstrap/stage1/main_parser.ax
+// Test harness entry point for AXIOM self-hosted Parser
 
 import std.string
 
@@ -14,7 +14,7 @@ extern "C" fn puts(s: str) -> i32
 
 pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     if argc < 2:
-        puts("Usage: lexer_test <filename>")
+        puts("Usage: parser_test <filename>")
         return 1
 
     let filename_ptr = argv[1]
@@ -45,15 +45,26 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
 
     let src = buffer as str
 
+    // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
 
-    mut i := 0
-    while i < tokens.len:
-        let tok = tokens.data[i]
-        printf("%d,%d,%d\n", tok.kind as i64, tok.offset as i64, tok.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // 2. Parse
+    mut pool := new_intern_pool()
+    mut parser := new_parser(tokens, src, pool)
+    parser.parse_program()
+
+    // 3. Print AST
+    mut i := 0 as i64
+    while i < parser.tree.nodes.len:
+        let node = parser.tree.nodes.data[i]
+        // Print in a standard format for comparison
+        printf("%d: kind=%d, flags=%d, token_idx=%d, first_child=%d, next_sibling=%d, payload=%d, extra_idx=%d\n",
+            i as i64, node.kind as i64, node.flags as i64, node.token_idx as i64,
+            node.first_child as i64, node.next_sibling as i64, node.payload as i64, node.extra_idx as i64)
         i = i + 1
 
+    // Free resources
     @free(buffer)
     if tokens.data != null as ptr[Token]:
         @free(tokens.data as ptr[u8])
@@ -63,5 +74,12 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         @free(lexer.indent_stack.data as ptr[u8])
     if lexer.newline_offsets.data != null as ptr[i32]:
         @free(lexer.newline_offsets.data as ptr[u8])
+
+    if parser.tree.nodes.data != null as ptr[AstNode]:
+        @free(parser.tree.nodes.data as ptr[u8])
+    if parser.tree.extras.data != null as ptr[i32]:
+        @free(parser.tree.extras.data as ptr[u8])
+
+    free_pool(pool)
 
     return 0

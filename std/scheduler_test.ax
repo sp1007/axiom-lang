@@ -1,0 +1,91 @@
+// AXIOM Standard Library — std/scheduler_test.ax
+//
+// Unit tests for AXIOM-native M:N work-stealing scheduler.
+
+extern "C" fn puts(s: str) -> i32
+extern "C" fn malloc(size: u64) -> ptr[void]
+extern "C" fn free(p: ptr[void])
+
+// We will use standard mock actor ID values for testing.
+fn test_runq_basic():
+    mut q := runq(top: 0, bottom: 0)
+    q.init()
+    assert(q.empty() == 1)
+
+    // Push 3 actor IDs
+    assert(q.push(101 as u64) == 0)
+    assert(q.push(102 as u64) == 0)
+    assert(q.push(103 as u64) == 0)
+    assert(q.empty() == 0)
+
+    // Owner pop should be LIFO (last-in, first-out)
+    assert(q.pop() == 103 as u64)
+    assert(q.pop() == 102 as u64)
+    assert(q.pop() == 101 as u64)
+    assert(q.empty() == 1)
+    assert(q.pop() == 0 as u64) // Empty pop returns 0
+    puts("  PASS: test_runq_basic")
+
+fn test_runq_steal():
+    mut q := runq(top: 0, bottom: 0)
+    q.init()
+
+    assert(q.push(201 as u64) == 0)
+    assert(q.push(202 as u64) == 0)
+    assert(q.push(203 as u64) == 0)
+
+    // Stealer pop should be FIFO (first-in, first-out) from the top
+    assert(q.steal() == 201 as u64)
+    assert(q.steal() == 202 as u64)
+    assert(q.pop() == 203 as u64) // Owner pops remaining
+    assert(q.empty() == 1)
+    puts("  PASS: test_runq_steal")
+
+fn test_scheduler_lifecycle():
+    let sz = @compiler_intrinsic("size_of")[scheduler]()
+    let sched = malloc(sz) as ptr[scheduler]
+    assert(sched != null as ptr[scheduler])
+    
+    // Init with 4 workers
+    assert(sched.init(4 as u32) == 0)
+    assert(sched.worker_count == 4 as u32)
+    assert(sched.running == 0)
+
+    // Submit some mock actors (IDs 1 to 8)
+    mut i := 1 as u64
+    while i <= 8 as u64:
+        assert(sched.submit(i) == 0)
+        i = i + 1 as u64
+
+    assert(sched.total_submitted == 8 as u64)
+
+    // Check round-robin distribution to workers (8 tasks among 4 workers)
+    // worker 0 should have IDs: 1 (submitted at 0), 5 (submitted at 4)
+    // worker 1 should have IDs: 2, 6
+    // worker 2 should have IDs: 3, 7
+    // worker 3 should have IDs: 4, 8
+    assert(sched.workers[0].runq.empty() == 0)
+    assert(sched.workers[3].runq.empty() == 0)
+
+    // Check pop from worker 0
+    assert(sched.workers[0].runq.pop() == 5 as u64)
+    assert(sched.workers[0].runq.pop() == 1 as u64)
+    assert(sched.workers[0].runq.empty() == 1)
+
+    // Verify stats
+    mut stats := SchedulerStats(worker_count: 0, total_submitted: 0, total_executed: 0, total_steals: 0)
+    sched.stats(&stats)
+    assert(stats.worker_count == 4 as u32)
+    assert(stats.total_submitted == 8 as u64)
+    assert(stats.total_executed == 0 as u64) // not run yet
+
+    sched.shutdown()
+    free(sched as ptr[void])
+    puts("  PASS: test_scheduler_lifecycle")
+
+pub fn main():
+    puts("Running AXIOM-native Scheduler unit tests...")
+    test_runq_basic()
+    test_runq_steal()
+    test_scheduler_lifecycle()
+    puts("All AXIOM-native Scheduler tests passed!")

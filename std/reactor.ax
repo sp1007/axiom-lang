@@ -1,0 +1,175 @@
+// AXIOM Standard Library — std/reactor.ax
+//
+// Platform Event Loop Reactor implementation in AXIOM.
+// Stub select-based and async I/O simulation matching ioloop.c.
+
+extern "C" fn memset(s: ptr[void], c: i32, n: u64) -> ptr[void]
+
+// Async runtime external functions
+extern "C" fn ax_future_new(type_tag: u32) -> ptr[void]
+extern "C" fn ax_future_resolve(f: ptr[void], result: ptr[void], size: u64)
+extern "C" fn ax_future_is_ready(f: ptr[void]) -> i32
+
+// IO Event flags
+pub const IO_READ: u32 = 1 as u32
+pub const IO_WRITE: u32 = 2 as u32
+pub const IO_ERROR: u32 = 4 as u32
+pub const IO_CLOSE: u32 = 8 as u32
+
+// --------------------------------------------------------------------------
+// IO Request Struct
+// --------------------------------------------------------------------------
+
+pub struct IORequest:
+    pub fd: i32
+    pub events: u32
+    pub future: ptr[void]
+    pub buffer: ptr[void]
+    pub buf_size: u64
+    pub actor_id: u64
+
+// --------------------------------------------------------------------------
+// IO Loop Struct
+// --------------------------------------------------------------------------
+
+pub struct ioloop:
+    pub backend_fd: i32
+    pub running: i32
+    pub events_processed: u64
+    pub pending: [IORequest; 1024]
+    pub pending_count: u32
+
+// --------------------------------------------------------------------------
+// Future Layout Struct (ABI compatible with AxFuture)
+// --------------------------------------------------------------------------
+
+pub struct FutureLayout:
+    pub state: i32
+    pub result: ptr[void]
+    pub result_size: u64
+    pub error: ptr[void]
+    pub type_tag: u32
+    pub coroutine: ptr[void]
+    pub resume_point: i32
+    pub waiter_actor: u64
+
+pub fn init(mut self: ioloop) -> i32:
+    let p = (&self) as ptr[void]
+    let sz = @compiler_intrinsic("size_of")[ioloop]()
+    memset(p, 0 as i32, sz as u64)
+    self.backend_fd = -1 as i32
+    self.running = 0 as i32
+    return 0 as i32
+
+pub fn destroy(mut self: ioloop):
+    self.running = 0 as i32
+    self.pending_count = 0 as u32
+
+pub fn register(mut self: ioloop, req: ptr[IORequest]) -> i32:
+    if self.pending_count >= 1024 as u32:
+        return -1 as i32
+
+    let target_idx = self.pending_count
+    self.pending[target_idx as i64].fd = req.fd
+    self.pending[target_idx as i64].events = req.events
+    self.pending[target_idx as i64].future = req.future
+    self.pending[target_idx as i64].buffer = req.buffer
+    self.pending[target_idx as i64].buf_size = req.buf_size
+    self.pending[target_idx as i64].actor_id = req.actor_id
+
+    self.pending_count = self.pending_count + 1 as u32
+    return 0 as i32
+
+pub fn unregister(mut self: ioloop, fd: i32) -> i32:
+    mut i := 0 as u32
+    mut found := 0 as i32
+    mut stop_loop := 0 as i32
+    while i < self.pending_count and stop_loop == 0 as i32:
+        if self.pending[i as i64].fd == fd:
+            found = 1 as i32
+            stop_loop = 1 as i32
+        if found == 0 as i32:
+            i = i + 1 as u32
+
+    if found != 0 as i32:
+        mut j := i
+        while j < self.pending_count - 1 as u32:
+            self.pending[j as i64].fd = self.pending[(j + 1 as u32) as i64].fd
+            self.pending[j as i64].events = self.pending[(j + 1 as u32) as i64].events
+            self.pending[j as i64].future = self.pending[(j + 1 as u32) as i64].future
+            self.pending[j as i64].buffer = self.pending[(j + 1 as u32) as i64].buffer
+            self.pending[j as i64].buf_size = self.pending[(j + 1 as u32) as i64].buf_size
+            self.pending[j as i64].actor_id = self.pending[(j + 1 as u32) as i64].actor_id
+            j = j + 1 as u32
+        self.pending_count = self.pending_count - 1 as u32
+        return 0 as i32
+
+    return -1 as i32
+
+pub fn poll(mut self: ioloop, timeout_ms: i32) -> i32:
+    mut processed := 0 as i32
+    mut i := 0 as u32
+    while i < self.pending_count:
+        let fut = self.pending[i as i64].future
+        if fut != null as ptr[void]:
+            if ax_future_is_ready(fut) == 0 as i32:
+                let size = self.pending[i as i64].buf_size
+                let res_ptr = (&size) as ptr[void]
+                ax_future_resolve(fut, res_ptr, 8 as u64) // u64 size is 8 bytes
+                processed = processed + 1 as i32
+        i = i + 1 as u32
+
+    self.events_processed = self.events_processed + (processed as u64)
+    return processed
+
+pub fn run(mut self: ioloop):
+    self.running = 1 as i32
+    while self.running != 0 as i32 and self.pending_count > 0 as u32:
+        self.poll(100 as i32)
+
+pub fn stop(mut self: ioloop):
+    self.running = 0 as i32
+
+// --------------------------------------------------------------------------
+// Standalone Async I/O Functions
+// --------------------------------------------------------------------------
+
+pub fn io_read_async(loop_ptr: ptr[ioloop], fd: i32, buf: ptr[void], size: u64, actor_id: u64) -> ptr[void]:
+    let f = ax_future_new(0 as u32)
+    if f == null as ptr[void]:
+        return null as ptr[void]
+
+    let fut_layout = f as ptr[FutureLayout]
+    fut_layout.waiter_actor = actor_id
+
+    let req = IORequest(
+        fd: fd,
+        events: IO_READ,
+        future: f,
+        buffer: buf,
+        buf_size: size,
+        actor_id: actor_id
+    )
+
+    loop_ptr.register(&req)
+    return f
+
+pub fn io_write_async(loop_ptr: ptr[ioloop], fd: i32, buf: ptr[void], size: u64, actor_id: u64) -> ptr[void]:
+    let f = ax_future_new(0 as u32)
+    if f == null as ptr[void]:
+        return null as ptr[void]
+
+    let fut_layout = f as ptr[FutureLayout]
+    fut_layout.waiter_actor = actor_id
+
+    let req = IORequest(
+        fd: fd,
+        events: IO_WRITE,
+        future: f,
+        buffer: buf,
+        buf_size: size,
+        actor_id: actor_id
+    )
+
+    loop_ptr.register(&req)
+    return f

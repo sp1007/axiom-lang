@@ -143,8 +143,6 @@ func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 			fNameID := e.nodeNameID(child)
 			fName := e.resolveName(fNameID, child)
 			
-			// Resolve Field's TypeID from the symbol table if available,
-			// otherwise fallback to the payload directly (for mock tests).
 			fTypeID := types.TypeID(0)
 			symIdx := childNode.Payload
 			if symIdx != 0 && e.symbols != nil && int(symIdx) < len(e.symbols.Symbols) && e.symbols.SymbolAt(symIdx).Kind == sema.SymField {
@@ -153,8 +151,16 @@ func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 				fTypeID = types.TypeID(childNode.Payload)
 			}
 			
-			fCType := CTypeName(fTypeID, e.table, e.intern, e.queue)
-			fields = append(fields, fieldInfo{name: fName, ctype: fCType})
+			fEntry := e.table.Entry(fTypeID)
+			if fEntry.Kind == types.KindArray {
+				elemID := e.table.ArrayElem(fTypeID)
+				elemC := CTypeName(elemID, e.table, e.intern, e.queue)
+				length := e.table.ArrayLength(fTypeID)
+				fields = append(fields, fieldInfo{name: fmt.Sprintf("%s[%d]", fName, length), ctype: elemC})
+			} else {
+				fCType := CTypeName(fTypeID, e.table, e.intern, e.queue)
+				fields = append(fields, fieldInfo{name: fName, ctype: fCType})
+			}
 		}
 		child = childNode.NextSibling
 	}
@@ -382,11 +388,23 @@ func MangleGlobalName(moduleName, varName string) string {
 }
 
 func GetFuncMangledName(symIdx uint32, defaultName string, table *types.TypeTable, symbols *sema.SymbolTable, intern *ast.InternPool) string {
+	if defaultName == "free" {
+		if symIdx != 0 && symbols != nil && int(symIdx) < len(symbols.Symbols) {
+			sym := symbols.SymbolAt(symIdx)
+			if sym.Flags&sema.SymFlagExtern != 0 {
+				return "free"
+			}
+		}
+		return "ax_free"
+	}
+	if isStdLibFunc(defaultName) {
+		return defaultName
+	}
 	if symIdx == 0 || symbols == nil || int(symIdx) >= len(symbols.Symbols) {
 		return "ax_" + defaultName
 	}
 	sym := symbols.SymbolAt(symIdx)
-	if sym.Flags & sema.SymFlagExtern != 0 {
+	if sym.Flags&sema.SymFlagExtern != 0 {
 		return defaultName
 	}
 	if sym.TypeID != 0 {
@@ -492,6 +510,8 @@ var stdLibFuncs = map[string]bool{
 	"log10":    true,
 	"floor":    true,
 	"ceil":     true,
+	"VirtualAlloc": true,
+	"VirtualFree":  true,
 }
 
 func isStdLibFunc(name string) bool {

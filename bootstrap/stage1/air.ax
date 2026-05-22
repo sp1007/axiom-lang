@@ -1,0 +1,530 @@
+// bootstrap/stage1/air.ax
+// SSA-form Intermediate Representation (AIR) structures and builders for the self-hosted AXIOM compiler frontend.
+
+pub const OP_NOP: u16 = 0x0000
+
+// Memory class (0x01xx)
+pub const OP_ALLOC: u16 = 0x0101
+pub const OP_FREE: u16 = 0x0102
+pub const OP_LOAD: u16 = 0x0103
+pub const OP_STORE: u16 = 0x0104
+pub const OP_GEP: u16 = 0x0105
+pub const OP_COPY: u16 = 0x0106
+pub const OP_MOVE: u16 = 0x0107
+pub const OP_MAKE_REF: u16 = 0x0108
+pub const OP_DEREF: u16 = 0x0109
+pub const OP_ARENA_ALLOC: u16 = 0x010A
+pub const OP_DESTROY: u16 = 0x010B
+pub const OP_ALIAS_REUSE: u16 = 0x010C
+pub const OP_GET_FIELD: u16 = 0x010D
+pub const OP_SET_FIELD: u16 = 0x010E
+pub const OP_INDEX: u16 = 0x010F
+pub const OP_SLICE: u16 = 0x0110
+
+// ALU class (0x02xx)
+pub const OP_ICONST: u16 = 0x0201
+pub const OP_FCONST: u16 = 0x0202
+pub const OP_IADD: u16 = 0x0203
+pub const OP_ISUB: u16 = 0x0204
+pub const OP_IMUL: u16 = 0x0205
+pub const OP_IDIV: u16 = 0x0206
+pub const OP_IMOD: u16 = 0x0207
+pub const OP_FADD: u16 = 0x0208
+pub const OP_FSUB: u16 = 0x0209
+pub const OP_FMUL: u16 = 0x020A
+pub const OP_FDIV: u16 = 0x020B
+pub const OP_EQ: u16 = 0x020C
+pub const OP_NE: u16 = 0x020D
+pub const OP_LT: u16 = 0x020E
+pub const OP_LE: u16 = 0x020F
+pub const OP_GT: u16 = 0x0210
+pub const OP_GE: u16 = 0x0211
+pub const OP_AND: u16 = 0x0212
+pub const OP_OR: u16 = 0x0213
+pub const OP_XOR: u16 = 0x0214
+pub const OP_SHL: u16 = 0x0215
+pub const OP_SHR: u16 = 0x0216
+pub const OP_NOT: u16 = 0x0217
+pub const OP_NEG: u16 = 0x021D
+pub const OP_ITOF: u16 = 0x021E
+pub const OP_FTOI: u16 = 0x021F
+pub const OP_ZEXT: u16 = 0x0220
+pub const OP_SEXT: u16 = 0x0221
+pub const OP_TRUNC: u16 = 0x0222
+pub const OP_CAST: u16 = 0x0223
+
+// Control class (0x03xx)
+pub const OP_JUMP: u16 = 0x0301
+pub const OP_BRANCH: u16 = 0x0302
+pub const OP_CALL: u16 = 0x0303
+pub const OP_RETURN: u16 = 0x0304
+pub const OP_PHI: u16 = 0x0305
+pub const OP_LOOP_BEGIN: u16 = 0x0306
+pub const OP_LOOP_END: u16 = 0x0307
+pub const OP_SPAWN: u16 = 0x0308
+pub const OP_SEND: u16 = 0x0309
+pub const OP_RECV: u16 = 0x030A
+pub const OP_AWAIT: u16 = 0x030B
+
+// SIMD class (0x04xx)
+pub const OP_SIMD_LOAD: u16 = 0x0401
+pub const OP_SIMD_STORE: u16 = 0x0402
+pub const OP_SIMD_ADD: u16 = 0x0403
+pub const OP_SIMD_MUL: u16 = 0x0404
+pub const OP_SIMD_FMA: u16 = 0x0405
+
+// Comptime class (0x05xx)
+pub const OP_COMPTIME: u16 = 0x0501
+
+// AirInst struct. Layout is FROZEN at 16 bytes.
+pub struct AirInst:
+    pub opcode: u16
+    pub type_id: u16
+    pub dest: u32
+    pub src1: u32
+    pub src2: u32
+
+// Custom monomorphic vectors for AIR builder
+pub struct AirInstVec:
+    pub data: ptr[AirInst]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_air_inst_vec() -> AirInstVec:
+    return AirInstVec(data: null as ptr[AirInst], len: 0, cap: 0)
+
+pub fn push(mut self: AirInstVec, inst: AirInst) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 16) as ptr[AirInst]
+        if self.data != null as ptr[AirInst]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = inst
+    self.len = self.len + 1
+    return idx
+
+pub struct BasicBlock:
+    pub id: u32
+    pub instrs_start: u32
+    pub instrs_len: u32
+    pub succs_start: u32
+    pub succs_len: u32
+    pub preds_start: u32
+    pub preds_len: u32
+    pub loop_depth: u8
+    pub is_entry: bool
+    pub is_exit: bool
+
+pub struct BasicBlockVec:
+    pub data: ptr[BasicBlock]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_basic_block_vec() -> BasicBlockVec:
+    return BasicBlockVec(data: null as ptr[BasicBlock], len: 0, cap: 0)
+
+pub fn push(mut self: BasicBlockVec, bb: BasicBlock) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 32) as ptr[BasicBlock]
+        if self.data != null as ptr[BasicBlock]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = bb
+    self.len = self.len + 1
+    return idx
+
+
+pub struct AirFunc:
+    pub sym_id: u32
+    pub name: u32
+    pub params: U32Vec
+    pub ret_type: u32
+    pub blocks: BasicBlockVec
+    pub insts: AirInstVec
+    pub extras: U32Vec
+    pub is_async: bool
+    pub is_extern: bool
+    // Flat block data storage
+    pub block_instrs: U32Vec
+    pub block_succs: U32Vec
+    pub block_preds: U32Vec
+
+pub fn free_air_func(mut f: AirFunc):
+    if f.params.data != null as ptr[u32]:
+        @free(f.params.data as ptr[u8])
+    if f.blocks.data != null as ptr[BasicBlock]:
+        @free(f.blocks.data as ptr[u8])
+    if f.insts.data != null as ptr[AirInst]:
+        @free(f.insts.data as ptr[u8])
+    if f.extras.data != null as ptr[u32]:
+        @free(f.extras.data as ptr[u8])
+    if f.block_instrs.data != null as ptr[u32]:
+        @free(f.block_instrs.data as ptr[u8])
+    if f.block_succs.data != null as ptr[u32]:
+        @free(f.block_succs.data as ptr[u8])
+    if f.block_preds.data != null as ptr[u32]:
+        @free(f.block_preds.data as ptr[u8])
+
+pub struct AirFuncVec:
+    pub data: ptr[AirFunc]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_air_func_vec() -> AirFuncVec:
+    return AirFuncVec(data: null as ptr[AirFunc], len: 0, cap: 0)
+
+pub fn push(mut self: AirFuncVec, f: AirFunc) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 192) as ptr[AirFunc]
+        if self.data != null as ptr[AirFunc]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 192)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = f
+    self.len = self.len + 1
+    return idx
+
+pub struct AirModule:
+    pub funcs: AirFuncVec
+
+pub fn free_air_module(mut m: AirModule):
+    mut i := 0 as i64
+    while i < m.funcs.len:
+        free_air_func(m.funcs.data[i])
+        i = i + 1
+    if m.funcs.data != null as ptr[AirFunc]:
+        @free(m.funcs.data as ptr[u8])
+
+pub struct AirFuncBuilder:
+    pub name: u32
+    pub ret_type: u32
+    pub blocks: BasicBlockVec
+    pub insts: AirInstVec
+    pub extras: U32Vec
+    pub cur_block: i32
+    pub next_reg: u32
+    // Flat block data builders
+    pub block_instrs: U32Vec
+    pub block_succs: U32Vec
+    pub block_preds: U32Vec
+
+pub fn new_air_func_builder(name: u32, ret_type: u32) -> AirFuncBuilder:
+    mut builder := AirFuncBuilder(
+        name: name,
+        ret_type: ret_type,
+        blocks: new_basic_block_vec(),
+        insts: new_air_inst_vec(),
+        extras: new_u32_vec(),
+        cur_block: -1 as i32,
+        next_reg: 1 as u32, // register 0 is NoValue
+        block_instrs: new_u32_vec(),
+        block_succs: new_u32_vec(),
+        block_preds: new_u32_vec(),
+    )
+    let entry_id = builder.new_block()
+    builder.blocks.data[entry_id].is_entry = true
+    builder.switch_to(entry_id)
+    return builder
+
+pub fn new_block(mut self: AirFuncBuilder) -> u32:
+    let id = self.blocks.len as u32
+    self.blocks.push(BasicBlock(
+        id: id,
+        instrs_start: 0 as u32,
+        instrs_len: 0 as u32,
+        succs_start: 0 as u32,
+        succs_len: 0 as u32,
+        preds_start: 0 as u32,
+        preds_len: 0 as u32,
+        loop_depth: 0 as u8,
+        is_entry: false,
+        is_exit: false,
+    ))
+    return id
+
+pub fn switch_to(mut self: AirFuncBuilder, block_id: u32):
+    self.cur_block = block_id as i32
+
+pub fn current_block(self: AirFuncBuilder) -> u32:
+    if self.cur_block < 0:
+        return 0xffffffff as u32
+    return self.cur_block as u32
+
+pub fn emit(mut self: AirFuncBuilder, inst: AirInst) -> u32:
+    let idx = self.insts.push(inst)
+    if self.cur_block >= 0 and (self.cur_block as i64) < self.blocks.len:
+        mut bb := &self.blocks.data[self.cur_block]
+        if bb.instrs_len == 0:
+            bb.instrs_start = self.block_instrs.len as u32
+        self.block_instrs.push(idx)
+        bb.instrs_len = bb.instrs_len + 1 as u32
+    return idx
+
+pub fn emit_extra(mut self: AirFuncBuilder, val: u32) -> u32:
+    return self.extras.push(val)
+
+pub fn set_extra(mut self: AirFuncBuilder, idx: u32, val: u32):
+    if (idx as i64) < self.extras.len:
+        self.extras.data[idx] = val
+
+pub fn fresh_reg(mut self: AirFuncBuilder) -> u32:
+    let r = self.next_reg
+    self.next_reg = self.next_reg + 1 as u32
+    return r
+
+pub fn add_edge(mut self: AirFuncBuilder, src: u32, dst: u32):
+    if (src as i64) < self.blocks.len and (dst as i64) < self.blocks.len:
+        mut src_bb := &self.blocks.data[src]
+        if src_bb.succs_len == 0:
+            src_bb.succs_start = self.block_succs.len as u32
+        // Append unique to flat list
+        mut exists := false
+        mut i := 0 as i64
+        while i < src_bb.succs_len as i64:
+            let idx = src_bb.succs_start as i64 + i
+            if self.block_succs.data[idx] == dst:
+                exists = true
+            i = i + 1
+        if not exists:
+            self.block_succs.push(dst)
+            src_bb.succs_len = src_bb.succs_len + 1 as u32
+
+        mut dst_bb := &self.blocks.data[dst]
+        if dst_bb.preds_len == 0:
+            dst_bb.preds_start = self.block_preds.len as u32
+        // Append unique to flat list
+        exists = false
+        i = 0
+        while i < dst_bb.preds_len as i64:
+            let idx = dst_bb.preds_start as i64 + i
+            if self.block_preds.data[idx] == src:
+                exists = true
+            i = i + 1
+        if not exists:
+            self.block_preds.push(src)
+            dst_bb.preds_len = dst_bb.preds_len + 1 as u32
+
+pub fn build_func(mut self: AirFuncBuilder) -> AirFunc:
+    // Mark exit blocks
+    mut i := 0 as i64
+    while i < self.blocks.len:
+        mut blk := &self.blocks.data[i]
+        if blk.instrs_len > 0:
+            let last_idx_idx = blk.instrs_start as i64 + (blk.instrs_len as i64) - 1
+            let last_idx = self.block_instrs.data[last_idx_idx] as i64
+            if last_idx < self.insts.len and self.insts.data[last_idx].opcode == OP_RETURN:
+                blk.is_exit = true
+        i = i + 1
+
+    return AirFunc(
+        sym_id: 0 as u32,
+        name: self.name,
+        params: new_u32_vec(),
+        ret_type: self.ret_type,
+        blocks: self.blocks,
+        insts: self.insts,
+        extras: self.extras,
+        is_async: false,
+        is_extern: false,
+        block_instrs: self.block_instrs,
+        block_succs: self.block_succs,
+        block_preds: self.block_preds,
+    )
+
+pub fn opcode_mnemonic(op: u16) -> str:
+    if op == OP_NOP:
+        return "nop"
+    if op == OP_ALLOC:
+        return "alloc"
+    if op == OP_FREE:
+        return "free"
+    if op == OP_LOAD:
+        return "load"
+    if op == OP_STORE:
+        return "store"
+    if op == OP_GEP:
+        return "gep"
+    if op == OP_COPY:
+        return "copy"
+    if op == OP_MOVE:
+        return "move"
+    if op == OP_MAKE_REF:
+        return "mkref"
+    if op == OP_DEREF:
+        return "deref"
+    if op == OP_ARENA_ALLOC:
+        return "aalloc"
+    if op == OP_DESTROY:
+        return "destroy"
+    if op == OP_ALIAS_REUSE:
+        return "areuse"
+    if op == OP_GET_FIELD:
+        return "getfld"
+    if op == OP_SET_FIELD:
+        return "setfld"
+    if op == OP_INDEX:
+        return "index"
+    if op == OP_SLICE:
+        return "slice"
+
+    if op == OP_ICONST:
+        return "iconst"
+    if op == OP_FCONST:
+        return "fconst"
+    if op == OP_IADD:
+        return "iadd"
+    if op == OP_ISUB:
+        return "isub"
+    if op == OP_IMUL:
+        return "imul"
+    if op == OP_IDIV:
+        return "idiv"
+    if op == OP_IMOD:
+        return "imod"
+    if op == OP_FADD:
+        return "fadd"
+    if op == OP_FSUB:
+        return "fsub"
+    if op == OP_FMUL:
+        return "fmul"
+    if op == OP_FDIV:
+        return "fdiv"
+    if op == OP_EQ:
+        return "eq"
+    if op == OP_NE:
+        return "ne"
+    if op == OP_LT:
+        return "lt"
+    if op == OP_LE:
+        return "le"
+    if op == OP_GT:
+        return "gt"
+    if op == OP_GE:
+        return "ge"
+    if op == OP_AND:
+        return "and"
+    if op == OP_OR:
+        return "or"
+    if op == OP_XOR:
+        return "xor"
+    if op == OP_SHL:
+        return "shl"
+    if op == OP_SHR:
+        return "shr"
+    if op == OP_NOT:
+        return "not"
+    if op == OP_NEG:
+        return "neg"
+    if op == OP_ITOF:
+        return "itof"
+    if op == OP_FTOI:
+        return "ftoi"
+    if op == OP_ZEXT:
+        return "zext"
+    if op == OP_SEXT:
+        return "sext"
+    if op == OP_TRUNC:
+        return "trunc"
+    if op == OP_CAST:
+        return "cast"
+
+    if op == OP_JUMP:
+        return "jump"
+    if op == OP_BRANCH:
+        return "branch"
+    if op == OP_CALL:
+        return "call"
+    if op == OP_RETURN:
+        return "ret"
+    if op == OP_PHI:
+        return "phi"
+    if op == OP_LOOP_BEGIN:
+        return "loopbeg"
+    if op == OP_LOOP_END:
+        return "loopend"
+    if op == OP_SPAWN:
+        return "spawn"
+    if op == OP_SEND:
+        return "send"
+    if op == OP_RECV:
+        return "recv"
+    if op == OP_AWAIT:
+        return "await"
+
+    if op == OP_SIMD_LOAD:
+        return "vload"
+    if op == OP_SIMD_STORE:
+        return "vstore"
+    if op == OP_SIMD_ADD:
+        return "vadd"
+    if op == OP_SIMD_MUL:
+        return "vmul"
+    if op == OP_SIMD_FMA:
+        return "vfma"
+
+    if op == OP_COMPTIME:
+        return "comptime"
+    return "???"
+
+pub fn opcode_class(op: u16) -> u16:
+    return op >> 8 as u16
+
+pub fn opcode_is_binary_alu(op: u16) -> bool:
+    if op == OP_IADD:
+        return true
+    if op == OP_ISUB:
+        return true
+    if op == OP_IMUL:
+        return true
+    if op == OP_IDIV:
+        return true
+    if op == OP_IMOD:
+        return true
+    if op == OP_FADD:
+        return true
+    if op == OP_FSUB:
+        return true
+    if op == OP_FMUL:
+        return true
+    if op == OP_FDIV:
+        return true
+    if op == OP_EQ:
+        return true
+    if op == OP_NE:
+        return true
+    if op == OP_LT:
+        return true
+    if op == OP_LE:
+        return true
+    if op == OP_GT:
+        return true
+    if op == OP_GE:
+        return true
+    if op == OP_AND:
+        return true
+    if op == OP_OR:
+        return true
+    if op == OP_XOR:
+        return true
+    if op == OP_SHL:
+        return true
+    if op == OP_SHR:
+        return true
+    return false

@@ -234,13 +234,16 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		// Wait, if it's a bare block it might need one. We'll let the parents push scopes.
 		nr.resolveChildren(nodeIdx)
 
-	case ast.NodeIfStmt, ast.NodeElifClause, ast.NodeElseClause, ast.NodeMatchArm, ast.NodeArenaBlock:
+	case ast.NodeIfStmt, ast.NodeElifClause, ast.NodeElseClause, ast.NodeMatchArm, ast.NodeArenaBlock, ast.NodeWhileStmt:
 		nr.symtable.PushScope(ScopeBlock)
 		nr.resolveChildren(nodeIdx)
 		nr.symtable.PopScope()
 
 	case ast.NodeForStmt:
 		nr.symtable.PushScope(ScopeLoop)
+		nameID := node.Payload
+		symIdx := nr.defineSymbol(nameID, SymVar, 0, nodeIdx)
+		node.Payload = symIdx
 		nr.resolveChildren(nodeIdx)
 		nr.symtable.PopScope()
 
@@ -257,6 +260,15 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 			break
 		}
 		symIdx, found := nr.symtable.Resolve(nameID)
+		if name == "free" {
+			fmt.Printf("[DEBUG-RESOLVE-FREE] Resolve free: found=%t symIdx=%d\n", found, symIdx)
+			for idx, sym := range nr.symtable.Symbols {
+				symName := nr.intern.Get(sym.NameID)
+				if symName == "free" {
+					fmt.Printf("[DEBUG-RESOLVE-FREE]   Symbol idx=%d kind=%v flags=%v scopeID=%d declNode=%d\n", idx, sym.Kind, sym.Flags, sym.ScopeID, sym.DeclNode)
+				}
+			}
+		}
 		if !found {
 			nr.errorf(nodeIdx, 2010, "undefined: '%s'", name)
 		} else {
@@ -320,8 +332,7 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		if node.Payload != 0 {
 			nameID := node.Payload
 			name := nr.intern.Get(nameID)
-			symIdx, found := nr.symtable.Resolve(nameID)
-			fmt.Printf("[DEBUG] Resolver NodeTypeExpr: name='%s' nameID=%d found=%t symIdx=%d\n", name, nameID, found, symIdx)
+			symIdx, found := nr.resolveType(nameID)
 			if !found {
 				nr.errorf(nodeIdx, 2010, "undefined type: '%s'", name)
 			} else {
@@ -434,4 +445,18 @@ func (nr *NameResolver) registerGenericTemplate(nodeIdx uint32, symID uint32) {
 
 	tmpl := types.NewGenericTemplate(symID, nodeIdx, params)
 	nr.types.RegisterGenericTemplate(tmpl)
+}
+
+func (nr *NameResolver) resolveType(nameID uint32) (uint32, bool) {
+	stack := nr.symtable.GetStack()
+	for i := len(stack) - 1; i >= 0; i-- {
+		scopeIdx := stack[i]
+		if symIdx, found := nr.symtable.Scopes[scopeIdx].get(nameID); found {
+			sym := nr.symtable.SymbolAt(symIdx)
+			if sym.Kind == SymStruct || sym.Kind == SymInterface || sym.Kind == SymTypeAlias || sym.Kind == SymBuiltinType || sym.Kind == SymGenericParam {
+				return symIdx, true
+			}
+		}
+	}
+	return 0, false
 }

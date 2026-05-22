@@ -32,8 +32,11 @@ var builtins = []builtinType{
 	{"alloc", 0},
 	{"free", 0},
 	{"memcpy", 0},
+	{"memset", 0},
 	{"print", 0},
 	{"println", 0},
+	{"compiler_intrinsic", 0},
+	{"assert", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated
@@ -133,6 +136,22 @@ func (st *SymbolTable) Define(nameID uint32, kind SymKind, flags SymFlags, declN
 
 	// Check for duplicate in current scope
 	if prevIdx, found := scope.get(nameID); found {
+		// If the previous symbol was a built-in type, allow the new definition to overwrite/shadow it.
+		if st.Symbols[prevIdx].Kind == SymBuiltinType {
+			symIdx := uint32(len(st.Symbols))
+			st.Symbols = append(st.Symbols, Symbol{
+				NameID:       nameID,
+				Kind:         kind,
+				Flags:        flags,
+				TypeID:       0, // unresolved initially
+				DeclNode:     declNode,
+				ScopeID:      scopeIdx,
+				NextOverload: 0,
+			})
+			scope.Overwrite(nameID, symIdx)
+			return symIdx, nil
+		}
+
 		// If both the previous symbol and the new symbol are functions, allow overloading.
 		if st.Symbols[prevIdx].Kind == SymFunc && kind == SymFunc {
 			// Traverse the NextOverload chain to find the last overloaded function

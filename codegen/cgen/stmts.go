@@ -174,8 +174,6 @@ func (g *StmtGen) emitVarDecl(idx uint32, node *ast.AstNode) {
 	if !useSym {
 		typeID = types.TypeID(node.Payload)
 	}
-	ctype := CTypeName(typeID, g.Table, g.Intern, g.Queue)
-
 	// Find initExpr by scanning children and skipping NodeTypeExpr and NodeGenericType
 	var initExprIdx uint32 = ast.NullIdx
 	child := node.FirstChild
@@ -188,13 +186,25 @@ func (g *StmtGen) emitVarDecl(idx uint32, node *ast.AstNode) {
 		child = g.Tree.Node(child).NextSibling
 	}
 
-	// Check for initializer
-	if initExprIdx != ast.NullIdx {
-		initExpr := g.ExprGen.Emit(initExprIdx)
-		g.W.Linef("%s %s = %s;", ctype, name, initExpr)
+	fEntry := g.Table.Entry(typeID)
+	if fEntry.Kind == types.KindArray {
+		elemID := g.Table.ArrayElem(typeID)
+		elemC := CTypeName(elemID, g.Table, g.Intern, g.Queue)
+		length := g.Table.ArrayLength(typeID)
+		if initExprIdx != ast.NullIdx {
+			initExpr := g.ExprGen.Emit(initExprIdx)
+			g.W.Linef("%s %s[%d] = %s;", elemC, name, length, initExpr)
+		} else {
+			g.W.Linef("%s %s[%d] = {0};", elemC, name, length)
+		}
 	} else {
-		// Default zero initialization
-		g.W.Linef("%s %s = {0};", ctype, name)
+		ctype := CTypeName(typeID, g.Table, g.Intern, g.Queue)
+		if initExprIdx != ast.NullIdx {
+			initExpr := g.ExprGen.Emit(initExprIdx)
+			g.W.Linef("%s %s = %s;", ctype, name, initExpr)
+		} else {
+			g.W.Linef("%s %s = {0};", ctype, name)
+		}
 	}
 }
 
@@ -205,12 +215,59 @@ func (g *StmtGen) emitAssign(idx uint32, node *ast.AstNode) {
 		g.W.Line("/* invalid assign: missing children */")
 		return
 	}
+
+	// Emit bounds checks for LHS first
+	g.emitLHSBoundsChecks(children[0])
+
+	// Emit LHS in unsafe (no bounds check) mode so it is a valid C lvalue
+	wasUnsafe := g.ExprGen.Unsafe
+	g.ExprGen.Unsafe = true
 	lhs := g.ExprGen.Emit(children[0])
+	g.ExprGen.Unsafe = wasUnsafe
+
 	rhs := g.ExprGen.Emit(children[1])
 
 	// Check for compound assignment operators via ExtraIdx
 	op := assignOp(node.ExtraIdx)
 	g.W.Linef("%s %s %s;", lhs, op, rhs)
+}
+
+func (g *StmtGen) emitLHSBoundsChecks(idx uint32) {
+	node := g.Tree.Node(idx)
+	if node.Kind == ast.NodeIndexExpr {
+		children := g.Tree.Children(idx)
+		if len(children) >= 2 {
+			// First recursively emit bounds checks for children (nested indexes)
+			g.emitLHSBoundsChecks(children[0])
+			g.emitLHSBoundsChecks(children[1])
+
+			// Emit bounds check for this index expression itself
+			arr := g.ExprGen.Emit(children[0])
+			index := g.ExprGen.Emit(children[1])
+
+			colType := g.ExprGen.NodeType(children[0])
+			if colType != types.TypeUnknown {
+				entry := g.Table.Entry(colType)
+				if entry.Kind == types.KindArray {
+					length := g.Table.ArrayLength(colType)
+					g.W.Linef("ax_bounds_check((ax_u64)(%s), (ax_u64)(%d));", index, length)
+					return
+				}
+				if entry.Kind == types.KindPointer {
+					// Pointers don't have bounds checks
+					return
+				}
+			}
+			g.W.Linef("ax_bounds_check((ax_u64)(%s), (%s).len);", index, arr)
+		}
+	} else {
+		// Recursively walk other children to find any index expressions (e.g. self.field.arr[i])
+		child := node.FirstChild
+		for child != ast.NullIdx {
+			g.emitLHSBoundsChecks(child)
+			child = g.Tree.Node(child).NextSibling
+		}
+	}
 }
 
 // emitReturn generates deferred expressions then the return statement.
@@ -289,7 +346,7 @@ func (g *StmtGen) emitWhile(idx uint32, node *ast.AstNode) {
 	g.W.Line("}")
 }
 
-// emitFor generates for-in loops over slices.
+// emitFor generates for-in loops over slices or ranges.
 func (g *StmtGen) emitFor(idx uint32, node *ast.AstNode) {
 	children := g.Tree.Children(idx)
 	if len(children) < 2 {
@@ -297,29 +354,78 @@ func (g *StmtGen) emitFor(idx uint32, node *ast.AstNode) {
 		return
 	}
 
-	varName := string(g.Tree.TokenText(node.TokenIdx))
-	iterExpr := g.ExprGen.Emit(children[0])
+	symIdx := node.Payload
+	varName := ""
+	var elemTypeID types.TypeID = types.TypeI32
 
-	// Element type from payload
-	elemTypeID := types.TypeID(node.Payload)
+	if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+		sym := g.Symbols.SymbolAt(symIdx)
+		varName = resolveName(sym.NameID, g.Intern)
+		if sym.TypeID != 0 {
+			elemTypeID = types.TypeID(sym.TypeID)
+		}
+	} else {
+		// Fallback if resolver didn't run
+		varName = resolveName(symIdx, g.Intern)
+		if varName == "" {
+			varName = "i" // default fallback
+		}
+	}
+
 	elemType := CTypeName(elemTypeID, g.Table, g.Intern, g.Queue)
 
-	idxVar := fmt.Sprintf("_ax_i_%s", varName)
+	// Check if iterator is a range expression: A..B
+	iterNode := g.Tree.Node(children[0])
+	isRange := false
+	var startExpr, endExpr string
+	if iterNode.Kind == ast.NodeBinaryExpr {
+		opText := string(g.Tree.TokenText(iterNode.TokenIdx))
+		if opText == ".." {
+			isRange = true
+			iterChildren := g.Tree.Children(children[0])
+			if len(iterChildren) >= 2 {
+				startExpr = g.ExprGen.Emit(iterChildren[0])
+				endExpr = g.ExprGen.Emit(iterChildren[1])
+			} else {
+				startExpr = "0"
+				endExpr = "0"
+			}
+		}
+	}
 
-	g.W.Linef("for (ax_u64 %s = 0; %s < (%s).len; %s++) {", idxVar, idxVar, iterExpr, idxVar)
-	g.W.Indent()
-	g.W.Linef("%s %s = (%s).ptr[%s];", elemType, varName, iterExpr, idxVar)
-	g.Defers.PushScope()
-	if len(children) > 1 {
-		g.EmitBlock(children[1])
+	if isRange {
+		g.W.Linef("for (%s %s = %s; %s < %s; %s++) {", elemType, varName, startExpr, varName, endExpr, varName)
+		g.W.Indent()
+		g.Defers.PushScope()
+		if len(children) > 1 {
+			g.EmitBlock(children[1])
+		}
+		deferred := g.Defers.PopScope()
+		for _, d := range deferred {
+			expr := g.ExprGen.Emit(d)
+			g.W.Linef("%s;", expr)
+		}
+		g.W.Dedent()
+		g.W.Line("}")
+	} else {
+		iterExpr := g.ExprGen.Emit(children[0])
+		idxVar := fmt.Sprintf("_ax_i_%s", varName)
+
+		g.W.Linef("for (ax_u64 %s = 0; %s < (%s).len; %s++) {", idxVar, idxVar, iterExpr, idxVar)
+		g.W.Indent()
+		g.W.Linef("%s %s = (%s).ptr[%s];", elemType, varName, iterExpr, idxVar)
+		g.Defers.PushScope()
+		if len(children) > 1 {
+			g.EmitBlock(children[1])
+		}
+		deferred := g.Defers.PopScope()
+		for _, d := range deferred {
+			expr := g.ExprGen.Emit(d)
+			g.W.Linef("%s;", expr)
+		}
+		g.W.Dedent()
+		g.W.Line("}")
 	}
-	deferred := g.Defers.PopScope()
-	for _, d := range deferred {
-		expr := g.ExprGen.Emit(d)
-		g.W.Linef("%s;", expr)
-	}
-	g.W.Dedent()
-	g.W.Line("}")
 }
 
 // emitDefer pushes the deferred expression onto the defer stack.

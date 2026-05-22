@@ -1,0 +1,427 @@
+// AXIOM Standard Library — std::mem::alloc
+//
+// AXIOM-native production-grade memory allocator.
+// Implements a segmented, size-classed allocator with per-actor heaps.
+// Avoids global lock contention and leverages direct OS virtual memory APIs.
+
+pub struct AxHeader:
+    pub gen_id: u32
+    pub flags: u32
+
+pub struct FreeSlot:
+    pub next: ptr[FreeSlot]
+
+pub struct FreeList:
+    pub head: ptr[FreeSlot]
+    pub count: i64
+
+// 64KB per segment
+pub const SEGMENT_SIZE: i64 = 65536
+pub const MAX_SEGMENTS: i64 = 4096
+pub const SEGMENT_MAGIC: u32 = 0xAF5E6000
+
+pub struct Segment:
+    pub base: ptr[u8]
+    pub bump: ptr[u8]
+    pub limit: ptr[u8]
+    pub sclass: i32
+    pub next: ptr[Segment]
+    pub magic: u32
+
+pub struct SegmentList:
+    pub active: ptr[Segment]
+    pub retired: ptr[Segment]
+    pub count: i64
+
+pub const ACTOR_HEAP_MAGIC: u32 = 0xAC704EA0
+
+pub struct ActorHeap:
+    pub actor_id: u64
+    pub magic: u32
+    pub padding: u32 // Padding to align fields
+
+    // per-size-class segments
+    pub seg_0: SegmentList
+    pub seg_1: SegmentList
+    pub seg_2: SegmentList
+    pub seg_3: SegmentList
+    pub seg_4: SegmentList
+    pub seg_5: SegmentList
+    pub seg_6: SegmentList
+    pub seg_7: SegmentList
+    pub seg_8: SegmentList
+    pub seg_9: SegmentList
+
+    // per-size-class free lists
+    pub free_0: FreeList
+    pub free_1: FreeList
+    pub free_2: FreeList
+    pub free_3: FreeList
+    pub free_4: FreeList
+    pub free_5: FreeList
+    pub free_6: FreeList
+    pub free_7: FreeList
+    pub free_8: FreeList
+    pub free_9: FreeList
+
+    pub total_allocated: u64
+    pub total_freed: u64
+    pub alloc_count: u64
+    pub free_count: u64
+
+// --------------------------------------------------------------------------
+// External OS Bindings
+// --------------------------------------------------------------------------
+
+extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
+extern "C" fn VirtualFree(lpAddress: ptr[void], dwSize: u64, dwFreeType: u32) -> i32
+
+extern "C" fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]
+extern "C" fn munmap(addr: ptr[void], length: u64) -> i32
+
+extern "C" fn calloc(num: i64, size: i64) -> ptr[void]
+extern "C" fn free(p: ptr[void])
+
+extern "C" fn std_mem_alloc_get_slab_used() -> ptr[i64]
+extern "C" fn std_mem_alloc_get_slab() -> ptr[Segment]
+extern "C" fn std_mem_alloc_get_free_pool() -> ptr[ptr[Segment]]
+
+// --------------------------------------------------------------------------
+// Size Classes
+// --------------------------------------------------------------------------
+
+pub fn ax_size_class_size(sc: i32) -> i64:
+    if sc == 0:
+        return 8
+    if sc == 1:
+        return 16
+    if sc == 2:
+        return 32
+    if sc == 3:
+        return 64
+    if sc == 4:
+        return 128
+    if sc == 5:
+        return 256
+    if sc == 6:
+        return 512
+    if sc == 7:
+        return 1024
+    if sc == 8:
+        return 2048
+    if sc == 9:
+        return 4096
+    return 0
+
+pub fn ax_size_class_for(user_size: i64) -> i32:
+    let total = user_size + 8 // 8-byte AxHeader
+    if total <= 8:
+        return 0
+    if total <= 16:
+        return 1
+    if total <= 32:
+        return 2
+    if total <= 64:
+        return 3
+    if total <= 128:
+        return 4
+    if total <= 256:
+        return 5
+    if total <= 512:
+        return 6
+    if total <= 1024:
+        return 7
+    if total <= 2048:
+        return 8
+    if total <= 4096:
+        return 9
+    return 10 // SIZE_CLASS_LARGE
+
+// --------------------------------------------------------------------------
+// Offset mapping helpers for ActorHeap structures
+// --------------------------------------------------------------------------
+
+pub fn ax_get_segment_list(heap: ptr[ActorHeap], sc: i32) -> ptr[SegmentList]:
+    if sc == 0:
+        return (heap as i64 + 16) as ptr[SegmentList]
+    if sc == 1:
+        return (heap as i64 + 16 + 24) as ptr[SegmentList]
+    if sc == 2:
+        return (heap as i64 + 16 + 48) as ptr[SegmentList]
+    if sc == 3:
+        return (heap as i64 + 16 + 72) as ptr[SegmentList]
+    if sc == 4:
+        return (heap as i64 + 16 + 96) as ptr[SegmentList]
+    if sc == 5:
+        return (heap as i64 + 16 + 120) as ptr[SegmentList]
+    if sc == 6:
+        return (heap as i64 + 16 + 144) as ptr[SegmentList]
+    if sc == 7:
+        return (heap as i64 + 16 + 168) as ptr[SegmentList]
+    if sc == 8:
+        return (heap as i64 + 16 + 192) as ptr[SegmentList]
+    if sc == 9:
+        return (heap as i64 + 16 + 216) as ptr[SegmentList]
+    return null as ptr[SegmentList]
+
+pub fn ax_get_free_list(heap: ptr[ActorHeap], sc: i32) -> ptr[FreeList]:
+    let base = heap as i64 + 16 + 240 // 10 * 24 = 240
+    if sc == 0:
+        return base as ptr[FreeList]
+    if sc == 1:
+        return (base + 16) as ptr[FreeList]
+    if sc == 2:
+        return (base + 32) as ptr[FreeList]
+    if sc == 3:
+        return (base + 48) as ptr[FreeList]
+    if sc == 4:
+        return (base + 64) as ptr[FreeList]
+    if sc == 5:
+        return (base + 80) as ptr[FreeList]
+    if sc == 6:
+        return (base + 96) as ptr[FreeList]
+    if sc == 7:
+        return (base + 112) as ptr[FreeList]
+    if sc == 8:
+        return (base + 128) as ptr[FreeList]
+    if sc == 9:
+        return (base + 144) as ptr[FreeList]
+    return null as ptr[FreeList]
+
+// --------------------------------------------------------------------------
+// Free List Primitives
+// --------------------------------------------------------------------------
+
+pub fn ax_free_list_push(list: ptr[FreeList], block: ptr[u8]):
+    let slot = (block as i64 + 8) as ptr[FreeSlot]
+    slot.next = list.head
+    list.head = slot
+    list.count = list.count + 1
+
+pub fn ax_free_list_pop(list: ptr[FreeList]) -> ptr[u8]:
+    let slot = list.head
+    if slot == null as ptr[FreeSlot]:
+        return null as ptr[u8]
+    list.head = slot.next
+    list.count = list.count - 1
+    return ((slot as i64) - 8) as ptr[u8]
+
+// --------------------------------------------------------------------------
+// OS Virtual Memory Allocator
+// --------------------------------------------------------------------------
+
+pub fn ax_os_alloc(size: i64) -> ptr[void]:
+    if @compiler_intrinsic("is_windows"):
+        // Windows: MEM_COMMIT | MEM_RESERVE = 0x3000, PAGE_READWRITE = 0x04
+        return VirtualAlloc(null as ptr[void], size as u64, 0x3000 as u32, 0x04 as u32)
+    else:
+        // POSIX: PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
+        return mmap(null as ptr[void], size as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64)
+
+pub fn ax_os_free(ptr: ptr[void], size: i64):
+    if ptr == null as ptr[void]:
+        return
+    if @compiler_intrinsic("is_windows"):
+        // Windows: MEM_RELEASE = 0x8000
+        VirtualFree(ptr, 0 as u64, 0x8000 as u32)
+    else:
+        munmap(ptr, size as u64)
+
+// --------------------------------------------------------------------------
+// Segment Pool & Lifecycle
+// --------------------------------------------------------------------------
+
+pub fn ax_segment_manager_init():
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    slab_used_ptr.* = 0
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    free_pool_ptr.* = null as ptr[Segment]
+    let slab_ptr = std_mem_alloc_get_slab()
+    @memset(slab_ptr as ptr[u8], 0 as u8, 4096 as i64 * @compiler_intrinsic("size_of")[Segment]() as i64)
+
+pub fn ax_segment_manager_shutdown():
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    let slab_ptr = std_mem_alloc_get_slab()
+    mut i := 0 as i64
+    while i < slab_used_ptr.*:
+        let seg = (slab_ptr as i64 + i * @compiler_intrinsic("size_of")[Segment]() as i64) as ptr[Segment]
+        if seg.magic == SEGMENT_MAGIC:
+            ax_os_free(seg.base as ptr[void], SEGMENT_SIZE)
+            seg.magic = 0 as u32
+        i = i + 1
+    slab_used_ptr.* = 0
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    free_pool_ptr.* = null as ptr[Segment]
+
+fn alloc_segment_meta() -> ptr[Segment]:
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    if free_pool_ptr.* != null as ptr[Segment]:
+        let seg = free_pool_ptr.*
+        free_pool_ptr.* = seg.next
+        return seg
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    if slab_used_ptr.* >= 4096 as i64:
+        return null as ptr[Segment]
+    let slab_ptr = std_mem_alloc_get_slab()
+    let seg = (slab_ptr as i64 + slab_used_ptr.* * @compiler_intrinsic("size_of")[Segment]() as i64) as ptr[Segment]
+    slab_used_ptr.* = slab_used_ptr.* + 1
+    return seg
+
+fn free_segment_meta(seg: ptr[Segment]):
+    @memset(seg as ptr[u8], 0 as u8, @compiler_intrinsic("size_of")[Segment]())
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    seg.next = free_pool_ptr.*
+    free_pool_ptr.* = seg
+
+pub fn ax_segment_acquire(sc: i32) -> ptr[Segment]:
+    let seg = alloc_segment_meta()
+    if seg == null as ptr[Segment]:
+        return null as ptr[Segment]
+    let mem = ax_os_alloc(SEGMENT_SIZE) as ptr[u8]
+    if mem == null as ptr[u8]:
+        free_segment_meta(seg)
+        return null as ptr[Segment]
+    seg.base = mem
+    seg.bump = mem
+    seg.limit = (mem as i64 + SEGMENT_SIZE) as ptr[u8]
+    seg.sclass = sc
+    seg.next = null as ptr[Segment]
+    seg.magic = SEGMENT_MAGIC
+    return seg
+
+pub fn ax_segment_release(seg: ptr[Segment]):
+    if seg == null as ptr[Segment] or seg.magic != SEGMENT_MAGIC:
+        return
+    ax_os_free(seg.base as ptr[void], SEGMENT_SIZE)
+    seg.magic = 0 as u32
+    free_segment_meta(seg)
+
+pub fn ax_segment_get_active(list: ptr[SegmentList], sc: i32) -> ptr[Segment]:
+    if list.active != null as ptr[Segment] and list.active.bump < list.active.limit:
+        return list.active
+    if list.active != null as ptr[Segment]:
+        list.active.next = list.retired
+        list.retired = list.active
+        list.count = list.count + 1
+    let seg = ax_segment_acquire(sc)
+    list.active = seg
+    return seg
+
+pub fn ax_segment_list_release_all(list: ptr[SegmentList]):
+    if list.active != null as ptr[Segment]:
+        ax_segment_release(list.active)
+        list.active = null as ptr[Segment]
+    mut seg := list.retired
+    while seg != null as ptr[Segment]:
+        let next = seg.next
+        ax_segment_release(seg)
+        seg = next
+    list.retired = null as ptr[Segment]
+    list.count = 0
+
+pub fn ax_segment_bump_alloc(seg: ptr[Segment], sc: i32) -> ptr[u8]:
+    if seg == null as ptr[Segment] or sc >= 10:
+        return null as ptr[u8]
+    let block_size = ax_size_class_size(sc)
+    if (seg.bump as i64 + block_size) > seg.limit as i64:
+        return null as ptr[u8]
+    let block = seg.bump
+    seg.bump = (seg.bump as i64 + block_size) as ptr[u8]
+    return block
+
+// --------------------------------------------------------------------------
+// Large Allocations (> 4096 bytes)
+// --------------------------------------------------------------------------
+
+pub fn ax_large_alloc(user_size: i64) -> ptr[u8]:
+    let total = 8 + user_size
+    let page_aligned = (total + 4095) & ~4095
+    let block = ax_os_alloc(page_aligned) as ptr[u8]
+    if block == null as ptr[u8]:
+        return null as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    hdr.gen_id = 1 as u32
+    hdr.flags = 10 as u32
+    return (block as i64 + 8) as ptr[u8]
+
+pub fn ax_large_free(user_ptr: ptr[u8], user_size: i64):
+    if user_ptr == null as ptr[u8]:
+        return
+    let block = (user_ptr as i64 - 8) as ptr[u8]
+    let total = 8 + user_size
+    let page_aligned = (total + 4095) & ~4095
+    ax_os_free(block as ptr[void], page_aligned)
+
+// --------------------------------------------------------------------------
+// Actor Heap Management
+// --------------------------------------------------------------------------
+
+pub fn ax_actor_heap_create(actor_id: u64) -> ptr[ActorHeap]:
+    let heap = calloc(1 as i64, @compiler_intrinsic("size_of")[ActorHeap]() as i64) as ptr[ActorHeap]
+    if heap == null as ptr[ActorHeap]:
+        return null as ptr[ActorHeap]
+    heap.actor_id = actor_id
+    heap.magic = ACTOR_HEAP_MAGIC
+    return heap
+
+pub fn ax_actor_heap_destroy(heap: ptr[ActorHeap]):
+    if heap == null as ptr[ActorHeap] or heap.magic != ACTOR_HEAP_MAGIC:
+        return
+    mut sc := 0
+    while sc < 10:
+        let list = ax_get_segment_list(heap, sc)
+        ax_segment_list_release_all(list)
+        sc = sc + 1
+    heap.magic = 0 as u32
+    free(heap as ptr[void])
+
+pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:
+    if heap == null as ptr[ActorHeap] or heap.magic != ACTOR_HEAP_MAGIC:
+        return null as ptr[u8]
+    let sc = ax_size_class_for(user_size)
+    if sc == 10:
+        let ptr_val = ax_large_alloc(user_size)
+        if ptr_val != null as ptr[u8]:
+            heap.total_allocated = heap.total_allocated + user_size as u64
+            heap.alloc_count = heap.alloc_count + 1 as u64
+        return ptr_val
+    let free_list = ax_get_free_list(heap, sc)
+    mut block := ax_free_list_pop(free_list)
+    if block == null as ptr[u8]:
+        let seg_list = ax_get_segment_list(heap, sc)
+        mut seg := ax_segment_get_active(seg_list, sc)
+        if seg == null as ptr[Segment]:
+            return null as ptr[u8]
+        block = ax_segment_bump_alloc(seg, sc)
+        if block == null as ptr[u8]:
+            seg = ax_segment_get_active(seg_list, sc)
+            if seg == null as ptr[Segment]:
+                return null as ptr[u8]
+            block = ax_segment_bump_alloc(seg, sc)
+            if block == null as ptr[u8]:
+                return null as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    hdr.gen_id = 1 as u32
+    hdr.flags = sc as u32
+    let block_size = ax_size_class_size(sc)
+    heap.total_allocated = heap.total_allocated + block_size as u64
+    heap.alloc_count = heap.alloc_count + 1 as u64
+    return (block as i64 + 8) as ptr[u8]
+
+pub fn ax_actor_free(heap: ptr[ActorHeap], user_ptr: ptr[u8]):
+    if heap == null as ptr[ActorHeap] or user_ptr == null as ptr[u8] or heap.magic != ACTOR_HEAP_MAGIC:
+        return
+    let block = (user_ptr as i64 - 8) as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    let sc = (hdr.flags & 15 as u32) as i32
+    hdr.gen_id = 0 as u32
+    if sc == 10 or sc >= 10:
+        return
+    let block_size = ax_size_class_size(sc)
+    heap.total_freed = heap.total_freed + block_size as u64
+    heap.free_count = heap.free_count + 1 as u64
+    let free_list = ax_get_free_list(heap, sc)
+    ax_free_list_push(free_list, block)
+
+pub fn ax_numa_alloc(size: i64, node_id: i32) -> ptr[u8]:
+    return ax_os_alloc(size) as ptr[u8]

@@ -1,6 +1,8 @@
 package sema
 
 import (
+	"fmt"
+
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/types"
 )
@@ -77,7 +79,31 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 			}
 
 			if idxType != types.TypeUnknown {
-				if !idxType.IsInteger() {
+				isGenericApp := false
+				if colType != types.TypeUnknown {
+					entry := tc.types.Entry(colType)
+					if entry.Kind == types.KindFunction {
+						isGenericApp = true
+					}
+				}
+
+				if tc.ast.Nodes[collection].Kind == ast.NodeIdent {
+					name := string(tc.ast.NodeText(collection))
+					if name == "compiler_intrinsic" || name == "@compiler_intrinsic" {
+						isGenericApp = true
+					}
+				} else if tc.ast.Nodes[collection].Kind == ast.NodeCallExpr {
+					// e.g. @compiler_intrinsic("size_of")
+					callee := tc.ast.Nodes[collection].FirstChild
+					if callee != 0 {
+						calleeText := string(tc.ast.NodeText(callee))
+						if calleeText == "compiler_intrinsic" || calleeText == "@compiler_intrinsic" {
+							isGenericApp = true
+						}
+					}
+				}
+
+				if !isGenericApp && !idxType.IsInteger() {
 					tc.errorf(nodeIdx, 3024, "index must be integer, found %d", idxType)
 				}
 			}
@@ -180,6 +206,7 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				}
 				
 				if !valid {
+					fmt.Printf("[DEBUG] ILLEGAL CAST: exprType=%d (Kind=%d), targetType=%d (Kind=%d)\n", exprType, exprEntry.Kind, targetType, targetEntry.Kind)
 					tc.errorf(nodeIdx, 3026, "illegal cast from %d to %d", exprType, targetType)
 				}
 			}

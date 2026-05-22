@@ -213,3 +213,12 @@ int ax_actor_step(AxActor* actor) {
 void ax_actor_stop(AxActorID id) {
     ax_actor_send(id, AX_ACTOR_ID_NONE, AX_MSG_STOP, NULL, 0);
 }
+
+int ax_actor_is_running(AxActor* actor) {
+    return actor && actor->state == AX_ACTOR_RUNNING;
+}
+
+int ax_actor_has_messages(AxActor* actor) {
+    return actor && actor->mailbox.head != NULL;
+}
+

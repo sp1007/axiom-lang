@@ -72,6 +72,34 @@ func runDumpAIR(args []string) int {
 	table := types.NewTypeTable()
 	symbols := sema.NewSymbolTable(intern)
 
+	// Semantic analysis
+	resolver := sema.NewNameResolver(tree, intern, symbols, table, nil)
+	if errs := resolver.Resolve(); hasErrorsDiags(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		for _, d := range errs {
+			fmt.Fprint(os.Stderr, diagnostics.FormatDiagnostic(d, source, filename, opts))
+		}
+		return 1
+	}
+
+	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
+	if errs := infer.Infer(); hasErrorsDiags(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		for _, d := range errs {
+			fmt.Fprint(os.Stderr, diagnostics.FormatDiagnostic(d, source, filename, opts))
+		}
+		return 1
+	}
+
+	tc := sema.NewTypeChecker(tree, intern, symbols, table, infer)
+	if errs := tc.Check(); hasErrorsDiags(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		for _, d := range errs {
+			fmt.Fprint(os.Stderr, diagnostics.FormatDiagnostic(d, source, filename, opts))
+		}
+		return 1
+	}
+
 	// Build AIR
 	mb := builder.NewModuleBuilder(tree, symbols, table, intern)
 	mod := mb.Build()
@@ -91,3 +119,13 @@ func runDumpAIR(args []string) int {
 
 	return 0
 }
+
+func hasErrorsDiags(diags []diagnostics.Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == diagnostics.SeverityError {
+			return true
+		}
+	}
+	return false
+}
+

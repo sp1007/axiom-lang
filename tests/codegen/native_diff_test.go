@@ -267,7 +267,7 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 	if err != nil {
 		return err
 	}
-	defer os.Remove(cSrcPath)
+	// defer os.Remove(cSrcPath)
 
 	if err := pipeline.GenerateC(cFile); err != nil {
 		cFile.Close()

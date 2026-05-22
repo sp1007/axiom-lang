@@ -1,5 +1,5 @@
-// bootstrap/stage1/main.ax
-// Test harness entry point for AXIOM self-hosted Lexer
+// bootstrap/stage1/main_typecheck.ax
+// Test harness entry point for AXIOM self-hosted Type Checker
 
 import std.string
 
@@ -14,7 +14,7 @@ extern "C" fn puts(s: str) -> i32
 
 pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     if argc < 2:
-        puts("Usage: lexer_test <filename>")
+        puts("Usage: typecheck_test <filename>")
         return 1
 
     let filename_ptr = argv[1]
@@ -45,15 +45,33 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
 
     let src = buffer as str
 
+    // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
 
-    mut i := 0
-    while i < tokens.len:
-        let tok = tokens.data[i]
-        printf("%d,%d,%d\n", tok.kind as i64, tok.offset as i64, tok.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // 2. Parse
+    mut pool := new_intern_pool()
+    mut parser := new_parser(tokens, src, pool)
+    parser.parse_program()
+
+    // 3. Resolve
+    mut symtable := new_symbol_table(parser.pool)
+    mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
+    resolver.resolve()
+
+    // 4. Typecheck
+    mut typetable := new_type_table()
+    mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
+    checker.run_type_checker()
+
+    // 5. Print node types
+    mut i := 0 as i64
+    while i < parser.tree.nodes.len:
+        let type_id = checker.node_types[i]
+        printf("%d: type=%d\n", i as i64, type_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         i = i + 1
 
+    // Free resources
     @free(buffer)
     if tokens.data != null as ptr[Token]:
         @free(tokens.data as ptr[u8])
@@ -63,5 +81,15 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         @free(lexer.indent_stack.data as ptr[u8])
     if lexer.newline_offsets.data != null as ptr[i32]:
         @free(lexer.newline_offsets.data as ptr[u8])
+
+    if parser.tree.nodes.data != null as ptr[AstNode]:
+        @free(parser.tree.nodes.data as ptr[u8])
+    if parser.tree.extras.data != null as ptr[i32]:
+        @free(parser.tree.extras.data as ptr[u8])
+
+    free_type_checker(checker)
+    free_typetable(typetable)
+    free_symtable(resolver.symtable)
+    free_pool(parser.pool)
 
     return 0

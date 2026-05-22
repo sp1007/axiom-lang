@@ -5,16 +5,16 @@ This report summarizes the compilation results of all `*.ax` files found in the 
 ## Summary
 
 - **Total Files Scanned:** 58
-- **Successfully Compiled:** 8
-- **Failed to Compile:** 50
+- **Successfully Compiled:** 12
+- **Failed to Compile:** 46
 
 ### Breakdown by Category
 
 - **air**: 2/7 passed
 - **root**: 0/19 passed
-- **generics**: 4/15 passed
-- **lexer**: 0/2 passed
-- **sema**: 2/15 passed
+- **generics**: 6/15 passed
+- **lexer**: 1/2 passed
+- **sema**: 3/15 passed
 
 ---
 
@@ -48,9 +48,9 @@ This report summarizes the compilation results of all `*.ax` files found in the 
 | [axiom_scientific_suite.ax](file:///d:\projects\compiler\Axiom\tests\axiom_scientific_suite.ax) | root | ❌ Fail | Future Language Spec (Not yet supported by Stage 1 Parser) (Error: `[31merror[E0004][0m: [1munexpected character '#' (0x23)[0m`) |
 | [axiom_security_suite.ax](file:///d:\projects\compiler\Axiom\tests\axiom_security_suite.ax) | root | ❌ Fail | Future Language Spec (Not yet supported by Stage 1 Parser) (Error: `[31merror[E1000][0m: [1mexpected identifier, got '('[0m`) |
 | [axiom_web_suite.ax](file:///d:\projects\compiler\Axiom\tests\axiom_web_suite.ax) | root | ❌ Fail | Future Language Spec (Not yet supported by Stage 1 Parser) (Error: `[31merror[E0004][0m: [1munexpected character '@' (0x40)[0m`) |
-| [async_await_outside.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_await_outside.ax) | generics | ❌ Fail | Expected Semantic/Syntax Error (Error: `[31merror[E3010][0m: [1mawait requires Future[T], found 22[0m`) |
-| [async_basic.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_basic.ax) | generics | ❌ Fail | Should Compile (Error: `[31merror[E3010][0m: [1mawait requires Future[T], found 22[0m`) |
-| [async_nested.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_nested.ax) | generics | ❌ Fail | Should Compile (Error: `[31merror[E3010][0m: [1mawait requires Future[T], found 22[0m`) |
+| [async_await_outside.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_await_outside.ax) | generics | ❌ Fail | Expected Semantic/Syntax Error (Error: `[31merror[E3011][0m: [1mawait can only be used inside async functions[0m`) |
+| [async_basic.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_basic.ax) | generics | ✅ Pass | Should Compile |
+| [async_nested.ax](file:///d:\projects\compiler\Axiom\tests\generics\async_nested.ax) | generics | ✅ Pass | Should Compile |
 | [generic_constrained.ax](file:///d:\projects\compiler\Axiom\tests\generics\generic_constrained.ax) | generics | ❌ Fail | Should Compile (Error: `panic: CTypeName: unresolved generic type parameter (TypeID 22)`) |
 | [generic_identity.ax](file:///d:\projects\compiler\Axiom\tests\generics\generic_identity.ax) | generics | ❌ Fail | Should Compile (Error: `[31merror[E3001][0m: [1mtype mismatch: expected 22, found 3[0m`) |
 | [generic_pair.ax](file:///d:\projects\compiler\Axiom\tests\generics\generic_pair.ax) | generics | ❌ Fail | Should Compile (Error: `[31merror[E3001][0m: [1mtype mismatch: expected 24, found 3[0m`) |
@@ -63,7 +63,7 @@ This report summarizes the compilation results of all `*.ax` files found in the 
 | [valid_const_decl.ax](file:///d:\projects\compiler\Axiom\tests\generics\valid_const_decl.ax) | generics | ✅ Pass | Should Compile |
 | [valid_struct_methods.ax](file:///d:\projects\compiler\Axiom\tests\generics\valid_struct_methods.ax) | generics | ✅ Pass | Should Compile |
 | [valid_sum_type_option.ax](file:///d:\projects\compiler\Axiom\tests\generics\valid_sum_type_option.ax) | generics | ❌ Fail | Should Compile (Error: `axc: C compilation failed: C compiler (gcc) failed:`) |
-| [hello.ax](file:///d:\projects\compiler\Axiom\tests\lexer\hello.ax) | lexer | ❌ Fail | Should Compile (Error: `[31merror[E2010][0m: [1mundefined: 'println'[0m`) |
+| [hello.ax](file:///d:\projects\compiler\Axiom\tests\lexer\hello.ax) | lexer | ✅ Pass | Should Compile |
 | [test_hello.ax](file:///d:\projects\compiler\Axiom\tests\lexer\test_hello.ax) | lexer | ❌ Fail | Should Compile (Error: `[31merror[E2005][0m: [1mfield not found in module[0m`) |
 | [err_arg_type.ax](file:///d:\projects\compiler\Axiom\tests\sema\err_arg_type.ax) | sema | ❌ Fail | Expected Semantic/Syntax Error (Error: `[31merror[E3001][0m: [1mtype mismatch: expected 3, found 12[0m`) |
 | [err_assign_mismatch.ax](file:///d:\projects\compiler\Axiom\tests\sema\err_assign_mismatch.ax) | sema | ❌ Fail | Expected Semantic/Syntax Error (Error: `[31merror[E1000][0m: [1mexpected identifier, got 'mut'[0m`) |
@@ -77,6 +77,6 @@ This report summarizes the compilation results of all `*.ax` files found in the 
 | [err_undefined.ax](file:///d:\projects\compiler\Axiom\tests\sema\err_undefined.ax) | sema | ❌ Fail | Expected Semantic/Syntax Error (Error: `[31merror[E2010][0m: [1mundefined: 'y'[0m`) |
 | [valid_assign.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_assign.ax) | sema | ❌ Fail | Should Compile (Error: `axc: C compilation failed: C compiler (gcc) failed:`) |
 | [valid_fibonacci.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_fibonacci.ax) | sema | ✅ Pass | Should Compile |
-| [valid_hello.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_hello.ax) | sema | ❌ Fail | Should Compile (Error: `[31merror[E1000][0m: [1mexpected identifier, got '.'[0m`) |
+| [valid_hello.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_hello.ax) | sema | ✅ Pass | Should Compile |
 | [valid_shadow.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_shadow.ax) | sema | ✅ Pass | Should Compile |
 | [valid_uninit.ax](file:///d:\projects\compiler\Axiom\tests\sema\valid_uninit.ax) | sema | ❌ Fail | Should Compile (Error: `axc: C compilation failed: C compiler (gcc) failed:`) |

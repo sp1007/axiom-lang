@@ -84,6 +84,7 @@ var builtinTable = map[string]BuiltinInfo{
 	"size_of":  {Kind: BuiltinDirect, CName: "sizeof"},
 	"align_of": {Kind: BuiltinDirect, CName: "_Alignof"},
 	"memcpy":   {Kind: BuiltinDirect, CName: "memcpy"},
+	"memset":   {Kind: BuiltinDirect, CName: "memset"},
 
 	// ---------- Vec ----------
 	"vec_new":    {Kind: BuiltinDirect, CName: "ax_vec_new"},
@@ -125,6 +126,11 @@ func EmitBuiltinCall(funcName string, args []string) string {
 
 	switch info.Kind {
 	case BuiltinDirect:
+		if funcName == "assert" && len(args) > 0 {
+			condStr := args[0]
+			escapedCond := strings.ReplaceAll(condStr, "\"", "\\\"")
+			return fmt.Sprintf("ax_assert_axiom(%s, AX_STR(\"%s\"))", condStr, escapedCond)
+		}
 		return fmt.Sprintf("%s(%s)", info.CName, strings.Join(args, ", "))
 
 	case BuiltinTyped:

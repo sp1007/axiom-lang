@@ -78,6 +78,35 @@ func (s *Scope) insert(nameID uint32, symbolIdx uint32) {
 	}
 }
 
+// Overwrite updates an existing nameID -> symbolIdx mapping.
+// Returns true if the key existed and was updated, false otherwise.
+func (s *Scope) Overwrite(nameID uint32, symbolIdx uint32) bool {
+	if s.capacity == 0 {
+		return false
+	}
+
+	mask := s.capacity - 1
+	idx := hashFNV1a(nameID) & mask
+	startIdx := idx
+
+	for {
+		entry := s.entries[idx]
+		if entry.nameID == 0 {
+			return false
+		}
+		if entry.nameID == nameID {
+			s.entries[idx].symbolIdx = symbolIdx
+			return true
+		}
+		idx = (idx + 1) & mask
+		if idx == startIdx {
+			break
+		}
+	}
+	return false
+}
+
+
 // get looks up a nameID in the scope.
 func (s *Scope) get(nameID uint32) (uint32, bool) {
 	if s.capacity == 0 {
