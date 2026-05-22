@@ -85,8 +85,52 @@ func (m *Monomorphizer) InstantiateFunction(templateSymID uint32, typeArgs []typ
 	instSymID := m.ast.Nodes[clonedRoot].Payload
 	m.cache[key] = instSymID
 
+	if m.symtable.InstantiatedToOriginalName == nil {
+		m.symtable.InstantiatedToOriginalName = make(map[uint32]uint32)
+	}
+	m.symtable.InstantiatedToOriginalName[instSymID] = origSym.NameID
+
 	if len(diags) == 0 {
+		// 1. Pre-register all cloned structs in the subtree
+		var preRegisterStructs func(nodeIdx uint32)
+		preRegisterStructs = func(nodeIdx uint32) {
+			node := &m.ast.Nodes[nodeIdx]
+			if node.Kind == ast.NodeStructDecl {
+				symIdx := node.Payload
+				if symIdx != 0 && int(symIdx) < len(m.symtable.Symbols) {
+					sym := m.symtable.SymbolAt(symIdx)
+					if sym.TypeID == 0 || sym.TypeID == uint32(types.TypeUnknown) {
+						nameID := sym.NameID
+						typeID := m.types.RegisterStruct(nameID, nil, nil)
+						sym.TypeID = uint32(typeID)
+					}
+				}
+			}
+			child := node.FirstChild
+			for child != 0 {
+				preRegisterStructs(child)
+				child = m.ast.Nodes[child].NextSibling
+			}
+		}
+		preRegisterStructs(clonedRoot)
+
+		// 2. Create the InferenceEngine and pre-infer all cloned structs
 		ie := NewInferenceEngine(m.ast, m.symtable, m.types, m)
+		var preInferStructs func(nodeIdx uint32)
+		preInferStructs = func(nodeIdx uint32) {
+			node := &m.ast.Nodes[nodeIdx]
+			if node.Kind == ast.NodeStructDecl {
+				ie.inferNode(nodeIdx, types.TypeUnknown)
+			}
+			child := node.FirstChild
+			for child != 0 {
+				preInferStructs(child)
+				child = m.ast.Nodes[child].NextSibling
+			}
+		}
+		preInferStructs(clonedRoot)
+
+		// 3. Infer the instantiated root node
 		ie.inferNode(clonedRoot, types.TypeUnknown)
 		diags = append(diags, ie.errors...)
 
@@ -108,11 +152,11 @@ func (m *Monomorphizer) InstantiateFunction(templateSymID uint32, typeArgs []typ
 func (m *Monomorphizer) substituteTypeParams(nodeIdx uint32, subst map[uint32]types.TypeID) {
 	node := &m.ast.Nodes[nodeIdx]
 
-	if node.Kind == ast.NodeIdent || node.Kind == ast.NodeParamDecl || node.Kind == ast.NodeFieldDecl || node.Kind == ast.NodeFuncDecl || node.Kind == ast.NodeStructDecl || node.Kind == ast.NodeTypeAliasDecl || node.Kind == ast.NodeVariantDecl {
+	if node.Kind == ast.NodeIdent || node.Kind == ast.NodeParamDecl || node.Kind == ast.NodeFieldDecl || node.Kind == ast.NodeFuncDecl || node.Kind == ast.NodeStructDecl || node.Kind == ast.NodeTypeAliasDecl || node.Kind == ast.NodeVariantDecl || node.Kind == ast.NodeTypeExpr || node.Kind == ast.NodeVarDecl || node.Kind == ast.NodeConstDecl || node.Kind == ast.NodeBindingPat || node.Kind == ast.NodeVariantPat || node.Kind == ast.NodeInterfaceDecl || node.Kind == ast.NodeImportDecl || node.Kind == ast.NodeForStmt {
 		symIdx := node.Payload
 		if symIdx != 0 && int(symIdx) < len(m.symtable.Symbols) {
 			sym := m.symtable.SymbolAt(symIdx)
-			if node.Kind == ast.NodeIdent {
+			if node.Kind == ast.NodeIdent || node.Kind == ast.NodeTypeExpr || node.Kind == ast.NodeBindingPat || node.Kind == ast.NodeVariantPat {
 				if typeID, ok := subst[sym.NameID]; ok {
 					entry := m.types.Entry(typeID)
 					nameID := entry.NameID

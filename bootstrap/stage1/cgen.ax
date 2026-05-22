@@ -1,0 +1,692 @@
+// bootstrap/stage1/cgen.ax
+// SSA AIR to C11 Code Generator.
+
+import std.string
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
+extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+
+fn opcode_defines_dest(op: u16) -> bool:
+    if op == 0 as u16: // OP_NOP
+        return false
+    if op == 0x0102 as u16: // OP_FREE
+        return false
+    if op == 0x010B as u16: // OP_DESTROY
+        return false
+    if op == 0x0104 as u16: // OP_STORE
+        return false
+    if op == 0x010E as u16: // OP_SET_FIELD
+        return false
+    if op == 0x0301 as u16: // OP_JUMP
+        return false
+    if op == 0x0302 as u16: // OP_BRANCH
+        return false
+    if op == 0x0304 as u16: // OP_RETURN
+        return false
+    return true
+
+pub struct CGenerator:
+    pub module: AirModule
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub file: ptr[void]
+    pub reg_types: ptr[u32]
+
+pub fn new_c_generator(mod: AirModule, tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> CGenerator:
+    return CGenerator(
+        module: mod,
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        file: null as ptr[void],
+        reg_types: null as ptr[u32],
+    )
+
+pub fn get_c_type(self: CGenerator, type_id: u32) -> str:
+    if type_id == 1 as u32:
+        return "ax_i8"
+    if type_id == 2 as u32:
+        return "ax_i16"
+    if type_id == 3 as u32:
+        return "ax_i32"
+    if type_id == 4 as u32:
+        return "ax_i64"
+    if type_id == 5 as u32:
+        return "ax_u8"
+    if type_id == 6 as u32:
+        return "ax_u16"
+    if type_id == 7 as u32:
+        return "ax_u32"
+    if type_id == 8 as u32:
+        return "ax_u64"
+    if type_id == 9 as u32:
+        return "ax_f32"
+    if type_id == 10 as u32:
+        return "ax_f64"
+    if type_id == 11 as u32:
+        return "ax_bool"
+    if type_id == 12 as u32:
+        return "ax_string"
+    if type_id == 13 as u32:
+        return "ax_char"
+    if type_id == 14 as u32:
+        return "void"
+    if type_id == 15 as u32:
+        return "ax_isize"
+    if type_id == 16 as u32:
+        return "ax_usize"
+    
+    if (type_id as i64) < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[type_id]
+        if entry.kind == TYPE_KIND_POINTER:
+            return "void*"
+        if entry.kind == TYPE_KIND_STRUCT:
+            if entry.name_id != 0 as u32:
+                let name = self.pool.get(entry.name_id)
+                // Return struct pointer name
+                mut res := @alloc(std.string.len(name) + 2) as ptr[u8]
+                @memcpy(res, name as ptr[u8], std.string.len(name))
+                res[std.string.len(name)] = '*' as u8
+                res[std.string.len(name) + 1] = 0 as u8
+                return res as str
+            return "void*"
+        if entry.kind == TYPE_KIND_SUM:
+            return "ax_i32"
+        if entry.kind == TYPE_KIND_SLICE:
+            return "ax_slice_void"
+    return "void*"
+
+pub fn is_stdlib_func(self: CGenerator, name: str) -> bool:
+    if name == "system" or name == "remove" or name == "fopen" or name == "fclose" or name == "fseek" or name == "ftell" or name == "rewind" or name == "fread" or name == "fwrite" or name == "printf" or name == "puts" or name == "putchar" or name == "getchar" or name == "fgetc" or name == "fgets" or name == "fputc" or name == "fputs" or name == "sprintf" or name == "snprintf" or name == "fprintf" or name == "scanf" or name == "fscanf" or name == "sscanf" or name == "malloc" or name == "free" or name == "realloc" or name == "calloc" or name == "exit" or name == "abort" or name == "memset" or name == "memcpy" or name == "memmove" or name == "println" or name == "print" or name == "eprint" or name == "eprintln" or name == "assert":
+        return true
+    
+    let name_ptr = name as ptr[u8]
+    let len = std.string.len(name)
+    if len >= 3 and name_ptr[0] == 'a' as u8 and name_ptr[1] == 'x' as u8 and name_ptr[2] == '_' as u8:
+        return true
+            
+    return false
+
+pub fn get_mangled_name_by_sym(self: CGenerator, sym_idx: u32) -> str:
+    mut fn_name := "func"
+    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[sym_idx as i64]
+        fn_name = self.pool.get(sym.name_id)
+        
+        if fn_name == "free":
+            let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+            if is_extern:
+                return "free"
+            return "ax_free"
+
+        if self.is_stdlib_func(fn_name):
+            return fn_name
+
+        let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+        if is_extern:
+            return fn_name
+
+        if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[sym.type_id as i64]
+            if entry.kind == TYPE_KIND_FUNC:
+                let fi = self.typetable.funcs.data[entry.extra as i64]
+                if fi.params.len > 0 as i64:
+                    mut first_param_type = fi.params.data[0]
+                    mut p_entry = self.typetable.entries.data[first_param_type as i64]
+                    if p_entry.kind == TYPE_KIND_POINTER:
+                        first_param_type = p_entry.extra
+                        p_entry = self.typetable.entries.data[first_param_type as i64]
+                    
+                    if p_entry.kind == TYPE_KIND_STRUCT and p_entry.name_id != 0 as u32:
+                        let struct_name = self.pool.get(p_entry.name_id)
+                        let struct_len = std.string.len(struct_name)
+                        let fn_len = std.string.len(fn_name)
+                        let total_len = 3 + struct_len + 1 + fn_len
+                        mut res := @alloc(total_len + 1) as ptr[u8]
+                        @memcpy(res, "ax_" as ptr[u8], 3)
+                        
+                        let dest1 = ((res as u64) + 3 as u64) as ptr[u8]
+                        @memcpy(dest1, struct_name as ptr[u8], struct_len)
+                        
+                        res[3 + struct_len] = '_' as u8
+                        
+                        let dest2 = ((res as u64) + 3 as u64 + struct_len as u64 + 1 as u64) as ptr[u8]
+                        @memcpy(dest2, fn_name as ptr[u8], fn_len)
+                        
+                        res[total_len] = 0 as u8
+                        return res as str
+
+    let fn_len = std.string.len(fn_name)
+    mut res := @alloc(3 + fn_len + 1) as ptr[u8]
+    @memcpy(res, "ax_" as ptr[u8], 3)
+    let dest = ((res as u64) + 3 as u64) as ptr[u8]
+    @memcpy(dest, fn_name as ptr[u8], fn_len)
+    res[3 + fn_len] = 0 as u8
+    return res as str
+
+fn str_to_null_terminated(s: str) -> ptr[u8]:
+    let len = std.string.len(s)
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, s as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf
+
+pub fn generate(mut self: CGenerator, out_filename: str) -> bool:
+    let filename_nt = str_to_null_terminated(out_filename)
+    self.file = fopen(filename_nt as ptr[void], "w")
+    @free(filename_nt)
+    if self.file == null as ptr[void]:
+        return false
+
+    mut has_main := false
+    mut main_has_args := false
+    mut fn_idx := 0 as i64
+    while fn_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[fn_idx]
+        let original_name = self.pool.get(f.name)
+        if original_name == "main":
+            has_main = true
+            if f.params.len > 0 as i64:
+                main_has_args = true
+        fn_idx = fn_idx + 1 as i64
+
+    fputs("// Generated automatically by AXIOM AirCGen Stage 1\n", self.file)
+    if has_main:
+        fputs("#define AX_EMIT_MAIN\n", self.file)
+        if main_has_args:
+            fputs("#define AX_MAIN_WITH_ARGS\n", self.file)
+    fputs("#include \"ax_runtime.h\"\n", self.file)
+    fputs("#include \"ax_stdlib.h\"\n\n", self.file)
+    fputs("#define r_0 0\n\n", self.file)
+
+    // 1. Forward declare all structs
+    fputs("// Forward Declarations\n", self.file)
+    mut i := 0 as i64
+    while i < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[i]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "typedef struct %s %s;\n", (name as ptr[u8]) as i64, (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        i = i + 1
+    fputs("\n", self.file)
+
+    // 2. Define structures
+    fputs("// Struct Definitions\n", self.file)
+    i = 0
+    while i < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[i]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "struct %s {\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            let si = self.typetable.structs.data[entry.extra as i64]
+            mut f_idx := 0 as i64
+            while f_idx < si.fields.len:
+                let field = si.fields.data[f_idx]
+                let field_type = self.get_c_type(field.type_id)
+                // Declare field
+                fprintf(self.file, "    %s f_%d;\n", (field_type as ptr[u8]) as i64, f_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                f_idx = f_idx + 1 as i64
+            fputs("};\n\n", self.file)
+        i = i + 1
+
+    // 3. Function prototypes
+    fputs("// Function Prototypes\n", self.file)
+    mut f_idx := 0 as i64
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            f_idx = f_idx + 1 as i64
+        else:
+            let original_name = self.pool.get(f.name)
+            let mangled_name = self.get_mangled_name_by_sym(f.sym_id)
+            let ret_type = self.get_c_type(f.ret_type)
+            fprintf(self.file, "%s %s(", (ret_type as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                if p_idx > 0:
+                    fputs(", ", self.file)
+                mut param_type := self.get_c_type(f.params.data[p_idx])
+                if original_name == "main" and p_idx == 1 as i64:
+                    param_type = "ax_u8**"
+                fprintf(self.file, "%s p_%d", (param_type as ptr[u8]) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1 as i64
+            fputs(");\n", self.file)
+            if mangled_name != original_name and mangled_name != "free" and mangled_name != "ax_free":
+                @free(mangled_name as ptr[u8])
+            f_idx = f_idx + 1 as i64
+    fputs("\n", self.file)
+
+    // 4. Function definitions
+    fputs("// Function Definitions\n", self.file)
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            f_idx = f_idx + 1 as i64
+        else:
+            let original_name = self.pool.get(f.name)
+            let mangled_name = self.get_mangled_name_by_sym(f.sym_id)
+            let ret_type = self.get_c_type(f.ret_type)
+            
+            fprintf(self.file, "%s %s(", (ret_type as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                if p_idx > 0:
+                    fputs(", ", self.file)
+                mut param_type := self.get_c_type(f.params.data[p_idx])
+                if original_name == "main" and p_idx == 1 as i64:
+                    param_type = "ax_u8**"
+                fprintf(self.file, "%s p_%d", (param_type as ptr[u8]) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1 as i64
+            fputs(") {\n", self.file)
+            if mangled_name != original_name and mangled_name != "free" and mangled_name != "ax_free":
+                @free(mangled_name as ptr[u8])
+
+            // Declare all SSA registers
+            // First scan to collect maximum registers
+            mut max_reg := 0 as u32
+            mut inst_idx := 0 as i64
+            while inst_idx < f.insts.len:
+                let inst = f.insts.data[inst_idx]
+                if inst.dest > max_reg:
+                    max_reg = inst.dest
+                inst_idx = inst_idx + 1
+
+            // Initialize register array types dynamically
+            if max_reg > 0 as u32:
+                self.reg_types = @alloc((max_reg as i64 + 1) * 4) as ptr[u32]
+                mut r := 0 as i64
+                while r <= max_reg as i64:
+                    self.reg_types[r] = 0 as u32
+                    r = r + 1
+
+                // Pre-populate parameter register types
+                if f.params.data != null as ptr[u32]:
+                    mut p_idx := 0 as i64
+                    while p_idx < f.params.len:
+                        let p_reg = (p_idx + 1) as u32
+                        if p_reg <= max_reg:
+                            self.reg_types[p_reg] = f.params.data[p_idx]
+                        p_idx = p_idx + 1
+
+                inst_idx = 0
+                while inst_idx < f.insts.len:
+                    let inst = f.insts.data[inst_idx]
+                    if opcode_defines_dest(inst.opcode) and inst.dest > 0 as u32:
+                        mut t_id := inst.type_id as u32
+                        if inst.opcode == 0x010D as u16: // OP_GET_FIELD
+                            mut obj_type_id = inst.type_id as u32
+                            if obj_type_id == 0 as u32 and inst.src1 > 0 as u32:
+                                obj_type_id = self.reg_types[inst.src1]
+                            if (obj_type_id as i64) < self.typetable.entries.len:
+                                mut entry = self.typetable.entries.data[obj_type_id]
+                                if entry.kind == TYPE_KIND_POINTER:
+                                    let pointee_id = entry.extra
+                                    if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                                        entry = self.typetable.entries.data[pointee_id]
+                                if entry.kind == TYPE_KIND_STRUCT:
+                                    let si = self.typetable.structs.data[entry.extra as i64]
+                                    if (inst.src2 as i64) < si.fields.len:
+                                        t_id = si.fields.data[inst.src2 as i64].type_id
+                        elif (inst.opcode == 0x0105 as u16 or inst.opcode == 0x0109 as u16 or inst.opcode == 0x010F as u16) and t_id == 0 as u32: // OP_INDEX, OP_GEP or OP_DEREF
+                            if inst.src1 > 0 as u32 and self.reg_types[inst.src1] != 0 as u32:
+                                let src_type = self.reg_types[inst.src1]
+                                if (src_type as i64) < self.typetable.entries.len:
+                                    let entry = self.typetable.entries.data[src_type]
+                                    if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                                        t_id = entry.extra
+                        elif inst.opcode == OP_CALL: // OP_CALL
+                            let sym_idx = inst.type_id as u32
+                            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                                let sym = self.symtable.symbols.data[sym_idx as i64]
+                                let fn_name = self.pool.get(sym.name_id)
+                                if fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln" or fn_name == "assert" or fn_name == "free":
+                                    t_id = 14 as u32
+                                else:
+                                    let fn_type_id = sym.type_id
+                                    if fn_type_id != 0 as u32 and (fn_type_id as i64) < self.typetable.entries.len:
+                                        let entry = self.typetable.entries.data[fn_type_id]
+                                        if entry.kind == TYPE_KIND_FUNC:
+                                            let fi = self.typetable.funcs.data[entry.extra as i64]
+                                            t_id = fi.ret
+                        self.reg_types[inst.dest] = t_id
+                    inst_idx = inst_idx + 1
+
+                // Print register declarations
+                r = 1
+                while r <= max_reg as i64:
+                    if self.reg_types[r] != 14 as u32:
+                        let t_name = self.get_c_type(self.reg_types[r])
+                        fprintf(self.file, "    %s r_%d = {0};\n", (t_name as ptr[u8]) as i64, r, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    r = r + 1
+
+                // Copy parameters to registers
+                if f.params.data != null as ptr[u32]:
+                    mut p_idx := 0 as i64
+                    while p_idx < f.params.len:
+                        let r_idx = (p_idx + 1) as i64
+                        fprintf(self.file, "    r_%d = p_%d;\n", r_idx, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        p_idx = p_idx + 1
+
+            // Generate C statements block-by-block
+            mut b_idx := 0 as i64
+            while b_idx < f.blocks.len:
+                let bb = f.blocks.data[b_idx]
+                fprintf(self.file, "block_%d: ;\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+                mut inst_offset := 0 as i64
+                while inst_offset < bb.instrs_len as i64:
+                    let inst_pos = f.block_instrs.data[bb.instrs_start as i64 + inst_offset]
+                    let inst = f.insts.data[inst_pos as i64]
+                    self.translate_inst(f, inst)
+                    inst_offset = inst_offset + 1 as i64
+                b_idx = b_idx + 1 as i64
+
+            if max_reg > 0 as u32:
+                @free(self.reg_types as ptr[u8])
+                self.reg_types = null as ptr[u32]
+
+            fputs("}\n\n", self.file)
+            f_idx = f_idx + 1 as i64
+
+    fclose(self.file)
+    return true
+
+pub fn translate_inst(mut self: CGenerator, f: AirFunc, inst: AirInst):
+    let op = inst.opcode
+    if op == OP_NOP:
+        return
+
+    if op == OP_ICONST:
+        if inst.type_id == 12 as u16: // string
+            let str_val = self.pool.get(inst.src1)
+            mut val_ptr = str_val as ptr[u8]
+            mut val_len = std.string.len(str_val)
+            mut is_stripped := false
+            if val_len >= 2 as i64 and val_ptr[0] == '"' as u8 and val_ptr[val_len - 1] == '"' as u8:
+                val_ptr = ((val_ptr as u64) + 1 as u64) as ptr[u8]
+                val_len = val_len - 2 as i64
+                is_stripped = true
+            
+            mut print_buf := val_ptr
+            if is_stripped:
+                print_buf = @alloc(val_len + 1) as ptr[u8]
+                @memcpy(print_buf, val_ptr, val_len)
+                print_buf[val_len] = 0 as u8
+
+            // Emit AX_STR macro
+            fprintf(self.file, "    r_%d = AX_STR(\"%s\");\n", inst.dest as i64, (print_buf as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            if is_stripped:
+                @free(print_buf)
+        else:
+            fprintf(self.file, "    r_%d = %d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_FCONST:
+        fprintf(self.file, "    r_%d = %d.0;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_IADD:
+        fprintf(self.file, "    r_%d = r_%d + r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_ISUB:
+        fprintf(self.file, "    r_%d = r_%d - r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IMUL:
+        fprintf(self.file, "    r_%d = r_%d * r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IDIV:
+        fprintf(self.file, "    r_%d = r_%d / r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IMOD:
+        fprintf(self.file, "    r_%d = r_%d %% r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_EQ:
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32 and self.reg_types[inst.src1] == 12 as u32:
+            fprintf(self.file, "    r_%d = ax_str_eq(r_%d, r_%d);\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = r_%d == r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NE:
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32 and self.reg_types[inst.src1] == 12 as u32:
+            fprintf(self.file, "    r_%d = !ax_str_eq(r_%d, r_%d);\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = r_%d != r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_LT:
+        fprintf(self.file, "    r_%d = r_%d < r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_LE:
+        fprintf(self.file, "    r_%d = r_%d <= r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GT:
+        fprintf(self.file, "    r_%d = r_%d > r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GE:
+        fprintf(self.file, "    r_%d = r_%d >= r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_AND:
+        fprintf(self.file, "    r_%d = r_%d && r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_OR:
+        fprintf(self.file, "    r_%d = r_%d || r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_XOR:
+        fprintf(self.file, "    r_%d = r_%d ^ r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SHL:
+        fprintf(self.file, "    r_%d = r_%d << r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SHR:
+        fprintf(self.file, "    r_%d = r_%d >> r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_NOT:
+        fprintf(self.file, "    r_%d = !r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NEG:
+        fprintf(self.file, "    r_%d = -r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_COPY or op == OP_MOVE or op == OP_ALIAS_REUSE:
+        fprintf(self.file, "    r_%d = r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_CAST:
+        if inst.type_id == 12 as u16:
+            fprintf(self.file, "    r_%d = (ax_string){.ptr = (const ax_u8*)r_%d, .len = strlen((const char*)r_%d)};\n", inst.dest as i64, inst.src1 as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            let t_name = self.get_c_type(inst.type_id as u32)
+            mut is_str_src := false
+            if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+                let src_type = self.reg_types[inst.src1]
+                if src_type == 12 as u32:
+                    is_str_src = true
+            if is_str_src:
+                fprintf(self.file, "    r_%d = (%s)r_%d.ptr;\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    r_%d = (%s)r_%d;\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_ALLOC:
+        let entry = self.typetable.entries.data[inst.type_id as i64]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "    r_%d = (%s*)ax_alloc(sizeof(%s));\n", inst.dest as i64, (name as ptr[u8]) as i64, (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = ax_alloc(%d);\n", inst.dest as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_FREE or op == OP_DESTROY:
+        fprintf(self.file, "    ax_free(r_%d);\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_MAKE_REF:
+        fprintf(self.file, "    r_%d = ax_make_ref(r_%d);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_DEREF:
+        fprintf(self.file, "    r_%d = ax_deref(r_%d);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_GET_FIELD:
+        mut obj_type_id := inst.type_id as u32
+        if obj_type_id == 0 as u32 and self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            obj_type_id = self.reg_types[inst.src1]
+        mut s_name := "void"
+        if obj_type_id != 0 as u32 and (obj_type_id as i64) < self.typetable.entries.len:
+            mut entry = self.typetable.entries.data[obj_type_id]
+            if entry.kind == TYPE_KIND_POINTER:
+                let pointee_id = entry.extra
+                if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                    entry = self.typetable.entries.data[pointee_id]
+            if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+                s_name = self.pool.get(entry.name_id)
+        fprintf(self.file, "    r_%d = ((struct %s*)r_%d)->f_%d;\n", inst.dest as i64, (s_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_SET_FIELD:
+        mut obj_type_id := inst.type_id as u32
+        if obj_type_id == 0 as u32 and self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            obj_type_id = self.reg_types[inst.src1]
+        mut s_name := "void"
+        if obj_type_id != 0 as u32 and (obj_type_id as i64) < self.typetable.entries.len:
+            mut entry = self.typetable.entries.data[obj_type_id]
+            if entry.kind == TYPE_KIND_POINTER:
+                let pointee_id = entry.extra
+                if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                    entry = self.typetable.entries.data[pointee_id]
+            if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+                s_name = self.pool.get(entry.name_id)
+        fprintf(self.file, "    ((struct %s*)r_%d)->f_%d = r_%d;\n", (s_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_INDEX:
+        mut t_name := "void*"
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            let t_id = self.reg_types[inst.src1]
+            if t_id != 0 as u32 and (t_id as i64) < self.typetable.entries.len:
+                let entry = self.typetable.entries.data[t_id]
+                if entry.kind == TYPE_KIND_POINTER:
+                    let pointee = entry.extra
+                    t_name = self.get_c_type(pointee)
+        if t_name == "void*" or t_name == "void":
+            if self.reg_types != null as ptr[u32] and inst.dest > 0 as u32:
+                let dest_t = self.reg_types[inst.dest]
+                if dest_t != 0 as u32:
+                    t_name = self.get_c_type(dest_t)
+        if t_name == "void":
+            t_name = "void*"
+        fprintf(self.file, "    r_%d = ((%s*)r_%d)[r_%d];\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_STORE:
+        if inst.src2 != 0 as u32:
+            mut t_name := "void*"
+            if self.reg_types != null as ptr[u32] and inst.dest > 0 as u32:
+                let t_id = self.reg_types[inst.dest]
+                if t_id != 0 as u32 and (t_id as i64) < self.typetable.entries.len:
+                    let entry = self.typetable.entries.data[t_id]
+                    if entry.kind == TYPE_KIND_POINTER:
+                        let pointee = entry.extra
+                        t_name = self.get_c_type(pointee)
+            if t_name == "void*" or t_name == "void":
+                if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+                    let src_t = self.reg_types[inst.src1]
+                    if src_t != 0 as u32:
+                        t_name = self.get_c_type(src_t)
+            if t_name == "void":
+                t_name = "void*"
+            fprintf(self.file, "    ((%s*)r_%d)[r_%d] = r_%d;\n", (t_name as ptr[u8]) as i64, inst.dest as i64, inst.src2 as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    *r_%d = r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_JUMP:
+        fprintf(self.file, "    goto block_%d;\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_BRANCH:
+        fprintf(self.file, "    if (r_%d) goto block_%d; else goto block_%d;\n", inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_RETURN:
+        if inst.src1 != 0 as u32:
+            fprintf(self.file, "    return r_%d;\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            if f.ret_type != 14 as u32: // not void
+                let t_name = self.get_c_type(f.ret_type)
+                fprintf(self.file, "    return (%s){0};\n", (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fputs("    return;\n", self.file)
+
+    elif op == OP_CALL:
+        // Handle argument list
+        let arg_start = inst.src2
+        let arg_count = f.extras.data[arg_start as i64]
+        mut is_assert := false
+        mut is_extern := false
+        
+        // Print callee
+        if inst.src1 == 0 as u32:
+            // Direct function call
+            // We find the function name from type_id (which is symbol idx in this case or typetable extra)
+            mut fn_name := "func"
+            let sym_idx = inst.type_id as u32
+            mut is_allocated := false
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                fn_name = self.get_mangled_name_by_sym(sym_idx)
+                let original_name = self.pool.get(self.symtable.symbols.data[sym_idx as i64].name_id)
+                if fn_name != original_name and fn_name != "free" and fn_name != "ax_free":
+                    is_allocated = true
+                let s_flags = self.symtable.symbols.data[sym_idx as i64].flags
+                if (s_flags & 4 as u16) != 0 as u16:
+                    is_extern = true
+            if fn_name == "assert":
+                fn_name = "ax_assert_axiom"
+                is_assert = true
+            elif fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln":
+                // Map to typed builtin
+                mut suffix := "_str"
+                if arg_count > 0 as u32:
+                    let first_arg_reg = f.extras.data[arg_start as i64 + 1]
+                    if self.reg_types != null as ptr[u32] and first_arg_reg > 0 as u32:
+                        let t_id = self.reg_types[first_arg_reg]
+                        if t_id == 3 as u32 or t_id == 4 as u32 or t_id == 7 as u32 or t_id == 8 as u32:
+                            suffix = "_i64"
+                        elif t_id == 9 as u32 or t_id == 10 as u32:
+                            suffix = "_f64"
+                        elif t_id == 11 as u32:
+                            suffix = "_bool"
+                
+                // Mangle to ax_<func_name><suffix>
+                let fn_len = std.string.len(fn_name)
+                let suffix_len = std.string.len(suffix)
+                mut mapped_name := @alloc(fn_len + suffix_len + 4) as ptr[u8]
+                @memcpy(mapped_name, "ax_" as ptr[u8], 3)
+                
+                let dest1 = ((mapped_name as u64) + 3 as u64) as ptr[u8]
+                @memcpy(dest1, fn_name as ptr[u8], fn_len)
+                
+                let dest2 = ((mapped_name as u64) + 3 as u64 + fn_len as u64) as ptr[u8]
+                @memcpy(dest2, suffix as ptr[u8], suffix_len)
+                
+                let term_idx = 3 + fn_len + suffix_len
+                mapped_name[term_idx] = 0 as u8
+                
+                fn_name = mapped_name as str
+                is_allocated = true
+
+            if inst.dest != 0 as u32 and (self.reg_types == null as ptr[u32] or self.reg_types[inst.dest] != 14 as u32):
+                if self.reg_types[inst.dest] == 0 as u32:
+                    fprintf(self.file, "    r_%d = (void*)%s(", inst.dest as i64, (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(self.file, "    r_%d = %s(", inst.dest as i64, (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    %s(", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            if is_allocated:
+                @free(fn_name as ptr[u8])
+        else:
+            // Indirect function call
+            if inst.dest != 0 as u32 and (self.reg_types == null as ptr[u32] or self.reg_types[inst.dest] != 14 as u32):
+                if self.reg_types[inst.dest] == 0 as u32:
+                    fprintf(self.file, "    r_%d = (void*)((void*(*)())r_%d)(", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(self.file, "    r_%d = ((void*(*)())r_%d)(", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    ((void(*)())r_%d)(", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+        mut i := 0 as i64
+        while i < arg_count as i64:
+            if i > 0:
+                fputs(", ", self.file)
+            let arg_reg = f.extras.data[arg_start as i64 + 1 + i]
+            mut is_str := false
+            if self.reg_types != null as ptr[u32] and arg_reg > 0 as u32:
+                let t_id = self.reg_types[arg_reg]
+                if t_id == 12 as u32:
+                    is_str = true
+            if is_extern and is_str:
+                fprintf(self.file, "(const char*)(r_%d).ptr", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "r_%d", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            i = i + 1
+        if is_assert:
+            fputs(", AX_STR(\"assertion failed\")", self.file)
+        fputs(");\n", self.file)

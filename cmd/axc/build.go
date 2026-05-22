@@ -10,6 +10,7 @@ import (
 
 	"github.com/axiom-lang/axiom/codegen/cgen"
 	"github.com/axiom-lang/axiom/codegen/native"
+	"github.com/axiom-lang/axiom/codegen/wasm"
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/diagnostics"
 	"github.com/axiom-lang/axiom/compiler/lexer"
@@ -255,6 +256,37 @@ func runBuild(args []string) int {
 		}
 
 		// Compile via native backend
+		if target.Arch == native.ArchWasm32 {
+			// Adjust auto-derived output name for Wasm
+			if strings.HasSuffix(outputPath, ".exe") {
+				outputPath = outputPath[:len(outputPath)-4] + ".wat"
+			} else if !strings.HasSuffix(outputPath, ".wat") && !strings.HasSuffix(outputPath, ".wasm") {
+				if outputPath == cgen.OutputBinaryName(filepath.Base(filename)) {
+					base := filepath.Base(filename)
+					ext := filepath.Ext(base)
+					outputPath = base[:len(base)-len(ext)] + ".wat"
+				}
+			}
+
+			// Compile via Wasm backend
+			wasmBackend := wasm.NewWasmBackend()
+			wasmBackend.Pool = intern
+			wasmBackend.Table = table
+			watStr, err := wasmBackend.Compile(mod)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "axc: Wasm codegen error: %v\n", err)
+				return 1
+			}
+
+			if err := os.WriteFile(outputPath, []byte(watStr), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "axc: cannot write Wasm Text file: %v\n", err)
+				return 1
+			}
+
+			fmt.Fprintf(os.Stderr, "axc: built Wasm text file %s (target: %s)\n", outputPath, targetTriple)
+			return 0
+		}
+
 		backend := native.NewNativeBackend(target)
 		backend.Pool = intern
 		backend.Table = table

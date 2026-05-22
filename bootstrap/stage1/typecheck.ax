@@ -4,6 +4,9 @@
 import std.string
 
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn strlen(s: ptr[u8]) -> i64
+extern "C" fn sprintf(buf: ptr[u8], format: ptr[u8], val: f64) -> i32
+extern "C" fn atof(s: str) -> f64
 
 // Predefined TypeID constants matching types/typeid.go exactly
 pub const TYPE_UNKNOWN: u32 = 0
@@ -29,6 +32,13 @@ pub const TYPE_EQ: u32 = 18
 pub const TYPE_HASH: u32 = 19
 pub const TYPE_DISPLAY: u32 = 20
 pub const TYPE_ACTOR_REF: u32 = 21
+
+pub struct ComptimeValue:
+    kind: u32
+    int_val: i64
+    float_val: f64
+    bool_val: bool
+    str_val: str
 
 // TypeKind enum matching compiler/types/types.go Kind constants
 pub const TYPE_KIND_PRIMITIVE: u8 = 0
@@ -95,6 +105,54 @@ pub fn push(mut self: StructInfoVec, si: StructInfo):
     self.data[self.len] = si
     self.len = self.len + 1
 
+pub struct VariantInfo:
+    name_id: u32
+    payload_type: u32
+    tag: u8
+    padding1: u8
+    padding2: u16
+
+pub struct VariantInfoVec:
+    data: ptr[VariantInfo]
+    len: i64
+    cap: i64
+
+pub fn push(mut self: VariantInfoVec, vi: VariantInfo):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 16) as ptr[VariantInfo]
+        if self.data != null as ptr[VariantInfo]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = vi
+    self.len = self.len + 1
+
+pub struct SumInfo:
+    variants: VariantInfoVec
+
+pub struct SumInfoVec:
+    data: ptr[SumInfo]
+    len: i64
+    cap: i64
+
+pub fn push(mut self: SumInfoVec, si: SumInfo):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[SumInfo]
+        if self.data != null as ptr[SumInfo]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = si
+    self.len = self.len + 1
+
 pub struct FuncInfo:
     params: U32Vec
     ret: u32
@@ -140,16 +198,24 @@ pub fn push(mut self: TypeEntryVec, te: TypeEntry) -> u32:
     self.len = self.len + 1
     return idx
 
+pub fn new_sum_info_vec() -> SumInfoVec:
+    return SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
+
+pub fn new_variant_info_vec() -> VariantInfoVec:
+    return VariantInfoVec(data: null as ptr[VariantInfo], len: 0, cap: 0)
+
 pub struct TypeTable:
     entries: TypeEntryVec
     structs: StructInfoVec
     funcs: FuncInfoVec
+    sumtypes: SumInfoVec
 
 pub fn new_type_table() -> TypeTable:
     mut tt := TypeTable(
         entries: TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0),
         structs: StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0),
         funcs: FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0),
+        sumtypes: SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0),
     )
     
     // 0: Unknown sentinel
@@ -183,6 +249,19 @@ pub fn new_type_table() -> TypeTable:
     tt.entries.push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
 
     return tt
+
+pub fn register_sum_type(mut self: TypeTable, name_id: u32, variants: VariantInfoVec) -> u32:
+    let s_idx = self.sumtypes.len as u32
+    self.sumtypes.push(SumInfo(variants: variants))
+    return self.entries.push(TypeEntry(
+        kind: TYPE_KIND_SUM,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 0 as u32,
+        align: 0 as u32,
+        extra: s_idx,
+    ))
 
 pub fn register_struct(mut self: TypeTable, name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
@@ -259,12 +338,68 @@ pub fn free_typetable(mut self: TypeTable):
         if f.params.data != null as ptr[u32]:
             @free(f.params.data as ptr[u8])
         i = i + 1
+    i = 0 as i64
+    while i < self.sumtypes.len:
+        let s = self.sumtypes.data[i]
+        if s.variants.data != null as ptr[VariantInfo]:
+            @free(s.variants.data as ptr[u8])
+        i = i + 1
+    if self.sumtypes.data != null as ptr[SumInfo]:
+        @free(self.sumtypes.data as ptr[u8])
     if self.entries.data != null as ptr[TypeEntry]:
         @free(self.entries.data as ptr[u8])
     if self.structs.data != null as ptr[StructInfo]:
         @free(self.structs.data as ptr[u8])
     if self.funcs.data != null as ptr[FuncInfo]:
         @free(self.funcs.data as ptr[u8])
+
+pub fn strip_quotes(s: str) -> str:
+    let len = std.string.len(s)
+    if len >= 2 and s[0] as u8 == '"' as u8 and s[len - 1] as u8 == '"' as u8:
+        let ptr_start = ((s as ptr[u8]) as i64 + 1 as i64) as ptr[u8]
+        return alloc_str_from_raw(ptr_start, len - 2)
+    return s
+
+pub fn format_int(val: i64) -> str:
+    if val == 0 as i64:
+        return "0"
+    if val == -9223372036854775808 as i64:
+        return "-9223372036854775808"
+    mut temp := val
+    mut is_neg := false
+    if val < 0 as i64:
+        is_neg = true
+        temp = 0 as i64 - val
+    let buf = @alloc(24) as ptr[u8]
+    mut len := 0
+    while temp > 0 as i64:
+        let rem = (temp % 10 as i64) as u8
+        buf[len] = ('0' as u8 + rem)
+        len = len + 1
+        temp = temp / 10 as i64
+    if is_neg:
+        buf[len] = '-' as u8
+        len = len + 1
+    mut i := 0
+    mut j := len - 1
+    while i < j:
+        let tmp = buf[i]
+        buf[i] = buf[j]
+        buf[j] = tmp
+        i = i + 1
+        j = j - 1
+    buf[len] = 0 as u8
+    let result = alloc_str_from_raw(buf, len as i64)
+    @free(buf)
+    return result
+
+pub fn format_float(val: f64) -> str:
+    let buf = @alloc(64) as ptr[u8]
+    sprintf(buf, "%g" as ptr[u8], val)
+    let len = strlen(buf)
+    let result = alloc_str_from_raw(buf, len)
+    @free(buf)
+    return result
 
 pub struct TypeChecker:
     tree: AstTree
@@ -273,6 +408,7 @@ pub struct TypeChecker:
     types: TypeTable
     node_types: ptr[u32]
     current_return: u32
+    current_match_scrutinee: u32
 
 pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable, types: TypeTable) -> TypeChecker:
     let node_count = tree.nodes.len
@@ -288,14 +424,240 @@ pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable
         types: types,
         node_types: node_types,
         current_return: 0 as u32,
+        current_match_scrutinee: 0 as u32,
     )
 
 pub fn free_type_checker(mut self: TypeChecker):
     @free(self.node_types as ptr[u8])
 
+pub fn parse_comptime_int(s: str) -> i64:
+    let len = std.string.len(s)
+    if len == 0:
+        return 0 as i64
+    mut i := 0
+    mut sign := 1 as i64
+    if s[0] as u8 == '-' as u8:
+        sign = -1 as i64
+        i = 1
+    elif s[0] as u8 == '+' as u8:
+        i = 1
+
+    mut base := 10 as i64
+    if i + 1 < len and s[i] as u8 == '0' as u8:
+        let next_char = s[i + 1] as u8
+        if next_char == 'x' as u8 or next_char == 'X' as u8:
+            base = 16 as i64
+            i = i + 2
+        elif next_char == 'o' as u8 or next_char == 'O' as u8:
+            base = 8 as i64
+            i = i + 2
+        elif next_char == 'b' as u8 or next_char == 'B' as u8:
+            base = 2 as i64
+            i = i + 2
+
+    mut val := 0 as i64
+    while i < len:
+        let c = s[i] as u8
+        mut digit := -1 as i64
+        if c >= '0' as u8 and c <= '9' as u8:
+            digit = (c - '0' as u8) as i64
+        elif c >= 'a' as u8 and c <= 'f' as u8:
+            digit = (c - 'a' as u8 + 10 as u8) as i64
+        elif c >= 'A' as u8 and c <= 'F' as u8:
+            digit = (c - 'A' as u8 + 10 as u8) as i64
+
+        if digit < 0 or digit >= base:
+            break
+
+        val = val * base + digit
+        i = i + 1
+
+    return val * sign
+
+pub fn node_text(self: TypeChecker, node_idx: u32) -> str:
+    let node = self.tree.nodes.data[node_idx]
+    let tok_idx = node.token_idx
+    if tok_idx as i64 >= self.tree.tokens.len:
+        return ""
+    let tok = self.tree.tokens.data[tok_idx as i64]
+    if tok.len == 0 as u16:
+        return ""
+    let start_ptr = ((self.tree.src as ptr[u8]) as i64 + tok.offset as i64) as ptr[u8]
+    return alloc_str_from_raw(start_ptr, tok.len as i64)
+
+pub fn eval_comptime(mut self: TypeChecker, node_idx: u32) -> ComptimeValue:
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+    
+    if kind == NODE_INT_LIT:
+        let text = self.node_text(node_idx)
+        let val = parse_comptime_int(text)
+        return ComptimeValue(kind: TYPE_I64, int_val: val, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_FLOAT_LIT:
+        let text = self.node_text(node_idx)
+        let val = atof(text)
+        return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: val, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BOOL_LIT:
+        let text = self.node_text(node_idx)
+        let is_true = (text == "true")
+        return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: is_true, str_val: "")
+        
+    elif kind == NODE_STRING_LIT:
+        let text = self.node_text(node_idx)
+        let stripped = strip_quotes(text)
+        return ComptimeValue(kind: TYPE_STRING, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: stripped)
+        
+    elif kind == NODE_COMPTIME:
+        let child = node.first_child
+        if child != 0 as u32:
+            return self.eval_comptime(child)
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BLOCK:
+        mut child := node.first_child
+        if child == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        mut last_val = ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        while child != 0 as u32:
+            last_val = self.eval_comptime(child)
+            child = self.tree.nodes.data[child].next_sibling
+        return last_val
+        
+    elif kind == NODE_RETURN_STMT:
+        let child = node.first_child
+        if child != 0 as u32:
+            return self.eval_comptime(child)
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_UNARY_EXPR:
+        let child = node.first_child
+        if child == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let val = self.eval_comptime(child)
+        let op = self.node_text(node_idx)
+        if op == "-":
+            if val.kind == TYPE_I64:
+                return ComptimeValue(kind: TYPE_I64, int_val: 0 as i64 - val.int_val, float_val: 0.0, bool_val: false, str_val: "")
+            elif val.kind == TYPE_F64:
+                return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: 0.0 - val.float_val, bool_val: false, str_val: "")
+        elif op == "not" or op == "!":
+            if val.kind == TYPE_BOOL:
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: not val.bool_val, str_val: "")
+        elif op == "~":
+            if val.kind == TYPE_I64:
+                return ComptimeValue(kind: TYPE_I64, int_val: 0 as i64 - val.int_val - 1 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BINARY_EXPR:
+        let lhs_idx = node.first_child
+        if lhs_idx == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        if rhs_idx == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let lhs = self.eval_comptime(lhs_idx)
+        let rhs = self.eval_comptime(rhs_idx)
+        let op = self.node_text(node_idx)
+        
+        let is_lhs_num = (lhs.kind == TYPE_I64 or lhs.kind == TYPE_F64)
+        let is_rhs_num = (rhs.kind == TYPE_I64 or rhs.kind == TYPE_F64)
+        if is_lhs_num and is_rhs_num:
+            if lhs.kind == TYPE_F64 or rhs.kind == TYPE_F64:
+                mut lf := lhs.float_val
+                if lhs.kind == TYPE_I64:
+                    lf = lhs.int_val as f64
+                mut rf := rhs.float_val
+                if rhs.kind == TYPE_I64:
+                    rf = rhs.int_val as f64
+                if op == "+":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf + rf, bool_val: false, str_val: "")
+                elif op == "-":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf - rf, bool_val: false, str_val: "")
+                elif op == "*":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf * rf, bool_val: false, str_val: "")
+                elif op == "/":
+                    if rf == 0.0:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf / rf, bool_val: false, str_val: "")
+                elif op == "==":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf == rf, str_val: "")
+                elif op == "!=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf != rf, str_val: "")
+                elif op == "<":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf < rf, str_val: "")
+                elif op == "<=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf <= rf, str_val: "")
+                elif op == ">":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf > rf, str_val: "")
+                elif op == ">=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf >= rf, str_val: "")
+            else:
+                let lh = lhs.int_val
+                let rh = rhs.int_val
+                if op == "+":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh + rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "-":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh - rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "*":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh * rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "/":
+                    if rh == 0 as i64:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh / rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "%":
+                    if rh == 0 as i64:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh % rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "==":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh == rh, str_val: "")
+                elif op == "!=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh != rh, str_val: "")
+                elif op == "<":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh < rh, str_val: "")
+                elif op == "<=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh <= rh, str_val: "")
+                elif op == ">":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh > rh, str_val: "")
+                elif op == ">=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh >= rh, str_val: "")
+        
+        if lhs.kind == TYPE_BOOL and rhs.kind == TYPE_BOOL:
+            let lb = lhs.bool_val
+            let rb = rhs.bool_val
+            if op == "and" or op == "&&":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb and rb, str_val: "")
+            elif op == "or" or op == "||":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb or rb, str_val: "")
+            elif op == "==":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb == rb, str_val: "")
+            elif op == "!=":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb != rb, str_val: "")
+                
+        if lhs.kind == TYPE_STRING and rhs.kind == TYPE_STRING:
+            let ls = lhs.str_val
+            let rs = rhs.str_val
+            if op == "+":
+                return ComptimeValue(kind: TYPE_STRING, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: std.string.concat(ls, rs))
+            elif op == "==":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: ls == rs, str_val: "")
+            elif op == "!=":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: ls != rs, str_val: "")
+                
+    return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+
 pub fn run_type_checker(mut self: TypeChecker):
-    // Phase 1: Register all StructDeclarations
+    // Phase 0: Register all Type Aliases / Sum Types
     mut i := 0 as i64
+    while i < self.tree.nodes.len:
+        let node = self.tree.nodes.data[i]
+        if node.kind == NODE_TYPE_ALIAS_DECL:
+            self.pre_infer_type_alias(i as u32)
+        i = i + 1
+
+    // Phase 1: Register all StructDeclarations
+    i = 0 as i64
     while i < self.tree.nodes.len:
         let node = self.tree.nodes.data[i]
         if node.kind == NODE_STRUCT_DECL:
@@ -312,6 +674,61 @@ pub fn run_type_checker(mut self: TypeChecker):
 
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
+
+pub fn pre_infer_type_alias(mut self: TypeChecker, node_idx: u32):
+    let sym_idx = self.tree.nodes.data[node_idx].payload
+    if sym_idx != 0 as u32:
+        let sym = self.symtable.symbols.data[sym_idx]
+        if sym.type_id == 0 as u32:
+            mut sum_node := 0 as u32
+            mut child := self.tree.nodes.data[node_idx].first_child
+            while child != 0 as u32:
+                let child_node = self.tree.nodes.data[child]
+                if child_node.kind == NODE_SUM_TYPE:
+                    sum_node = child
+                    break
+                child = child_node.next_sibling
+            
+            if sum_node != 0 as u32:
+                mut variants := new_variant_info_vec()
+                mut tag := 0 as u8
+                
+                mut v_node := self.tree.nodes.data[sum_node].first_child
+                while v_node != 0 as u32:
+                    let v_node_struct = self.tree.nodes.data[v_node]
+                    if v_node_struct.kind == NODE_VARIANT_DECL:
+                        let v_sym_idx = v_node_struct.payload
+                        if v_sym_idx != 0 as u32:
+                            let v_sym = self.symtable.symbols.data[v_sym_idx]
+                            
+                            mut payload_type := TYPE_UNKNOWN
+                            let type_expr_node = v_node_struct.first_child
+                            if type_expr_node != 0 as u32:
+                                payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
+                                
+                            variants.push(VariantInfo(
+                                name_id: v_sym.name_id,
+                                payload_type: payload_type,
+                                tag: tag,
+                                padding1: 0 as u8,
+                                padding2: 0 as u16,
+                            ))
+                            tag = tag + 1 as u8
+                    v_node = v_node_struct.next_sibling
+                
+                let type_id = self.types.register_sum_type(sym.name_id, variants)
+                self.symtable.symbols.data[sym_idx].type_id = type_id
+                self.node_types[node_idx] = type_id
+                
+                // Assign sum type TypeID to each variant symbol
+                v_node = self.tree.nodes.data[sum_node].first_child
+                while v_node != 0 as u32:
+                    let v_node_struct = self.tree.nodes.data[v_node]
+                    if v_node_struct.kind == NODE_VARIANT_DECL:
+                        let v_sym_idx = v_node_struct.payload
+                        if v_sym_idx != 0 as u32:
+                            self.symtable.symbols.data[v_sym_idx].type_id = type_id
+                    v_node = v_node_struct.next_sibling
 
 pub fn pre_infer_struct(mut self: TypeChecker, node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
@@ -434,7 +851,19 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             if child_node.kind != NODE_FIELD_DECL:
                 self.infer_node(child, TYPE_UNKNOWN)
             child = child_node.next_sibling
-            
+
+    elif kind == NODE_TYPE_ALIAS_DECL:
+        let sym_idx = self.tree.nodes.data[node_idx].payload
+        if sym_idx != 0 as u32:
+            result_type = self.symtable.symbols.data[sym_idx].type_id
+        
+        mut child := self.tree.nodes.data[node_idx].first_child
+        while child != 0 as u32:
+            let child_node = self.tree.nodes.data[child]
+            if child_node.kind != NODE_SUM_TYPE:
+                self.infer_node(child, TYPE_UNKNOWN)
+            child = child_node.next_sibling
+
     elif kind == NODE_PARAM_DECL:
         let sym_idx = self.tree.nodes.data[node_idx].payload
         mut p_type := TYPE_UNKNOWN
@@ -482,6 +911,72 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
         let expr = self.tree.nodes.data[node_idx].first_child
         if expr != 0 as u32:
             self.infer_node(expr, self.current_return)
+
+    elif kind == NODE_MATCH_STMT:
+        let scrutinee = self.tree.nodes.data[node_idx].first_child
+        if scrutinee != 0 as u32:
+            let scrutinee_type = self.infer_node(scrutinee, TYPE_UNKNOWN)
+            let prev_scrutinee = self.current_match_scrutinee
+            self.current_match_scrutinee = scrutinee_type
+            
+            mut arm := self.tree.nodes.data[scrutinee].next_sibling
+            mut arm_type := TYPE_UNKNOWN
+            while arm != 0 as u32:
+                let t = self.infer_node(arm, expected)
+                if arm_type == TYPE_UNKNOWN:
+                    arm_type = t
+                arm = self.tree.nodes.data[arm].next_sibling
+            
+            self.current_match_scrutinee = prev_scrutinee
+            result_type = arm_type
+
+    elif kind == NODE_MATCH_ARM:
+        let pattern = self.tree.nodes.data[node_idx].first_child
+        mut body := 0 as u32
+        if pattern != 0 as u32:
+            body = self.tree.nodes.data[pattern].next_sibling
+            
+        let scrutinee_type = self.current_match_scrutinee
+        if scrutinee_type != TYPE_UNKNOWN:
+            let s_entry = self.types.entries.data[scrutinee_type]
+            if s_entry.kind == TYPE_KIND_SUM:
+                let sum_info = self.types.sumtypes.data[s_entry.extra]
+                
+                // Let's typecheck the pattern!
+                if pattern != 0 as u32:
+                    let pat_node = self.tree.nodes.data[pattern]
+                    if pat_node.kind == NODE_VARIANT_PAT:
+                        let v_sym_idx = pat_node.payload
+                        if v_sym_idx != 0 as u32:
+                            let v_sym = self.symtable.symbols.data[v_sym_idx]
+                            
+                            // Find corresponding variant in sum_info
+                            mut payload_type := TYPE_UNKNOWN
+                            mut found := false
+                            mut j := 0 as i64
+                            while j < sum_info.variants.len:
+                                let v_info = sum_info.variants.data[j]
+                                if v_info.name_id == v_sym.name_id:
+                                    payload_type = v_info.payload_type
+                                    found = true
+                                    break
+                                j = j + 1
+                            
+                            // Now assign payload type to binding patterns (which are children of NODE_VARIANT_PAT)
+                            let arg = pat_node.first_child
+                            if arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
+                                let arg_sym_idx = self.tree.nodes.data[arg].payload
+                                if arg_sym_idx != 0 as u32:
+                                    self.symtable.symbols.data[arg_sym_idx].type_id = payload_type
+                                    self.node_types[arg] = payload_type
+                    elif pat_node.kind == NODE_BINDING_PAT:
+                        let b_sym_idx = pat_node.payload
+                        if b_sym_idx != 0 as u32:
+                            self.symtable.symbols.data[b_sym_idx].type_id = scrutinee_type
+                            self.node_types[pattern] = scrutinee_type
+        
+        if body != 0 as u32:
+            result_type = self.infer_node(body, expected)
         
     elif kind == NODE_IF_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
@@ -567,6 +1062,8 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     result_type = fi.ret
                 elif entry.kind == TYPE_KIND_STRUCT:
                     result_type = callee_type
+                elif entry.kind == TYPE_KIND_SUM:
+                    result_type = callee_type
             
             // Infer arguments
             mut arg := self.tree.nodes.data[callee].next_sibling
@@ -607,7 +1104,29 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
                     result_type = self.types.register_slice(inner)
-                    
+    elif kind == NODE_UNARY_EXPR:
+        let operand = self.tree.nodes.data[node_idx].first_child
+        if operand != 0 as u32:
+            let operand_type = self.infer_node(operand, expected)
+            let op = self.node_text(node_idx)
+            if op == "&":
+                result_type = self.types.register_pointer(operand_type)
+            elif op == "not" or op == "!":
+                result_type = TYPE_BOOL
+            else:
+                result_type = operand_type
+
+    elif kind == NODE_DEREF_EXPR:
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            let child_type = self.infer_node(child, TYPE_UNKNOWN)
+            if child_type != TYPE_UNKNOWN:
+                let entry = self.types.entries.data[child_type]
+                if entry.kind == TYPE_KIND_POINTER:
+                    result_type = entry.extra
+                else:
+                    result_type = child_type
+
     elif kind == NODE_INT_LIT:
         if expected == TYPE_I8 or expected == TYPE_I16 or expected == TYPE_I32 or expected == TYPE_I64 or expected == TYPE_U8 or expected == TYPE_U16 or expected == TYPE_U32 or expected == TYPE_U64 or expected == TYPE_F32 or expected == TYPE_F64 or expected == TYPE_ISIZE or expected == TYPE_USIZE:
             result_type = expected
@@ -655,6 +1174,7 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                         let f = struct_info.fields.data[j]
                         if f.name_id == field_name_id:
                             result_type = f.type_id
+                            self.tree.nodes.data[node_idx].extra_idx = j as u32
                             found = true
                             break
                         j = j + 1
@@ -682,6 +1202,60 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                     result_type = c_entry.extra
                     
+    elif kind == NODE_COMPTIME:
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            let child_type = self.infer_node(child, expected)
+            if child_type == TYPE_UNKNOWN:
+                result_type = TYPE_UNKNOWN
+            else:
+                let val = self.eval_comptime(child)
+                mut lit_kind := NODE_INT_LIT
+                mut val_str := ""
+                mut tok_kind := TK_INT_LIT
+                
+                if val.kind == TYPE_BOOL:
+                    lit_kind = NODE_BOOL_LIT
+                    if val.bool_val:
+                        val_str = "true"
+                        tok_kind = TK_TRUE
+                    else:
+                        val_str = "false"
+                        tok_kind = TK_FALSE
+                elif val.kind == TYPE_STRING:
+                    lit_kind = NODE_STRING_LIT
+                    val_str = std.string.concat("\"", std.string.concat(val.str_val, "\""))
+                    tok_kind = TK_STRING_LIT
+                elif val.kind == TYPE_F64:
+                    lit_kind = NODE_FLOAT_LIT
+                    val_str = format_float(val.float_val)
+                    tok_kind = TK_FLOAT_LIT
+                else:
+                    lit_kind = NODE_INT_LIT
+                    val_str = format_int(val.int_val)
+                    tok_kind = TK_INT_LIT
+                
+                let new_offset = std.string.len(self.tree.src) as u32
+                self.tree.src = std.string.concat(self.tree.src, val_str)
+                
+                let new_tok_idx = self.tree.tokens.len as u32
+                self.tree.tokens.push(Token(
+                    kind: tok_kind,
+                    padding: 0 as u8,
+                    len: std.string.len(val_str) as u16,
+                    offset: new_offset,
+                ))
+                
+                // Mutate the AST node in-place
+                self.tree.nodes.data[node_idx].kind = lit_kind
+                self.tree.nodes.data[node_idx].token_idx = new_tok_idx
+                self.tree.nodes.data[node_idx].first_child = NULL_IDX
+                self.tree.nodes.data[node_idx].payload = val.kind
+                
+                result_type = val.kind
+        else:
+            result_type = TYPE_VOID
+
     else:
         // Default traversal
         mut child := self.tree.nodes.data[node_idx].first_child

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
@@ -68,6 +69,25 @@ func (p *Pipeline) GenerateC(w io.Writer) error {
 	// Stage 3: Emit function definitions with bodies
 	p.emitFuncDefs(w)
 
+	// Emit entry point wrapper if main exists
+	if emitter.hasMain {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "/* Entry point wrapper */")
+		if emitter.mainHasArgs {
+			fmt.Fprintln(w, "ax_i32 ax_main(ax_i32 argc, ax_u8** argv) {")
+			if emitter.mainParamCount == 1 {
+				fmt.Fprintln(w, "    return ax_main_usr(argc);")
+			} else {
+				fmt.Fprintln(w, "    return ax_main_usr(argc, argv);")
+			}
+			fmt.Fprintln(w, "}")
+		} else {
+			fmt.Fprintln(w, "ax_i32 ax_main(void) {")
+			fmt.Fprintln(w, "    return ax_main_usr();")
+			fmt.Fprintln(w, "}")
+		}
+	}
+
 	return nil
 }
 
@@ -82,8 +102,41 @@ func (p *Pipeline) emitFuncDefs(w io.Writer) {
 			if node.Flags&ast.FlagIsExtern == 0 {
 				p.emitFuncDef(w, child, node)
 			}
+		} else if node.Kind == ast.NodeStructDecl {
+			sChild := node.FirstChild
+			for sChild != ast.NullIdx {
+				sNode := p.tree.Node(sChild)
+				if sNode.Kind == ast.NodeFuncDecl {
+					if sNode.Flags&ast.FlagIsExtern == 0 {
+						p.emitFuncDef(w, sChild, sNode)
+					}
+				}
+				sChild = sNode.NextSibling
+			}
 		}
 		child = node.NextSibling
+	}
+
+	// Process all instantiated generic functions/methods
+	var instKeys []uint32
+	for k := range p.symbols.InstantiatedToOriginalName {
+		instKeys = append(instKeys, k)
+	}
+	// Sort to preserve perfect determinism
+	sort.Slice(instKeys, func(i, j int) bool {
+		return instKeys[i] < instKeys[j]
+	})
+
+	for _, instSymIdx := range instKeys {
+		sym := p.symbols.SymbolAt(instSymIdx)
+		if sym.DeclNode != 0 {
+			declNode := p.tree.Node(sym.DeclNode)
+			if declNode.Kind == ast.NodeFuncDecl {
+				if declNode.Flags&ast.FlagIsExtern == 0 {
+					p.emitFuncDef(w, sym.DeclNode, declNode)
+				}
+			}
+		}
 	}
 }
 
@@ -94,6 +147,9 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 	symIdx := node.Payload
 	if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
 		sym := p.symbols.SymbolAt(symIdx)
+		if sym.Flags&sema.SymFlagGeneric != 0 {
+			return
+		}
 		nameText = p.intern.Get(sym.NameID)
 	} else if node.Payload != 0 {
 		nameText = p.intern.Get(node.Payload)
@@ -104,6 +160,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 	// Build return type and parameters from the symbol table
 	retType := "void"
 	var paramStrs []string
+	returnTypeID := types.TypeVoid
 
 	if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
 		sym := p.symbols.SymbolAt(symIdx)
@@ -112,6 +169,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 			if entry.Kind == types.KindFunction {
 				queue := NewTypeDeclQueue()
 				fi := p.table.FuncInfo(types.TypeID(sym.TypeID))
+				returnTypeID = fi.Return
 				retType = CTypeName(fi.Return, p.table, p.intern, queue)
 
 				// Collect parameter names and flags from AST children
@@ -159,14 +217,14 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 
 	mangledName := GetFuncMangledName(symIdx, nameText, p.table, p.symbols, p.intern)
 
+	if nameText == "main" {
+		retType = "ax_i32"
+	}
+
 	// Emit function signature
 	paramsStr := "void"
 	if len(paramStrs) > 0 {
 		paramsStr = strings.Join(paramStrs, ", ")
-	}
-
-	if nameText == "main" {
-		retType = "ax_i32"
 	}
 
 	fmt.Fprintf(w, "\n%s%s %s(%s) {\n", visibility, retType, mangledName, paramsStr)
@@ -178,6 +236,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 		iw.Indent()
 		queue := NewTypeDeclQueue()
 		sg := NewStmtGen(iw, p.table, p.intern, p.symbols, p.tree, queue)
+		sg.ExprGen.ReturnType = returnTypeID
 		sg.EmitFuncBody(bodyIdx)
 		if nameText == "main" {
 			iw.Line("return 0;")

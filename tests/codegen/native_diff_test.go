@@ -53,7 +53,8 @@ func compileCBackend(t *testing.T, source []byte, outPath string) error {
 		return fmt.Errorf("name resolution errors: %v", errs)
 	}
 
-	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
+	mono := sema.NewMonomorphizer(tree, intern, symbols, table)
+	infer := sema.NewInferenceEngine(tree, symbols, table, mono)
 	if errs := infer.Infer(); hasErrors(errs) {
 		return fmt.Errorf("type inference errors: %v", errs)
 	}
@@ -169,7 +170,8 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 	}
 
 	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Type Inference...")
-	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
+	mono := sema.NewMonomorphizer(tree, intern, symbols, table)
+	infer := sema.NewInferenceEngine(tree, symbols, table, mono)
 	if errs := infer.Infer(); hasErrors(errs) {
 		opts := diagnostics.DefaultFormatOptions()
 		opts.UseColor = false
@@ -320,7 +322,8 @@ func compileNativeBackend(t *testing.T, source []byte, outPath string) error {
 		return fmt.Errorf("name resolution errors: %v", errs)
 	}
 
-	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
+	mono := sema.NewMonomorphizer(tree, intern, symbols, table)
+	infer := sema.NewInferenceEngine(tree, symbols, table, mono)
 	if errs := infer.Infer(); hasErrors(errs) {
 		return fmt.Errorf("type inference errors: %v", errs)
 	}

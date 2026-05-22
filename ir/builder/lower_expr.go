@@ -339,18 +339,19 @@ func (fl *funcLowering) lowerCallExpr(idx uint32, node *ast.AstNode) uint32 {
 	calleeReg := fl.lowerExpr(child, calleeNode)
 
 	// Remaining children are arguments
-	argStart := fl.fb.EmitExtra(0) // placeholder for arg count
-	argCount := uint32(0)
+	var tempArgs []uint32
 	arg := calleeNode.NextSibling
 	for arg != ast.NullIdx {
 		argNode := fl.mb.tree.Node(arg)
 		argReg := fl.lowerExpr(arg, argNode)
-		fl.fb.EmitExtra(argReg)
-		argCount++
+		tempArgs = append(tempArgs, argReg)
 		arg = argNode.NextSibling
 	}
-	// Patch arg count at argStart (stored in Extras[argStart])
-	fl.fb.SetExtra(argStart, argCount)
+
+	argStart := fl.fb.EmitExtra(uint32(len(tempArgs)))
+	for _, argReg := range tempArgs {
+		fl.fb.EmitExtra(argReg)
+	}
 
 	// Determine return type
 	typeID := uint16(0)

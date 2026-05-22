@@ -14,6 +14,8 @@ package cgen
 import (
 	"fmt"
 	"strings"
+
+	"github.com/axiom-lang/axiom/compiler/types"
 )
 
 // BuiltinKind classifies a built-in function by its dispatch behavior.
@@ -57,6 +59,7 @@ var builtinTable = map[string]BuiltinInfo{
 	"str_eq":          {Kind: BuiltinDirect, CName: "ax_str_eq"},
 	"std.string.slice": {Kind: BuiltinDirect, CName: "ax_str_slice"},
 	"std.string.len":   {Kind: BuiltinDirect, CName: "ax_str_len"},
+	"std.string.concat": {Kind: BuiltinDirect, CName: "ax_str_concat"},
 
 	// ---------- Conversions ----------
 	"to_str": {Kind: BuiltinTyped, CName: "ax_"},  // ax_{i64,f64,bool}_to_str
@@ -116,9 +119,8 @@ func LookupBuiltin(funcName string) (BuiltinInfo, bool) {
 	return info, ok
 }
 
-// EmitBuiltinCall generates the C code for a built-in function call.
-// Returns the call expression string, or empty string if not a built-in.
-func EmitBuiltinCall(funcName string, args []string) string {
+// EmitBuiltinCallTyped generates the C code for a built-in function call, leveraging argument types for selection.
+func EmitBuiltinCallTyped(funcName string, args []string, argTypes []types.TypeID) string {
 	info, ok := builtinTable[funcName]
 	if !ok {
 		return ""
@@ -131,18 +133,36 @@ func EmitBuiltinCall(funcName string, args []string) string {
 			escapedCond := strings.ReplaceAll(condStr, "\"", "\\\"")
 			return fmt.Sprintf("ax_assert_axiom(%s, AX_STR(\"%s\"))", condStr, escapedCond)
 		}
+		if funcName == "panic" && len(args) > 0 {
+			return fmt.Sprintf("ax_panic((const char*)(%s).ptr)", args[0])
+		}
 		return fmt.Sprintf("%s(%s)", info.CName, strings.Join(args, ", "))
 
 	case BuiltinTyped:
-		// For typed builtins, the codegen should append the type suffix.
-		// Default to _str for now (type-dispatch will be improved
-		// when the type system is wired through to codegen).
 		suffix := "_str"
+		if len(argTypes) > 0 {
+			tID := argTypes[0]
+			if tID == types.TypeI8 || tID == types.TypeI16 || tID == types.TypeI32 || tID == types.TypeI64 ||
+				tID == types.TypeU8 || tID == types.TypeU16 || tID == types.TypeU32 || tID == types.TypeU64 ||
+				tID == types.TypeISize || tID == types.TypeUSize {
+				suffix = "_i64"
+			} else if tID == types.TypeF32 || tID == types.TypeF64 {
+				suffix = "_f64"
+			} else if tID == types.TypeBool {
+				suffix = "_bool"
+			}
+		}
 		return fmt.Sprintf("%s%s(%s)", info.CName, suffix, strings.Join(args, ", "))
 
 	default:
 		return ""
 	}
+}
+
+// EmitBuiltinCall generates the C code for a built-in function call.
+// Returns the call expression string, or empty string if not a built-in.
+func EmitBuiltinCall(funcName string, args []string) string {
+	return EmitBuiltinCallTyped(funcName, args, nil)
 }
 
 // IsBuiltin returns true if funcName is a recognized built-in.

@@ -8,9 +8,11 @@ import (
 
 // SymbolTable is the central symbol storage for the entire compilation unit.
 type SymbolTable struct {
-	Symbols []Symbol // flat array of all symbols across all scopes
-	Scopes  []Scope  // all scopes (index 0 = global scope)
-	stack   []uint32 // active scope stack (indices into Scopes)
+	Symbols                    []Symbol // flat array of all symbols across all scopes
+	Scopes                     []Scope  // all scopes (index 0 = global scope)
+	stack                      []uint32 // active scope stack (indices into Scopes)
+	intern                     *ast.InternPool
+	InstantiatedToOriginalName map[uint32]uint32
 }
 
 // builtinType represents a built-in type to pre-populate in the global scope.
@@ -37,15 +39,18 @@ var builtins = []builtinType{
 	{"println", 0},
 	{"compiler_intrinsic", 0},
 	{"assert", 0},
+	{"panic", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated
 // with built-in primitive types.
 func NewSymbolTable(intern *ast.InternPool) *SymbolTable {
 	st := &SymbolTable{
-		Symbols: make([]Symbol, 0, 1024),
-		Scopes:  make([]Scope, 0, 64),
-		stack:   make([]uint32, 0, 32),
+		Symbols:                    make([]Symbol, 0, 1024),
+		Scopes:                     make([]Scope, 0, 64),
+		stack:                      make([]uint32, 0, 32),
+		intern:                     intern,
+		InstantiatedToOriginalName: make(map[uint32]uint32),
 	}
 
 	// Create global scope (index 0)

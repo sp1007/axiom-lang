@@ -62,6 +62,18 @@ func (mb *ModuleBuilder) Build() *air.AirModule {
 			if fn != nil {
 				mb.module.Funcs = append(mb.module.Funcs, *fn)
 			}
+		} else if node.Kind == ast.NodeStructDecl {
+			sChild := node.FirstChild
+			for sChild != ast.NullIdx {
+				sNode := mb.tree.Node(sChild)
+				if sNode.Kind == ast.NodeFuncDecl {
+					fn := mb.lowerFunc(sChild, sNode)
+					if fn != nil {
+						mb.module.Funcs = append(mb.module.Funcs, *fn)
+					}
+				}
+				sChild = sNode.NextSibling
+			}
 		}
 		child = node.NextSibling
 	}

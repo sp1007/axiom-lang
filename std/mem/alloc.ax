@@ -79,8 +79,7 @@ extern "C" fn VirtualFree(lpAddress: ptr[void], dwSize: u64, dwFreeType: u32) ->
 extern "C" fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]
 extern "C" fn munmap(addr: ptr[void], length: u64) -> i32
 
-extern "C" fn calloc(num: i64, size: i64) -> ptr[void]
-extern "C" fn free(p: ptr[void])
+
 
 extern "C" fn std_mem_alloc_get_slab_used() -> ptr[i64]
 extern "C" fn std_mem_alloc_get_slab() -> ptr[Segment]
@@ -357,9 +356,12 @@ pub fn ax_large_free(user_ptr: ptr[u8], user_size: i64):
 // --------------------------------------------------------------------------
 
 pub fn ax_actor_heap_create(actor_id: u64) -> ptr[ActorHeap]:
-    let heap = calloc(1 as i64, @compiler_intrinsic("size_of")[ActorHeap]() as i64) as ptr[ActorHeap]
+    let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
+    let page_aligned = (size + 4095) & ~4095
+    let heap = ax_os_alloc(page_aligned) as ptr[ActorHeap]
     if heap == null as ptr[ActorHeap]:
         return null as ptr[ActorHeap]
+    @memset(heap as ptr[u8], 0 as u8, page_aligned)
     heap.actor_id = actor_id
     heap.magic = ACTOR_HEAP_MAGIC
     return heap
@@ -373,7 +375,9 @@ pub fn ax_actor_heap_destroy(heap: ptr[ActorHeap]):
         ax_segment_list_release_all(list)
         sc = sc + 1
     heap.magic = 0 as u32
-    free(heap as ptr[void])
+    let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
+    let page_aligned = (size + 4095) & ~4095
+    ax_os_free(heap as ptr[void], page_aligned)
 
 pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:
     if heap == null as ptr[ActorHeap] or heap.magic != ACTOR_HEAP_MAGIC:

@@ -156,11 +156,8 @@ func hoistInvariants(fn *air.AirFunc, loop *LoopInfo) bool {
 
 	// Find instructions in the loop body that are loop-invariant:
 	// - All source operands are defined outside the loop, or
-	// - All source operands are loop-invariant themselves (fixpoint)
+	// - All source operands are loop-invariant themselves (already hoisted)
 	// - No side effects
-
-	// For MVP: mark instructions where both Src1 and Src2 are defined
-	// outside the loop body
 	loopDefs := make(map[uint32]bool)
 	for _, blkID := range loop.BodyBlocks {
 		if int(blkID) >= len(fn.Blocks) {
@@ -177,7 +174,10 @@ func hoistInvariants(fn *air.AirFunc, loop *LoopInfo) bool {
 		}
 	}
 
-	changed := false
+	var toHoist []uint32
+	hoistedDefs := make(map[uint32]bool)
+
+	// Scan instructions in loop body blocks and identify invariants
 	for _, blkID := range loop.BodyBlocks {
 		if int(blkID) >= len(fn.Blocks) {
 			continue
@@ -195,22 +195,129 @@ func hoistInvariants(fn *air.AirFunc, loop *LoopInfo) bool {
 				continue
 			}
 
-			// Check if all sources are defined outside the loop
-			src1Outside := inst.Src1 == 0 || !loopDefs[inst.Src1]
-			src2Outside := inst.Src2 == 0 || !loopDefs[inst.Src2]
+			// Check if all sources are defined outside the loop or already hoisted
+			src1Outside := inst.Src1 == 0 || !loopDefs[inst.Src1] || hoistedDefs[inst.Src1]
+			src2Outside := inst.Src2 == 0 || !loopDefs[inst.Src2] || hoistedDefs[inst.Src2]
 
 			if src1Outside && src2Outside && inst.Dest != 0 {
-				// This instruction is loop-invariant — mark for hoisting
-				// For MVP: we mark it by setting a metadata flag.
-				// Full hoisting requires moving the instruction to the preheader
-				// and updating block instruction lists.
-				// For now, just annotate that we detected it.
-				changed = true
+				toHoist = append(toHoist, instIdx)
+				hoistedDefs[inst.Dest] = true
 			}
 		}
 	}
 
-	return changed
+	if len(toHoist) == 0 {
+		return false
+	}
+
+	// Identify or construct the preheader block
+	headerBlk := &fn.Blocks[loop.HeaderBlock]
+	var outsidePreds []uint32
+	for _, predID := range headerBlk.Preds {
+		if !bodySet[predID] && int(predID) < len(fn.Blocks) {
+			outsidePreds = append(outsidePreds, predID)
+		}
+	}
+
+	var preheaderID uint32
+	if len(outsidePreds) == 1 {
+		// Single predecessor from outside - perfect preheader
+		preheaderID = outsidePreds[0]
+	} else {
+		// Create a new preheader block dynamically to redirect multiple entries
+		preheaderID = uint32(len(fn.Blocks))
+		preheader := air.BasicBlock{
+			ID:    preheaderID,
+			Succs: []uint32{loop.HeaderBlock},
+			Preds: outsidePreds,
+		}
+
+		// Emit the jump instruction at the end of the new preheader
+		jumpIdx := uint32(len(fn.Insts))
+		fn.Insts = append(fn.Insts, air.AirInst{
+			Opcode: air.OpJump,
+			Src1:   loop.HeaderBlock,
+		})
+		preheader.Instrs = []uint32{jumpIdx}
+		fn.Blocks = append(fn.Blocks, preheader)
+
+		// Redirect predecessors to new preheader instead of header
+		for _, predID := range outsidePreds {
+			predBlk := &fn.Blocks[predID]
+			for sidx, succ := range predBlk.Succs {
+				if succ == loop.HeaderBlock {
+					predBlk.Succs[sidx] = preheaderID
+				}
+			}
+
+			// Redirect instructions inside predecessor
+			for ii := range predBlk.Instrs {
+				instIdx := predBlk.Instrs[ii]
+				inst := &fn.Insts[instIdx]
+				if inst.Opcode == air.OpJump && inst.Src1 == loop.HeaderBlock {
+					inst.Src1 = preheaderID
+				} else if inst.Opcode == air.OpBranch {
+					if inst.Src2 == loop.HeaderBlock {
+						inst.Src2 = preheaderID
+					}
+					if inst.Dest == loop.HeaderBlock {
+						inst.Dest = preheaderID
+					}
+				}
+			}
+		}
+
+		// Update header predecessors
+		var newPreds []uint32
+		for _, predID := range headerBlk.Preds {
+			if bodySet[predID] {
+				newPreds = append(newPreds, predID)
+			}
+		}
+		newPreds = append(newPreds, preheaderID)
+		headerBlk.Preds = newPreds
+	}
+
+	preheaderBlk := &fn.Blocks[preheaderID]
+
+	// Hoist each instruction: remove from body block and insert into preheader
+	hoistSet := make(map[uint32]bool)
+	for _, idx := range toHoist {
+		hoistSet[idx] = true
+	}
+
+	for _, blkID := range loop.BodyBlocks {
+		if int(blkID) >= len(fn.Blocks) {
+			continue
+		}
+		blk := &fn.Blocks[blkID]
+
+		// Filter out hoisted instructions
+		var newInstrs []uint32
+		for _, idx := range blk.Instrs {
+			if !hoistSet[idx] {
+				newInstrs = append(newInstrs, idx)
+			}
+		}
+		blk.Instrs = newInstrs
+	}
+
+	// Insert hoisted instructions in preheader right before the terminator
+	termIdx := len(preheaderBlk.Instrs) - 1
+	if termIdx < 0 {
+		preheaderBlk.Instrs = toHoist
+	} else {
+		prefix := make([]uint32, termIdx)
+		copy(prefix, preheaderBlk.Instrs[:termIdx])
+		suffix := make([]uint32, len(preheaderBlk.Instrs)-termIdx)
+		copy(suffix, preheaderBlk.Instrs[termIdx:])
+
+		newInstrs := append(prefix, toHoist...)
+		newInstrs = append(newInstrs, suffix...)
+		preheaderBlk.Instrs = newInstrs
+	}
+
+	return true
 }
 
 // containsBlock checks if a block ID is in the given list.

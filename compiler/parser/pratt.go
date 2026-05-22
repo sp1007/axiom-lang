@@ -146,6 +146,42 @@ func (p *Parser) parseNUD() uint32 {
 		return p.parseAwaitExpr()
 	case lexer.TokenPipe:
 		return p.parseClosureExpr()
+	case lexer.TokenHash:
+		hashTok := p.consume()
+		runTok, ok := p.expect(lexer.TokenIdent)
+		if ok && string(p.tokenText(runTok)) == "run" {
+			comptimeNode := p.tree.AddNode(ast.NodeComptime, p.tokenIdx(hashTok))
+			if p.check(lexer.TokenLBrace) {
+				p.consume() // '{'
+				blockNode := p.tree.AddNode(ast.NodeBlock, p.tokenIdx(runTok))
+				for !p.check(lexer.TokenRBrace) && !p.check(lexer.TokenEOF) {
+					prevPos := p.pos
+					stmt := p.parseStmt()
+					if stmt != 0 {
+						p.tree.AppendChild(blockNode, stmt)
+					}
+					if p.pos == prevPos {
+						p.consume()
+					}
+				}
+				p.expect(lexer.TokenRBrace)
+				p.tree.AppendChild(comptimeNode, blockNode)
+			} else if p.check(lexer.TokenColon) {
+				p.consume() // ':'
+				blockNode := p.parseBlock()
+				if blockNode != 0 {
+					p.tree.AppendChild(comptimeNode, blockNode)
+				}
+			} else {
+				exprNode := p.parseExpr()
+				if exprNode != 0 {
+					p.tree.AppendChild(comptimeNode, exprNode)
+				}
+			}
+			return comptimeNode
+		} else {
+			return p.tree.AddNode(ast.NodeError, p.tokenIdx(hashTok))
+		}
 	default:
 		p.errorf(tok, "expected expression, got %s", tok.Kind)
 		p.consume() // Ensure progress to avoid infinite loops

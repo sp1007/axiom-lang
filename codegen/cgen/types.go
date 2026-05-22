@@ -13,14 +13,16 @@ import (
 //
 // Thread-safety: not safe for concurrent use.
 type TypeDeclQueue struct {
-	seen    map[types.TypeID]bool
-	ordered []types.TypeID
+	seen        map[types.TypeID]bool
+	ordered     []types.TypeID
+	emittedTags map[string]bool
 }
 
 // NewTypeDeclQueue creates an empty TypeDeclQueue.
 func NewTypeDeclQueue() *TypeDeclQueue {
 	return &TypeDeclQueue{
-		seen: make(map[types.TypeID]bool),
+		seen:        make(map[types.TypeID]bool),
+		emittedTags: make(map[string]bool),
 	}
 }
 
@@ -84,7 +86,8 @@ func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		typeArgs := table.GenericInstArgs(id)
 		parts := make([]string, len(typeArgs))
 		for i, arg := range typeArgs {
-			parts[i] = sanitizeName(CTypeName(arg, table, intern, queue))
+			typeNameStr := CTypeName(arg, table, intern, queue)
+			parts[i] = sanitizeName(typeNameStr)
 		}
 		name := "struct ax_" + resolveName(entry.NameID, intern) + "_" + strings.Join(parts, "_")
 		queue.Enqueue(id)
@@ -142,10 +145,31 @@ func CTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		return sumTypeDecl(id, table, intern, queue)
 
 	case types.KindGenericInst:
-		// Generic instantiations may be structs or sum types.
-		// For now, emit a forward declaration comment.
-		cname := CTypeName(id, table, intern, queue)
-		return fmt.Sprintf("/* forward: %s (generic inst) */", cname)
+		// Find the underlying template structure or sum type
+		var templateID types.TypeID
+		var templateEntry *types.TypeEntry
+		for idx := 0; idx < table.Count(); idx++ {
+			e := table.Entry(types.TypeID(idx))
+			if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID == entry.NameID {
+				templateID = types.TypeID(idx)
+				templateEntry = e
+				break
+			}
+		}
+
+		if templateEntry == nil {
+			panic(fmt.Sprintf("CTypeDecl: generic base template not found for %s", resolveName(entry.NameID, intern)))
+		}
+
+		if templateEntry.Kind == types.KindStruct {
+			return genericInstStructDecl(id, templateID, table, intern, queue)
+		} else if templateEntry.Kind == types.KindSum {
+			if queue.emittedTags == nil {
+				queue.emittedTags = make(map[string]bool)
+			}
+			return genericInstSumTypeDecl(id, templateID, table, intern, queue, queue.emittedTags)
+		}
+		return ""
 
 	default:
 		return "" // primitives, pointers, functions don't need declarations
@@ -223,6 +247,30 @@ func sumTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool
 	b.WriteString("    } data;\n")
 	b.WriteString("};\n")
 
+	// Emit constructor functions for each variant (non-generic)
+	for _, v := range info.Variants {
+		vname := resolveName(v.NameID, intern)
+		vnameLower := strings.ToLower(vname)
+		structName := "struct " + cname
+		if v.PayloadType == types.TypeUnknown {
+			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(void) {\n",
+				structName, baseName, vnameLower)
+			fmt.Fprintf(&b, "    %s _result;\n", structName)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    return _result;\n")
+			b.WriteString("}\n")
+		} else {
+			payloadC := CTypeName(v.PayloadType, table, intern, queue)
+			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(%s value) {\n",
+				structName, baseName, vnameLower, payloadC)
+			fmt.Fprintf(&b, "    %s _result;\n", structName)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    _result.data.%s = value;\n", vname)
+			fmt.Fprintf(&b, "    return _result;\n")
+			b.WriteString("}\n")
+		}
+	}
+
 	return b.String()
 }
 
@@ -298,3 +346,109 @@ func sanitizeName(name string) string {
 	}
 	return b.String()
 }
+
+func genericInstStructDecl(id types.TypeID, templateID types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue) string {
+	cname := CTypeName(id, table, intern, queue)
+	mangledName := strings.TrimPrefix(cname, "struct ")
+
+	info := table.StructInfo(templateID)
+	params := info.GenericParams
+	args := table.GenericInstArgs(id)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "struct %s {\n", mangledName)
+	for _, f := range info.Fields {
+		fname := resolveName(f.NameID, intern)
+		specType := table.SubstituteGenericType(f.TypeID, params, args)
+		fEntry := table.Entry(specType)
+		if fEntry.Kind == types.KindArray {
+			elemID := table.ArrayElem(specType)
+			elemC := CTypeName(elemID, table, intern, queue)
+			length := table.ArrayLength(specType)
+			fmt.Fprintf(&b, "    %s %s[%d];\n", elemC, fname, length)
+		} else {
+			ftype := CTypeName(specType, table, intern, queue)
+			fmt.Fprintf(&b, "    %s %s;\n", ftype, fname)
+		}
+	}
+	b.WriteString("};\n")
+	return b.String()
+}
+
+func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue, emittedTags map[string]bool) string {
+	templateEntry := table.Entry(templateID)
+	info := table.SumInfo(templateID)
+	baseName := resolveName(templateEntry.NameID, intern)
+	cname := CTypeName(id, table, intern, queue)
+	mangledName := strings.TrimPrefix(cname, "struct ")
+
+	params := info.GenericParams
+	args := table.GenericInstArgs(id)
+
+	var b strings.Builder
+
+	// 1. Emit the tag enum once per template name
+	if !emittedTags[baseName] {
+		emittedTags[baseName] = true
+		fmt.Fprintf(&b, "enum ax_%s_tag {\n", baseName)
+		for _, v := range info.Variants {
+			vname := resolveName(v.NameID, intern)
+			fmt.Fprintf(&b, "    ax_%s_%s = %d,\n", baseName, vname, v.Tag)
+		}
+		b.WriteString("};\n\n")
+	}
+
+	// 2. Emit the concrete tagged union struct
+	fmt.Fprintf(&b, "struct %s {\n", mangledName)
+	fmt.Fprintf(&b, "    enum ax_%s_tag tag;\n", baseName)
+
+	hasPayload := false
+	for _, v := range info.Variants {
+		if v.PayloadType != types.TypeUnknown {
+			hasPayload = true
+			break
+		}
+	}
+
+	if hasPayload {
+		b.WriteString("    union {\n")
+		for _, v := range info.Variants {
+			if v.PayloadType != types.TypeUnknown {
+				vname := resolveName(v.NameID, intern)
+				specType := table.SubstituteGenericType(v.PayloadType, params, args)
+				payloadC := CTypeName(specType, table, intern, queue)
+				fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
+			}
+		}
+		b.WriteString("    } data;\n")
+	}
+	b.WriteString("};\n")
+
+	// Emit constructor functions for each variant (generic instantiation)
+	for _, v := range info.Variants {
+		vname := resolveName(v.NameID, intern)
+		vnameLower := strings.ToLower(vname)
+		structName := "struct " + mangledName
+		if v.PayloadType == types.TypeUnknown {
+			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(void) {\n",
+				structName, mangledName, vnameLower)
+			fmt.Fprintf(&b, "    %s _result;\n", structName)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    return _result;\n")
+			b.WriteString("}\n")
+		} else {
+			specType := table.SubstituteGenericType(v.PayloadType, params, args)
+			payloadC := CTypeName(specType, table, intern, queue)
+			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(%s value) {\n",
+				structName, mangledName, vnameLower, payloadC)
+			fmt.Fprintf(&b, "    %s _result;\n", structName)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    _result.data.%s = value;\n", vname)
+			fmt.Fprintf(&b, "    return _result;\n")
+			b.WriteString("}\n")
+		}
+	}
+
+	return b.String()
+}
+

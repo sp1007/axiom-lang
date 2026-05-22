@@ -1,0 +1,317 @@
+#define AX_EMIT_MAIN
+#include "ax_runtime.h"
+#include "ax_stdlib.h"
+
+/* Forward declarations */
+struct ax__AX_std_Atomic_bool;
+struct ax__AX_std_Atomic_i32;
+struct ax__AX_std_Mutex_i32;
+struct ax__AX_std_MutexGuard_i32;
+struct ax__AX_std_Option__AX_std_MutexGuard_i32;
+struct ax__AX_std_RwLock_i32;
+struct ax__AX_std_ReadGuard_i32;
+struct ax__AX_std_WriteGuard_i32;
+
+/* Type definitions */
+struct ax__AX_std_Atomic_bool {
+    ax_bool value;
+};
+
+struct ax__AX_std_Atomic_i32 {
+    ax_i32 value;
+};
+
+struct ax__AX_std_Mutex_i32 {
+    ax_i32 value;
+    struct ax__AX_std_Atomic_bool locked;
+};
+
+struct ax__AX_std_MutexGuard_i32 {
+    struct ax__AX_std_Mutex_i32* mutex;
+};
+
+enum ax__AX_std_Option__AX_std_MutexGuard_i32_tag {
+    ax__AX_std_Option__AX_std_MutexGuard_i32_Some = 0,
+    ax__AX_std_Option__AX_std_MutexGuard_i32_None = 1,
+};
+
+struct ax__AX_std_Option__AX_std_MutexGuard_i32 {
+    enum ax__AX_std_Option__AX_std_MutexGuard_i32_tag tag;
+    union {
+        struct ax__AX_std_MutexGuard_i32 Some;
+    } data;
+};
+
+static inline struct ax__AX_std_Option__AX_std_MutexGuard_i32 ax__AX_std_Option__AX_std_MutexGuard_i32_some(struct ax__AX_std_MutexGuard_i32 value) {
+    struct ax__AX_std_Option__AX_std_MutexGuard_i32 _result;
+    _result.tag = ax__AX_std_Option__AX_std_MutexGuard_i32_Some;
+    _result.data.Some = value;
+    return _result;
+}
+
+static inline struct ax__AX_std_Option__AX_std_MutexGuard_i32 ax__AX_std_Option__AX_std_MutexGuard_i32_none(void) {
+    struct ax__AX_std_Option__AX_std_MutexGuard_i32 _result;
+    _result.tag = ax__AX_std_Option__AX_std_MutexGuard_i32_None;
+    return _result;
+}
+
+struct ax__AX_std_RwLock_i32 {
+    ax_i32 value;
+    struct ax__AX_std_Atomic_i32 readers;
+    struct ax__AX_std_Atomic_bool writer;
+};
+
+struct ax__AX_std_ReadGuard_i32 {
+    struct ax__AX_std_RwLock_i32* lock;
+};
+
+struct ax__AX_std_WriteGuard_i32 {
+    struct ax__AX_std_RwLock_i32* lock;
+};
+
+
+/* Function prototypes */
+static void ax_test_atomic_operations(void);
+static void ax_test_mutex_operations(void);
+static void ax_test_rwlock_operations(void);
+ax_i32 ax_main_usr(void);
+struct ax__AX_std_Atomic_bool ax_AX_std_atomic_new_bool(ax_bool value);
+ax_bool ax__AX_std_Atomic_bool_compare_and_swap(struct ax__AX_std_Atomic_bool* self, ax_bool expected, ax_bool desired);
+void ax__AX_std_Atomic_bool_store(struct ax__AX_std_Atomic_bool* self, ax_bool value);
+struct ax__AX_std_Atomic_i32 ax_AX_std_atomic_new_i32(ax_i32 value);
+ax_bool ax__AX_std_Atomic_bool_load(struct ax__AX_std_Atomic_bool* self);
+void ax__AX_std_Atomic_i32_store(struct ax__AX_std_Atomic_i32* self, ax_i32 value);
+ax_i32 ax__AX_std_Atomic_i32_load(struct ax__AX_std_Atomic_i32* self);
+ax_i32 ax__AX_std_Atomic_i32_swap(struct ax__AX_std_Atomic_i32* self, ax_i32 value);
+ax_bool ax__AX_std_Atomic_i32_compare_and_swap(struct ax__AX_std_Atomic_i32* self, ax_i32 expected, ax_i32 desired);
+struct ax__AX_std_Mutex_i32 ax_AX_std_mutex_new_i32(ax_i32 value);
+struct ax__AX_std_MutexGuard_i32 ax__AX_std_Mutex_i32_lock(struct ax__AX_std_Mutex_i32* self);
+ax_i32 ax__AX_std_MutexGuard_i32_get(struct ax__AX_std_MutexGuard_i32 self);
+void ax__AX_std_MutexGuard_i32_set(struct ax__AX_std_MutexGuard_i32 self, ax_i32 value);
+void ax__AX_std_MutexGuard_i32_unlock(struct ax__AX_std_MutexGuard_i32 self);
+struct ax__AX_std_Option__AX_std_MutexGuard_i32 ax__AX_std_Mutex_i32_try_lock(struct ax__AX_std_Mutex_i32* self);
+ax_bool ax_AX_std_is_some__AX_std_MutexGuard_i32(struct ax__AX_std_Option__AX_std_MutexGuard_i32 self);
+struct ax__AX_std_MutexGuard_i32 ax_AX_std_unwrap__AX_std_MutexGuard_i32(struct ax__AX_std_Option__AX_std_MutexGuard_i32 self);
+struct ax__AX_std_RwLock_i32 ax_AX_std_rwlock_new_i32(ax_i32 value);
+struct ax__AX_std_ReadGuard_i32 ax__AX_std_RwLock_i32_read(struct ax__AX_std_RwLock_i32* self);
+ax_i32 ax__AX_std_ReadGuard_i32_get(struct ax__AX_std_ReadGuard_i32 self);
+void ax__AX_std_ReadGuard_i32_unlock(struct ax__AX_std_ReadGuard_i32 self);
+struct ax__AX_std_WriteGuard_i32 ax__AX_std_RwLock_i32_write(struct ax__AX_std_RwLock_i32* self);
+ax_i32 ax__AX_std_WriteGuard_i32_get(struct ax__AX_std_WriteGuard_i32 self);
+void ax__AX_std_WriteGuard_i32_set(struct ax__AX_std_WriteGuard_i32 self, ax_i32 value);
+void ax__AX_std_WriteGuard_i32_unlock(struct ax__AX_std_WriteGuard_i32 self);
+
+
+static void ax_test_atomic_operations(void) {
+    struct ax__AX_std_Atomic_i32 at = ax_AX_std_atomic_new_i32(((ax_i32)(10)));
+    ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 10), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 10)"));
+    ax__AX_std_Atomic_i32_store(&(at), ((ax_i32)(20)));
+    ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 20), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 20)"));
+    ax_i32 old = ax__AX_std_Atomic_i32_swap(&(at), ((ax_i32)(30)));
+    ax_assert_axiom((old == 20), AX_STR("(old == 20)"));
+    ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 30), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 30)"));
+    ax_bool swapped = ax__AX_std_Atomic_i32_compare_and_swap(&(at), ((ax_i32)(30)), ((ax_i32)(40)));
+    ax_assert_axiom((swapped == AX_TRUE), AX_STR("(swapped == AX_TRUE)"));
+    ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 40), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 40)"));
+    ax_bool not_swapped = ax__AX_std_Atomic_i32_compare_and_swap(&(at), ((ax_i32)(30)), ((ax_i32)(50)));
+    ax_assert_axiom((not_swapped == AX_FALSE), AX_STR("(not_swapped == AX_FALSE)"));
+    ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 40), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 40)"));
+    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_atomic_operations", .len=30}).ptr);
+}
+
+static void ax_test_mutex_operations(void) {
+    struct ax__AX_std_Mutex_i32 m = ax_AX_std_mutex_new_i32(((ax_i32)(100)));
+    struct ax__AX_std_MutexGuard_i32 guard = ax__AX_std_Mutex_i32_lock(&(m));
+    ax_assert_axiom((ax__AX_std_MutexGuard_i32_get(guard) == 100), AX_STR("(ax__AX_std_MutexGuard_i32_get(guard) == 100)"));
+    ax__AX_std_MutexGuard_i32_set(guard, ((ax_i32)(200)));
+    ax_assert_axiom((ax__AX_std_MutexGuard_i32_get(guard) == 200), AX_STR("(ax__AX_std_MutexGuard_i32_get(guard) == 200)"));
+    ax__AX_std_MutexGuard_i32_unlock(guard);
+    struct ax__AX_std_Option__AX_std_MutexGuard_i32 guard_opt = ax__AX_std_Mutex_i32_try_lock(&(m));
+    ax_assert_axiom(ax_AX_std_is_some__AX_std_MutexGuard_i32(guard_opt), AX_STR("ax_AX_std_is_some__AX_std_MutexGuard_i32(guard_opt)"));
+    struct ax__AX_std_MutexGuard_i32 g = ax_AX_std_unwrap__AX_std_MutexGuard_i32(guard_opt);
+    ax_assert_axiom((ax__AX_std_MutexGuard_i32_get(g) == 200), AX_STR("(ax__AX_std_MutexGuard_i32_get(g) == 200)"));
+    ax__AX_std_MutexGuard_i32_unlock(g);
+    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_mutex_operations", .len=29}).ptr);
+}
+
+static void ax_test_rwlock_operations(void) {
+    struct ax__AX_std_RwLock_i32 l = ax_AX_std_rwlock_new_i32(((ax_i32)(500)));
+    struct ax__AX_std_ReadGuard_i32 r1 = ax__AX_std_RwLock_i32_read(&(l));
+    ax_assert_axiom((ax__AX_std_ReadGuard_i32_get(r1) == 500), AX_STR("(ax__AX_std_ReadGuard_i32_get(r1) == 500)"));
+    struct ax__AX_std_ReadGuard_i32 r2 = ax__AX_std_RwLock_i32_read(&(l));
+    ax_assert_axiom((ax__AX_std_ReadGuard_i32_get(r2) == 500), AX_STR("(ax__AX_std_ReadGuard_i32_get(r2) == 500)"));
+    ax__AX_std_ReadGuard_i32_unlock(r1);
+    ax__AX_std_ReadGuard_i32_unlock(r2);
+    struct ax__AX_std_WriteGuard_i32 w = ax__AX_std_RwLock_i32_write(&(l));
+    ax_assert_axiom((ax__AX_std_WriteGuard_i32_get(w) == 500), AX_STR("(ax__AX_std_WriteGuard_i32_get(w) == 500)"));
+    ax__AX_std_WriteGuard_i32_set(w, ((ax_i32)(1000)));
+    ax_assert_axiom((ax__AX_std_WriteGuard_i32_get(w) == 1000), AX_STR("(ax__AX_std_WriteGuard_i32_get(w) == 1000)"));
+    ax__AX_std_WriteGuard_i32_unlock(w);
+    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_rwlock_operations", .len=30}).ptr);
+}
+
+ax_i32 ax_main_usr(void) {
+    puts((const char*)((ax_string){.ptr=(const ax_u8*)"Running AXIOM-native synchronization unit tests...", .len=50}).ptr);
+    ax_test_atomic_operations();
+    ax_test_mutex_operations();
+    ax_test_rwlock_operations();
+    return puts((const char*)((ax_string){.ptr=(const ax_u8*)"All AXIOM-native synchronization tests passed!", .len=46}).ptr);
+    return 0;
+}
+
+struct ax__AX_std_Atomic_bool ax_AX_std_atomic_new_bool(ax_bool value) {
+    return ((struct ax__AX_std_Atomic_bool){.value=value});
+}
+
+ax_bool ax__AX_std_Atomic_bool_compare_and_swap(struct ax__AX_std_Atomic_bool* self, ax_bool expected, ax_bool desired) {
+    return __sync_bool_compare_and_swap(&(self->value), expected, desired);
+}
+
+void ax__AX_std_Atomic_bool_store(struct ax__AX_std_Atomic_bool* self, ax_bool value) {
+    __atomic_store_n(&(self->value), value, __ATOMIC_SEQ_CST);
+}
+
+struct ax__AX_std_Atomic_i32 ax_AX_std_atomic_new_i32(ax_i32 value) {
+    return ((struct ax__AX_std_Atomic_i32){.value=value});
+}
+
+ax_bool ax__AX_std_Atomic_bool_load(struct ax__AX_std_Atomic_bool* self) {
+    return __atomic_load_n(&(self->value), __ATOMIC_SEQ_CST);
+}
+
+void ax__AX_std_Atomic_i32_store(struct ax__AX_std_Atomic_i32* self, ax_i32 value) {
+    __atomic_store_n(&(self->value), value, __ATOMIC_SEQ_CST);
+}
+
+ax_i32 ax__AX_std_Atomic_i32_load(struct ax__AX_std_Atomic_i32* self) {
+    return __atomic_load_n(&(self->value), __ATOMIC_SEQ_CST);
+}
+
+ax_i32 ax__AX_std_Atomic_i32_swap(struct ax__AX_std_Atomic_i32* self, ax_i32 value) {
+    return __atomic_exchange_n(&(self->value), value, __ATOMIC_SEQ_CST);
+}
+
+ax_bool ax__AX_std_Atomic_i32_compare_and_swap(struct ax__AX_std_Atomic_i32* self, ax_i32 expected, ax_i32 desired) {
+    return __sync_bool_compare_and_swap(&(self->value), expected, desired);
+}
+
+struct ax__AX_std_Mutex_i32 ax_AX_std_mutex_new_i32(ax_i32 value) {
+    return ((struct ax__AX_std_Mutex_i32){.value=value, .locked=ax_AX_std_atomic_new_bool(AX_FALSE)});
+}
+
+struct ax__AX_std_MutexGuard_i32 ax__AX_std_Mutex_i32_lock(struct ax__AX_std_Mutex_i32* self) {
+    while ((!ax__AX_std_Atomic_bool_compare_and_swap(&(self->locked), AX_FALSE, AX_TRUE))) {
+        ax_i32 dummy = 0;
+        (void)dummy;
+    }
+    return ((struct ax__AX_std_MutexGuard_i32){.mutex=self});
+}
+
+ax_i32 ax__AX_std_MutexGuard_i32_get(struct ax__AX_std_MutexGuard_i32 self) {
+    return self.mutex->value;
+}
+
+void ax__AX_std_MutexGuard_i32_set(struct ax__AX_std_MutexGuard_i32 self, ax_i32 value) {
+    self.mutex->value = value;
+}
+
+void ax__AX_std_MutexGuard_i32_unlock(struct ax__AX_std_MutexGuard_i32 self) {
+    ax__AX_std_Atomic_bool_store(&(self.mutex->locked), AX_FALSE);
+}
+
+struct ax__AX_std_Option__AX_std_MutexGuard_i32 ax__AX_std_Mutex_i32_try_lock(struct ax__AX_std_Mutex_i32* self) {
+    if (ax__AX_std_Atomic_bool_compare_and_swap(&(self->locked), AX_FALSE, AX_TRUE)) {
+        return ax__AX_std_Option__AX_std_MutexGuard_i32_some(((struct ax__AX_std_MutexGuard_i32){.mutex=self}));
+    } else {
+        {
+            return ax__AX_std_Option__AX_std_MutexGuard_i32_none();
+        }
+    }
+}
+
+ax_bool ax_AX_std_is_some__AX_std_MutexGuard_i32(struct ax__AX_std_Option__AX_std_MutexGuard_i32 self) {
+    switch ((self).tag) {
+        case ax__AX_std_Option__AX_std_MutexGuard_i32_Some: {
+            return AX_TRUE;
+            break;
+        }
+        case ax__AX_std_Option__AX_std_MutexGuard_i32_None: {
+            return AX_FALSE;
+            break;
+        }
+        default: {
+            /* unreachable: exhaustiveness checked by type checker */
+            __builtin_unreachable();
+        }
+    }
+}
+
+struct ax__AX_std_MutexGuard_i32 ax_AX_std_unwrap__AX_std_MutexGuard_i32(struct ax__AX_std_Option__AX_std_MutexGuard_i32 self) {
+    switch ((self).tag) {
+        case ax__AX_std_Option__AX_std_MutexGuard_i32_Some: {
+            struct ax__AX_std_MutexGuard_i32 v = (self).data.Some;
+            (void)v;
+            return v;
+            break;
+        }
+        case ax__AX_std_Option__AX_std_MutexGuard_i32_None: {
+            ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called unwrap() on a None value", .len=31}).ptr);
+            break;
+        }
+        default: {
+            /* unreachable: exhaustiveness checked by type checker */
+            __builtin_unreachable();
+        }
+    }
+}
+
+struct ax__AX_std_RwLock_i32 ax_AX_std_rwlock_new_i32(ax_i32 value) {
+    return ((struct ax__AX_std_RwLock_i32){.value=value, .readers=ax_AX_std_atomic_new_i32(0), .writer=ax_AX_std_atomic_new_bool(AX_FALSE)});
+}
+
+struct ax__AX_std_ReadGuard_i32 ax__AX_std_RwLock_i32_read(struct ax__AX_std_RwLock_i32* self) {
+    while (ax__AX_std_Atomic_bool_load(&(self->writer))) {
+        ax_i32 dummy = 0;
+        (void)dummy;
+    }
+    ax__AX_std_Atomic_i32_store(&(self->readers), (ax__AX_std_Atomic_i32_load(&(self->readers)) + 1));
+    return ((struct ax__AX_std_ReadGuard_i32){.lock=self});
+}
+
+ax_i32 ax__AX_std_ReadGuard_i32_get(struct ax__AX_std_ReadGuard_i32 self) {
+    return self.lock->value;
+}
+
+void ax__AX_std_ReadGuard_i32_unlock(struct ax__AX_std_ReadGuard_i32 self) {
+    ax_i32 r = ax__AX_std_Atomic_i32_load(&(self.lock->readers));
+    ax__AX_std_Atomic_i32_store(&(self.lock->readers), (r - 1));
+}
+
+struct ax__AX_std_WriteGuard_i32 ax__AX_std_RwLock_i32_write(struct ax__AX_std_RwLock_i32* self) {
+    while ((!ax__AX_std_Atomic_bool_compare_and_swap(&(self->writer), AX_FALSE, AX_TRUE))) {
+        ax_i32 dummy = 0;
+        (void)dummy;
+    }
+    while ((ax__AX_std_Atomic_i32_load(&(self->readers)) > 0)) {
+        ax_i32 dummy = 0;
+        (void)dummy;
+    }
+    return ((struct ax__AX_std_WriteGuard_i32){.lock=self});
+}
+
+ax_i32 ax__AX_std_WriteGuard_i32_get(struct ax__AX_std_WriteGuard_i32 self) {
+    return self.lock->value;
+}
+
+void ax__AX_std_WriteGuard_i32_set(struct ax__AX_std_WriteGuard_i32 self, ax_i32 value) {
+    self.lock->value = value;
+}
+
+void ax__AX_std_WriteGuard_i32_unlock(struct ax__AX_std_WriteGuard_i32 self) {
+    ax__AX_std_Atomic_bool_store(&(self.lock->writer), AX_FALSE);
+}
+
+/* Entry point wrapper */
+ax_i32 ax_main(void) {
+    return ax_main_usr();
+}

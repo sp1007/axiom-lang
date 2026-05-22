@@ -3,6 +3,7 @@ package cgen
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
@@ -25,12 +26,15 @@ type DeclEmitter struct {
 	symbols *sema.SymbolTable
 	tree    *ast.AstTree
 	queue   *TypeDeclQueue
+	emitted map[types.TypeID]bool
 
 	forwards []string // struct forward declarations
 	typedefs []string // struct/sum/slice definitions
 	protos   []string // function prototypes
 	globals  []string // global variable declarations
-	hasMain  bool
+	hasMain        bool
+	mainHasArgs    bool
+	mainParamCount int
 }
 
 // NewDeclEmitter creates a DeclEmitter with the given compilation context.
@@ -46,12 +50,29 @@ func NewDeclEmitter(
 		symbols: symbols,
 		tree:    tree,
 		queue:   NewTypeDeclQueue(),
+		emitted: make(map[types.TypeID]bool),
 	}
 }
 
 // ProcessModule walks all top-level declarations in the AST and collects
 // the corresponding C declarations. Call this before EmitTo.
 func (e *DeclEmitter) ProcessModule() {
+	// Pre-traverse all AST nodes to collect and enqueue all referenced compound types
+	g := NewExprGen(e.table, e.intern, e.symbols, e.tree, e.queue)
+	visited := make(map[types.TypeID]bool)
+	for idx := 0; idx < e.tree.NodeCount(); idx++ {
+		tID := g.NodeType(uint32(idx))
+		if tID != types.TypeUnknown && tID != 0 {
+			gen := isGeneric(e.table, tID, visited)
+			if strings.Contains(resolveName(e.table.Entry(tID).NameID, e.intern), "Mutex") || strings.Contains(resolveName(e.table.Entry(tID).NameID, e.intern), "RwLock") || strings.Contains(resolveName(e.table.Entry(tID).NameID, e.intern), "Guard") {
+				fmt.Printf("DEBUG Node %d: TypeID %d, Kind %d (%s), isGeneric %t, Name %s\n", idx, tID, e.table.Entry(tID).Kind, fmt.Sprintf("%d", e.table.Entry(tID).Kind), gen, resolveName(e.table.Entry(tID).NameID, e.intern))
+			}
+			if !gen {
+				CTypeName(tID, e.table, e.intern, e.queue)
+			}
+		}
+	}
+
 	root := e.tree.Node(0) // NodeProgram
 	child := root.FirstChild
 	for child != ast.NullIdx {
@@ -59,6 +80,14 @@ func (e *DeclEmitter) ProcessModule() {
 		switch node.Kind {
 		case ast.NodeStructDecl:
 			e.processStruct(child, node)
+			sChild := node.FirstChild
+			for sChild != ast.NullIdx {
+				sNode := e.tree.Node(sChild)
+				if sNode.Kind == ast.NodeFuncDecl {
+					e.processFunc(sChild, sNode)
+				}
+				sChild = sNode.NextSibling
+			}
 		case ast.NodeFuncDecl:
 			e.processFunc(child, node)
 		case ast.NodeConstDecl:
@@ -72,6 +101,107 @@ func (e *DeclEmitter) ProcessModule() {
 	// Drain the type declaration queue for any types referenced
 	// by function signatures or global declarations.
 	e.drainTypeDecls()
+
+	// Process all instantiated generic functions/methods
+	var instKeys []uint32
+	for k := range e.symbols.InstantiatedToOriginalName {
+		instKeys = append(instKeys, k)
+	}
+	// Sort to preserve perfect determinism
+	sort.Slice(instKeys, func(i, j int) bool {
+		return instKeys[i] < instKeys[j]
+	})
+
+	for _, instSymIdx := range instKeys {
+		sym := e.symbols.SymbolAt(instSymIdx)
+		if sym.DeclNode != 0 {
+			declNode := e.tree.Node(sym.DeclNode)
+			if declNode.Kind == ast.NodeFuncDecl {
+				e.processFunc(sym.DeclNode, declNode)
+			}
+		}
+	}
+
+	// Drain type declarations again to catch any types enqueued by instantiated generic functions.
+	e.drainTypeDecls()
+}
+
+func isGeneric(table *types.TypeTable, id types.TypeID, visited map[types.TypeID]bool) bool {
+	if id == types.TypeUnknown || id == 0 {
+		return false
+	}
+	if visited[id] {
+		return false
+	}
+	visited[id] = true
+	defer func() { visited[id] = false }()
+
+	entry := table.Entry(id)
+	switch entry.Kind {
+	case types.KindGeneric:
+		return true
+	case types.KindPointer:
+		return isGeneric(table, table.PointerElem(id), visited)
+	case types.KindRef:
+		return isGeneric(table, types.TypeID(entry.Extra), visited)
+	case types.KindSlice:
+		return isGeneric(table, table.SliceElem(id), visited)
+	case types.KindArray:
+		return isGeneric(table, table.ArrayElem(id), visited)
+	case types.KindGenericInst:
+		for _, arg := range table.GenericInstArgs(id) {
+			if isGeneric(table, arg, visited) {
+				return true
+			}
+		}
+	case types.KindFunction:
+		fi := table.FuncInfo(id)
+		if isGeneric(table, fi.Return, visited) {
+			return true
+		}
+		for _, param := range fi.Params {
+			if isGeneric(table, param, visited) {
+				return true
+			}
+		}
+	case types.KindStruct:
+		si := table.StructInfo(id)
+		for _, param := range si.GenericParams {
+			if isGeneric(table, types.TypeID(param), visited) {
+				return true
+			}
+		}
+		for _, field := range si.Fields {
+			if isGeneric(table, field.TypeID, visited) {
+				return true
+			}
+		}
+	case types.KindSum:
+		sumInfo := table.SumInfo(id)
+		for _, param := range sumInfo.GenericParams {
+			if isGeneric(table, types.TypeID(param), visited) {
+				return true
+			}
+		}
+		for _, variant := range sumInfo.Variants {
+			if variant.PayloadType != 0 && isGeneric(table, variant.PayloadType, visited) {
+				return true
+			}
+		}
+	case types.KindInterface:
+		ii := table.InterfaceInfo(id)
+		for _, method := range ii.Methods {
+			if isGeneric(table, method.Return, visited) {
+				return true
+			}
+			for _, param := range method.Params {
+				if isGeneric(table, param, visited) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // EmitTo writes the full declaration section to w.
@@ -84,6 +214,9 @@ func (e *DeclEmitter) ProcessModule() {
 func (e *DeclEmitter) EmitTo(w io.Writer) {
 	if e.hasMain {
 		fmt.Fprintln(w, "#define AX_EMIT_MAIN")
+		if e.mainHasArgs {
+			fmt.Fprintln(w, "#define AX_MAIN_WITH_ARGS")
+		}
 	}
 	fmt.Fprintln(w, `#include "ax_runtime.h"`)
 	fmt.Fprintln(w, `#include "ax_stdlib.h"`)
@@ -128,6 +261,20 @@ func (e *DeclEmitter) EmitTo(w io.Writer) {
 
 // processStruct processes a struct declaration node.
 func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
+	symIdx := node.Payload
+	var structTypeID types.TypeID
+	if symIdx != 0 && int(symIdx) < len(e.symbols.Symbols) {
+		sym := e.symbols.SymbolAt(symIdx)
+		if sym.Flags&sema.SymFlagGeneric != 0 {
+			return
+		}
+		structTypeID = types.TypeID(sym.TypeID)
+	}
+
+	if structTypeID != 0 {
+		e.emitted[structTypeID] = true
+	}
+
 	nameID := e.nodeNameID(idx)
 	name := e.resolveName(nameID, idx)
 
@@ -177,6 +324,14 @@ func (e *DeclEmitter) processStruct(idx uint32, node *ast.AstNode) {
 
 // processFunc processes a function declaration node and emits a prototype.
 func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
+	symIdx := node.Payload
+	if symIdx != 0 && int(symIdx) < len(e.symbols.Symbols) {
+		sym := e.symbols.SymbolAt(symIdx)
+		if sym.Flags&sema.SymFlagGeneric != 0 {
+			return
+		}
+	}
+
 	nameID := e.nodeNameID(idx)
 	name := e.resolveName(nameID, idx)
 	if name == "main" {
@@ -191,7 +346,6 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 	var retType string
 	var paramStrs []string
 
-	symIdx := node.Payload // Payload = symbol index for FuncDecl
 	if symIdx != 0 && int(symIdx) < len(e.symbols.Symbols) {
 		sym := e.symbols.SymbolAt(symIdx)
 		if sym.TypeID != 0 {
@@ -208,6 +362,19 @@ func (e *DeclEmitter) processFunc(idx uint32, node *ast.AstNode) {
 
 	if name == "main" {
 		retType = "ax_i32"
+		if symIdx != 0 && int(symIdx) < len(e.symbols.Symbols) {
+			sym := e.symbols.SymbolAt(symIdx)
+			if sym.TypeID != 0 {
+				entry := e.table.Entry(types.TypeID(sym.TypeID))
+				if entry.Kind == types.KindFunction {
+					fi := e.table.FuncInfo(types.TypeID(sym.TypeID))
+					e.mainParamCount = len(fi.Params)
+				}
+			}
+		}
+		if len(paramStrs) > 0 {
+			e.mainHasArgs = true
+		}
 	} else if retType == "" {
 		retType = "void"
 	}
@@ -272,11 +439,16 @@ func (e *DeclEmitter) processTypeAlias(idx uint32, node *ast.AstNode) {
 		return
 	}
 	sym := e.symbols.SymbolAt(symIdx)
+	if sym.Flags&sema.SymFlagGeneric != 0 {
+		return
+	}
 	if sym.TypeID == 0 {
 		return
 	}
 
 	typeID := types.TypeID(sym.TypeID)
+	e.emitted[typeID] = true
+
 	entry := e.table.Entry(typeID)
 	if entry.Kind == types.KindSum {
 		decl := CTypeDecl(typeID, e.table, e.intern, e.queue)
@@ -288,14 +460,31 @@ func (e *DeclEmitter) processTypeAlias(idx uint32, node *ast.AstNode) {
 
 // drainTypeDecls processes all types enqueued by CTypeName calls.
 func (e *DeclEmitter) drainTypeDecls() {
-	ids := e.queue.Drain()
-	for _, id := range ids {
-		entry := e.table.Entry(id)
-		switch entry.Kind {
-		case types.KindSlice:
-			decl := CTypeDecl(id, e.table, e.intern, e.queue)
-			if decl != "" {
-				e.typedefs = append(e.typedefs, decl)
+	for e.queue.Len() > 0 {
+		ids := e.queue.Drain()
+		for _, id := range ids {
+			entry := e.table.Entry(id)
+			fmt.Printf("[DRAIN] ID: %d, Kind: %d, Name: %s, Emitted: %v\n", id, entry.Kind, resolveName(entry.NameID, e.intern), e.emitted[id])
+			if e.emitted[id] {
+				continue
+			}
+			switch entry.Kind {
+			case types.KindStruct, types.KindSlice, types.KindGenericInst, types.KindSum:
+				e.emitted[id] = true
+				decl := CTypeDecl(id, e.table, e.intern, e.queue)
+				if decl != "" {
+					e.typedefs = append(e.typedefs, decl)
+					if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
+						structName := "ax_" + resolveName(entry.NameID, e.intern)
+						e.forwards = append(e.forwards, fmt.Sprintf("struct %s;", structName))
+					} else if entry.Kind == types.KindGenericInst {
+						cname := CTypeName(id, e.table, e.intern, e.queue)
+						if strings.HasPrefix(cname, "struct ") {
+							structName := strings.TrimPrefix(cname, "struct ")
+							e.forwards = append(e.forwards, fmt.Sprintf("struct %s;", structName))
+						}
+					}
+				}
 			}
 		}
 	}
@@ -388,6 +577,9 @@ func MangleGlobalName(moduleName, varName string) string {
 }
 
 func GetFuncMangledName(symIdx uint32, defaultName string, table *types.TypeTable, symbols *sema.SymbolTable, intern *ast.InternPool) string {
+	if defaultName == "main" {
+		return "ax_main_usr"
+	}
 	if defaultName == "free" {
 		if symIdx != 0 && symbols != nil && int(symIdx) < len(symbols.Symbols) {
 			sym := symbols.SymbolAt(symIdx)
@@ -401,6 +593,9 @@ func GetFuncMangledName(symIdx uint32, defaultName string, table *types.TypeTabl
 		return defaultName
 	}
 	if symIdx == 0 || symbols == nil || int(symIdx) >= len(symbols.Symbols) {
+		if strings.HasPrefix(defaultName, "_AX_") {
+			return "ax" + defaultName
+		}
 		return "ax_" + defaultName
 	}
 	sym := symbols.SymbolAt(symIdx)
@@ -413,10 +608,25 @@ func GetFuncMangledName(symIdx uint32, defaultName string, table *types.TypeTabl
 			fi := table.FuncInfo(types.TypeID(sym.TypeID))
 			if len(fi.Params) > 0 {
 				if structName, ok := getReceiverStructName(fi.Params[0], table, intern); ok {
-					return "ax_" + structName + "_" + defaultName
+					methodName := defaultName
+					if symbols.InstantiatedToOriginalName != nil {
+						if origNameID, ok := symbols.InstantiatedToOriginalName[symIdx]; ok {
+							methodName = intern.Get(origNameID)
+						}
+					}
+					return "ax_" + structName + "_" + methodName
 				}
 			}
 		}
+	}
+	if sym.NameID != 0 && intern != nil {
+		symName := intern.Get(sym.NameID)
+		if strings.HasPrefix(symName, "_AX_") {
+			return "ax" + symName
+		}
+	}
+	if strings.HasPrefix(defaultName, "_AX_") {
+		return "ax" + defaultName
 	}
 	return "ax_" + defaultName
 }
@@ -448,6 +658,8 @@ func getReceiverStructName(t1 types.TypeID, table *types.TypeTable, intern *ast.
 }
 
 var stdLibFuncs = map[string]bool{
+	"system":   true,
+	"remove":   true,
 	"fopen":    true,
 	"fclose":   true,
 	"fseek":    true,

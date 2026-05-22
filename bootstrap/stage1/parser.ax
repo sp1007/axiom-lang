@@ -215,6 +215,42 @@ pub fn parse_nud(mut self: Parser) -> u32:
         let inner = self.parse_expr_with_prec(BP_NONE)
         self.expect(TK_R_PAREN)
         return inner
+    if tok.kind == TK_HASH:
+        let hash_tok = self.consume()
+        let run_tok = self.expect(TK_IDENT)
+        let run_text = self.token_text(run_tok)
+        mut is_run := false
+        if std.string.len(run_text) > 0:
+            if run_text == "run":
+                is_run = true
+            @free(run_text as ptr[u8])
+
+        if is_run:
+            let comptime_node = self.tree.add_node(NODE_COMPTIME, self.token_idx(hash_tok))
+            if self.check(TK_L_BRACE):
+                self.consume() // '{'
+                let block_node = self.tree.add_node(NODE_BLOCK, self.token_idx(run_tok))
+                while not self.check(TK_R_BRACE) and not self.check(TK_EOF):
+                    let prev_pos = self.pos
+                    let stmt = self.parse_stmt()
+                    if stmt != 0 as u32:
+                        self.append_child(block_node, stmt)
+                    if self.pos == prev_pos:
+                        self.consume()
+                self.expect(TK_R_BRACE)
+                self.append_child(comptime_node, block_node)
+            elif self.check(TK_COLON):
+                self.consume() // ':'
+                let block_node = self.parse_block()
+                if block_node != 0 as u32:
+                    self.append_child(comptime_node, block_node)
+            else:
+                let expr_node = self.parse_expr_with_prec(BP_NONE)
+                if expr_node != 0 as u32:
+                    self.append_child(comptime_node, expr_node)
+            return comptime_node
+        else:
+            return self.tree.add_node(NODE_ERROR, self.token_idx(hash_tok))
 
     self.errorf(tok, "expected expression nud")
     self.consume()
@@ -327,6 +363,8 @@ pub fn parse_stmt(mut self: Parser) -> u32:
         return self.parse_while_loop()
     if tok.kind == TK_FOR:
         return self.parse_for_loop()
+    if tok.kind == TK_MATCH:
+        return self.parse_match_stmt()
 
     return self.parse_expr_stmt()
 
@@ -374,6 +412,18 @@ pub fn parse_if_stmt(mut self: Parser) -> u32:
     if body != 0 as u32:
         self.append_child(node, body)
 
+    while self.check(TK_ELIF):
+        let elif_tok = self.consume()
+        let elif_node = self.tree.add_node(NODE_ELIF_CLAUSE, self.token_idx(elif_tok))
+        let elif_cond = self.parse_expr_with_prec(BP_NONE)
+        if elif_cond != 0 as u32:
+            self.append_child(elif_node, elif_cond)
+        self.expect(TK_COLON)
+        let elif_body = self.parse_block()
+        if elif_body != 0 as u32:
+            self.append_child(elif_node, elif_body)
+        self.append_child(node, elif_node)
+
     if self.check(TK_ELSE):
         let else_tok = self.consume()
         let else_node = self.tree.add_node(NODE_ELSE_CLAUSE, self.token_idx(else_tok))
@@ -414,6 +464,99 @@ pub fn parse_for_loop(mut self: Parser) -> u32:
         self.append_child(node, body)
     return node
 
+pub fn parse_match_stmt(mut self: Parser) -> u32:
+    let tok = self.expect(TK_MATCH)
+    let node = self.tree.add_node(NODE_MATCH_STMT, self.token_idx(tok))
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr != 0 as u32:
+        self.append_child(node, expr)
+    self.expect(TK_COLON)
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after match")
+        return node
+    self.consume() // consume INDENT
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let arm = self.parse_match_arm()
+        if arm != 0 as u32:
+            self.append_child(node, arm)
+        if self.pos == prev_pos:
+            self.pos = self.pos + 1
+    if self.check(TK_DEDENT):
+        self.consume()
+    return node
+
+pub fn parse_match_arm(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_MATCH_ARM, self.token_idx(tok))
+    let pat = self.parse_pattern()
+    if pat != 0 as u32:
+        self.append_child(node, pat)
+    self.expect(TK_COLON)
+    if self.check(TK_INDENT):
+        let body = self.parse_block()
+        if body != 0 as u32:
+            self.append_child(node, body)
+    else:
+        let expr = self.parse_expr_with_prec(BP_NONE)
+        if expr != 0 as u32:
+            self.append_child(node, expr)
+        self.expect_newline()
+    return node
+
+pub fn parse_pattern(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind == TK_IDENT:
+        self.consume()
+        let text = self.token_text(tok)
+        let len = std.string.len(text)
+        if len == 1 and text[0] as u8 == 95 as u8: // '_' ASCII is 95
+            @free(text as ptr[u8])
+            return self.tree.add_node(NODE_WILDCARD_PAT, self.token_idx(tok))
+        if self.check(TK_L_PAREN):
+            let node = self.tree.add_node(NODE_VARIANT_PAT, self.token_idx(tok))
+            self.set_payload(node, self.pool.intern(text))
+            @free(text as ptr[u8])
+            self.consume() // '('
+            while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+                let prev_pos = self.pos
+                let inner = self.parse_pattern()
+                if inner != 0 as u32:
+                    self.append_child(node, inner)
+                if not self.check(TK_R_PAREN):
+                    self.expect(TK_COMMA)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_PAREN)
+            return node
+        let node = self.tree.add_node(NODE_BINDING_PAT, self.token_idx(tok))
+        self.set_payload(node, self.pool.intern(text))
+        @free(text as ptr[u8])
+        return node
+    elif (tok.kind == TK_INT_LIT or tok.kind == TK_FLOAT_LIT or tok.kind == TK_STRING_LIT or
+          tok.kind == TK_CHAR_LIT or tok.kind == TK_TRUE or tok.kind == TK_FALSE or tok.kind == TK_NIL):
+        self.consume()
+        return self.tree.add_node(NODE_LITERAL_PAT, self.token_idx(tok))
+    elif tok.kind == TK_L_PAREN:
+        self.consume()
+        let node = self.tree.add_node(NODE_TUPLE_PAT, self.token_idx(tok))
+        while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let inner = self.parse_pattern()
+            if inner != 0 as u32:
+                self.append_child(node, inner)
+            if not self.check(TK_R_PAREN):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_PAREN)
+        return node
+    else:
+        self.errorf(tok, "expected pattern")
+        self.consume()
+        return 0 as u32
+
 pub fn parse_expr_stmt(mut self: Parser) -> u32:
     let expr = self.parse_expr_with_prec(BP_NONE)
     if expr == 0 as u32:
@@ -447,12 +590,27 @@ pub fn parse_block(mut self: Parser) -> u32:
 
 pub fn parse_type_expr(mut self: Parser) -> u32:
     let tok = self.peek()
-    if tok.kind == TK_IDENT:
+    if tok.kind == TK_IDENT or tok.kind == TK_FUTURE or tok.kind == TK_ISOLATED:
         self.consume()
         let node = self.tree.add_node(NODE_TYPE_EXPR, self.token_idx(tok))
         let text = self.token_text(tok)
         self.set_payload(node, self.pool.intern(text))
         @free(text as ptr[u8])
+        if self.check_raw(TK_L_BRACKET):
+            let gen_node = self.tree.add_node(NODE_GENERIC_TYPE, self.token_idx(tok))
+            self.append_child(gen_node, node)
+            self.consume() // [
+            while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
+                let prev_pos = self.pos
+                let t = self.parse_type_expr()
+                if t != 0 as u32:
+                    self.append_child(gen_node, t)
+                if not self.check(TK_R_BRACKET):
+                    self.expect(TK_COMMA)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_BRACKET)
+            return gen_node
         return node
     if tok.kind == TK_STAR:
         self.consume()
@@ -475,6 +633,36 @@ pub fn parse_type_expr(mut self: Parser) -> u32:
 
     self.errorf(tok, "expected type expression")
     return 0 as u32
+
+pub fn parse_generic_params(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_GENERIC_PARAMS, self.token_idx(tok))
+    self.expect(TK_L_BRACKET)
+    while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let gp = self.parse_generic_param()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+        if not self.check(TK_R_BRACKET):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_BRACKET)
+    return node
+
+pub fn parse_generic_param(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_GENERIC_PARAM, self.token_idx(tok))
+    let name_tok = self.expect(TK_IDENT)
+    let text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    if self.check(TK_COLON):
+        self.consume()
+        let constraint = self.parse_type_expr()
+        if constraint != 0 as u32:
+            self.append_child(node, constraint)
+    return node
 
 pub fn parse_func_decl(mut self: Parser, is_pub: bool) -> u32:
     let fn_tok = self.expect(TK_FN)
@@ -525,18 +713,181 @@ pub fn parse_func_decl(mut self: Parser, is_pub: bool) -> u32:
 
     return node
 
+pub fn parse_struct_decl(mut self: Parser, is_pub: bool) -> u32:
+    mut is_packed := false
+    if self.check(TK_PACKED):
+        self.consume()
+        is_packed = true
+    let tok = self.expect(TK_STRUCT)
+    let node = self.tree.add_node(NODE_STRUCT_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+    if is_packed:
+        self.set_flags(node, 64 as u16) // FLAG_IS_PACKED is 64
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_COLON)
+
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after struct declaration")
+        return node
+    self.consume() // consume INDENT
+
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let inner = self.peek()
+        if inner.kind == TK_FN:
+            let m = self.parse_func_decl(false)
+            if m != 0 as u32:
+                self.append_child(node, m)
+        elif inner.kind == TK_PUB:
+            self.consume()
+            let next = self.peek()
+            if next.kind == TK_FN:
+                let m = self.parse_func_decl(true)
+                if m != 0 as u32:
+                    self.append_child(node, m)
+            else:
+                let f = self.parse_field_decl(true)
+                if f != 0 as u32:
+                    self.append_child(node, f)
+        else:
+            let f = self.parse_field_decl(false)
+            if f != 0 as u32:
+                self.append_child(node, f)
+        if self.pos == prev_pos:
+            self.consume()
+
+    if self.check(TK_DEDENT):
+        self.consume()
+    return node
+
+pub fn parse_field_decl(mut self: Parser, is_pub: bool) -> u32:
+    mut is_mut := false
+    if self.check(TK_MUT):
+        self.consume()
+        is_mut = true
+    let tok = self.peek()
+    if tok.kind != TK_IDENT:
+        self.errorf(tok, "expected field name")
+        self.consume()
+        return 0 as u32
+    self.consume()
+    let node = self.tree.add_node(NODE_FIELD_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+    if is_mut:
+        self.set_flags(node, FLAG_IS_MUT as u16)
+    let text = self.token_text(tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    self.expect(TK_COLON)
+    let type_node = self.parse_type_expr()
+    if type_node != 0 as u32:
+        self.append_child(node, type_node)
+    self.expect_newline()
+    return node
+
+pub fn parse_type_alias_decl(mut self: Parser, is_pub: bool) -> u32:
+    let tok = self.expect(TK_TYPE)
+    let node = self.tree.add_node(NODE_TYPE_ALIAS_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_EQ)
+
+    let sum_tok = self.peek()
+    let sum_node = self.tree.add_node(NODE_SUM_TYPE, self.token_idx(sum_tok))
+    let v = self.parse_type_variant()
+    if v != 0 as u32:
+        self.append_child(sum_node, v)
+
+    while self.check_raw(TK_PIPE):
+        self.consume()
+        let next_v = self.parse_type_variant()
+        if next_v != 0 as u32:
+            self.append_child(sum_node, next_v)
+
+    self.append_child(node, sum_node)
+    self.expect_newline()
+    return node
+
+pub fn parse_type_variant(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind != TK_IDENT:
+        return 0 as u32
+    self.consume()
+    let node = self.tree.add_node(NODE_VARIANT_DECL, self.token_idx(tok))
+    let text = self.token_text(tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+
+    if self.check_raw(TK_L_PAREN):
+        self.consume() // '('
+        while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let t = self.parse_type_expr()
+            if t != 0 as u32:
+                self.append_child(node, t)
+            if not self.check(TK_R_PAREN):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_PAREN)
+    return node
+
 pub fn parse_program(mut self: Parser):
     while not self.check(TK_EOF):
         let prev_pos = self.pos
         let tok = self.peek()
         mut decl := 0 as u32
-        if tok.kind == TK_PUB:
+        if tok.kind == TK_IMPORT:
+            decl = self.parse_import_decl()
+        elif tok.kind == TK_PUB:
             self.consume()
             let next = self.peek()
             if next.kind == TK_FN:
                 decl = self.parse_func_decl(true)
+            elif next.kind == TK_STRUCT or next.kind == TK_PACKED:
+                decl = self.parse_struct_decl(true)
+            elif next.kind == TK_TYPE:
+                decl = self.parse_type_alias_decl(true)
+            elif next.kind == TK_CONST:
+                decl = self.parse_const_decl(true)
+            elif next.kind == TK_EXTERN:
+                decl = self.parse_extern_decl(true)
         elif tok.kind == TK_FN:
             decl = self.parse_func_decl(false)
+        elif tok.kind == TK_STRUCT or tok.kind == TK_PACKED:
+            decl = self.parse_struct_decl(false)
+        elif tok.kind == TK_TYPE:
+            decl = self.parse_type_alias_decl(false)
+        elif tok.kind == TK_CONST:
+            decl = self.parse_const_decl(false)
+        elif tok.kind == TK_EXTERN:
+            decl = self.parse_extern_decl(false)
         else:
             self.errorf(tok, "expected top level declaration")
             self.consume()
@@ -546,3 +897,138 @@ pub fn parse_program(mut self: Parser):
 
         if self.pos == prev_pos:
             self.consume()
+
+pub fn parse_param(mut self: Parser) -> u32:
+    let param_tok = self.peek()
+    let param = self.tree.add_node(NODE_PARAM_DECL, self.token_idx(param_tok))
+    if self.check(TK_MUT):
+        self.consume()
+        self.set_flags(param, FLAG_IS_MUT as u16)
+    let param_name = self.expect(TK_IDENT)
+    let param_text = self.token_text(param_name)
+    self.set_payload(param, self.pool.intern(param_text))
+    @free(param_text as ptr[u8])
+    self.expect(TK_COLON)
+    let t = self.parse_type_expr()
+    if t != 0 as u32:
+        self.append_child(param, t)
+    return param
+
+pub fn parse_const_decl(mut self: Parser, is_pub: bool) -> u32:
+    let tok = self.expect(TK_CONST)
+    let node = self.tree.add_node(NODE_CONST_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    self.expect(TK_COLON)
+    let type_node = self.parse_type_expr()
+    if type_node != 0 as u32:
+        self.append_child(node, type_node)
+
+    self.expect(TK_EQ)
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr != 0 as u32:
+        self.append_child(node, expr)
+    self.expect_newline()
+    return node
+
+pub fn parse_extern_decl(mut self: Parser, is_pub: bool) -> u32:
+    self.expect(TK_EXTERN)
+    
+    // Expect ABI string literal, e.g. "C"
+    self.expect(TK_STRING_LIT)
+
+    let fn_tok = self.expect(TK_FN)
+    let node = self.tree.add_node(NODE_FUNC_DECL, self.token_idx(fn_tok))
+    self.set_flags(node, FLAG_IS_EXTERN as u16)
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_L_PAREN)
+    while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let param = self.parse_param()
+        if param != 0 as u32:
+            self.append_child(node, param)
+        if not self.check(TK_R_PAREN):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_PAREN)
+
+    if self.check_raw(TK_ARROW):
+        self.consume()
+        let ret_type = self.parse_type_expr()
+        if ret_type != 0 as u32:
+            self.append_child(node, ret_type)
+    
+    self.expect_newline()
+    return node
+
+pub fn parse_import_decl(mut self: Parser) -> u32:
+    let tok = self.expect(TK_IMPORT)
+    let node = self.tree.add_node(NODE_IMPORT_DECL, self.token_idx(tok))
+
+    let path_tok = self.expect(TK_IDENT)
+    let path_text = self.token_text(path_tok)
+    mut path_id := self.pool.intern(path_text)
+    @free(path_text as ptr[u8])
+
+    while self.check_raw(TK_DOT):
+        self.consume()
+        let seg_tok = self.expect(TK_IDENT)
+        let seg_text = self.token_text(seg_tok)
+        let base_str = self.pool.get(path_id)
+        
+        // Concatenate path segments with '.'
+        let len_base = std.string.len(base_str)
+        let len_seg = std.string.len(seg_text)
+        let total_len = len_base + 1 + len_seg
+        mut new_buf := @alloc(total_len + 1) as ptr[u8]
+        @memcpy(new_buf, base_str as ptr[u8], len_base)
+        new_buf[len_base] = '.' as u8
+        @memcpy(((new_buf as i64) + len_base + 1 as i64) as ptr[u8], seg_text as ptr[u8], len_seg)
+        new_buf[total_len] = 0 as u8
+        
+        path_id = self.pool.intern(new_buf as str)
+        @free(new_buf)
+        @free(seg_text as ptr[u8])
+
+    self.set_payload(node, path_id)
+
+    if self.check_raw(TK_L_BRACE):
+        self.consume()
+        while not self.check(TK_R_BRACE) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let name_tok = self.expect(TK_IDENT)
+            let name_text = self.token_text(name_tok)
+            let name_node = self.tree.add_node(NODE_IDENT, self.token_idx(name_tok))
+            self.set_payload(name_node, self.pool.intern(name_text))
+            @free(name_text as ptr[u8])
+            self.append_child(node, name_node)
+
+            if not self.check(TK_R_BRACE):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_BRACE)
+
+    self.expect_newline()
+    return node
+

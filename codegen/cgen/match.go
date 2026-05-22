@@ -2,6 +2,7 @@ package cgen
 
 import (
 	"github.com/axiom-lang/axiom/compiler/ast"
+	"github.com/axiom-lang/axiom/compiler/sema"
 	"github.com/axiom-lang/axiom/compiler/types"
 )
 
@@ -40,6 +41,10 @@ func NewMatchGen(
 //
 // matchNodeIdx is the AST node index of the NodeMatchStmt.
 func (mg *MatchGen) EmitMatchStmt(matchNodeIdx uint32) {
+	mg.EmitMatchStmtWithReturning(matchNodeIdx, false)
+}
+
+func (mg *MatchGen) EmitMatchStmtWithReturning(matchNodeIdx uint32, returning bool) {
 	node := mg.Tree.Node(matchNodeIdx)
 	children := mg.Tree.Children(matchNodeIdx)
 
@@ -52,8 +57,7 @@ func (mg *MatchGen) EmitMatchStmt(matchNodeIdx uint32) {
 	discrimExpr := mg.ExprGen.Emit(children[0])
 
 	// Get the type of the discriminant to resolve variant names
-	discrimNode := mg.Tree.Node(children[0])
-	discrimTypeID := types.TypeID(discrimNode.Payload)
+	discrimTypeID := mg.ExprGen.NodeType(children[0])
 	_ = node // silence unused
 
 	mg.W.Linef("switch ((%s).tag) {", discrimExpr)
@@ -71,7 +75,7 @@ func (mg *MatchGen) EmitMatchStmt(matchNodeIdx uint32) {
 		}
 
 		patternNode := mg.Tree.Node(armChildren[0])
-		mg.emitMatchArm(discrimExpr, discrimTypeID, patternNode, armChildren)
+		mg.emitMatchArmWithReturning(discrimExpr, discrimTypeID, patternNode, armChildren, returning)
 	}
 
 	// Add exhaustiveness guard
@@ -88,6 +92,16 @@ func (mg *MatchGen) emitMatchArm(
 	discrimTypeID types.TypeID,
 	patternNode *ast.AstNode,
 	armChildren []uint32,
+) {
+	mg.emitMatchArmWithReturning(discrimExpr, discrimTypeID, patternNode, armChildren, false)
+}
+
+func (mg *MatchGen) emitMatchArmWithReturning(
+	discrimExpr string,
+	discrimTypeID types.TypeID,
+	patternNode *ast.AstNode,
+	armChildren []uint32,
+	returning bool,
 ) {
 	entry := mg.Table.Entry(discrimTypeID)
 	baseName := resolveName(entry.NameID, mg.Intern)
@@ -111,6 +125,7 @@ func (mg *MatchGen) emitMatchArm(
 						payloadC := CTypeName(v.PayloadType, mg.Table, mg.Intern, mg.Queue)
 						mg.W.Linef("        %s %s = (%s).data.%s;",
 							payloadC, bindName, discrimExpr, variantName)
+						mg.W.Linef("        (void)%s;", bindName)
 						break
 					}
 				}
@@ -118,39 +133,47 @@ func (mg *MatchGen) emitMatchArm(
 		}
 
 		// Emit arm body (second child onwards)
-		if len(armChildren) >= 2 {
-			mg.W.Indent()
-			mg.W.Indent()
-			bodyNode := mg.Tree.Node(armChildren[1])
-			child := bodyNode.FirstChild
-			for child != ast.NullIdx {
-				expr := mg.ExprGen.Emit(child)
-				mg.W.Linef("%s;", expr)
-				child = mg.Tree.Node(child).NextSibling
-			}
-			mg.W.Dedent()
-			mg.W.Dedent()
-		}
+		mg.emitArmBodyWithReturning(armChildren, returning)
 
 		mg.W.Line("        break;")
 		mg.W.Line("    }")
 
+	case ast.NodeBindingPat:
+		// Binding pattern can be a variant with no payload (e.g. None)
+		symIdx := patternNode.Payload
+		isVariant := false
+		var variantName string
+		if symIdx != 0 && mg.ExprGen.Symbols != nil && int(symIdx) < len(mg.ExprGen.Symbols.Symbols) {
+			sym := mg.ExprGen.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymVariant {
+				isVariant = true
+				variantName = resolveName(sym.NameID, mg.Intern)
+			}
+		}
+
+		if isVariant {
+			mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+			mg.emitArmBodyWithReturning(armChildren, returning)
+			mg.W.Line("        break;")
+			mg.W.Line("    }")
+		} else {
+			// Otherwise it's a wildcard / fallback variable binding
+			mg.W.Line("    default: {")
+			bindName := string(mg.Tree.TokenText(patternNode.TokenIdx))
+			if bindName != "_" && bindName != "" {
+				discrimC := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
+				mg.W.Linef("        %s %s = %s;", discrimC, bindName, discrimExpr)
+				mg.W.Linef("        (void)%s;", bindName)
+			}
+			mg.emitArmBodyWithReturning(armChildren, returning)
+			mg.W.Line("        break;")
+			mg.W.Line("    }")
+		}
+
 	case ast.NodeWildcardPat:
 		// Wildcard: default case
 		mg.W.Line("    default: {")
-		if len(armChildren) >= 2 {
-			mg.W.Indent()
-			mg.W.Indent()
-			bodyNode := mg.Tree.Node(armChildren[1])
-			child := bodyNode.FirstChild
-			for child != ast.NullIdx {
-				expr := mg.ExprGen.Emit(child)
-				mg.W.Linef("%s;", expr)
-				child = mg.Tree.Node(child).NextSibling
-			}
-			mg.W.Dedent()
-			mg.W.Dedent()
-		}
+		mg.emitArmBodyWithReturning(armChildren, returning)
 		mg.W.Line("        break;")
 		mg.W.Line("    }")
 
@@ -158,21 +181,47 @@ func (mg *MatchGen) emitMatchArm(
 		// Literal pattern: case <literal>:
 		litValue := mg.ExprGen.Emit(armChildren[0])
 		mg.W.Linef("    case %s: {", litValue)
-		if len(armChildren) >= 2 {
-			mg.W.Indent()
-			mg.W.Indent()
-			bodyNode := mg.Tree.Node(armChildren[1])
-			child := bodyNode.FirstChild
-			for child != ast.NullIdx {
-				expr := mg.ExprGen.Emit(child)
-				mg.W.Linef("%s;", expr)
-				child = mg.Tree.Node(child).NextSibling
-			}
-			mg.W.Dedent()
-			mg.W.Dedent()
-		}
+		mg.emitArmBodyWithReturning(armChildren, returning)
 		mg.W.Line("        break;")
 		mg.W.Line("    }")
+	}
+}
+
+func (mg *MatchGen) emitArmBody(armChildren []uint32) {
+	mg.emitArmBodyWithReturning(armChildren, false)
+}
+
+func (mg *MatchGen) emitArmBodyWithReturning(armChildren []uint32, returning bool) {
+	if len(armChildren) >= 2 {
+		mg.W.Indent()
+		mg.W.Indent()
+		sg := &StmtGen{
+			W:       mg.W,
+			ExprGen: mg.ExprGen,
+			Defers:  NewDeferStack(),
+			Table:   mg.Table,
+			Intern:  mg.Intern,
+			Symbols: mg.ExprGen.Symbols,
+			Tree:    mg.Tree,
+			Queue:   mg.Queue,
+		}
+
+		bodyNodeIdx := armChildren[1]
+		bodyNode := mg.Tree.Node(bodyNodeIdx)
+		if bodyNode.Kind == ast.NodeBlock {
+			sg.EmitBlockWithReturning(bodyNodeIdx, returning)
+		} else {
+			// It is a single expression, not a NodeBlock.
+			// Let's emit it directly!
+			expr := sg.ExprGen.Emit(bodyNodeIdx)
+			if returning && sg.ExprGen.ReturnType != types.TypeVoid && sg.ExprGen.ReturnType != types.TypeUnknown && !sg.IsVoidExpr(bodyNodeIdx) {
+				mg.W.Linef("return %s;", expr)
+			} else {
+				mg.W.Linef("%s;", expr)
+			}
+		}
+		mg.W.Dedent()
+		mg.W.Dedent()
 	}
 }
 

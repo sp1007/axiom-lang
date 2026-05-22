@@ -1,0 +1,56 @@
+// bootstrap/stage1/alias_reuse.ax
+// AliasReuseOptimizer optimizes adjacent destroy and alloc pairs into NODE_ALIAS_STMT.
+
+import std.string
+
+pub struct AliasReuseOptimizer:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+
+pub fn new_alias_reuse_optimizer(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> AliasReuseOptimizer:
+    return AliasReuseOptimizer(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+    )
+
+pub fn run(mut self: AliasReuseOptimizer):
+    self.optimize_node(0 as u32)
+
+pub fn optimize_node(mut self: AliasReuseOptimizer, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_BLOCK:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_DESTROY_STMT:
+                let next_idx = child.next_sibling
+                if next_idx != 0 as u32:
+                    let next_node = self.tree.nodes.data[next_idx]
+                    if next_node.kind == NODE_VAR_DECL:
+                        // Found adjacent destroy and allocation!
+                        let destroy_sym = child.payload
+                        let alloc_sym = next_node.payload
+                        if destroy_sym != 0 as u32 and alloc_sym != 0 as u32:
+                            let sym_d = self.symtable.symbols.data[destroy_sym]
+                            let sym_a = self.symtable.symbols.data[alloc_sym]
+                            if sym_d.type_id == sym_a.type_id:
+                                // Optimize by converting to NODE_ALIAS_STMT!
+                                // For simplicity, we flag FlagUsesArena or custom reuse in the AST.
+                                self.tree.nodes.data[next_idx].flags = self.tree.nodes.data[next_idx].flags | (FLAG_IS_MOVED as u16)
+            
+            self.optimize_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.optimize_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling

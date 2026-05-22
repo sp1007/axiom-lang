@@ -148,7 +148,11 @@ AX_SLICE_DECL(ax_byte, ax_slice_byte);
  * a C main() that initializes the runtime and calls ax_main().
  * ================================================================ */
 #ifdef AX_EMIT_MAIN
-extern int ax_main();
+#ifdef AX_MAIN_WITH_ARGS
+extern int ax_main(ax_i32 argc, ax_u8** argv);
+#else
+extern int ax_main(void);
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -165,7 +169,13 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(65001);
 #endif
     ax_set_program_name(argc > 0 ? argv[0] : "<axiom>");
-    return ax_main(argc, argv);
+#ifdef AX_MAIN_WITH_ARGS
+    return ax_main((ax_i32)argc, (ax_u8**)argv);
+#else
+    (void)argc;
+    (void)argv;
+    return ax_main();
+#endif
 }
 #endif
 

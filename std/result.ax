@@ -2,188 +2,114 @@
 //
 // Core error-handling sum types.
 
-// --------------------------------------------------------------------------
-// Option[T] = Some(T) | None
-// --------------------------------------------------------------------------
-
-/// A value that may or may not be present.
-pub enum Option[T] {
-    Some(T),
-    None,
-}
-
-impl[T] Option[T] {
-    /// Returns true if the option contains a value.
-    pub fn is_some(self) -> bool {
-        match self {
-            Some(_) => true,
-            None    => false,
-        }
-    }
-
-    /// Returns true if the option is None.
-    pub fn is_none(self) -> bool {
-        !self.is_some()
-    }
-
-    /// Returns the contained value, panicking if None.
-    pub fn unwrap(self) -> T {
-        match self {
-            Some(v) => v,
-            None    => panic("called unwrap() on a None value"),
-        }
-    }
-
-    /// Returns the contained value, or a default.
-    pub fn unwrap_or(self, default: T) -> T {
-        match self {
-            Some(v) => v,
-            None    => default,
-        }
-    }
-
-    /// Returns the contained value, or computes from a closure.
-    pub fn unwrap_or_else(self, f: fn() -> T) -> T {
-        match self {
-            Some(v) => v,
-            None    => f(),
-        }
-    }
-
-    /// Returns the contained value, panicking with message if None.
-    pub fn expect(self, message: str) -> T {
-        match self {
-            Some(v) => v,
-            None    => panic(message),
-        }
-    }
-
-    /// Transforms the contained value with a function.
-    pub fn map[U](self, f: fn(T) -> U) -> Option[U] {
-        match self {
-            Some(v) => Some(f(v)),
-            None    => None,
-        }
-    }
-
-    /// Returns None if None, otherwise returns the result of f.
-    pub fn flat_map[U](self, f: fn(T) -> Option[U]) -> Option[U] {
-        match self {
-            Some(v) => f(v),
-            None    => None,
-        }
-    }
-
-    /// Converts Option[T] to Result[T, E].
-    pub fn ok_or[E](self, err: E) -> Result[T, E] {
-        match self {
-            Some(v) => Ok(v),
-            None    => Err(err),
-        }
-    }
-
-    /// Returns None if the predicate returns false.
-    pub fn filter(self, pred: fn(T) -> bool) -> Option[T] {
-        match self {
-            Some(v) => if pred(v) { Some(v) } else { None },
-            None    => None,
-        }
-    }
-
-    /// Returns self if Some, otherwise returns other.
-    pub fn or(self, other: Option[T]) -> Option[T] {
-        match self {
-            Some(_) => self,
-            None    => other,
-        }
-    }
-}
+pub type Option[T] = Some(T) | None
+pub type Result[T, E] = Ok(T) | Err(E)
 
 // --------------------------------------------------------------------------
-// Result[T, E] = Ok(T) | Err(E)
+// Option[T] Methods
 // --------------------------------------------------------------------------
 
-/// A result that is either a success value or an error.
-pub enum Result[T, E] {
-    Ok(T),
-    Err(E),
-}
+pub fn is_some[T](self: Option[T]) -> bool:
+    match self:
+        Some(_): true
+        None: false
 
-impl[T, E] Result[T, E] {
-    /// Returns true if the result is Ok.
-    pub fn is_ok(self) -> bool {
-        match self {
-            Ok(_)  => true,
-            Err(_) => false,
-        }
-    }
+pub fn is_none[T](self: Option[T]) -> bool:
+    return not self.is_some()
 
-    /// Returns true if the result is Err.
-    pub fn is_err(self) -> bool {
-        !self.is_ok()
-    }
+pub fn unwrap[T](self: Option[T]) -> T:
+    match self:
+        Some(v): v
+        None: panic("called unwrap() on a None value")
 
-    /// Returns the success value, panicking if Err.
-    pub fn unwrap(self) -> T {
-        match self {
-            Ok(v)  => v,
-            Err(_) => panic("called unwrap() on an Err value"),
-        }
-    }
+pub fn unwrap_or[T](self: Option[T], default: T) -> T:
+    match self:
+        Some(v): v
+        None: default
 
-    /// Returns the success value, or a default.
-    pub fn unwrap_or(self, default: T) -> T {
-        match self {
-            Ok(v)  => v,
-            Err(_) => default,
-        }
-    }
+pub fn expect[T](self: Option[T], message: str) -> T:
+    match self:
+        Some(v): v
+        None: panic(message)
 
-    /// Returns the success value, panicking with message if Err.
-    pub fn expect(self, message: str) -> T {
-        match self {
-            Ok(v)  => v,
-            Err(_) => panic(message),
-        }
-    }
+pub fn map[T, U](self: Option[T], f: fn(T) -> U) -> Option[U]:
+    match self:
+        Some(v): Some(f(v))
+        None: None
 
-    /// Transforms the success value.
-    pub fn map[U](self, f: fn(T) -> U) -> Result[U, E] {
-        match self {
-            Ok(v)  => Ok(f(v)),
-            Err(e) => Err(e),
-        }
-    }
+pub fn flat_map[T, U](self: Option[T], f: fn(T) -> Option[U]) -> Option[U]:
+    match self:
+        Some(v): f(v)
+        None: None
 
-    /// Transforms the error value.
-    pub fn map_err[F](self, f: fn(E) -> F) -> Result[T, F] {
-        match self {
-            Ok(v)  => Ok(v),
-            Err(e) => Err(f(e)),
-        }
-    }
+pub fn ok_or[T, E](self: Option[T], err: E) -> Result[T, E]:
+    match self:
+        Some(v): Ok(v)
+        None: Err(err)
 
-    /// Chains operations that may fail.
-    pub fn flat_map[U](self, f: fn(T) -> Result[U, E]) -> Result[U, E] {
-        match self {
-            Ok(v)  => f(v),
-            Err(e) => Err(e),
-        }
-    }
+pub fn filter[T](self: Option[T], pred: fn(T) -> bool) -> Option[T]:
+    match self:
+        Some(v):
+            if pred(v):
+                return Some(v)
+            else:
+                return None
+        None: None
 
-    /// Extracts the Ok value as an Option.
-    pub fn ok(self) -> Option[T] {
-        match self {
-            Ok(v)  => Some(v),
-            Err(_) => None,
-        }
-    }
+pub fn or_other[T](self: Option[T], other: Option[T]) -> Option[T]:
+    match self:
+        Some(_): self
+        None: other
 
-    /// Extracts the Err value as an Option.
-    pub fn err(self) -> Option[E] {
-        match self {
-            Ok(_)  => None,
-            Err(e) => Some(e),
-        }
-    }
-}
+
+// --------------------------------------------------------------------------
+// Result[T, E] Methods
+// --------------------------------------------------------------------------
+
+pub fn is_ok[T, E](self: Result[T, E]) -> bool:
+    match self:
+        Ok(_): true
+        Err(_): false
+
+pub fn is_err[T, E](self: Result[T, E]) -> bool:
+    return not self.is_ok()
+
+pub fn unwrap[T, E](self: Result[T, E]) -> T:
+    match self:
+        Ok(v): v
+        Err(_): panic("called unwrap() on an Err value")
+
+pub fn unwrap_or[T, E](self: Result[T, E], default: T) -> T:
+    match self:
+        Ok(v): v
+        Err(_): default
+
+pub fn expect[T, E](self: Result[T, E], message: str) -> T:
+    match self:
+        Ok(v): v
+        Err(_): panic(message)
+
+pub fn map[T, E, U](self: Result[T, E], f: fn(T) -> U) -> Result[U, E]:
+    match self:
+        Ok(v): Ok(f(v))
+        Err(e): Err(e)
+
+pub fn map_err[T, E, F](self: Result[T, E], f: fn(E) -> F) -> Result[T, F]:
+    match self:
+        Ok(v): Ok(v)
+        Err(e): Err(f(e))
+
+pub fn flat_map[T, E, U](self: Result[T, E], f: fn(T) -> Result[U, E]) -> Result[U, E]:
+    match self:
+        Ok(v): f(v)
+        Err(e): Err(e)
+
+pub fn ok[T, E](self: Result[T, E]) -> Option[T]:
+    match self:
+        Ok(v): Some(v)
+        Err(_): None
+
+pub fn err[T, E](self: Result[T, E]) -> Option[E]:
+    match self:
+        Ok(_): None
+        Err(e): Some(e)

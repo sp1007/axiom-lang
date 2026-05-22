@@ -1,0 +1,225 @@
+// bootstrap/stage1/connection_graph.ax
+// ConnectionGraph models ownership relationships between values as a directed
+// graph with typed edges for static memory safety.
+
+pub const EDGE_OWNS: u32 = 0
+pub const EDGE_BORROWS: u32 = 1
+pub const EDGE_FLOWS_TO: u32 = 2
+pub const EDGE_ESCAPES_TO: u32 = 3
+pub const EDGE_REUSED_BY: u32 = 4
+
+pub struct CGNode:
+    pub id: u32
+    pub sym_id: u32
+    pub type_id: u32
+    pub is_ref: bool
+    pub lifetime: u32
+
+pub struct CGNodeVec:
+    pub data: ptr[CGNode]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_cg_node_vec() -> CGNodeVec:
+    return CGNodeVec(data: null as ptr[CGNode], len: 0, cap: 0)
+
+pub fn push(mut self: CGNodeVec, n: CGNode) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 20) as ptr[CGNode] // CGNode size is 20 bytes
+        if self.data != null as ptr[CGNode]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 20)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = n
+    self.len = self.len + 1
+    return idx
+
+pub struct CGEdge:
+    pub from: u32
+    pub to: u32
+    pub kind: u32
+
+pub struct CGEdgeVec:
+    pub data: ptr[CGEdge]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_cg_edge_vec() -> CGEdgeVec:
+    return CGEdgeVec(data: null as ptr[CGEdge], len: 0, cap: 0)
+
+pub fn push(mut self: CGEdgeVec, e: CGEdge) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 12) as ptr[CGEdge] // CGEdge size is 12 bytes
+        if self.data != null as ptr[CGEdge]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 12)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = e
+    self.len = self.len + 1
+    return idx
+
+pub struct U32VecVec:
+    pub data: ptr[U32Vec]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_u32_vec_vec() -> U32VecVec:
+    return U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+
+pub fn push(mut self: U32VecVec, v: U32Vec) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[U32Vec] // size of U32Vec is 24 bytes
+        if self.data != null as ptr[U32Vec]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = v
+    self.len = self.len + 1
+    return idx
+
+pub struct ConnectionGraph:
+    pub nodes: CGNodeVec
+    pub edges: CGEdgeVec
+    pub adj_out: U32VecVec
+    pub adj_in: U32VecVec
+    pub sym_to_node: U32Vec
+
+pub fn new_connection_graph() -> ConnectionGraph:
+    return ConnectionGraph(
+        nodes: new_cg_node_vec(),
+        edges: new_cg_edge_vec(),
+        adj_out: new_u32_vec_vec(),
+        adj_in: new_u32_vec_vec(),
+        sym_to_node: new_u32_vec(),
+    )
+
+pub fn free_connection_graph(mut self: ConnectionGraph):
+    if self.nodes.data != null as ptr[CGNode]:
+        @free(self.nodes.data as ptr[u8])
+    if self.edges.data != null as ptr[CGEdge]:
+        @free(self.edges.data as ptr[u8])
+    
+    mut i := 0 as i64
+    while i < self.adj_out.len:
+        let v = self.adj_out.data[i]
+        if v.data != null as ptr[u32]:
+            @free(v.data as ptr[u8])
+        i = i + 1
+    if self.adj_out.data != null as ptr[U32Vec]:
+        @free(self.adj_out.data as ptr[u8])
+
+    i = 0
+    while i < self.adj_in.len:
+        let v = self.adj_in.data[i]
+        if v.data != null as ptr[u32]:
+            @free(v.data as ptr[u8])
+        i = i + 1
+    if self.adj_in.data != null as ptr[U32Vec]:
+        @free(self.adj_in.data as ptr[u8])
+
+    if self.sym_to_node.data != null as ptr[u32]:
+        @free(self.sym_to_node.data as ptr[u8])
+
+pub fn ensure_adj_capacity(mut self: ConnectionGraph, node_id: u32):
+    while self.adj_out.len <= node_id as i64:
+        self.adj_out.push(new_u32_vec())
+    while self.adj_in.len <= node_id as i64:
+        self.adj_in.push(new_u32_vec())
+
+pub fn add_value_node(mut self: ConnectionGraph, sym_id: u32, type_id: u32, lifetime: u32) -> u32:
+    let id = self.nodes.len as u32
+    self.nodes.push(CGNode(
+        id: id,
+        sym_id: sym_id,
+        type_id: type_id,
+        is_ref: false,
+        lifetime: lifetime,
+    ))
+    self.ensure_adj_capacity(id)
+    if sym_id != 0:
+        while self.sym_to_node.len <= sym_id as i64:
+            self.sym_to_node.push(0xffffffff as u32)
+        self.sym_to_node.data[sym_id] = id
+    return id
+
+pub fn add_ref_node(mut self: ConnectionGraph, target_node_id: u32) -> u32:
+    mut type_id := 0 as u32
+    mut lifetime := 0 as u32
+    if (target_node_id as i64) < self.nodes.len:
+        type_id = self.nodes.data[target_node_id].type_id
+        lifetime = self.nodes.data[target_node_id].lifetime
+    
+    let id = self.nodes.len as u32
+    self.nodes.push(CGNode(
+        id: id,
+        sym_id: 0 as u32,
+        type_id: type_id,
+        is_ref: true,
+        lifetime: lifetime,
+    ))
+    self.ensure_adj_capacity(id)
+    self.add_edge(id, target_node_id, EDGE_BORROWS)
+    return id
+
+pub fn add_edge(mut self: ConnectionGraph, from: u32, to: u32, kind: u32):
+    let edge_idx = self.edges.push(CGEdge(from: from, to: to, kind: kind))
+    self.ensure_adj_capacity(from)
+    self.ensure_adj_capacity(to)
+    self.adj_out.data[from].push(edge_idx)
+    self.adj_in.data[to].push(edge_idx)
+
+pub fn node_of_sym(self: ConnectionGraph, sym_id: u32) -> u32:
+    if (sym_id as i64) < self.sym_to_node.len:
+        return self.sym_to_node.data[sym_id]
+    return 0xffffffff as u32
+
+pub fn escapes(self: ConnectionGraph, node_id: u32) -> bool:
+    if self.nodes.len == 0:
+        return false
+    mut visited = @alloc(self.nodes.len) as ptr[bool]
+    mut idx := 0 as i64
+    while idx < self.nodes.len:
+        visited[idx] = false
+        idx = idx + 1
+    
+    let res = self.escape_dfs(node_id, visited)
+    @free(visited as ptr[u8])
+    return res
+
+pub fn escape_dfs(self: ConnectionGraph, node_id: u32, visited: ptr[bool]) -> bool:
+    if (node_id as i64) >= self.nodes.len:
+        return false
+    if visited[node_id]:
+        return false
+    visited[node_id] = true
+
+    if (node_id as i64) >= self.adj_out.len:
+        return false
+
+    let out_edges = &self.adj_out.data[node_id]
+    mut i := 0 as i64
+    while i < out_edges.len:
+        let edge_idx = out_edges.data[i]
+        let edge = self.edges.data[edge_idx]
+        if edge.kind == EDGE_ESCAPES_TO:
+            return true
+        if edge.kind == EDGE_OWNS or edge.kind == EDGE_FLOWS_TO:
+            if self.escape_dfs(edge.to, visited):
+                return true
+        i = i + 1
+    return false

@@ -163,10 +163,81 @@ func (ce *ComptimeEvaluator) Eval(nodeIdx uint32) (ComptimeValue, *diagnostics.D
 		return ce.evalBoolLit(nodeIdx)
 	case ast.NodeIdent:
 		return ce.evalConstRef(nodeIdx)
+	case ast.NodeComptime:
+		if node.FirstChild != 0 {
+			return ce.Eval(node.FirstChild)
+		}
+		return ComptimeValue{Kind: types.TypeVoid}, nil
+	case ast.NodeBlock:
+		var lastVal ComptimeValue
+		var err *diagnostics.Diagnostic
+		child := node.FirstChild
+		if child == 0 {
+			return ComptimeValue{Kind: types.TypeVoid}, nil
+		}
+		for child != 0 {
+			lastVal, err = ce.Eval(child)
+			if err != nil {
+				return ComptimeValue{}, err
+			}
+			child = ce.ast.Nodes[child].NextSibling
+		}
+		return lastVal, nil
+	case ast.NodeReturnStmt:
+		if node.FirstChild != 0 {
+			return ce.Eval(node.FirstChild)
+		}
+		return ComptimeValue{Kind: types.TypeVoid}, nil
+	case ast.NodeBinaryExpr:
+		lhsIdx := node.FirstChild
+		if lhsIdx == 0 {
+			d := &diagnostics.Diagnostic{
+				Severity: diagnostics.SeverityError,
+				Code:     1500,
+				Message:  "missing left-hand side of binary expression",
+				Pos:      diagnostics.Pos{},
+			}
+			return ComptimeValue{}, d
+		}
+		rhsIdx := ce.ast.Nodes[lhsIdx].NextSibling
+		if rhsIdx == 0 {
+			d := &diagnostics.Diagnostic{
+				Severity: diagnostics.SeverityError,
+				Code:     1500,
+				Message:  "missing right-hand side of binary expression",
+				Pos:      diagnostics.Pos{},
+			}
+			return ComptimeValue{}, d
+		}
+		lhsVal, err := ce.Eval(lhsIdx)
+		if err != nil {
+			return ComptimeValue{}, err
+		}
+		rhsVal, err := ce.Eval(rhsIdx)
+		if err != nil {
+			return ComptimeValue{}, err
+		}
+		op := ce.tokenText(nodeIdx)
+		return ce.evalBinaryOp(nodeIdx, op, lhsVal, rhsVal)
+	case ast.NodeUnaryExpr:
+		operandIdx := node.FirstChild
+		if operandIdx == 0 {
+			d := &diagnostics.Diagnostic{
+				Severity: diagnostics.SeverityError,
+				Code:     1500,
+				Message:  "missing operand of unary expression",
+				Pos:      diagnostics.Pos{},
+			}
+			return ComptimeValue{}, d
+		}
+		val, err := ce.Eval(operandIdx)
+		if err != nil {
+			return ComptimeValue{}, err
+		}
+		op := ce.tokenText(nodeIdx)
+		return ce.evalUnaryOp(nodeIdx, op, val)
 	case ast.NodeCallExpr:
-		// Binary operators are represented as call expressions in some parsers,
-		// but in AXIOM the stub parser doesn't produce binary ops yet.
-		// For now, reject function calls in comptime context.
+		// Reject function calls in comptime context.
 		d := &diagnostics.Diagnostic{
 			Severity: diagnostics.SeverityError,
 			Code:     1500,
@@ -183,6 +254,129 @@ func (ce *ComptimeEvaluator) Eval(nodeIdx uint32) (ComptimeValue, *diagnostics.D
 		}
 		return ComptimeValue{}, d
 	}
+}
+
+func (ce *ComptimeEvaluator) evalBinaryOp(nodeIdx uint32, op string, lhs, rhs ComptimeValue) (ComptimeValue, *diagnostics.Diagnostic) {
+	if lhs.Kind.IsNumeric() && rhs.Kind.IsNumeric() {
+		if lhs.Kind == types.TypeF32 || lhs.Kind == types.TypeF64 || rhs.Kind == types.TypeF32 || rhs.Kind == types.TypeF64 {
+			lf := lhs.FloatVal
+			if lhs.Kind != types.TypeF32 && lhs.Kind != types.TypeF64 {
+				lf = float64(lhs.IntVal)
+			}
+			rf := rhs.FloatVal
+			if rhs.Kind != types.TypeF32 && rhs.Kind != types.TypeF64 {
+				rf = float64(rhs.IntVal)
+			}
+			switch op {
+			case "+", "-", "*", "/":
+				val, diag := FloatArith(op, lf, rf)
+				if diag != nil {
+					return ComptimeValue{}, diag
+				}
+				return ComptimeValue{Kind: types.TypeF64, FloatVal: val}, nil
+			case "==":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf == rf}, nil
+			case "!=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf != rf}, nil
+			case "<":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf < rf}, nil
+			case "<=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf <= rf}, nil
+			case ">":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf > rf}, nil
+			case ">=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lf >= rf}, nil
+			}
+		} else {
+			switch op {
+			case "+", "-", "*", "/", "%":
+				val, diag := IntArith(op, lhs.IntVal, rhs.IntVal)
+				if diag != nil {
+					return ComptimeValue{}, diag
+				}
+				return ComptimeValue{Kind: types.TypeI64, IntVal: val}, nil
+			case "==":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal == rhs.IntVal}, nil
+			case "!=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal != rhs.IntVal}, nil
+			case "<":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal < rhs.IntVal}, nil
+			case "<=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal <= rhs.IntVal}, nil
+			case ">":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal > rhs.IntVal}, nil
+			case ">=":
+				return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.IntVal >= rhs.IntVal}, nil
+			}
+		}
+	}
+
+	if lhs.Kind == types.TypeBool && rhs.Kind == types.TypeBool {
+		switch op {
+		case "and", "&&":
+			val, diag := BoolLogic("and", lhs.BoolVal, rhs.BoolVal)
+			if diag != nil {
+				return ComptimeValue{}, diag
+			}
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: val}, nil
+		case "or", "||":
+			val, diag := BoolLogic("or", lhs.BoolVal, rhs.BoolVal)
+			if diag != nil {
+				return ComptimeValue{}, diag
+			}
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: val}, nil
+		case "==":
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.BoolVal == rhs.BoolVal}, nil
+		case "!=":
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.BoolVal != rhs.BoolVal}, nil
+		}
+	}
+
+	if lhs.Kind == types.TypeString && rhs.Kind == types.TypeString {
+		switch op {
+		case "+":
+			return ComptimeValue{Kind: types.TypeString, StrVal: StringConcat(lhs.StrVal, rhs.StrVal)}, nil
+		case "==":
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.StrVal == rhs.StrVal}, nil
+		case "!=":
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: lhs.StrVal != rhs.StrVal}, nil
+		}
+	}
+
+	d := &diagnostics.Diagnostic{
+		Severity: diagnostics.SeverityError,
+		Code:     1500,
+		Message:  fmt.Sprintf("invalid types for binary operator '%s': %d and %d", op, lhs.Kind, rhs.Kind),
+		Pos:      diagnostics.Pos{},
+	}
+	return ComptimeValue{}, d
+}
+
+func (ce *ComptimeEvaluator) evalUnaryOp(nodeIdx uint32, op string, val ComptimeValue) (ComptimeValue, *diagnostics.Diagnostic) {
+	switch op {
+	case "-":
+		if val.Kind.IsNumeric() {
+			if val.Kind == types.TypeF32 || val.Kind == types.TypeF64 {
+				return ComptimeValue{Kind: val.Kind, FloatVal: -val.FloatVal}, nil
+			}
+			return ComptimeValue{Kind: val.Kind, IntVal: -val.IntVal}, nil
+		}
+	case "not", "!":
+		if val.Kind == types.TypeBool {
+			return ComptimeValue{Kind: types.TypeBool, BoolVal: !val.BoolVal}, nil
+		}
+	case "~":
+		if val.Kind.IsNumeric() && val.Kind != types.TypeF32 && val.Kind != types.TypeF64 {
+			return ComptimeValue{Kind: val.Kind, IntVal: ^val.IntVal}, nil
+		}
+	}
+	d := &diagnostics.Diagnostic{
+		Severity: diagnostics.SeverityError,
+		Code:     1500,
+		Message:  fmt.Sprintf("invalid type for unary operator '%s': %d", op, val.Kind),
+		Pos:      diagnostics.Pos{},
+	}
+	return ComptimeValue{}, d
 }
 
 func (ce *ComptimeEvaluator) evalIntLit(nodeIdx uint32) (ComptimeValue, *diagnostics.Diagnostic) {

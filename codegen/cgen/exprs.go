@@ -12,12 +12,14 @@ import (
 // ExprGen generates C expression strings from typed AST expression nodes.
 // It carries context about safe/unsafe mode to control safety check emission.
 type ExprGen struct {
-	Table   *types.TypeTable
-	Intern  *ast.InternPool
-	Symbols *sema.SymbolTable
-	Tree    *ast.AstTree
-	Queue   *TypeDeclQueue
-	Unsafe  bool // when true, omits bounds checks and generational checks
+	Table        *types.TypeTable
+	Intern       *ast.InternPool
+	Symbols      *sema.SymbolTable
+	Tree         *ast.AstTree
+	Queue        *TypeDeclQueue
+	Unsafe       bool // when true, omits bounds checks and generational checks
+	ExpectedType types.TypeID
+	ReturnType   types.TypeID
 }
 
 // NewExprGen creates a new expression generator.
@@ -175,6 +177,22 @@ func (g *ExprGen) emitIdent(idx uint32, node *ast.AstNode) string {
 			}
 		case sema.SymFunc:
 			return GetFuncMangledName(symIdx, text, g.Table, g.Symbols, g.Intern)
+		case sema.SymVariant, sema.SymEnumVariant:
+			sumTypeID := g.ExpectedType
+			if !g.typeHasVariant(sumTypeID, text) {
+				if g.typeHasVariant(g.ReturnType, text) {
+					sumTypeID = g.ReturnType
+				} else {
+					sumTypeID = types.TypeID(sym.TypeID)
+				}
+			}
+			sumTypeName := CTypeName(sumTypeID, g.Table, g.Intern, g.Queue)
+			sumTypeName = strings.TrimPrefix(sumTypeName, "struct ")
+			ctorPrefix := "ax_"
+			if strings.HasPrefix(sumTypeName, "ax_") {
+				ctorPrefix = ""
+			}
+			return fmt.Sprintf("%s%s_%s()", ctorPrefix, sumTypeName, strings.ToLower(text))
 		}
 	}
 	return text
@@ -330,6 +348,31 @@ func (g *ExprGen) tryEmitCompilerIntrinsic(nodeIdx uint32, node *ast.AstNode) (s
 					if argStr == "is_windows" {
 						return "1", true
 					}
+					// Atomic intrinsics!
+					if argStr == "atomic_load" || argStr == "atomic_store" || argStr == "atomic_swap" || argStr == "atomic_cas" {
+						args := []string{}
+						for i := 2; i < len(children); i++ {
+							args = append(args, g.Emit(children[i]))
+						}
+						if len(args) > 0 {
+							switch argStr {
+							case "atomic_load":
+								return fmt.Sprintf("__atomic_load_n(%s, __ATOMIC_SEQ_CST)", args[0]), true
+							case "atomic_store":
+								if len(args) >= 2 {
+									return fmt.Sprintf("__atomic_store_n(%s, %s, __ATOMIC_SEQ_CST)", args[0], args[1]), true
+								}
+							case "atomic_swap":
+								if len(args) >= 2 {
+									return fmt.Sprintf("__atomic_exchange_n(%s, %s, __ATOMIC_SEQ_CST)", args[0], args[1]), true
+								}
+							case "atomic_cas":
+								if len(args) >= 3 {
+									return fmt.Sprintf("__sync_bool_compare_and_swap(%s, %s, %s)", args[0], args[1], args[2]), true
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -401,8 +444,80 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		return "/* invalid call expr */"
 	}
 
-	isExtern := false
 	funcNode := g.Tree.Node(children[0])
+	if funcNode.Kind == ast.NodeIdent {
+		symIdx := funcNode.Payload
+		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymVariant || sym.Kind == sema.SymEnumVariant {
+				sumTypeID := g.NodeType(idx)
+				variantName := string(g.Tree.TokenText(funcNode.TokenIdx))
+				if g.typeHasVariant(g.ExpectedType, variantName) {
+					sumTypeID = g.ExpectedType
+				} else if g.typeHasVariant(g.ReturnType, variantName) {
+					sumTypeID = g.ReturnType
+				}
+				if sumTypeID == types.TypeUnknown || sumTypeID == 0 {
+					sumTypeID = g.ExpectedType
+				}
+				if sumTypeID == types.TypeUnknown || sumTypeID == 0 {
+					sumTypeID = g.ReturnType
+				}
+				if sumTypeID == types.TypeUnknown || sumTypeID == 0 {
+					sumTypeID = types.TypeID(sym.TypeID)
+				}
+
+				var payloadType types.TypeID = types.TypeUnknown
+				if sumTypeID != types.TypeUnknown && g.Table != nil {
+					entry := g.Table.Entry(sumTypeID)
+					variantName := string(g.Tree.TokenText(funcNode.TokenIdx))
+					if entry.Kind == types.KindSum {
+						info := g.Table.SumInfo(sumTypeID)
+						for _, v := range info.Variants {
+							if resolveName(v.NameID, g.Intern) == variantName {
+								payloadType = v.PayloadType
+								break
+							}
+						}
+					} else if entry.Kind == types.KindGenericInst {
+						templateID := types.TypeID(entry.Extra)
+						info := g.Table.SumInfo(templateID)
+						params := info.GenericParams
+						args := g.Table.GenericInstArgs(sumTypeID)
+						for _, v := range info.Variants {
+							if resolveName(v.NameID, g.Intern) == variantName {
+								if v.PayloadType != types.TypeUnknown {
+									payloadType = g.Table.SubstituteGenericType(v.PayloadType, params, args)
+								}
+								break
+							}
+						}
+					}
+				}
+
+				sumTypeName := CTypeName(sumTypeID, g.Table, g.Intern, g.Queue)
+				sumTypeName = strings.TrimPrefix(sumTypeName, "struct ")
+				ctorPrefix := "ax_"
+				if strings.HasPrefix(sumTypeName, "ax_") {
+					ctorPrefix = ""
+				}
+				ctorName := fmt.Sprintf("%s%s_%s", ctorPrefix, sumTypeName, strings.ToLower(variantName))
+
+				args := make([]string, 0, len(children)-1)
+				for i := 1; i < len(children); i++ {
+					oldExpected := g.ExpectedType
+					if i == 1 && payloadType != types.TypeUnknown {
+						g.ExpectedType = payloadType
+					}
+					args = append(args, g.Emit(children[i]))
+					g.ExpectedType = oldExpected
+				}
+				return fmt.Sprintf("%s(%s)", ctorName, strings.Join(args, ", "))
+			}
+		}
+	}
+
+	isExtern := false
 	if funcNode.Kind == ast.NodeIdent {
 		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
 		symIdx := funcNode.Payload
@@ -417,11 +532,75 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		}
 	}
 
+	var fi *types.FuncType
+	calleeIdx := children[0]
+	calleeNode := g.Tree.Node(calleeIdx)
+	var funcSymIdx uint32 = 0
+	if calleeNode.Kind == ast.NodeIdent {
+		funcSymIdx = calleeNode.Payload
+	} else if calleeNode.Kind == ast.NodeIndexExpr {
+		funcSymIdx = calleeNode.Payload
+	}
+
+	if funcSymIdx != 0 && g.Symbols != nil && int(funcSymIdx) < len(g.Symbols.Symbols) {
+		sym := g.Symbols.SymbolAt(funcSymIdx)
+		if sym.TypeID != 0 {
+			entry := g.Table.Entry(types.TypeID(sym.TypeID))
+			if entry.Kind == types.KindFunction {
+				fi = g.Table.FuncInfo(types.TypeID(sym.TypeID))
+			}
+		}
+	} else if calleeNode.Kind == ast.NodeFieldExpr {
+		fieldChildren := g.Tree.Children(calleeIdx)
+		if len(fieldChildren) >= 1 {
+			receiverIdx := fieldChildren[0]
+			objType := g.NodeType(receiverIdx)
+			if objType != types.TypeUnknown {
+				entry := g.Table.Entry(objType)
+				baseType := objType
+				if entry.Kind == types.KindPointer {
+					baseType = g.Table.PointerElem(objType)
+					entry = g.Table.Entry(baseType)
+				}
+				if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
+					fieldNameText := string(g.Tree.TokenText(calleeNode.TokenIdx))
+					fieldNameID := g.Intern.Intern([]byte(fieldNameText))
+					methodSymIdx, found := g.findMethodSymbol(baseType, fieldNameID)
+					if found && g.Symbols != nil {
+						sym := g.Symbols.SymbolAt(methodSymIdx)
+						if sym.TypeID != 0 {
+							e := g.Table.Entry(types.TypeID(sym.TypeID))
+							if e.Kind == types.KindFunction {
+								fi = g.Table.FuncInfo(types.TypeID(sym.TypeID))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Collect arguments first (needed for both builtin and normal paths)
 	args := make([]string, 0, len(children)-1)
+	argTypes := make([]types.TypeID, 0, len(children)-1)
 	for i := 1; i < len(children); i++ {
 		argNodeIdx := children[i]
 		argNode := g.Tree.Node(argNodeIdx)
+
+		var paramType types.TypeID = types.TypeUnknown
+		if fi != nil {
+			if calleeNode.Kind == ast.NodeFieldExpr {
+				if i < len(fi.Params) {
+					paramType = fi.Params[i]
+				}
+			} else {
+				if i-1 < len(fi.Params) {
+					paramType = fi.Params[i-1]
+				}
+			}
+		}
+		g.ExpectedType = paramType
+
 		var val string
 		var actualIdx uint32
 		if argNode.Kind == ast.NodeNamedArg {
@@ -432,6 +611,14 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 		} else {
 			actualIdx = argNodeIdx
 			val = g.Emit(actualIdx)
+		}
+
+		g.ExpectedType = types.TypeUnknown // reset after Emit
+
+		if actualIdx != ast.NullIdx {
+			argTypes = append(argTypes, g.NodeType(actualIdx))
+		} else {
+			argTypes = append(argTypes, types.TypeUnknown)
 		}
 
 		if isExtern && actualIdx != ast.NullIdx {
@@ -447,42 +634,74 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 
 	// Check if the callee is a qualified/namespaced built-in call
 	if qualifiedName, ok := g.getQualifiedFieldName(children[0]); ok {
-		if call := EmitBuiltinCall(qualifiedName, args); call != "" {
+		if call := EmitBuiltinCallTyped(qualifiedName, args, argTypes); call != "" {
 			return call
 		}
 	}
 
-	// First child is the function expression (usually an Ident)
+	// First child is the function expression (usually an Ident or NodeIndexExpr for generic instantiations)
 	funcNode = g.Tree.Node(children[0])
-	if funcNode.Kind == ast.NodeIdent {
-		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
+	instSymIdx := uint32(0)
+	isStructConstructor := false
+	structSymIdx := uint32(0)
 
-		// Check if it's actually a struct constructor call
+	if funcNode.Kind == ast.NodeIdent {
 		symIdx := funcNode.Payload
 		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
 			sym := g.Symbols.SymbolAt(symIdx)
 			if sym.Kind == sema.SymStruct {
-				structType := types.TypeID(sym.TypeID)
-				ctype := CTypeName(structType, g.Table, g.Intern, g.Queue)
-				var fields []string
-				for i := 1; i < len(children); i++ {
-					childIdx := children[i]
-					childNode := g.Tree.Node(childIdx)
-					if childNode.Kind == ast.NodeNamedArg {
-						fieldName := string(g.Tree.TokenText(childNode.TokenIdx))
-						if childNode.FirstChild != ast.NullIdx {
-							value := g.Emit(childNode.FirstChild)
-							fields = append(fields, fmt.Sprintf(".%s=%s", fieldName, value))
-						}
-					}
-				}
-				return fmt.Sprintf("((%s){%s})", ctype, strings.Join(fields, ", "))
+				isStructConstructor = true
+				structSymIdx = symIdx
 			}
 		}
+	} else if funcNode.Kind == ast.NodeIndexExpr {
+		if funcNode.Payload != 0 && g.Symbols != nil && int(funcNode.Payload) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(funcNode.Payload)
+			if sym.Kind == sema.SymFunc {
+				instSymIdx = funcNode.Payload
+			} else if sym.Kind == sema.SymStruct {
+				isStructConstructor = true
+				structSymIdx = funcNode.Payload
+			}
+		}
+	}
 
-		// Check builtin table first
-		if call := EmitBuiltinCall(funcName, args); call != "" {
-			return call
+	if isStructConstructor {
+		sym := g.Symbols.SymbolAt(structSymIdx)
+		structType := types.TypeID(sym.TypeID)
+		ctype := CTypeName(structType, g.Table, g.Intern, g.Queue)
+		var fields []string
+		for i := 1; i < len(children); i++ {
+			childIdx := children[i]
+			childNode := g.Tree.Node(childIdx)
+			if childNode.Kind == ast.NodeNamedArg {
+				fieldName := string(g.Tree.TokenText(childNode.TokenIdx))
+				if childNode.FirstChild != ast.NullIdx {
+					value := g.Emit(childNode.FirstChild)
+					fields = append(fields, fmt.Sprintf(".%s=%s", fieldName, value))
+				}
+			}
+		}
+		return fmt.Sprintf("((%s){%s})", ctype, strings.Join(fields, ", "))
+	}
+
+	if funcNode.Kind == ast.NodeIdent || (funcNode.Kind == ast.NodeIndexExpr && instSymIdx != 0) {
+		var funcName string
+		var symIdx uint32
+		if funcNode.Kind == ast.NodeIdent {
+			funcName = string(g.Tree.TokenText(funcNode.TokenIdx))
+			symIdx = funcNode.Payload
+		} else {
+			sym := g.Symbols.SymbolAt(instSymIdx)
+			funcName = string(g.Intern.Get(sym.NameID))
+			symIdx = instSymIdx
+		}
+
+		if funcNode.Kind == ast.NodeIdent {
+			// Check builtin table first
+			if call := EmitBuiltinCallTyped(funcName, args, argTypes); call != "" {
+				return call
+			}
 		}
 
 		// Not a builtin — apply standard mangling
@@ -523,7 +742,7 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 					baseType = g.Table.PointerElem(objType)
 					entry = g.Table.Entry(baseType)
 				}
-				if entry.Kind == types.KindStruct {
+				if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
 					// Method call!
 					fieldNameText := string(g.Tree.TokenText(funcNode.TokenIdx))
 					fieldNameID := g.Intern.Intern([]byte(fieldNameText))
@@ -631,6 +850,14 @@ func (g *ExprGen) emitField(idx uint32, node *ast.AstNode) string {
 
 // emitIndex emits an array/slice index with bounds checking.
 func (g *ExprGen) emitIndex(idx uint32, node *ast.AstNode) string {
+	if node.Payload != 0 && g.Symbols != nil && int(node.Payload) < len(g.Symbols.Symbols) {
+		sym := g.Symbols.SymbolAt(node.Payload)
+		if sym.Kind == sema.SymFunc {
+			funcName := string(g.Intern.Get(sym.NameID))
+			return GetFuncMangledName(node.Payload, funcName, g.Table, g.Symbols, g.Intern)
+		}
+	}
+
 	children := g.Tree.Children(idx)
 	if len(children) < 2 {
 		return "/* invalid index expr */"
@@ -963,10 +1190,46 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 							return f.TypeID
 						}
 					}
+					// Fallback: check if it's a method of this struct
+					var actualNameID uint32
+					if fieldNameID != 0 {
+						actualNameID = fieldNameID
+					} else if g.Intern != nil {
+						actualNameID = g.Intern.InternString(fieldName)
+					}
+					if actualNameID != 0 {
+						if symIdx, found := g.findMethodSymbol(objType, actualNameID); found {
+							return types.TypeID(g.Symbols.SymbolAt(symIdx).TypeID)
+						}
+					}
+					// Fallback 2: check using string comparison on method symbol names
+					for _, sym := range g.Symbols.Symbols {
+						if sym.Kind == sema.SymFunc {
+							symName := resolveName(sym.NameID, g.Intern)
+							if symName == fieldName {
+								tID := types.TypeID(sym.TypeID)
+								if tID != types.TypeUnknown {
+									e := g.Table.Entry(tID)
+									if e.Kind == types.KindFunction && len(g.Table.FuncInfo(tID).Params) > 0 {
+										firstParamType := g.Table.FuncInfo(tID).Params[0]
+										if firstParamType == objType || (g.Table.Entry(firstParamType).Kind == types.KindPointer && g.Table.PointerElem(firstParamType) == objType) {
+											return tID
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 		}
 	case ast.NodeIndexExpr:
+		if node.Payload != 0 && g.Symbols != nil && int(node.Payload) < len(g.Symbols.Symbols) {
+			sym := g.Symbols.SymbolAt(node.Payload)
+			if sym.Kind == sema.SymFunc {
+				return types.TypeID(sym.TypeID)
+			}
+		}
 		children := g.Tree.Children(nodeIdx)
 		if len(children) >= 1 {
 			colType := g.NodeType(children[0])
@@ -992,9 +1255,24 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 				if entry.Kind == types.KindFunction {
 					funcInfo := g.Table.FuncInfo(calleeType)
 					return funcInfo.Return
-				} else if entry.Kind == types.KindStruct {
+				} else if entry.Kind == types.KindStruct || entry.Kind == types.KindSum || entry.Kind == types.KindGenericInst {
 					return calleeType
 				}
+			}
+		}
+	case ast.NodeUnaryExpr:
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			opText := string(g.Tree.TokenText(node.TokenIdx))
+			if opText == "&" {
+				operandType := g.NodeType(children[0])
+				if operandType != types.TypeUnknown && g.Table != nil {
+					return g.Table.RegisterPointer(operandType)
+				}
+			} else if opText == "not" {
+				return types.TypeBool
+			} else {
+				return g.NodeType(children[0])
 			}
 		}
 	}
@@ -1003,7 +1281,13 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 
 func (g *ExprGen) findMethodSymbol(structType types.TypeID, methodNameID uint32) (uint32, bool) {
 	for idx, sym := range g.Symbols.Symbols {
-		if sym.Kind == sema.SymFunc && sym.NameID == methodNameID {
+		nameID := sym.NameID
+		if g.Symbols.InstantiatedToOriginalName != nil {
+			if origNameID, ok := g.Symbols.InstantiatedToOriginalName[uint32(idx)]; ok {
+				nameID = origNameID
+			}
+		}
+		if sym.Kind == sema.SymFunc && nameID == methodNameID {
 			tID := types.TypeID(sym.TypeID)
 			if tID != types.TypeUnknown {
 				entry := g.Table.Entry(tID)
@@ -1059,16 +1343,27 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 		return false
 	}
 	sym := g.Symbols.SymbolAt(symIdx)
-	var symName string
-	if sym.NameID != 0 {
-		symName = g.Intern.Get(sym.NameID)
-	} else {
-		symName = "<unnamed>"
-	}
 	if sym.DeclNode == 0 {
 		return false
 	}
-	// Traverse the children of sym.DeclNode to find the parameter nodes.
+
+	// First, check the function signature in the TypeTable!
+	// If the type signature explicitly uses a pointer for this parameter, it expects a pointer!
+	if sym.TypeID != 0 {
+		entry := g.Table.Entry(types.TypeID(sym.TypeID))
+		if entry.Kind == types.KindFunction {
+			fi := g.Table.FuncInfo(types.TypeID(sym.TypeID))
+			if paramIdx < len(fi.Params) {
+				pt := fi.Params[paramIdx]
+				ptEntry := g.Table.Entry(pt)
+				if ptEntry.Kind == types.KindPointer {
+					return true
+				}
+			}
+		}
+	}
+
+	// Otherwise, fallback to checking parameter declaration flags (mut/lent) in the AST
 	paramCount := 0
 	child := g.Tree.Node(sym.DeclNode).FirstChild
 	for child != ast.NullIdx {
@@ -1079,7 +1374,6 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 				isMut := (childNode.Flags & ast.FlagIsMut) != 0
 				
 				if isLent {
-					fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (LENT) -> true\n", symName, symIdx, paramIdx)
 					return true
 				}
 				if isMut {
@@ -1092,19 +1386,10 @@ func (g *ExprGen) expectsPointer(symIdx uint32, paramIdx int) bool {
 								pt := fi.Params[paramIdx]
 								ptEntry := g.Table.Entry(pt)
 								if ptEntry.Kind == types.KindStruct || ptEntry.Kind == types.KindGenericInst {
-									fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT STRUCT) -> true\n", symName, symIdx, paramIdx)
 									return true
-								} else {
-									fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT NON-STRUCT kind=%v) -> false\n", symName, symIdx, paramIdx, ptEntry.Kind)
 								}
-							} else {
-								fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT paramIdx out of range %d) -> false\n", symName, symIdx, paramIdx, len(fi.Params))
 							}
-						} else {
-							fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT not function type kind=%v) -> false\n", symName, symIdx, paramIdx, entry.Kind)
 						}
-					} else {
-						fmt.Printf("[DEBUG-EXPECTS-POINTER] sym=%s symIdx=%d paramIdx=%d (MUT TypeID is 0) -> false\n", symName, symIdx, paramIdx)
 					}
 				}
 				return false
@@ -1174,6 +1459,30 @@ func (g *ExprGen) isImplicitPointerC(nodeIdx uint32) bool {
 						return true
 					}
 				}
+			}
+		}
+	}
+	return false
+}
+
+func (g *ExprGen) typeHasVariant(typeID types.TypeID, variantName string) bool {
+	if typeID == types.TypeUnknown || typeID == 0 || g.Table == nil {
+		return false
+	}
+	entry := g.Table.Entry(typeID)
+	if entry.Kind == types.KindSum {
+		info := g.Table.SumInfo(typeID)
+		for _, v := range info.Variants {
+			if resolveName(v.NameID, g.Intern) == variantName {
+				return true
+			}
+		}
+	} else if entry.Kind == types.KindGenericInst {
+		templateID := types.TypeID(entry.Extra)
+		info := g.Table.SumInfo(templateID)
+		for _, v := range info.Variants {
+			if resolveName(v.NameID, g.Intern) == variantName {
+				return true
 			}
 		}
 	}

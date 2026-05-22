@@ -98,14 +98,16 @@ pub struct AirModuleBuilder:
     pub typetable: TypeTable
     pub pool: InternPool
     pub module: AirModule
+    pub node_types: ptr[u32]
 
-pub fn new_air_module_builder(tree: AstTree, symbols: SymbolTable, typetable: TypeTable, pool: InternPool) -> AirModuleBuilder:
+pub fn new_air_module_builder(tree: AstTree, symbols: SymbolTable, typetable: TypeTable, pool: InternPool, node_types: ptr[u32]) -> AirModuleBuilder:
     return AirModuleBuilder(
         tree: tree,
         symbols: symbols,
         typetable: typetable,
         pool: pool,
         module: AirModule(funcs: new_air_func_vec()),
+        node_types: node_types,
     )
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
@@ -252,9 +254,9 @@ pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
         return 0 as u32
     let node = self.mb.tree.nodes.data[idx as i64]
     if node.kind == NODE_INT_LIT:
-        return self.lower_int_lit(node)
+        return self.lower_int_lit(idx, node)
     if node.kind == NODE_FLOAT_LIT:
-        return self.lower_float_lit(node)
+        return self.lower_float_lit(idx, node)
     if node.kind == NODE_BOOL_LIT:
         return self.lower_bool_lit(node)
     if node.kind == NODE_NIL_LIT:
@@ -289,17 +291,15 @@ pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
         return self.lower_array_lit(idx, node)
     return 0 as u32
 
-pub fn lower_int_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_int_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = parse_int_from_str(text)
     @free(text as ptr[u8])
 
     mut type_id := 3 as u16 // default i32
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
@@ -310,17 +310,15 @@ pub fn lower_int_lit(mut self: FuncLowering, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_float_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_float_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = atof(text)
     @free(text as ptr[u8])
 
     mut type_id := 10 as u16 // default f64
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
 
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
@@ -478,31 +476,95 @@ pub fn lower_call_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         return 0 as u32
 
     let callee_node = self.mb.tree.nodes.data[child as i64]
-    if callee_node.kind == NODE_IDENT:
+    
+    // Check if callee is a method call on a struct
+    mut is_method_call := false
+    mut method_sym_idx := 0 as u32
+    mut receiver_node_idx := 0 as u32
+    if callee_node.kind == NODE_FIELD_EXPR:
+        mut resolved := false
+
+        if not resolved:
+            receiver_node_idx = callee_node.first_child
+            if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+                mut rec_type := self.mb.node_types[receiver_node_idx as i64]
+                if rec_type != 0 as u32:
+                    mut entry = self.mb.typetable.entries.data[rec_type as i64]
+                    if entry.kind == TYPE_KIND_POINTER:
+                        rec_type = entry.extra
+                        entry = self.mb.typetable.entries.data[rec_type as i64]
+                    
+                    if entry.kind == TYPE_KIND_STRUCT:
+                        let method_name = self.mb.pool.get(callee_node.payload)
+                        mut i := 0 as i64
+                        while i < self.mb.symbols.symbols.len:
+                            let sym = self.mb.symbols.symbols.data[i]
+                            if sym.kind == SYM_FUNC:
+                                let sym_name = self.mb.pool.get(sym.name_id)
+                                if sym_name == method_name:
+                                    let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+                                    if t_entry.kind == TYPE_KIND_FUNC:
+                                        let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                                        if fi.params.len > 0 as i64:
+                                            mut first_param := fi.params.data[0]
+                                            mut p_entry = self.mb.typetable.entries.data[first_param as i64]
+                                            if p_entry.kind == TYPE_KIND_POINTER:
+                                                first_param = p_entry.extra
+                                            if first_param == rec_type:
+                                                is_method_call = true
+                                                method_sym_idx = i as u32
+                                                resolved = true
+                                                break
+                            i = i + 1 as i64
+
+    if not is_method_call and callee_node.kind == NODE_IDENT:
         let sym_idx = callee_node.payload
         if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[sym_idx as i64]
             if sym.kind == SYM_STRUCT:
                 return self.lower_struct_constructor_call(idx, node, sym.type_id)
 
-    let callee_reg = self.lower_expr(child)
+    let temp_args = @alloc(128 * 4) as ptr[u32]
+    mut temp_count := 0 as u32
 
-    let arg_start = self.fb.emit_extra(0 as u32) // placeholder for arg count
-    mut arg_count := 0 as u32
+    if is_method_call:
+        let receiver_reg = self.lower_expr(receiver_node_idx)
+        temp_args[temp_count as i64] = receiver_reg
+        temp_count = temp_count + 1 as u32
+
     mut arg := callee_node.next_sibling
     while arg != 0 as u32:
         let arg_reg = self.lower_expr(arg)
-        self.fb.emit_extra(arg_reg)
-        arg_count = arg_count + 1 as u32
+        temp_args[temp_count as i64] = arg_reg
+        temp_count = temp_count + 1 as u32
         arg = self.mb.tree.nodes.data[arg as i64].next_sibling
 
-    self.fb.set_extra(arg_start, arg_count)
+    let arg_start = self.fb.emit_extra(temp_count)
+    mut i := 0 as u32
+    while i < temp_count:
+        self.fb.emit_extra(temp_args[i as i64])
+        i = i + 1 as u32
+
+    @free(temp_args as ptr[u8])
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    mut callee_reg := 0 as u32
+
+    if is_method_call:
+        type_id = method_sym_idx as u16
+        callee_reg = 0 as u32
+    else:
+        callee_reg = self.lower_expr(child)
+        if callee_node.kind == NODE_IDENT:
+            type_id = callee_node.payload as u16
+        else:
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                type_id = self.mb.node_types[idx as i64] as u16
+            else:
+                if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+                    let sym = self.mb.symbols.symbols.data[node.payload as i64]
+                    if sym.type_id != 0 as u32:
+                        type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -523,10 +585,13 @@ pub fn lower_field_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let field_idx = node.extra_idx
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    let obj_type = self.mb.node_types[child as i64]
+    if obj_type != 0 as u32:
+        let entry = self.mb.typetable.entries.data[obj_type as i64]
+        if entry.kind == TYPE_KIND_POINTER:
+            type_id = entry.extra as u16
+        else:
+            type_id = obj_type as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -550,10 +615,13 @@ pub fn lower_index_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         idx_reg = self.lower_expr(idx_expr)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -573,10 +641,13 @@ pub fn lower_cast_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let src_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -596,10 +667,13 @@ pub fn lower_deref_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let ptr_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -636,10 +710,13 @@ pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let future_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -653,10 +730,13 @@ pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
 pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let struct_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -677,7 +757,7 @@ pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
                 let val_reg = self.lower_expr(val_child)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
-                    type_id: 0 as u16,
+                    type_id: type_id,
                     dest: val_reg,
                     src1: struct_reg,
                     src2: field_idx,
@@ -688,10 +768,13 @@ pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
 pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let arr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -752,7 +835,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
                 let val_reg = self.lower_expr(val_child)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
-                    type_id: 0 as u16,
+                    type_id: type_id as u16,
                     dest: val_reg,
                     src1: struct_reg,
                     src2: field_idx,
@@ -762,7 +845,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
             let val_reg = self.lower_expr(child)
             self.fb.emit(AirInst(
                 opcode: OP_SET_FIELD,
-                type_id: 0 as u16,
+                type_id: type_id as u16,
                 dest: val_reg,
                 src1: struct_reg,
                 src2: field_idx,
@@ -964,6 +1047,88 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
     if lhs_idx == 0 as u32:
         return
     let lhs_node = self.mb.tree.nodes.data[lhs_idx as i64]
+
+    if lhs_node.kind == NODE_FIELD_EXPR:
+        let obj_idx = lhs_node.first_child
+        let obj_reg = self.lower_expr(obj_idx)
+        let field_idx = lhs_node.extra_idx
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let obj_type = self.mb.node_types[obj_idx as i64]
+        if obj_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[obj_type as i64]
+            if entry.kind == TYPE_KIND_POINTER:
+                type_id = entry.extra as u16
+            else:
+                type_id = obj_type as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_SET_FIELD,
+            type_id: type_id,
+            dest: val_reg,
+            src1: obj_reg,
+            src2: field_idx,
+        ))
+        return
+
+    elif lhs_node.kind == NODE_INDEX_EXPR:
+        let arr_idx = lhs_node.first_child
+        let arr_reg = self.lower_expr(arr_idx)
+        let index_idx = self.mb.tree.nodes.data[arr_idx as i64].next_sibling
+        mut index_reg := 0 as u32
+        if index_idx != 0 as u32:
+            index_reg = self.lower_expr(index_idx)
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let arr_type = self.mb.node_types[arr_idx as i64]
+        if arr_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[arr_type as i64]
+            if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                type_id = entry.extra as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_STORE,
+            type_id: type_id,
+            dest: arr_reg,
+            src1: val_reg,
+            src2: index_reg,
+        ))
+        return
+
+    elif lhs_node.kind == NODE_DEREF_EXPR:
+        let ptr_idx = lhs_node.first_child
+        let ptr_reg = self.lower_expr(ptr_idx)
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let ptr_type = self.mb.node_types[ptr_idx as i64]
+        if ptr_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[ptr_type as i64]
+            if entry.kind == TYPE_KIND_POINTER:
+                type_id = entry.extra as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_STORE,
+            type_id: type_id,
+            dest: ptr_reg,
+            src1: val_reg,
+            src2: 0 as u32,
+        ))
+        return
 
     mut name_id := lhs_node.payload
     if name_id == 0 as u32:
@@ -1321,4 +1486,14 @@ pub fn build_module(self: ptr[AirModuleBuilder]):
             if fn_ptr != null as ptr[AirFunc]:
                 self.module.funcs.push(fn_ptr[0])
                 @free(fn_ptr as ptr[u8])
+        elif node.kind == NODE_STRUCT_DECL:
+            mut member := node.first_child
+            while member != 0 as u32:
+                let member_node = self.tree.nodes.data[member as i64]
+                if member_node.kind == NODE_FUNC_DECL:
+                    let fn_ptr = self.lower_func(member, member_node)
+                    if fn_ptr != null as ptr[AirFunc]:
+                        self.module.funcs.push(fn_ptr[0])
+                        @free(fn_ptr as ptr[u8])
+                member = member_node.next_sibling
         child = node.next_sibling

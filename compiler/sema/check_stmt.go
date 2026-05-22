@@ -356,8 +356,9 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 				// Extract arm pattern info for exhaustiveness
 				if sumInfo != nil {
 					pattern := tc.ast.Nodes[arm].FirstChild
-					if tc.ast.Nodes[pattern].Kind == ast.NodeIdent {
-						symIdx := tc.ast.Nodes[pattern].Payload
+					patNode := tc.ast.Nodes[pattern]
+					if patNode.Kind == ast.NodeIdent {
+						symIdx := patNode.Payload
 						if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 							sym := tc.symtable.SymbolAt(symIdx)
 							if sym.NameID == tc.intern.Intern([]byte("_")) {
@@ -366,8 +367,8 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 								seenVariants[sym.NameID] = true
 							}
 						}
-					} else if tc.ast.Nodes[pattern].Kind == ast.NodeCallExpr {
-						callee := tc.ast.Nodes[pattern].FirstChild
+					} else if patNode.Kind == ast.NodeCallExpr {
+						callee := patNode.FirstChild
 						if tc.ast.Nodes[callee].Kind == ast.NodeIdent {
 							symIdx := tc.ast.Nodes[callee].Payload
 							if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
@@ -375,6 +376,24 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 								seenVariants[sym.NameID] = true
 							}
 						}
+					} else if patNode.Kind == ast.NodeVariantPat {
+						symIdx := patNode.Payload
+						if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+							sym := tc.symtable.SymbolAt(symIdx)
+							seenVariants[sym.NameID] = true
+						}
+					} else if patNode.Kind == ast.NodeBindingPat {
+						symIdx := patNode.Payload
+						if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+							sym := tc.symtable.SymbolAt(symIdx)
+							if sym.Kind == SymVariant {
+								seenVariants[sym.NameID] = true
+							} else {
+								hasWildcard = true
+							}
+						}
+					} else if patNode.Kind == ast.NodeWildcardPat {
+						hasWildcard = true
 					}
 				}
 
@@ -432,6 +451,31 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 								argSym := tc.symtable.SymbolAt(argSymIdx)
 								argSym.TypeID = uint32(payloadType)
 							}
+						}
+					}
+				}
+			} else if tc.ast.Nodes[pattern].Kind == ast.NodeVariantPat {
+				symIdx := tc.ast.Nodes[pattern].Payload
+				arg := tc.ast.Nodes[pattern].FirstChild
+				
+				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+					sym := tc.symtable.SymbolAt(symIdx)
+					
+					// Find variant payload type
+					var payloadType types.TypeID = 0
+					for _, v := range sumInfo.Variants {
+						if v.NameID == sym.NameID {
+							payloadType = v.PayloadType
+							break
+						}
+					}
+
+					// If arg is BindingPat or Ident, bind it
+					if arg != 0 && (tc.ast.Nodes[arg].Kind == ast.NodeBindingPat || tc.ast.Nodes[arg].Kind == ast.NodeIdent) {
+						argSymIdx := tc.ast.Nodes[arg].Payload
+						if argSymIdx != 0 && int(argSymIdx) < len(tc.symtable.Symbols) {
+							argSym := tc.symtable.SymbolAt(argSymIdx)
+							argSym.TypeID = uint32(payloadType)
 						}
 					}
 				}

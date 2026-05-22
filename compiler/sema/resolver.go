@@ -25,6 +25,7 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 			if moduleName == "std.string" {
 				lenID := intern.Intern([]byte("len"))
 				sliceID := intern.Intern([]byte("slice"))
+				concatID := intern.Intern([]byte("concat"))
 
 				// Define std.string.len
 				// fn len(s: str) -> i64
@@ -39,6 +40,13 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 				sliceTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeI64, types.TypeI64}, types.TypeString, nil)
 				st.SymbolAt(sliceSymIdx).TypeID = uint32(sliceTypeID)
 				m.Exports[sliceID] = sliceSymIdx
+
+				// Define std.string.concat
+				// fn concat(a: str, b: str) -> str
+				concatSymIdx, _ := st.Define(concatID, SymFunc, 0, 0)
+				concatTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString}, types.TypeString, nil)
+				st.SymbolAt(concatSymIdx).TypeID = uint32(concatTypeID)
+				m.Exports[concatID] = concatSymIdx
 			}
 			return nil
 		})
@@ -193,13 +201,14 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		symIdx := nr.defineSymbol(nameID, SymTypeAlias, 0, nodeIdx)
 		node.Payload = symIdx
 
+		nr.symtable.PushScope(ScopeBlock)
+
 		if node.Flags&uint16(ast.FlagIsGeneric) != 0 {
 			nr.registerGenericTemplate(nodeIdx, symIdx)
 			sym := nr.symtable.SymbolAt(symIdx)
 			sym.Flags |= SymFlagGeneric
 		}
 		
-		nr.symtable.PushScope(ScopeBlock)
 		nr.resolveChildren(nodeIdx)
 		
 		currScopeIdx := nr.symtable.CurrentScope()
@@ -346,6 +355,14 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		// A binding pattern introduces a new variable in the match arm scope.
 		// e.g., `Some(v)` → `v` is a BindingPat
 		nameID := node.Payload
+		if symIdx, found := nr.symtable.Resolve(nameID); found {
+			sym := nr.symtable.SymbolAt(symIdx)
+			if sym.Kind == SymVariant {
+				node.Payload = symIdx
+				nr.symtable.MarkUsed(symIdx)
+				break
+			}
+		}
 		node.Payload = nr.defineSymbol(nameID, SymVar, 0, nodeIdx)
 
 	case ast.NodeVariantPat:
@@ -382,6 +399,7 @@ func (nr *NameResolver) defineSymbol(nameID uint32, kind SymKind, flags SymFlags
 	if diag != nil {
 		name := nr.intern.Get(nameID)
 		diag.Message = fmt.Sprintf("symbol already defined in this scope: '%s'", name)
+		diag.Pos = nodePos(nr.ast, declNode)
 		nr.errors = append(nr.errors, *diag)
 	}
 	return idx

@@ -351,4 +351,5 @@ var oneCharOps = map[byte]TokenKind{
 	'.': TokenDot, ',': TokenComma, ':': TokenColon, ';': TokenSemicolon,
 	'!': TokenBang, '(': TokenLParen, ')': TokenRParen,
 	'[': TokenLBracket, ']': TokenRBracket, '{': TokenLBrace, '}': TokenRBrace,
+	'#': TokenHash,
 }

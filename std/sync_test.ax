@@ -1,0 +1,70 @@
+// AXIOM Standard Library — std::sync_test
+//
+// Standalone unit tests for AXIOM-native synchronization primitives.
+
+extern "C" fn puts(s: str) -> i32
+extern "C" fn printf(fmt: str, a1: i64) -> i32
+
+fn test_atomic_operations():
+    mut at := atomic_new[i32](10 as i32)
+    assert(at.load() == 10)
+
+    at.store(20 as i32)
+    assert(at.load() == 20)
+
+    let old = at.swap(30 as i32)
+    assert(old == 20)
+    assert(at.load() == 30)
+
+    let swapped = at.compare_and_swap(30 as i32, 40 as i32)
+    assert(swapped == true)
+    assert(at.load() == 40)
+
+    let not_swapped = at.compare_and_swap(30 as i32, 50 as i32)
+    assert(not_swapped == false)
+    assert(at.load() == 40)
+    puts("  PASS: test_atomic_operations")
+
+fn test_mutex_operations():
+    mut m := mutex_new[i32](100 as i32)
+    
+    // Test lock & unlock
+    let guard = m.lock()
+    assert(guard.get() == 100)
+    guard.set(200 as i32)
+    assert(guard.get() == 200)
+    guard.unlock()
+
+    // Test try_lock
+    let guard_opt = m.try_lock()
+    assert(guard_opt.is_some())
+    let g = guard_opt.unwrap()
+    assert(g.get() == 200)
+    g.unlock()
+    puts("  PASS: test_mutex_operations")
+
+fn test_rwlock_operations():
+    mut l := rwlock_new[i32](500 as i32)
+
+    // Test read lock
+    let r1 = l.read()
+    assert(r1.get() == 500)
+    let r2 = l.read()
+    assert(r2.get() == 500)
+    r1.unlock()
+    r2.unlock()
+
+    // Test write lock
+    let w = l.write()
+    assert(w.get() == 500)
+    w.set(1000 as i32)
+    assert(w.get() == 1000)
+    w.unlock()
+    puts("  PASS: test_rwlock_operations")
+
+pub fn main():
+    puts("Running AXIOM-native synchronization unit tests...")
+    test_atomic_operations()
+    test_mutex_operations()
+    test_rwlock_operations()
+    puts("All AXIOM-native synchronization tests passed!")

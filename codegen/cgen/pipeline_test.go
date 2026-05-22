@@ -101,13 +101,18 @@ func TestPipeline_SingleFuncNoBody(t *testing.T) {
 	}
 
 	// Should have the prototype in the declarations section
-	if !strings.Contains(output, "ax_i32 ax_main(void);") {
+	if !strings.Contains(output, "ax_i32 ax_main_usr(void);") {
 		t.Errorf("missing function prototype:\n%s", output)
 	}
 
 	// Should have the function definition
-	if !strings.Contains(output, "ax_i32 ax_main(void) {") {
+	if !strings.Contains(output, "ax_i32 ax_main_usr(void) {") {
 		t.Errorf("missing function definition:\n%s", output)
+	}
+
+	// Should have the wrapper
+	if !strings.Contains(output, "ax_i32 ax_main(void) {") {
+		t.Errorf("missing wrapper definition:\n%s", output)
 	}
 }
 
@@ -305,8 +310,8 @@ func TestPipeline_OutputStructure(t *testing.T) {
 
 	// Verify ordering: #include comes before prototype, prototype comes before definition
 	includePos := strings.Index(output, `#include "ax_runtime.h"`)
-	protoPos := strings.Index(output, "ax_i32 ax_main(void);")
-	defPos := strings.Index(output, "ax_i32 ax_main(void) {")
+	protoPos := strings.Index(output, "ax_i32 ax_main_usr(void);")
+	defPos := strings.Index(output, "ax_i32 ax_main_usr(void) {")
 
 	if includePos < 0 {
 		t.Fatal("missing #include")

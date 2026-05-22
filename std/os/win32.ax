@@ -1,0 +1,22 @@
+// AXIOM Standard Library — std::os::win32
+//
+// Direct, libc-free Win32 API FFI imports from kernel32.dll.
+
+pub const STD_INPUT_HANDLE:  u32 = 0xFFFFFFF6 as u32 // -10
+pub const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5 as u32 // -11
+pub const STD_ERROR_HANDLE:  u32 = 0xFFFFFFF4 as u32 // -12
+
+pub const GENERIC_READ:    u32 = 0x80000000 as u32
+pub const GENERIC_WRITE:   u32 = 0x40000000 as u32
+pub const FILE_SHARE_READ: u32 = 1 as u32
+
+pub const CREATE_ALWAYS:     u32 = 2 as u32
+pub const OPEN_EXISTING:     u32 = 3 as u32
+pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x80 as u32
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[u32], lpOverlapped: ptr[void]) -> i32
+extern "C" fn ReadFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToRead: u32, lpNumberOfBytesRead: ptr[u32], lpOverlapped: ptr[void]) -> i32
+extern "C" fn CreateFileA(lpFileName: ptr[u8], dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ptr[void], dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ptr[void]) -> ptr[void]
+extern "C" fn CloseHandle(hObject: ptr[void]) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)

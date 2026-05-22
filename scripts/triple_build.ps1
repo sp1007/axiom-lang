@@ -76,8 +76,15 @@ $frontendFiles = @(
     "bootstrap/stage1/parser.ax",
     "bootstrap/stage1/resolver.ax",
     "bootstrap/stage1/typecheck.ax",
+    "bootstrap/stage1/connection_graph.ax",
+    "bootstrap/stage1/ownership.ax",
+    "bootstrap/stage1/escape.ax",
+    "bootstrap/stage1/ctgc.ax",
+    "bootstrap/stage1/alias_reuse.ax",
     "bootstrap/stage1/air.ax",
     "bootstrap/stage1/air_builder.ax",
+    "bootstrap/stage1/cgen.ax",
+    "bootstrap/stage1/wasm.ax",
     "bootstrap/stage1/main_air.ax"
 )
 

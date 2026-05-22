@@ -92,6 +92,12 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					if name == "compiler_intrinsic" || name == "@compiler_intrinsic" {
 						isGenericApp = true
 					}
+					symIdx := tc.ast.Nodes[collection].Payload
+					if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+						if tc.symtable.SymbolAt(symIdx).Flags&SymFlagGeneric != 0 {
+							isGenericApp = true
+						}
+					}
 				} else if tc.ast.Nodes[collection].Kind == ast.NodeCallExpr {
 					// e.g. @compiler_intrinsic("size_of")
 					callee := tc.ast.Nodes[collection].FirstChild
@@ -116,13 +122,26 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 			objType := tc.infer.TypeOf(obj)
 			
 			isStructAccess := false
+			var structType types.TypeID = objType
+			var entry *types.TypeEntry
 			if objType != types.TypeUnknown {
-				entry := tc.types.Entry(objType)
+				entry = tc.types.Entry(objType)
 				if entry.Kind == types.KindPointer {
 					objType = tc.types.PointerElem(objType)
 					entry = tc.types.Entry(objType)
 				}
-				if entry.Kind == types.KindStruct {
+				structType = objType
+				if entry.Kind == types.KindGenericInst {
+					for idx := 0; idx < tc.types.Count(); idx++ {
+						e := tc.types.Entry(types.TypeID(idx))
+						if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID == entry.NameID {
+							structType = types.TypeID(idx)
+							entry = e
+							break
+						}
+					}
+				}
+				if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
 					isStructAccess = true
 				}
 			}
@@ -130,27 +149,62 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 			if !isStructAccess {
 				isResolvedSym := false
 				symIdx := node.Payload
+				lhsIsModule := false
+				lhsNode := &tc.ast.Nodes[obj]
+				if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
+					lhsSymIdx := lhsNode.Payload
+					if lhsSymIdx != 0 && int(lhsSymIdx) < len(tc.symtable.Symbols) {
+						lhsSym := tc.symtable.SymbolAt(lhsSymIdx)
+						if lhsSym.Kind == SymModule {
+							lhsIsModule = true
+						}
+					}
+				}
+				nodeIsModule := false
 				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 					sym := tc.symtable.SymbolAt(symIdx)
-					if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst || sym.Kind == SymModule {
-						isResolvedSym = true
+					if sym.Kind == SymModule {
+						nodeIsModule = true
+					}
+				}
+				if lhsIsModule || nodeIsModule {
+					if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+						sym := tc.symtable.SymbolAt(symIdx)
+						if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst || sym.Kind == SymModule {
+							isResolvedSym = true
+						}
 					}
 				}
 				if !isResolvedSym && objType != types.TypeUnknown {
 					tc.errorf(nodeIdx, 3025, "cannot access field on non-struct type %d", objType)
 				}
 			} else {
-				// Verify that the field or method exists on the struct
-				structInfo := tc.types.StructInfo(objType)
-				fieldNameID := uint32(node.Payload)
+				// Verify that the field or method exists on the struct or sum type
 				found := false
-				for _, field := range structInfo.Fields {
-					if field.NameID == fieldNameID {
-						found = true
-						break
+				fieldNameID := uint32(node.Payload)
+				
+				if entry.Kind == types.KindStruct {
+					structInfo := tc.types.StructInfo(structType)
+					for _, field := range structInfo.Fields {
+						if field.NameID == fieldNameID {
+							found = true
+							break
+						}
 					}
 				}
+				
 				if !found && tc.ifaces != nil {
+					methods := tc.ifaces.getMethodsOfStruct(structType)
+					for _, method := range methods {
+						if method.NameID == fieldNameID {
+							found = true
+							break
+						}
+					}
+				}
+
+				// Also fall back to getMethodsOfStruct using the original objType
+				if !found && tc.ifaces != nil && objType != structType {
 					methods := tc.ifaces.getMethodsOfStruct(objType)
 					for _, method := range methods {
 						if method.NameID == fieldNameID {
@@ -159,12 +213,13 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 						}
 					}
 				}
+
 				if !found {
 					fieldName := ""
 					if fieldNameID != 0 {
 						fieldName = tc.intern.Get(fieldNameID)
 					}
-					tc.errorf(nodeIdx, 3026, "struct type %d has no field or method '%s'", objType, fieldName)
+					tc.errorf(nodeIdx, 3026, "type %d has no field or method '%s'", objType, fieldName)
 				}
 			}
 		}

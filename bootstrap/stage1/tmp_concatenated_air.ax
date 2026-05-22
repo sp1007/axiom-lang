@@ -103,6 +103,8 @@ pub const TK_NEWLINE: u8 = 79
 pub const TK_EOF: u8 = 80
 pub const TK_ERROR: u8 = 81
 pub const TK_DOT_DOT: u8 = 82
+pub const TK_HASH: u8 = 83
+
 
 pub struct Token:
     kind: u8
@@ -591,6 +593,11 @@ pub fn scan_operator_or_punct(mut self: Lexer):
         self.pos = self.pos + 1
         self.emit(TK_R_BRACE, start, 1)
         return
+    if b == 35: // '#'
+        self.pos = self.pos + 1
+        self.emit(TK_HASH, start, 1)
+        return
+
 
     self.pos = self.pos + 1
     self.emit(TK_ERROR, start, 1)
@@ -803,6 +810,8 @@ pub const NODE_ERROR: u8 = 63
 
 pub const NODE_DESTROY_STMT: u8 = 64
 pub const NODE_ALIAS_STMT: u8 = 65
+pub const NODE_COMPTIME: u8 = 66
+
 
 // Flags constants (matching compiler/ast/node.go exactly)
 pub const FLAG_IS_PUB: u16 = 1
@@ -1295,6 +1304,42 @@ pub fn parse_nud(mut self: Parser) -> u32:
         let inner = self.parse_expr_with_prec(BP_NONE)
         self.expect(TK_R_PAREN)
         return inner
+    if tok.kind == TK_HASH:
+        let hash_tok = self.consume()
+        let run_tok = self.expect(TK_IDENT)
+        let run_text = self.token_text(run_tok)
+        mut is_run := false
+        if std.string.len(run_text) > 0:
+            if run_text == "run":
+                is_run = true
+            @free(run_text as ptr[u8])
+
+        if is_run:
+            let comptime_node = self.tree.add_node(NODE_COMPTIME, self.token_idx(hash_tok))
+            if self.check(TK_L_BRACE):
+                self.consume() // '{'
+                let block_node = self.tree.add_node(NODE_BLOCK, self.token_idx(run_tok))
+                while not self.check(TK_R_BRACE) and not self.check(TK_EOF):
+                    let prev_pos = self.pos
+                    let stmt = self.parse_stmt()
+                    if stmt != 0 as u32:
+                        self.append_child(block_node, stmt)
+                    if self.pos == prev_pos:
+                        self.consume()
+                self.expect(TK_R_BRACE)
+                self.append_child(comptime_node, block_node)
+            elif self.check(TK_COLON):
+                self.consume() // ':'
+                let block_node = self.parse_block()
+                if block_node != 0 as u32:
+                    self.append_child(comptime_node, block_node)
+            else:
+                let expr_node = self.parse_expr_with_prec(BP_NONE)
+                if expr_node != 0 as u32:
+                    self.append_child(comptime_node, expr_node)
+            return comptime_node
+        else:
+            return self.tree.add_node(NODE_ERROR, self.token_idx(hash_tok))
 
     self.errorf(tok, "expected expression nud")
     self.consume()
@@ -1407,6 +1452,8 @@ pub fn parse_stmt(mut self: Parser) -> u32:
         return self.parse_while_loop()
     if tok.kind == TK_FOR:
         return self.parse_for_loop()
+    if tok.kind == TK_MATCH:
+        return self.parse_match_stmt()
 
     return self.parse_expr_stmt()
 
@@ -1454,6 +1501,18 @@ pub fn parse_if_stmt(mut self: Parser) -> u32:
     if body != 0 as u32:
         self.append_child(node, body)
 
+    while self.check(TK_ELIF):
+        let elif_tok = self.consume()
+        let elif_node = self.tree.add_node(NODE_ELIF_CLAUSE, self.token_idx(elif_tok))
+        let elif_cond = self.parse_expr_with_prec(BP_NONE)
+        if elif_cond != 0 as u32:
+            self.append_child(elif_node, elif_cond)
+        self.expect(TK_COLON)
+        let elif_body = self.parse_block()
+        if elif_body != 0 as u32:
+            self.append_child(elif_node, elif_body)
+        self.append_child(node, elif_node)
+
     if self.check(TK_ELSE):
         let else_tok = self.consume()
         let else_node = self.tree.add_node(NODE_ELSE_CLAUSE, self.token_idx(else_tok))
@@ -1494,6 +1553,99 @@ pub fn parse_for_loop(mut self: Parser) -> u32:
         self.append_child(node, body)
     return node
 
+pub fn parse_match_stmt(mut self: Parser) -> u32:
+    let tok = self.expect(TK_MATCH)
+    let node = self.tree.add_node(NODE_MATCH_STMT, self.token_idx(tok))
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr != 0 as u32:
+        self.append_child(node, expr)
+    self.expect(TK_COLON)
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after match")
+        return node
+    self.consume() // consume INDENT
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let arm = self.parse_match_arm()
+        if arm != 0 as u32:
+            self.append_child(node, arm)
+        if self.pos == prev_pos:
+            self.pos = self.pos + 1
+    if self.check(TK_DEDENT):
+        self.consume()
+    return node
+
+pub fn parse_match_arm(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_MATCH_ARM, self.token_idx(tok))
+    let pat = self.parse_pattern()
+    if pat != 0 as u32:
+        self.append_child(node, pat)
+    self.expect(TK_COLON)
+    if self.check(TK_INDENT):
+        let body = self.parse_block()
+        if body != 0 as u32:
+            self.append_child(node, body)
+    else:
+        let expr = self.parse_expr_with_prec(BP_NONE)
+        if expr != 0 as u32:
+            self.append_child(node, expr)
+        self.expect_newline()
+    return node
+
+pub fn parse_pattern(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind == TK_IDENT:
+        self.consume()
+        let text = self.token_text(tok)
+        let len = std.string.len(text)
+        if len == 1 and text[0] as u8 == 95 as u8: // '_' ASCII is 95
+            @free(text as ptr[u8])
+            return self.tree.add_node(NODE_WILDCARD_PAT, self.token_idx(tok))
+        if self.check(TK_L_PAREN):
+            let node = self.tree.add_node(NODE_VARIANT_PAT, self.token_idx(tok))
+            self.set_payload(node, self.pool.intern(text))
+            @free(text as ptr[u8])
+            self.consume() // '('
+            while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+                let prev_pos = self.pos
+                let inner = self.parse_pattern()
+                if inner != 0 as u32:
+                    self.append_child(node, inner)
+                if not self.check(TK_R_PAREN):
+                    self.expect(TK_COMMA)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_PAREN)
+            return node
+        let node = self.tree.add_node(NODE_BINDING_PAT, self.token_idx(tok))
+        self.set_payload(node, self.pool.intern(text))
+        @free(text as ptr[u8])
+        return node
+    elif (tok.kind == TK_INT_LIT or tok.kind == TK_FLOAT_LIT or tok.kind == TK_STRING_LIT or
+          tok.kind == TK_CHAR_LIT or tok.kind == TK_TRUE or tok.kind == TK_FALSE or tok.kind == TK_NIL):
+        self.consume()
+        return self.tree.add_node(NODE_LITERAL_PAT, self.token_idx(tok))
+    elif tok.kind == TK_L_PAREN:
+        self.consume()
+        let node = self.tree.add_node(NODE_TUPLE_PAT, self.token_idx(tok))
+        while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let inner = self.parse_pattern()
+            if inner != 0 as u32:
+                self.append_child(node, inner)
+            if not self.check(TK_R_PAREN):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_PAREN)
+        return node
+    else:
+        self.errorf(tok, "expected pattern")
+        self.consume()
+        return 0 as u32
+
 pub fn parse_expr_stmt(mut self: Parser) -> u32:
     let expr = self.parse_expr_with_prec(BP_NONE)
     if expr == 0 as u32:
@@ -1527,12 +1679,27 @@ pub fn parse_block(mut self: Parser) -> u32:
 
 pub fn parse_type_expr(mut self: Parser) -> u32:
     let tok = self.peek()
-    if tok.kind == TK_IDENT:
+    if tok.kind == TK_IDENT or tok.kind == TK_FUTURE or tok.kind == TK_ISOLATED:
         self.consume()
         let node = self.tree.add_node(NODE_TYPE_EXPR, self.token_idx(tok))
         let text = self.token_text(tok)
         self.set_payload(node, self.pool.intern(text))
         @free(text as ptr[u8])
+        if self.check_raw(TK_L_BRACKET):
+            let gen_node = self.tree.add_node(NODE_GENERIC_TYPE, self.token_idx(tok))
+            self.append_child(gen_node, node)
+            self.consume() // [
+            while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
+                let prev_pos = self.pos
+                let t = self.parse_type_expr()
+                if t != 0 as u32:
+                    self.append_child(gen_node, t)
+                if not self.check(TK_R_BRACKET):
+                    self.expect(TK_COMMA)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_BRACKET)
+            return gen_node
         return node
     if tok.kind == TK_STAR:
         self.consume()
@@ -1555,6 +1722,36 @@ pub fn parse_type_expr(mut self: Parser) -> u32:
 
     self.errorf(tok, "expected type expression")
     return 0 as u32
+
+pub fn parse_generic_params(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_GENERIC_PARAMS, self.token_idx(tok))
+    self.expect(TK_L_BRACKET)
+    while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let gp = self.parse_generic_param()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+        if not self.check(TK_R_BRACKET):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_BRACKET)
+    return node
+
+pub fn parse_generic_param(mut self: Parser) -> u32:
+    let tok = self.peek()
+    let node = self.tree.add_node(NODE_GENERIC_PARAM, self.token_idx(tok))
+    let name_tok = self.expect(TK_IDENT)
+    let text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    if self.check(TK_COLON):
+        self.consume()
+        let constraint = self.parse_type_expr()
+        if constraint != 0 as u32:
+            self.append_child(node, constraint)
+    return node
 
 pub fn parse_func_decl(mut self: Parser, is_pub: bool) -> u32:
     let fn_tok = self.expect(TK_FN)
@@ -1605,18 +1802,181 @@ pub fn parse_func_decl(mut self: Parser, is_pub: bool) -> u32:
 
     return node
 
+pub fn parse_struct_decl(mut self: Parser, is_pub: bool) -> u32:
+    mut is_packed := false
+    if self.check(TK_PACKED):
+        self.consume()
+        is_packed = true
+    let tok = self.expect(TK_STRUCT)
+    let node = self.tree.add_node(NODE_STRUCT_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+    if is_packed:
+        self.set_flags(node, 64 as u16) // FLAG_IS_PACKED is 64
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_COLON)
+
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after struct declaration")
+        return node
+    self.consume() // consume INDENT
+
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let inner = self.peek()
+        if inner.kind == TK_FN:
+            let m = self.parse_func_decl(false)
+            if m != 0 as u32:
+                self.append_child(node, m)
+        elif inner.kind == TK_PUB:
+            self.consume()
+            let next = self.peek()
+            if next.kind == TK_FN:
+                let m = self.parse_func_decl(true)
+                if m != 0 as u32:
+                    self.append_child(node, m)
+            else:
+                let f = self.parse_field_decl(true)
+                if f != 0 as u32:
+                    self.append_child(node, f)
+        else:
+            let f = self.parse_field_decl(false)
+            if f != 0 as u32:
+                self.append_child(node, f)
+        if self.pos == prev_pos:
+            self.consume()
+
+    if self.check(TK_DEDENT):
+        self.consume()
+    return node
+
+pub fn parse_field_decl(mut self: Parser, is_pub: bool) -> u32:
+    mut is_mut := false
+    if self.check(TK_MUT):
+        self.consume()
+        is_mut = true
+    let tok = self.peek()
+    if tok.kind != TK_IDENT:
+        self.errorf(tok, "expected field name")
+        self.consume()
+        return 0 as u32
+    self.consume()
+    let node = self.tree.add_node(NODE_FIELD_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+    if is_mut:
+        self.set_flags(node, FLAG_IS_MUT as u16)
+    let text = self.token_text(tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    self.expect(TK_COLON)
+    let type_node = self.parse_type_expr()
+    if type_node != 0 as u32:
+        self.append_child(node, type_node)
+    self.expect_newline()
+    return node
+
+pub fn parse_type_alias_decl(mut self: Parser, is_pub: bool) -> u32:
+    let tok = self.expect(TK_TYPE)
+    let node = self.tree.add_node(NODE_TYPE_ALIAS_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_EQ)
+
+    let sum_tok = self.peek()
+    let sum_node = self.tree.add_node(NODE_SUM_TYPE, self.token_idx(sum_tok))
+    let v = self.parse_type_variant()
+    if v != 0 as u32:
+        self.append_child(sum_node, v)
+
+    while self.check_raw(TK_PIPE):
+        self.consume()
+        let next_v = self.parse_type_variant()
+        if next_v != 0 as u32:
+            self.append_child(sum_node, next_v)
+
+    self.append_child(node, sum_node)
+    self.expect_newline()
+    return node
+
+pub fn parse_type_variant(mut self: Parser) -> u32:
+    let tok = self.peek()
+    if tok.kind != TK_IDENT:
+        return 0 as u32
+    self.consume()
+    let node = self.tree.add_node(NODE_VARIANT_DECL, self.token_idx(tok))
+    let text = self.token_text(tok)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+
+    if self.check_raw(TK_L_PAREN):
+        self.consume() // '('
+        while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let t = self.parse_type_expr()
+            if t != 0 as u32:
+                self.append_child(node, t)
+            if not self.check(TK_R_PAREN):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_PAREN)
+    return node
+
 pub fn parse_program(mut self: Parser):
     while not self.check(TK_EOF):
         let prev_pos = self.pos
         let tok = self.peek()
         mut decl := 0 as u32
-        if tok.kind == TK_PUB:
+        if tok.kind == TK_IMPORT:
+            decl = self.parse_import_decl()
+        elif tok.kind == TK_PUB:
             self.consume()
             let next = self.peek()
             if next.kind == TK_FN:
                 decl = self.parse_func_decl(true)
+            elif next.kind == TK_STRUCT or next.kind == TK_PACKED:
+                decl = self.parse_struct_decl(true)
+            elif next.kind == TK_TYPE:
+                decl = self.parse_type_alias_decl(true)
+            elif next.kind == TK_CONST:
+                decl = self.parse_const_decl(true)
+            elif next.kind == TK_EXTERN:
+                decl = self.parse_extern_decl(true)
         elif tok.kind == TK_FN:
             decl = self.parse_func_decl(false)
+        elif tok.kind == TK_STRUCT or tok.kind == TK_PACKED:
+            decl = self.parse_struct_decl(false)
+        elif tok.kind == TK_TYPE:
+            decl = self.parse_type_alias_decl(false)
+        elif tok.kind == TK_CONST:
+            decl = self.parse_const_decl(false)
+        elif tok.kind == TK_EXTERN:
+            decl = self.parse_extern_decl(false)
         else:
             self.errorf(tok, "expected top level declaration")
             self.consume()
@@ -1626,6 +1986,141 @@ pub fn parse_program(mut self: Parser):
 
         if self.pos == prev_pos:
             self.consume()
+
+pub fn parse_param(mut self: Parser) -> u32:
+    let param_tok = self.peek()
+    let param = self.tree.add_node(NODE_PARAM_DECL, self.token_idx(param_tok))
+    if self.check(TK_MUT):
+        self.consume()
+        self.set_flags(param, FLAG_IS_MUT as u16)
+    let param_name = self.expect(TK_IDENT)
+    let param_text = self.token_text(param_name)
+    self.set_payload(param, self.pool.intern(param_text))
+    @free(param_text as ptr[u8])
+    self.expect(TK_COLON)
+    let t = self.parse_type_expr()
+    if t != 0 as u32:
+        self.append_child(param, t)
+    return param
+
+pub fn parse_const_decl(mut self: Parser, is_pub: bool) -> u32:
+    let tok = self.expect(TK_CONST)
+    let node = self.tree.add_node(NODE_CONST_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    self.expect(TK_COLON)
+    let type_node = self.parse_type_expr()
+    if type_node != 0 as u32:
+        self.append_child(node, type_node)
+
+    self.expect(TK_EQ)
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr != 0 as u32:
+        self.append_child(node, expr)
+    self.expect_newline()
+    return node
+
+pub fn parse_extern_decl(mut self: Parser, is_pub: bool) -> u32:
+    self.expect(TK_EXTERN)
+    
+    // Expect ABI string literal, e.g. "C"
+    self.expect(TK_STRING_LIT)
+
+    let fn_tok = self.expect(TK_FN)
+    let node = self.tree.add_node(NODE_FUNC_DECL, self.token_idx(fn_tok))
+    self.set_flags(node, FLAG_IS_EXTERN as u16)
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_L_PAREN)
+    while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let param = self.parse_param()
+        if param != 0 as u32:
+            self.append_child(node, param)
+        if not self.check(TK_R_PAREN):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_PAREN)
+
+    if self.check_raw(TK_ARROW):
+        self.consume()
+        let ret_type = self.parse_type_expr()
+        if ret_type != 0 as u32:
+            self.append_child(node, ret_type)
+    
+    self.expect_newline()
+    return node
+
+pub fn parse_import_decl(mut self: Parser) -> u32:
+    let tok = self.expect(TK_IMPORT)
+    let node = self.tree.add_node(NODE_IMPORT_DECL, self.token_idx(tok))
+
+    let path_tok = self.expect(TK_IDENT)
+    let path_text = self.token_text(path_tok)
+    mut path_id := self.pool.intern(path_text)
+    @free(path_text as ptr[u8])
+
+    while self.check_raw(TK_DOT):
+        self.consume()
+        let seg_tok = self.expect(TK_IDENT)
+        let seg_text = self.token_text(seg_tok)
+        let base_str = self.pool.get(path_id)
+        
+        // Concatenate path segments with '.'
+        let len_base = std.string.len(base_str)
+        let len_seg = std.string.len(seg_text)
+        let total_len = len_base + 1 + len_seg
+        mut new_buf := @alloc(total_len + 1) as ptr[u8]
+        @memcpy(new_buf, base_str as ptr[u8], len_base)
+        new_buf[len_base] = '.' as u8
+        @memcpy(((new_buf as i64) + len_base + 1 as i64) as ptr[u8], seg_text as ptr[u8], len_seg)
+        new_buf[total_len] = 0 as u8
+        
+        path_id = self.pool.intern(new_buf as str)
+        @free(new_buf)
+        @free(seg_text as ptr[u8])
+
+    self.set_payload(node, path_id)
+
+    if self.check_raw(TK_L_BRACE):
+        self.consume()
+        while not self.check(TK_R_BRACE) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let name_tok = self.expect(TK_IDENT)
+            let name_text = self.token_text(name_tok)
+            let name_node = self.tree.add_node(NODE_IDENT, self.token_idx(name_tok))
+            self.set_payload(name_node, self.pool.intern(name_text))
+            @free(name_text as ptr[u8])
+            self.append_child(node, name_node)
+
+            if not self.check(TK_R_BRACE):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_BRACE)
+
+    self.expect_newline()
+    return node
+
 // bootstrap/stage1/resolver.ax
 // Name resolution pass and Symbol Table implementation for self-hosted compiler.
 
@@ -1905,6 +2400,7 @@ pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
     st.define_builtin("println", 0, intern)
     st.define_builtin("compiler_intrinsic", 0, intern)
     st.define_builtin("assert", 0, intern)
+    st.define_builtin("panic", 0, intern)
 
     return st
 
@@ -2017,6 +2513,55 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
     if kind == NODE_PROGRAM:
         self.resolve_children(node_idx)
 
+    elif kind == NODE_IMPORT_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        
+        let name = self.intern.get(name_id)
+        if name == "std.string":
+            let len_name = self.intern.intern_string("std.string.len")
+            self.symtable.define(len_name, SYM_FUNC, 0 as u16, node_idx)
+            let slice_name = self.intern.intern_string("std.string.slice")
+            self.symtable.define(slice_name, SYM_FUNC, 0 as u16, node_idx)
+            let concat_name = self.intern.intern_string("std.string.concat")
+            self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
+
+    elif kind == NODE_FIELD_EXPR:
+        let lhs_idx = self.tree.nodes.data[node_idx].first_child
+        if lhs_idx != 0 as u32:
+            let lhs_node = self.tree.nodes.data[lhs_idx]
+            mut is_module_import := false
+            
+            if lhs_node.kind == NODE_IDENT:
+                let lhs_name = self.intern.get(lhs_node.payload)
+                let rhs_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
+                let full_name = std.string.concat(lhs_name, std.string.concat(".", rhs_name))
+                let full_name_id = self.intern.intern_string(full_name)
+                let sym_idx = self.symtable.resolve(full_name_id)
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    if sym.kind == SYM_MODULE:
+                        self.tree.nodes.data[node_idx].payload = sym_idx
+                        is_module_import = true
+                        
+            if not is_module_import:
+                self.resolve_node(lhs_idx)
+                let updated_lhs_node = self.tree.nodes.data[lhs_idx]
+                if updated_lhs_node.kind == NODE_IDENT or updated_lhs_node.kind == NODE_FIELD_EXPR:
+                    let sym_idx = updated_lhs_node.payload
+                    if sym_idx != 0 as u32:
+                        let sym = self.symtable.symbols.data[sym_idx]
+                        if sym.kind == SYM_MODULE:
+                            let field_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
+                            let module_name = self.intern.get(sym.name_id)
+                            let full_name = std.string.concat(module_name, std.string.concat(".", field_name))
+                            let full_name_id = self.intern.intern_string(full_name)
+                            let resolved_idx = self.symtable.resolve(full_name_id)
+                            if resolved_idx != 0 as u32:
+                                self.tree.nodes.data[node_idx].payload = resolved_idx
+                                self.symtable.symbols.data[resolved_idx].flags = self.symtable.symbols.data[resolved_idx].flags | SYM_FLAG_USED
+
     elif kind == NODE_FUNC_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
         mut sym_flags := 0 as u16
@@ -2085,7 +2630,21 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
         self.tree.nodes.data[node_idx].payload = sym_idx
         self.symtable.push_scope(SCOPE_BLOCK)
         self.resolve_children(node_idx)
+        
+        let curr_scope_idx = self.symtable.current_scope()
         self.symtable.pop_scope()
+        let parent_scope_idx = self.symtable.current_scope()
+        
+        // Elevate variant symbols to parent scope
+        let curr_scope = self.symtable.scopes.data[curr_scope_idx]
+        mut i := 0 as i64
+        while i < curr_scope.capacity as i64:
+            let entry = curr_scope.entries[i]
+            if entry.name_id != 0 as u32:
+                let sym = self.symtable.symbols.data[entry.symbol_idx]
+                if sym.kind == SYM_VARIANT:
+                    self.symtable.scopes.data[parent_scope_idx].scope_put(entry.name_id, entry.symbol_idx)
+            i = i + 1
 
     elif kind == NODE_VARIANT_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
@@ -2164,6 +2723,9 @@ pub fn free_symtable(mut self: SymbolTable):
 
 
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn strlen(s: ptr[u8]) -> i64
+extern "C" fn sprintf(buf: ptr[u8], format: ptr[u8], val: f64) -> i32
+extern "C" fn atof(s: str) -> f64
 
 // Predefined TypeID constants matching types/typeid.go exactly
 pub const TYPE_UNKNOWN: u32 = 0
@@ -2189,6 +2751,13 @@ pub const TYPE_EQ: u32 = 18
 pub const TYPE_HASH: u32 = 19
 pub const TYPE_DISPLAY: u32 = 20
 pub const TYPE_ACTOR_REF: u32 = 21
+
+pub struct ComptimeValue:
+    kind: u32
+    int_val: i64
+    float_val: f64
+    bool_val: bool
+    str_val: str
 
 // TypeKind enum matching compiler/types/types.go Kind constants
 pub const TYPE_KIND_PRIMITIVE: u8 = 0
@@ -2255,6 +2824,54 @@ pub fn push(mut self: StructInfoVec, si: StructInfo):
     self.data[self.len] = si
     self.len = self.len + 1
 
+pub struct VariantInfo:
+    name_id: u32
+    payload_type: u32
+    tag: u8
+    padding1: u8
+    padding2: u16
+
+pub struct VariantInfoVec:
+    data: ptr[VariantInfo]
+    len: i64
+    cap: i64
+
+pub fn push(mut self: VariantInfoVec, vi: VariantInfo):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 16) as ptr[VariantInfo]
+        if self.data != null as ptr[VariantInfo]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = vi
+    self.len = self.len + 1
+
+pub struct SumInfo:
+    variants: VariantInfoVec
+
+pub struct SumInfoVec:
+    data: ptr[SumInfo]
+    len: i64
+    cap: i64
+
+pub fn push(mut self: SumInfoVec, si: SumInfo):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[SumInfo]
+        if self.data != null as ptr[SumInfo]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = si
+    self.len = self.len + 1
+
 pub struct FuncInfo:
     params: U32Vec
     ret: u32
@@ -2300,16 +2917,24 @@ pub fn push(mut self: TypeEntryVec, te: TypeEntry) -> u32:
     self.len = self.len + 1
     return idx
 
+pub fn new_sum_info_vec() -> SumInfoVec:
+    return SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
+
+pub fn new_variant_info_vec() -> VariantInfoVec:
+    return VariantInfoVec(data: null as ptr[VariantInfo], len: 0, cap: 0)
+
 pub struct TypeTable:
     entries: TypeEntryVec
     structs: StructInfoVec
     funcs: FuncInfoVec
+    sumtypes: SumInfoVec
 
 pub fn new_type_table() -> TypeTable:
     mut tt := TypeTable(
         entries: TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0),
         structs: StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0),
         funcs: FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0),
+        sumtypes: SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0),
     )
     
     // 0: Unknown sentinel
@@ -2343,6 +2968,19 @@ pub fn new_type_table() -> TypeTable:
     tt.entries.push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
 
     return tt
+
+pub fn register_sum_type(mut self: TypeTable, name_id: u32, variants: VariantInfoVec) -> u32:
+    let s_idx = self.sumtypes.len as u32
+    self.sumtypes.push(SumInfo(variants: variants))
+    return self.entries.push(TypeEntry(
+        kind: TYPE_KIND_SUM,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 0 as u32,
+        align: 0 as u32,
+        extra: s_idx,
+    ))
 
 pub fn register_struct(mut self: TypeTable, name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
@@ -2419,12 +3057,68 @@ pub fn free_typetable(mut self: TypeTable):
         if f.params.data != null as ptr[u32]:
             @free(f.params.data as ptr[u8])
         i = i + 1
+    i = 0 as i64
+    while i < self.sumtypes.len:
+        let s = self.sumtypes.data[i]
+        if s.variants.data != null as ptr[VariantInfo]:
+            @free(s.variants.data as ptr[u8])
+        i = i + 1
+    if self.sumtypes.data != null as ptr[SumInfo]:
+        @free(self.sumtypes.data as ptr[u8])
     if self.entries.data != null as ptr[TypeEntry]:
         @free(self.entries.data as ptr[u8])
     if self.structs.data != null as ptr[StructInfo]:
         @free(self.structs.data as ptr[u8])
     if self.funcs.data != null as ptr[FuncInfo]:
         @free(self.funcs.data as ptr[u8])
+
+pub fn strip_quotes(s: str) -> str:
+    let len = std.string.len(s)
+    if len >= 2 and s[0] as u8 == '"' as u8 and s[len - 1] as u8 == '"' as u8:
+        let ptr_start = ((s as ptr[u8]) as i64 + 1 as i64) as ptr[u8]
+        return alloc_str_from_raw(ptr_start, len - 2)
+    return s
+
+pub fn format_int(val: i64) -> str:
+    if val == 0 as i64:
+        return "0"
+    if val == -9223372036854775808 as i64:
+        return "-9223372036854775808"
+    mut temp := val
+    mut is_neg := false
+    if val < 0 as i64:
+        is_neg = true
+        temp = 0 as i64 - val
+    let buf = @alloc(24) as ptr[u8]
+    mut len := 0
+    while temp > 0 as i64:
+        let rem = (temp % 10 as i64) as u8
+        buf[len] = ('0' as u8 + rem)
+        len = len + 1
+        temp = temp / 10 as i64
+    if is_neg:
+        buf[len] = '-' as u8
+        len = len + 1
+    mut i := 0
+    mut j := len - 1
+    while i < j:
+        let tmp = buf[i]
+        buf[i] = buf[j]
+        buf[j] = tmp
+        i = i + 1
+        j = j - 1
+    buf[len] = 0 as u8
+    let result = alloc_str_from_raw(buf, len as i64)
+    @free(buf)
+    return result
+
+pub fn format_float(val: f64) -> str:
+    let buf = @alloc(64) as ptr[u8]
+    sprintf(buf, "%g" as ptr[u8], val)
+    let len = strlen(buf)
+    let result = alloc_str_from_raw(buf, len)
+    @free(buf)
+    return result
 
 pub struct TypeChecker:
     tree: AstTree
@@ -2433,6 +3127,7 @@ pub struct TypeChecker:
     types: TypeTable
     node_types: ptr[u32]
     current_return: u32
+    current_match_scrutinee: u32
 
 pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable, types: TypeTable) -> TypeChecker:
     let node_count = tree.nodes.len
@@ -2448,14 +3143,240 @@ pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable
         types: types,
         node_types: node_types,
         current_return: 0 as u32,
+        current_match_scrutinee: 0 as u32,
     )
 
 pub fn free_type_checker(mut self: TypeChecker):
     @free(self.node_types as ptr[u8])
 
+pub fn parse_comptime_int(s: str) -> i64:
+    let len = std.string.len(s)
+    if len == 0:
+        return 0 as i64
+    mut i := 0
+    mut sign := 1 as i64
+    if s[0] as u8 == '-' as u8:
+        sign = -1 as i64
+        i = 1
+    elif s[0] as u8 == '+' as u8:
+        i = 1
+
+    mut base := 10 as i64
+    if i + 1 < len and s[i] as u8 == '0' as u8:
+        let next_char = s[i + 1] as u8
+        if next_char == 'x' as u8 or next_char == 'X' as u8:
+            base = 16 as i64
+            i = i + 2
+        elif next_char == 'o' as u8 or next_char == 'O' as u8:
+            base = 8 as i64
+            i = i + 2
+        elif next_char == 'b' as u8 or next_char == 'B' as u8:
+            base = 2 as i64
+            i = i + 2
+
+    mut val := 0 as i64
+    while i < len:
+        let c = s[i] as u8
+        mut digit := -1 as i64
+        if c >= '0' as u8 and c <= '9' as u8:
+            digit = (c - '0' as u8) as i64
+        elif c >= 'a' as u8 and c <= 'f' as u8:
+            digit = (c - 'a' as u8 + 10 as u8) as i64
+        elif c >= 'A' as u8 and c <= 'F' as u8:
+            digit = (c - 'A' as u8 + 10 as u8) as i64
+
+        if digit < 0 or digit >= base:
+            break
+
+        val = val * base + digit
+        i = i + 1
+
+    return val * sign
+
+pub fn node_text(self: TypeChecker, node_idx: u32) -> str:
+    let node = self.tree.nodes.data[node_idx]
+    let tok_idx = node.token_idx
+    if tok_idx as i64 >= self.tree.tokens.len:
+        return ""
+    let tok = self.tree.tokens.data[tok_idx as i64]
+    if tok.len == 0 as u16:
+        return ""
+    let start_ptr = ((self.tree.src as ptr[u8]) as i64 + tok.offset as i64) as ptr[u8]
+    return alloc_str_from_raw(start_ptr, tok.len as i64)
+
+pub fn eval_comptime(mut self: TypeChecker, node_idx: u32) -> ComptimeValue:
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+    
+    if kind == NODE_INT_LIT:
+        let text = self.node_text(node_idx)
+        let val = parse_comptime_int(text)
+        return ComptimeValue(kind: TYPE_I64, int_val: val, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_FLOAT_LIT:
+        let text = self.node_text(node_idx)
+        let val = atof(text)
+        return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: val, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BOOL_LIT:
+        let text = self.node_text(node_idx)
+        let is_true = (text == "true")
+        return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: is_true, str_val: "")
+        
+    elif kind == NODE_STRING_LIT:
+        let text = self.node_text(node_idx)
+        let stripped = strip_quotes(text)
+        return ComptimeValue(kind: TYPE_STRING, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: stripped)
+        
+    elif kind == NODE_COMPTIME:
+        let child = node.first_child
+        if child != 0 as u32:
+            return self.eval_comptime(child)
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BLOCK:
+        mut child := node.first_child
+        if child == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        mut last_val = ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        while child != 0 as u32:
+            last_val = self.eval_comptime(child)
+            child = self.tree.nodes.data[child].next_sibling
+        return last_val
+        
+    elif kind == NODE_RETURN_STMT:
+        let child = node.first_child
+        if child != 0 as u32:
+            return self.eval_comptime(child)
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_UNARY_EXPR:
+        let child = node.first_child
+        if child == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let val = self.eval_comptime(child)
+        let op = self.node_text(node_idx)
+        if op == "-":
+            if val.kind == TYPE_I64:
+                return ComptimeValue(kind: TYPE_I64, int_val: 0 as i64 - val.int_val, float_val: 0.0, bool_val: false, str_val: "")
+            elif val.kind == TYPE_F64:
+                return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: 0.0 - val.float_val, bool_val: false, str_val: "")
+        elif op == "not" or op == "!":
+            if val.kind == TYPE_BOOL:
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: not val.bool_val, str_val: "")
+        elif op == "~":
+            if val.kind == TYPE_I64:
+                return ComptimeValue(kind: TYPE_I64, int_val: 0 as i64 - val.int_val - 1 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        
+    elif kind == NODE_BINARY_EXPR:
+        let lhs_idx = node.first_child
+        if lhs_idx == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        if rhs_idx == 0 as u32:
+            return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+        let lhs = self.eval_comptime(lhs_idx)
+        let rhs = self.eval_comptime(rhs_idx)
+        let op = self.node_text(node_idx)
+        
+        let is_lhs_num = (lhs.kind == TYPE_I64 or lhs.kind == TYPE_F64)
+        let is_rhs_num = (rhs.kind == TYPE_I64 or rhs.kind == TYPE_F64)
+        if is_lhs_num and is_rhs_num:
+            if lhs.kind == TYPE_F64 or rhs.kind == TYPE_F64:
+                mut lf := lhs.float_val
+                if lhs.kind == TYPE_I64:
+                    lf = lhs.int_val as f64
+                mut rf := rhs.float_val
+                if rhs.kind == TYPE_I64:
+                    rf = rhs.int_val as f64
+                if op == "+":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf + rf, bool_val: false, str_val: "")
+                elif op == "-":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf - rf, bool_val: false, str_val: "")
+                elif op == "*":
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf * rf, bool_val: false, str_val: "")
+                elif op == "/":
+                    if rf == 0.0:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: lf / rf, bool_val: false, str_val: "")
+                elif op == "==":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf == rf, str_val: "")
+                elif op == "!=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf != rf, str_val: "")
+                elif op == "<":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf < rf, str_val: "")
+                elif op == "<=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf <= rf, str_val: "")
+                elif op == ">":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf > rf, str_val: "")
+                elif op == ">=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lf >= rf, str_val: "")
+            else:
+                let lh = lhs.int_val
+                let rh = rhs.int_val
+                if op == "+":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh + rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "-":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh - rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "*":
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh * rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "/":
+                    if rh == 0 as i64:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh / rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "%":
+                    if rh == 0 as i64:
+                        return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+                    return ComptimeValue(kind: TYPE_I64, int_val: lh % rh, float_val: 0.0, bool_val: false, str_val: "")
+                elif op == "==":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh == rh, str_val: "")
+                elif op == "!=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh != rh, str_val: "")
+                elif op == "<":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh < rh, str_val: "")
+                elif op == "<=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh <= rh, str_val: "")
+                elif op == ">":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh > rh, str_val: "")
+                elif op == ">=":
+                    return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lh >= rh, str_val: "")
+        
+        if lhs.kind == TYPE_BOOL and rhs.kind == TYPE_BOOL:
+            let lb = lhs.bool_val
+            let rb = rhs.bool_val
+            if op == "and" or op == "&&":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb and rb, str_val: "")
+            elif op == "or" or op == "||":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb or rb, str_val: "")
+            elif op == "==":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb == rb, str_val: "")
+            elif op == "!=":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: lb != rb, str_val: "")
+                
+        if lhs.kind == TYPE_STRING and rhs.kind == TYPE_STRING:
+            let ls = lhs.str_val
+            let rs = rhs.str_val
+            if op == "+":
+                return ComptimeValue(kind: TYPE_STRING, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: std.string.concat(ls, rs))
+            elif op == "==":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: ls == rs, str_val: "")
+            elif op == "!=":
+                return ComptimeValue(kind: TYPE_BOOL, int_val: 0 as i64, float_val: 0.0, bool_val: ls != rs, str_val: "")
+                
+    return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
+
 pub fn run_type_checker(mut self: TypeChecker):
-    // Phase 1: Register all StructDeclarations
+    // Phase 0: Register all Type Aliases / Sum Types
     mut i := 0 as i64
+    while i < self.tree.nodes.len:
+        let node = self.tree.nodes.data[i]
+        if node.kind == NODE_TYPE_ALIAS_DECL:
+            self.pre_infer_type_alias(i as u32)
+        i = i + 1
+
+    // Phase 1: Register all StructDeclarations
+    i = 0 as i64
     while i < self.tree.nodes.len:
         let node = self.tree.nodes.data[i]
         if node.kind == NODE_STRUCT_DECL:
@@ -2472,6 +3393,61 @@ pub fn run_type_checker(mut self: TypeChecker):
 
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
+
+pub fn pre_infer_type_alias(mut self: TypeChecker, node_idx: u32):
+    let sym_idx = self.tree.nodes.data[node_idx].payload
+    if sym_idx != 0 as u32:
+        let sym = self.symtable.symbols.data[sym_idx]
+        if sym.type_id == 0 as u32:
+            mut sum_node := 0 as u32
+            mut child := self.tree.nodes.data[node_idx].first_child
+            while child != 0 as u32:
+                let child_node = self.tree.nodes.data[child]
+                if child_node.kind == NODE_SUM_TYPE:
+                    sum_node = child
+                    break
+                child = child_node.next_sibling
+            
+            if sum_node != 0 as u32:
+                mut variants := new_variant_info_vec()
+                mut tag := 0 as u8
+                
+                mut v_node := self.tree.nodes.data[sum_node].first_child
+                while v_node != 0 as u32:
+                    let v_node_struct = self.tree.nodes.data[v_node]
+                    if v_node_struct.kind == NODE_VARIANT_DECL:
+                        let v_sym_idx = v_node_struct.payload
+                        if v_sym_idx != 0 as u32:
+                            let v_sym = self.symtable.symbols.data[v_sym_idx]
+                            
+                            mut payload_type := TYPE_UNKNOWN
+                            let type_expr_node = v_node_struct.first_child
+                            if type_expr_node != 0 as u32:
+                                payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
+                                
+                            variants.push(VariantInfo(
+                                name_id: v_sym.name_id,
+                                payload_type: payload_type,
+                                tag: tag,
+                                padding1: 0 as u8,
+                                padding2: 0 as u16,
+                            ))
+                            tag = tag + 1 as u8
+                    v_node = v_node_struct.next_sibling
+                
+                let type_id = self.types.register_sum_type(sym.name_id, variants)
+                self.symtable.symbols.data[sym_idx].type_id = type_id
+                self.node_types[node_idx] = type_id
+                
+                // Assign sum type TypeID to each variant symbol
+                v_node = self.tree.nodes.data[sum_node].first_child
+                while v_node != 0 as u32:
+                    let v_node_struct = self.tree.nodes.data[v_node]
+                    if v_node_struct.kind == NODE_VARIANT_DECL:
+                        let v_sym_idx = v_node_struct.payload
+                        if v_sym_idx != 0 as u32:
+                            self.symtable.symbols.data[v_sym_idx].type_id = type_id
+                    v_node = v_node_struct.next_sibling
 
 pub fn pre_infer_struct(mut self: TypeChecker, node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
@@ -2594,7 +3570,19 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             if child_node.kind != NODE_FIELD_DECL:
                 self.infer_node(child, TYPE_UNKNOWN)
             child = child_node.next_sibling
-            
+
+    elif kind == NODE_TYPE_ALIAS_DECL:
+        let sym_idx = self.tree.nodes.data[node_idx].payload
+        if sym_idx != 0 as u32:
+            result_type = self.symtable.symbols.data[sym_idx].type_id
+        
+        mut child := self.tree.nodes.data[node_idx].first_child
+        while child != 0 as u32:
+            let child_node = self.tree.nodes.data[child]
+            if child_node.kind != NODE_SUM_TYPE:
+                self.infer_node(child, TYPE_UNKNOWN)
+            child = child_node.next_sibling
+
     elif kind == NODE_PARAM_DECL:
         let sym_idx = self.tree.nodes.data[node_idx].payload
         mut p_type := TYPE_UNKNOWN
@@ -2642,6 +3630,72 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
         let expr = self.tree.nodes.data[node_idx].first_child
         if expr != 0 as u32:
             self.infer_node(expr, self.current_return)
+
+    elif kind == NODE_MATCH_STMT:
+        let scrutinee = self.tree.nodes.data[node_idx].first_child
+        if scrutinee != 0 as u32:
+            let scrutinee_type = self.infer_node(scrutinee, TYPE_UNKNOWN)
+            let prev_scrutinee = self.current_match_scrutinee
+            self.current_match_scrutinee = scrutinee_type
+            
+            mut arm := self.tree.nodes.data[scrutinee].next_sibling
+            mut arm_type := TYPE_UNKNOWN
+            while arm != 0 as u32:
+                let t = self.infer_node(arm, expected)
+                if arm_type == TYPE_UNKNOWN:
+                    arm_type = t
+                arm = self.tree.nodes.data[arm].next_sibling
+            
+            self.current_match_scrutinee = prev_scrutinee
+            result_type = arm_type
+
+    elif kind == NODE_MATCH_ARM:
+        let pattern = self.tree.nodes.data[node_idx].first_child
+        mut body := 0 as u32
+        if pattern != 0 as u32:
+            body = self.tree.nodes.data[pattern].next_sibling
+            
+        let scrutinee_type = self.current_match_scrutinee
+        if scrutinee_type != TYPE_UNKNOWN:
+            let s_entry = self.types.entries.data[scrutinee_type]
+            if s_entry.kind == TYPE_KIND_SUM:
+                let sum_info = self.types.sumtypes.data[s_entry.extra]
+                
+                // Let's typecheck the pattern!
+                if pattern != 0 as u32:
+                    let pat_node = self.tree.nodes.data[pattern]
+                    if pat_node.kind == NODE_VARIANT_PAT:
+                        let v_sym_idx = pat_node.payload
+                        if v_sym_idx != 0 as u32:
+                            let v_sym = self.symtable.symbols.data[v_sym_idx]
+                            
+                            // Find corresponding variant in sum_info
+                            mut payload_type := TYPE_UNKNOWN
+                            mut found := false
+                            mut j := 0 as i64
+                            while j < sum_info.variants.len:
+                                let v_info = sum_info.variants.data[j]
+                                if v_info.name_id == v_sym.name_id:
+                                    payload_type = v_info.payload_type
+                                    found = true
+                                    break
+                                j = j + 1
+                            
+                            // Now assign payload type to binding patterns (which are children of NODE_VARIANT_PAT)
+                            let arg = pat_node.first_child
+                            if arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
+                                let arg_sym_idx = self.tree.nodes.data[arg].payload
+                                if arg_sym_idx != 0 as u32:
+                                    self.symtable.symbols.data[arg_sym_idx].type_id = payload_type
+                                    self.node_types[arg] = payload_type
+                    elif pat_node.kind == NODE_BINDING_PAT:
+                        let b_sym_idx = pat_node.payload
+                        if b_sym_idx != 0 as u32:
+                            self.symtable.symbols.data[b_sym_idx].type_id = scrutinee_type
+                            self.node_types[pattern] = scrutinee_type
+        
+        if body != 0 as u32:
+            result_type = self.infer_node(body, expected)
         
     elif kind == NODE_IF_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
@@ -2727,6 +3781,8 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     result_type = fi.ret
                 elif entry.kind == TYPE_KIND_STRUCT:
                     result_type = callee_type
+                elif entry.kind == TYPE_KIND_SUM:
+                    result_type = callee_type
             
             // Infer arguments
             mut arg := self.tree.nodes.data[callee].next_sibling
@@ -2767,7 +3823,29 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
                     result_type = self.types.register_slice(inner)
-                    
+    elif kind == NODE_UNARY_EXPR:
+        let operand = self.tree.nodes.data[node_idx].first_child
+        if operand != 0 as u32:
+            let operand_type = self.infer_node(operand, expected)
+            let op = self.node_text(node_idx)
+            if op == "&":
+                result_type = self.types.register_pointer(operand_type)
+            elif op == "not" or op == "!":
+                result_type = TYPE_BOOL
+            else:
+                result_type = operand_type
+
+    elif kind == NODE_DEREF_EXPR:
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            let child_type = self.infer_node(child, TYPE_UNKNOWN)
+            if child_type != TYPE_UNKNOWN:
+                let entry = self.types.entries.data[child_type]
+                if entry.kind == TYPE_KIND_POINTER:
+                    result_type = entry.extra
+                else:
+                    result_type = child_type
+
     elif kind == NODE_INT_LIT:
         if expected == TYPE_I8 or expected == TYPE_I16 or expected == TYPE_I32 or expected == TYPE_I64 or expected == TYPE_U8 or expected == TYPE_U16 or expected == TYPE_U32 or expected == TYPE_U64 or expected == TYPE_F32 or expected == TYPE_F64 or expected == TYPE_ISIZE or expected == TYPE_USIZE:
             result_type = expected
@@ -2815,6 +3893,7 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                         let f = struct_info.fields.data[j]
                         if f.name_id == field_name_id:
                             result_type = f.type_id
+                            self.tree.nodes.data[node_idx].extra_idx = j as u32
                             found = true
                             break
                         j = j + 1
@@ -2842,6 +3921,60 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                     result_type = c_entry.extra
                     
+    elif kind == NODE_COMPTIME:
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            let child_type = self.infer_node(child, expected)
+            if child_type == TYPE_UNKNOWN:
+                result_type = TYPE_UNKNOWN
+            else:
+                let val = self.eval_comptime(child)
+                mut lit_kind := NODE_INT_LIT
+                mut val_str := ""
+                mut tok_kind := TK_INT_LIT
+                
+                if val.kind == TYPE_BOOL:
+                    lit_kind = NODE_BOOL_LIT
+                    if val.bool_val:
+                        val_str = "true"
+                        tok_kind = TK_TRUE
+                    else:
+                        val_str = "false"
+                        tok_kind = TK_FALSE
+                elif val.kind == TYPE_STRING:
+                    lit_kind = NODE_STRING_LIT
+                    val_str = std.string.concat("\"", std.string.concat(val.str_val, "\""))
+                    tok_kind = TK_STRING_LIT
+                elif val.kind == TYPE_F64:
+                    lit_kind = NODE_FLOAT_LIT
+                    val_str = format_float(val.float_val)
+                    tok_kind = TK_FLOAT_LIT
+                else:
+                    lit_kind = NODE_INT_LIT
+                    val_str = format_int(val.int_val)
+                    tok_kind = TK_INT_LIT
+                
+                let new_offset = std.string.len(self.tree.src) as u32
+                self.tree.src = std.string.concat(self.tree.src, val_str)
+                
+                let new_tok_idx = self.tree.tokens.len as u32
+                self.tree.tokens.push(Token(
+                    kind: tok_kind,
+                    padding: 0 as u8,
+                    len: std.string.len(val_str) as u16,
+                    offset: new_offset,
+                ))
+                
+                // Mutate the AST node in-place
+                self.tree.nodes.data[node_idx].kind = lit_kind
+                self.tree.nodes.data[node_idx].token_idx = new_tok_idx
+                self.tree.nodes.data[node_idx].first_child = NULL_IDX
+                self.tree.nodes.data[node_idx].payload = val.kind
+                
+                result_type = val.kind
+        else:
+            result_type = TYPE_VOID
+
     else:
         // Default traversal
         mut child := self.tree.nodes.data[node_idx].first_child
@@ -2851,6 +3984,704 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             
     self.node_types[node_idx] = result_type
     return result_type
+// bootstrap/stage1/connection_graph.ax
+// ConnectionGraph models ownership relationships between values as a directed
+// graph with typed edges for static memory safety.
+
+pub const EDGE_OWNS: u32 = 0
+pub const EDGE_BORROWS: u32 = 1
+pub const EDGE_FLOWS_TO: u32 = 2
+pub const EDGE_ESCAPES_TO: u32 = 3
+pub const EDGE_REUSED_BY: u32 = 4
+
+pub struct CGNode:
+    pub id: u32
+    pub sym_id: u32
+    pub type_id: u32
+    pub is_ref: bool
+    pub lifetime: u32
+
+pub struct CGNodeVec:
+    pub data: ptr[CGNode]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_cg_node_vec() -> CGNodeVec:
+    return CGNodeVec(data: null as ptr[CGNode], len: 0, cap: 0)
+
+pub fn push(mut self: CGNodeVec, n: CGNode) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 20) as ptr[CGNode] // CGNode size is 20 bytes
+        if self.data != null as ptr[CGNode]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 20)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = n
+    self.len = self.len + 1
+    return idx
+
+pub struct CGEdge:
+    pub from: u32
+    pub to: u32
+    pub kind: u32
+
+pub struct CGEdgeVec:
+    pub data: ptr[CGEdge]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_cg_edge_vec() -> CGEdgeVec:
+    return CGEdgeVec(data: null as ptr[CGEdge], len: 0, cap: 0)
+
+pub fn push(mut self: CGEdgeVec, e: CGEdge) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 12) as ptr[CGEdge] // CGEdge size is 12 bytes
+        if self.data != null as ptr[CGEdge]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 12)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = e
+    self.len = self.len + 1
+    return idx
+
+pub struct U32VecVec:
+    pub data: ptr[U32Vec]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_u32_vec_vec() -> U32VecVec:
+    return U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+
+pub fn push(mut self: U32VecVec, v: U32Vec) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[U32Vec] // size of U32Vec is 24 bytes
+        if self.data != null as ptr[U32Vec]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = v
+    self.len = self.len + 1
+    return idx
+
+pub struct ConnectionGraph:
+    pub nodes: CGNodeVec
+    pub edges: CGEdgeVec
+    pub adj_out: U32VecVec
+    pub adj_in: U32VecVec
+    pub sym_to_node: U32Vec
+
+pub fn new_connection_graph() -> ConnectionGraph:
+    return ConnectionGraph(
+        nodes: new_cg_node_vec(),
+        edges: new_cg_edge_vec(),
+        adj_out: new_u32_vec_vec(),
+        adj_in: new_u32_vec_vec(),
+        sym_to_node: new_u32_vec(),
+    )
+
+pub fn free_connection_graph(mut self: ConnectionGraph):
+    if self.nodes.data != null as ptr[CGNode]:
+        @free(self.nodes.data as ptr[u8])
+    if self.edges.data != null as ptr[CGEdge]:
+        @free(self.edges.data as ptr[u8])
+    
+    mut i := 0 as i64
+    while i < self.adj_out.len:
+        let v = self.adj_out.data[i]
+        if v.data != null as ptr[u32]:
+            @free(v.data as ptr[u8])
+        i = i + 1
+    if self.adj_out.data != null as ptr[U32Vec]:
+        @free(self.adj_out.data as ptr[u8])
+
+    i = 0
+    while i < self.adj_in.len:
+        let v = self.adj_in.data[i]
+        if v.data != null as ptr[u32]:
+            @free(v.data as ptr[u8])
+        i = i + 1
+    if self.adj_in.data != null as ptr[U32Vec]:
+        @free(self.adj_in.data as ptr[u8])
+
+    if self.sym_to_node.data != null as ptr[u32]:
+        @free(self.sym_to_node.data as ptr[u8])
+
+pub fn ensure_adj_capacity(mut self: ConnectionGraph, node_id: u32):
+    while self.adj_out.len <= node_id as i64:
+        self.adj_out.push(new_u32_vec())
+    while self.adj_in.len <= node_id as i64:
+        self.adj_in.push(new_u32_vec())
+
+pub fn add_value_node(mut self: ConnectionGraph, sym_id: u32, type_id: u32, lifetime: u32) -> u32:
+    let id = self.nodes.len as u32
+    self.nodes.push(CGNode(
+        id: id,
+        sym_id: sym_id,
+        type_id: type_id,
+        is_ref: false,
+        lifetime: lifetime,
+    ))
+    self.ensure_adj_capacity(id)
+    if sym_id != 0:
+        while self.sym_to_node.len <= sym_id as i64:
+            self.sym_to_node.push(0xffffffff as u32)
+        self.sym_to_node.data[sym_id] = id
+    return id
+
+pub fn add_ref_node(mut self: ConnectionGraph, target_node_id: u32) -> u32:
+    mut type_id := 0 as u32
+    mut lifetime := 0 as u32
+    if (target_node_id as i64) < self.nodes.len:
+        type_id = self.nodes.data[target_node_id].type_id
+        lifetime = self.nodes.data[target_node_id].lifetime
+    
+    let id = self.nodes.len as u32
+    self.nodes.push(CGNode(
+        id: id,
+        sym_id: 0 as u32,
+        type_id: type_id,
+        is_ref: true,
+        lifetime: lifetime,
+    ))
+    self.ensure_adj_capacity(id)
+    self.add_edge(id, target_node_id, EDGE_BORROWS)
+    return id
+
+pub fn add_edge(mut self: ConnectionGraph, from: u32, to: u32, kind: u32):
+    let edge_idx = self.edges.push(CGEdge(from: from, to: to, kind: kind))
+    self.ensure_adj_capacity(from)
+    self.ensure_adj_capacity(to)
+    self.adj_out.data[from].push(edge_idx)
+    self.adj_in.data[to].push(edge_idx)
+
+pub fn node_of_sym(self: ConnectionGraph, sym_id: u32) -> u32:
+    if (sym_id as i64) < self.sym_to_node.len:
+        return self.sym_to_node.data[sym_id]
+    return 0xffffffff as u32
+
+pub fn escapes(self: ConnectionGraph, node_id: u32) -> bool:
+    if self.nodes.len == 0:
+        return false
+    mut visited = @alloc(self.nodes.len) as ptr[bool]
+    mut idx := 0 as i64
+    while idx < self.nodes.len:
+        visited[idx] = false
+        idx = idx + 1
+    
+    let res = self.escape_dfs(node_id, visited)
+    @free(visited as ptr[u8])
+    return res
+
+pub fn escape_dfs(self: ConnectionGraph, node_id: u32, visited: ptr[bool]) -> bool:
+    if (node_id as i64) >= self.nodes.len:
+        return false
+    if visited[node_id]:
+        return false
+    visited[node_id] = true
+
+    if (node_id as i64) >= self.adj_out.len:
+        return false
+
+    let out_edges = &self.adj_out.data[node_id]
+    mut i := 0 as i64
+    while i < out_edges.len:
+        let edge_idx = out_edges.data[i]
+        let edge = self.edges.data[edge_idx]
+        if edge.kind == EDGE_ESCAPES_TO:
+            return true
+        if edge.kind == EDGE_OWNS or edge.kind == EDGE_FLOWS_TO:
+            if self.escape_dfs(edge.to, visited):
+                return true
+        i = i + 1
+    return false
+// bootstrap/stage1/ownership.ax
+// OwnershipChecker checks single ownership, moves, and mutability.
+
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+extern "C" fn exit(code: i32)
+
+pub struct OwnershipChecker:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub errors: u32
+
+pub fn new_ownership_checker(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> OwnershipChecker:
+    return OwnershipChecker(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        errors: 0 as u32,
+    )
+
+pub fn check(mut self: OwnershipChecker):
+    self.check_node(0 as u32)
+    if self.errors > 0 as u32:
+        puts("Ownership check failed.")
+        exit(1)
+
+pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_VAR_DECL:
+        let init_idx = node.first_child
+        if init_idx != 0 as u32:
+            self.check_node(init_idx)
+            self.check_move(init_idx)
+        
+    elif kind == NODE_ASSIGN_STMT:
+        let lhs_idx = node.first_child
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        self.check_node(lhs_idx)
+        self.check_node(rhs_idx)
+
+        if lhs_idx != 0 as u32:
+            let lhs_kind = self.tree.nodes.data[lhs_idx].kind
+            if lhs_kind == NODE_IDENT:
+                let sym_idx = self.tree.nodes.data[lhs_idx].payload
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    if (sym.flags & SYM_FLAG_MUT) == 0 as u16:
+                        let tok = self.tree.tokens.data[node.token_idx]
+                        printf("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.errors = self.errors + 1 as u32
+            
+            self.check_move(rhs_idx)
+
+    elif kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            if (sym.flags & SYM_FLAG_MOVED) != 0 as u16:
+                let tok = self.tree.tokens.data[node.token_idx]
+                printf("error[E4001]: use of moved value at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.errors = self.errors + 1 as u32
+
+    elif kind == NODE_CALL_EXPR:
+        mut arg_idx := node.first_child
+        if arg_idx != 0 as u32:
+            self.check_node(arg_idx)
+            arg_idx = self.tree.nodes.data[arg_idx].next_sibling
+            while arg_idx != 0 as u32:
+                self.check_node(arg_idx)
+                self.check_move(arg_idx)
+                arg_idx = self.tree.nodes.data[arg_idx].next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.check_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn check_move(mut self: OwnershipChecker, node_idx: u32):
+    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[node_idx]
+    if node.kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            mut is_copyable := true
+            let type_id = sym.type_id
+            if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
+                let entry = self.typetable.entries.data[type_id]
+                if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_POINTER:
+                    is_copyable = false
+            
+            if not is_copyable:
+                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_MOVED
+// bootstrap/stage1/escape.ax
+// EscapeAnalyser performs escape analysis using ConnectionGraph.
+
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+pub struct EscapeAnalyser:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub curr_cg: ConnectionGraph
+    pub escape_node_idx: u32
+
+pub fn new_escape_analyser(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> EscapeAnalyser:
+    return EscapeAnalyser(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        curr_cg: new_connection_graph(),
+        escape_node_idx: 0 as u32,
+    )
+
+pub fn run(mut self: EscapeAnalyser):
+    self.curr_cg = new_connection_graph()
+    self.escape_node_idx = 0 as u32
+    self.traverse_nodes(0 as u32)
+    free_connection_graph(self.curr_cg)
+
+pub fn traverse_nodes(mut self: EscapeAnalyser, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_FUNC_DECL:
+        // Build new connection graph for each function
+        let old_cg = self.curr_cg
+        self.curr_cg = new_connection_graph()
+        self.escape_node_idx = self.curr_cg.add_value_node(0 as u32, 0 as u32, 0 as u32)
+
+        // Register parameters
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_PARAM_DECL:
+                let sym_idx = child.payload
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
+            child_idx = child.next_sibling
+
+        // Analyze function body
+        child_idx = node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            child_idx = child.next_sibling
+
+        // Tag local variables that escape
+        mut idx := 0 as i64
+        while idx < self.curr_cg.nodes.len:
+            let cg_node = self.curr_cg.nodes.data[idx]
+            if cg_node.sym_id != 0 as u32:
+                let sym_idx = cg_node.sym_id
+                let is_escaping = self.curr_cg.escapes(cg_node.id)
+                if is_escaping:
+                    // Tag symbol and AST decl node
+                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | (FLAG_ESCAPES_TO_HEAP as u16)
+                    let decl_node = self.symtable.symbols.data[sym_idx].decl_node
+                    if decl_node != 0 as u32:
+                        self.tree.nodes.data[decl_node].flags = self.tree.nodes.data[decl_node].flags | (FLAG_ESCAPES_TO_HEAP as u16)
+            idx = idx + 1
+
+        free_connection_graph(self.curr_cg)
+        self.curr_cg = old_cg
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.traverse_nodes(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_block(mut self: EscapeAnalyser, block_idx: u32):
+    if block_idx == 0 as u32 or block_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[block_idx]
+    mut child_idx := node.first_child
+    while child_idx != 0 as u32:
+        self.analyze_stmt(child_idx)
+        child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_stmt(mut self: EscapeAnalyser, stmt_idx: u32):
+    if stmt_idx == 0 as u32 or stmt_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[stmt_idx]
+    let kind = node.kind
+
+    if kind == NODE_VAR_DECL:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            let cg_idx = self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
+            let init_idx = node.first_child
+            if init_idx != 0 as u32:
+                self.analyze_expr(init_idx, cg_idx)
+
+    elif kind == NODE_ASSIGN_STMT:
+        let lhs_idx = node.first_child
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        if lhs_idx != 0 as u32:
+            let lhs_kind = self.tree.nodes.data[lhs_idx].kind
+            if lhs_kind == NODE_IDENT:
+                let sym_idx = self.tree.nodes.data[lhs_idx].payload
+                if sym_idx != 0 as u32:
+                    let lhs_cg_idx = self.curr_cg.node_of_sym(sym_idx)
+                    if lhs_cg_idx != 0xffffffff as u32:
+                        self.analyze_expr(rhs_idx, lhs_cg_idx)
+            else:
+                // non-ident LHS means struct field or indexing, RHS escapes to heap
+                self.analyze_expr(rhs_idx, self.escape_node_idx)
+
+    elif kind == NODE_RETURN_STMT:
+        let val_idx = node.first_child
+        if val_idx != 0 as u32:
+            self.analyze_expr(val_idx, self.escape_node_idx)
+
+    elif kind == NODE_IF_STMT:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            else:
+                self.analyze_stmt(child_idx)
+            child_idx = child.next_sibling
+
+    elif kind == NODE_WHILE_STMT or kind == NODE_FOR_STMT:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            child_idx = child.next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.analyze_stmt(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_expr(mut self: EscapeAnalyser, expr_idx: u32, flow_dest: u32):
+    if expr_idx == 0 as u32 or expr_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[expr_idx]
+    let kind = node.kind
+
+    if kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let cg_src = self.curr_cg.node_of_sym(sym_idx)
+            if cg_src != 0xffffffff as u32 and flow_dest != 0xffffffff as u32:
+                self.curr_cg.add_edge(cg_src, flow_dest, EDGE_FLOWS_TO)
+
+    elif kind == NODE_CALL_EXPR:
+        // Function call: arguments flow to return/escape
+        mut child_idx := node.first_child
+        if child_idx != 0 as u32:
+            // First is callee
+            self.analyze_expr(child_idx, self.escape_node_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+            while child_idx != 0 as u32:
+                self.analyze_expr(child_idx, self.escape_node_idx)
+                child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+    elif kind == NODE_STRUCT_LIT:
+        // Struct literal fields flow to the struct dest
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            let val_idx = child.first_child
+            if val_idx != 0 as u32:
+                self.analyze_expr(val_idx, flow_dest)
+            child_idx = child.next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.analyze_expr(child_idx, flow_dest)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+// bootstrap/stage1/ctgc.ax
+// Compile-Time Garbage Collection (CTGC) injector.
+
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+pub struct CtgcInjector:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub active_vars: U32Vec // Stack of active sym_idx's
+    pub active_var_decls: U32Vec // Stack of AST node decl indices
+
+pub fn new_ctgc_injector(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> CtgcInjector:
+    return CtgcInjector(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        active_vars: new_u32_vec(),
+        active_var_decls: new_u32_vec(),
+    )
+
+pub fn run(mut self: CtgcInjector):
+    self.traverse_and_inject(0 as u32, 0 as u32)
+
+pub fn traverse_and_inject(mut self: CtgcInjector, node_idx: u32, parent_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_BLOCK:
+        let start_len = self.active_vars.len
+        
+        // 1. Collect all non-escaping heap variables declared at this block level
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_VAR_DECL:
+                let sym_idx = child.payload
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    // If it is non-escaping heap variable
+                    if (sym.flags & (FLAG_ESCAPES_TO_HEAP as u16)) == 0 as u16:
+                        mut is_heap := false
+                        let type_id = sym.type_id
+                        if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
+                            let entry = self.typetable.entries.data[type_id]
+                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_POINTER:
+                                is_heap = true
+                        
+                        if is_heap:
+                            self.active_vars.push(sym_idx)
+                            self.active_var_decls.push(child_idx)
+            child_idx = child.next_sibling
+
+        // 2. Recursively process children
+        child_idx = node.first_child
+        while child_idx != 0 as u32:
+            self.traverse_and_inject(child_idx, node_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+        // 3. Inject destroy statements for variables declared in this block at the end of the block
+        let num_block_vars = self.active_vars.len - start_len
+        if num_block_vars > 0 as i64:
+            mut idx := self.active_vars.len - 1 as i64
+            while idx >= start_len:
+                let sym_idx = self.active_vars.data[idx]
+                // Create NODE_DESTROY_STMT node
+                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
+                self.tree.nodes.data[destroy_node].payload = sym_idx
+                self.append_child_node(node_idx, destroy_node)
+                idx = idx - 1
+
+            // Pop them from stack
+            self.active_vars.len = start_len
+            self.active_var_decls.len = start_len
+
+    elif kind == NODE_RETURN_STMT:
+        // Inject destroy statements for all active variables before the return statement
+        if self.active_vars.len > 0 as i64:
+            mut idx := self.active_vars.len - 1 as i64
+            while idx >= 0 as i64:
+                let sym_idx = self.active_vars.data[idx]
+                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
+                self.tree.nodes.data[destroy_node].payload = sym_idx
+                self.insert_before(parent_idx, node_idx, destroy_node)
+                idx = idx - 1
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.traverse_and_inject(child_idx, node_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn append_child_node(mut self: CtgcInjector, parent: u32, child: u32):
+    if self.tree.nodes.data[parent].first_child == 0 as u32:
+        self.tree.nodes.data[parent].first_child = child
+        return
+    mut cur := self.tree.nodes.data[parent].first_child
+    while self.tree.nodes.data[cur].next_sibling != 0 as u32:
+        cur = self.tree.nodes.data[cur].next_sibling
+    self.tree.nodes.data[cur].next_sibling = child
+
+pub fn insert_before(mut self: CtgcInjector, parent: u32, target: u32, new_node: u32):
+    if self.tree.nodes.data[parent].first_child == target:
+        self.tree.nodes.data[new_node].next_sibling = target
+        self.tree.nodes.data[parent].first_child = new_node
+        return
+    mut cur := self.tree.nodes.data[parent].first_child
+    while cur != 0 as u32:
+        if self.tree.nodes.data[cur].next_sibling == target:
+            self.tree.nodes.data[new_node].next_sibling = target
+            self.tree.nodes.data[cur].next_sibling = new_node
+            return
+        cur = self.tree.nodes.data[cur].next_sibling
+// bootstrap/stage1/alias_reuse.ax
+// AliasReuseOptimizer optimizes adjacent destroy and alloc pairs into NODE_ALIAS_STMT.
+
+
+pub struct AliasReuseOptimizer:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+
+pub fn new_alias_reuse_optimizer(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> AliasReuseOptimizer:
+    return AliasReuseOptimizer(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+    )
+
+pub fn run(mut self: AliasReuseOptimizer):
+    self.optimize_node(0 as u32)
+
+pub fn optimize_node(mut self: AliasReuseOptimizer, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_BLOCK:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_DESTROY_STMT:
+                let next_idx = child.next_sibling
+                if next_idx != 0 as u32:
+                    let next_node = self.tree.nodes.data[next_idx]
+                    if next_node.kind == NODE_VAR_DECL:
+                        // Found adjacent destroy and allocation!
+                        let destroy_sym = child.payload
+                        let alloc_sym = next_node.payload
+                        if destroy_sym != 0 as u32 and alloc_sym != 0 as u32:
+                            let sym_d = self.symtable.symbols.data[destroy_sym]
+                            let sym_a = self.symtable.symbols.data[alloc_sym]
+                            if sym_d.type_id == sym_a.type_id:
+                                // Optimize by converting to NODE_ALIAS_STMT!
+                                // For simplicity, we flag FlagUsesArena or custom reuse in the AST.
+                                self.tree.nodes.data[next_idx].flags = self.tree.nodes.data[next_idx].flags | (FLAG_IS_MOVED as u16)
+            
+            self.optimize_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.optimize_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
 // bootstrap/stage1/air.ax
 // SSA-form Intermediate Representation (AIR) structures and builders for the self-hosted AXIOM compiler frontend.
 
@@ -3480,14 +5311,16 @@ pub struct AirModuleBuilder:
     pub typetable: TypeTable
     pub pool: InternPool
     pub module: AirModule
+    pub node_types: ptr[u32]
 
-pub fn new_air_module_builder(tree: AstTree, symbols: SymbolTable, typetable: TypeTable, pool: InternPool) -> AirModuleBuilder:
+pub fn new_air_module_builder(tree: AstTree, symbols: SymbolTable, typetable: TypeTable, pool: InternPool, node_types: ptr[u32]) -> AirModuleBuilder:
     return AirModuleBuilder(
         tree: tree,
         symbols: symbols,
         typetable: typetable,
         pool: pool,
         module: AirModule(funcs: new_air_func_vec()),
+        node_types: node_types,
     )
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
@@ -3634,9 +5467,9 @@ pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
         return 0 as u32
     let node = self.mb.tree.nodes.data[idx as i64]
     if node.kind == NODE_INT_LIT:
-        return self.lower_int_lit(node)
+        return self.lower_int_lit(idx, node)
     if node.kind == NODE_FLOAT_LIT:
-        return self.lower_float_lit(node)
+        return self.lower_float_lit(idx, node)
     if node.kind == NODE_BOOL_LIT:
         return self.lower_bool_lit(node)
     if node.kind == NODE_NIL_LIT:
@@ -3671,17 +5504,15 @@ pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
         return self.lower_array_lit(idx, node)
     return 0 as u32
 
-pub fn lower_int_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_int_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = parse_int_from_str(text)
     @free(text as ptr[u8])
 
     mut type_id := 3 as u16 // default i32
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
@@ -3692,17 +5523,15 @@ pub fn lower_int_lit(mut self: FuncLowering, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_float_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_float_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = atof(text)
     @free(text as ptr[u8])
 
     mut type_id := 10 as u16 // default f64
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
 
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
@@ -3860,31 +5689,95 @@ pub fn lower_call_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         return 0 as u32
 
     let callee_node = self.mb.tree.nodes.data[child as i64]
-    if callee_node.kind == NODE_IDENT:
+    
+    // Check if callee is a method call on a struct
+    mut is_method_call := false
+    mut method_sym_idx := 0 as u32
+    mut receiver_node_idx := 0 as u32
+    if callee_node.kind == NODE_FIELD_EXPR:
+        mut resolved := false
+
+        if not resolved:
+            receiver_node_idx = callee_node.first_child
+            if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+                mut rec_type := self.mb.node_types[receiver_node_idx as i64]
+                if rec_type != 0 as u32:
+                    mut entry = self.mb.typetable.entries.data[rec_type as i64]
+                    if entry.kind == TYPE_KIND_POINTER:
+                        rec_type = entry.extra
+                        entry = self.mb.typetable.entries.data[rec_type as i64]
+                    
+                    if entry.kind == TYPE_KIND_STRUCT:
+                        let method_name = self.mb.pool.get(callee_node.payload)
+                        mut i := 0 as i64
+                        while i < self.mb.symbols.symbols.len:
+                            let sym = self.mb.symbols.symbols.data[i]
+                            if sym.kind == SYM_FUNC:
+                                let sym_name = self.mb.pool.get(sym.name_id)
+                                if sym_name == method_name:
+                                    let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+                                    if t_entry.kind == TYPE_KIND_FUNC:
+                                        let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                                        if fi.params.len > 0 as i64:
+                                            mut first_param := fi.params.data[0]
+                                            mut p_entry = self.mb.typetable.entries.data[first_param as i64]
+                                            if p_entry.kind == TYPE_KIND_POINTER:
+                                                first_param = p_entry.extra
+                                            if first_param == rec_type:
+                                                is_method_call = true
+                                                method_sym_idx = i as u32
+                                                resolved = true
+                                                break
+                            i = i + 1 as i64
+
+    if not is_method_call and callee_node.kind == NODE_IDENT:
         let sym_idx = callee_node.payload
         if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[sym_idx as i64]
             if sym.kind == SYM_STRUCT:
                 return self.lower_struct_constructor_call(idx, node, sym.type_id)
 
-    let callee_reg = self.lower_expr(child)
+    let temp_args = @alloc(128 * 4) as ptr[u32]
+    mut temp_count := 0 as u32
 
-    let arg_start = self.fb.emit_extra(0 as u32) // placeholder for arg count
-    mut arg_count := 0 as u32
+    if is_method_call:
+        let receiver_reg = self.lower_expr(receiver_node_idx)
+        temp_args[temp_count as i64] = receiver_reg
+        temp_count = temp_count + 1 as u32
+
     mut arg := callee_node.next_sibling
     while arg != 0 as u32:
         let arg_reg = self.lower_expr(arg)
-        self.fb.emit_extra(arg_reg)
-        arg_count = arg_count + 1 as u32
+        temp_args[temp_count as i64] = arg_reg
+        temp_count = temp_count + 1 as u32
         arg = self.mb.tree.nodes.data[arg as i64].next_sibling
 
-    self.fb.set_extra(arg_start, arg_count)
+    let arg_start = self.fb.emit_extra(temp_count)
+    mut i := 0 as u32
+    while i < temp_count:
+        self.fb.emit_extra(temp_args[i as i64])
+        i = i + 1 as u32
+
+    @free(temp_args as ptr[u8])
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    mut callee_reg := 0 as u32
+
+    if is_method_call:
+        type_id = method_sym_idx as u16
+        callee_reg = 0 as u32
+    else:
+        callee_reg = self.lower_expr(child)
+        if callee_node.kind == NODE_IDENT:
+            type_id = callee_node.payload as u16
+        else:
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                type_id = self.mb.node_types[idx as i64] as u16
+            else:
+                if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+                    let sym = self.mb.symbols.symbols.data[node.payload as i64]
+                    if sym.type_id != 0 as u32:
+                        type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -3905,10 +5798,13 @@ pub fn lower_field_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let field_idx = node.extra_idx
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    let obj_type = self.mb.node_types[child as i64]
+    if obj_type != 0 as u32:
+        let entry = self.mb.typetable.entries.data[obj_type as i64]
+        if entry.kind == TYPE_KIND_POINTER:
+            type_id = entry.extra as u16
+        else:
+            type_id = obj_type as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -3932,10 +5828,13 @@ pub fn lower_index_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         idx_reg = self.lower_expr(idx_expr)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -3955,10 +5854,13 @@ pub fn lower_cast_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let src_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -3978,10 +5880,13 @@ pub fn lower_deref_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let ptr_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -4018,10 +5923,13 @@ pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let future_reg = self.lower_expr(child)
 
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -4035,10 +5943,13 @@ pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
 pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let struct_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -4059,7 +5970,7 @@ pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
                 let val_reg = self.lower_expr(val_child)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
-                    type_id: 0 as u16,
+                    type_id: type_id,
                     dest: val_reg,
                     src1: struct_reg,
                     src2: field_idx,
@@ -4070,10 +5981,13 @@ pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
 pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     mut type_id := 0 as u16
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u16
+    else:
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                type_id = sym.type_id as u16
 
     let arr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -4134,7 +6048,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
                 let val_reg = self.lower_expr(val_child)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
-                    type_id: 0 as u16,
+                    type_id: type_id as u16,
                     dest: val_reg,
                     src1: struct_reg,
                     src2: field_idx,
@@ -4144,7 +6058,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
             let val_reg = self.lower_expr(child)
             self.fb.emit(AirInst(
                 opcode: OP_SET_FIELD,
-                type_id: 0 as u16,
+                type_id: type_id as u16,
                 dest: val_reg,
                 src1: struct_reg,
                 src2: field_idx,
@@ -4346,6 +6260,88 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
     if lhs_idx == 0 as u32:
         return
     let lhs_node = self.mb.tree.nodes.data[lhs_idx as i64]
+
+    if lhs_node.kind == NODE_FIELD_EXPR:
+        let obj_idx = lhs_node.first_child
+        let obj_reg = self.lower_expr(obj_idx)
+        let field_idx = lhs_node.extra_idx
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let obj_type = self.mb.node_types[obj_idx as i64]
+        if obj_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[obj_type as i64]
+            if entry.kind == TYPE_KIND_POINTER:
+                type_id = entry.extra as u16
+            else:
+                type_id = obj_type as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_SET_FIELD,
+            type_id: type_id,
+            dest: val_reg,
+            src1: obj_reg,
+            src2: field_idx,
+        ))
+        return
+
+    elif lhs_node.kind == NODE_INDEX_EXPR:
+        let arr_idx = lhs_node.first_child
+        let arr_reg = self.lower_expr(arr_idx)
+        let index_idx = self.mb.tree.nodes.data[arr_idx as i64].next_sibling
+        mut index_reg := 0 as u32
+        if index_idx != 0 as u32:
+            index_reg = self.lower_expr(index_idx)
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let arr_type = self.mb.node_types[arr_idx as i64]
+        if arr_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[arr_type as i64]
+            if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                type_id = entry.extra as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_STORE,
+            type_id: type_id,
+            dest: arr_reg,
+            src1: val_reg,
+            src2: index_reg,
+        ))
+        return
+
+    elif lhs_node.kind == NODE_DEREF_EXPR:
+        let ptr_idx = lhs_node.first_child
+        let ptr_reg = self.lower_expr(ptr_idx)
+
+        let rhs_idx = lhs_node.next_sibling
+        if rhs_idx == 0 as u32:
+            return
+        let val_reg = self.lower_expr(rhs_idx)
+
+        mut type_id := 0 as u16
+        let ptr_type = self.mb.node_types[ptr_idx as i64]
+        if ptr_type != 0 as u32:
+            let entry = self.mb.typetable.entries.data[ptr_type as i64]
+            if entry.kind == TYPE_KIND_POINTER:
+                type_id = entry.extra as u16
+
+        self.fb.emit(AirInst(
+            opcode: OP_STORE,
+            type_id: type_id,
+            dest: ptr_reg,
+            src1: val_reg,
+            src2: 0 as u32,
+        ))
+        return
 
     mut name_id := lhs_node.payload
     if name_id == 0 as u32:
@@ -4703,19 +6699,1308 @@ pub fn build_module(self: ptr[AirModuleBuilder]):
             if fn_ptr != null as ptr[AirFunc]:
                 self.module.funcs.push(fn_ptr[0])
                 @free(fn_ptr as ptr[u8])
+        elif node.kind == NODE_STRUCT_DECL:
+            mut member := node.first_child
+            while member != 0 as u32:
+                let member_node = self.tree.nodes.data[member as i64]
+                if member_node.kind == NODE_FUNC_DECL:
+                    let fn_ptr = self.lower_func(member, member_node)
+                    if fn_ptr != null as ptr[AirFunc]:
+                        self.module.funcs.push(fn_ptr[0])
+                        @free(fn_ptr as ptr[u8])
+                member = member_node.next_sibling
         child = node.next_sibling
+// bootstrap/stage1/cgen.ax
+// SSA AIR to C11 Code Generator.
+
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
+extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+
+fn opcode_defines_dest(op: u16) -> bool:
+    if op == 0 as u16: // OP_NOP
+        return false
+    if op == 0x0102 as u16: // OP_FREE
+        return false
+    if op == 0x010B as u16: // OP_DESTROY
+        return false
+    if op == 0x0104 as u16: // OP_STORE
+        return false
+    if op == 0x010E as u16: // OP_SET_FIELD
+        return false
+    if op == 0x0301 as u16: // OP_JUMP
+        return false
+    if op == 0x0302 as u16: // OP_BRANCH
+        return false
+    if op == 0x0304 as u16: // OP_RETURN
+        return false
+    return true
+
+pub struct CGenerator:
+    pub module: AirModule
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub file: ptr[void]
+    pub reg_types: ptr[u32]
+
+pub fn new_c_generator(mod: AirModule, tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> CGenerator:
+    return CGenerator(
+        module: mod,
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        file: null as ptr[void],
+        reg_types: null as ptr[u32],
+    )
+
+pub fn get_c_type(self: CGenerator, type_id: u32) -> str:
+    if type_id == 1 as u32:
+        return "ax_i8"
+    if type_id == 2 as u32:
+        return "ax_i16"
+    if type_id == 3 as u32:
+        return "ax_i32"
+    if type_id == 4 as u32:
+        return "ax_i64"
+    if type_id == 5 as u32:
+        return "ax_u8"
+    if type_id == 6 as u32:
+        return "ax_u16"
+    if type_id == 7 as u32:
+        return "ax_u32"
+    if type_id == 8 as u32:
+        return "ax_u64"
+    if type_id == 9 as u32:
+        return "ax_f32"
+    if type_id == 10 as u32:
+        return "ax_f64"
+    if type_id == 11 as u32:
+        return "ax_bool"
+    if type_id == 12 as u32:
+        return "ax_string"
+    if type_id == 13 as u32:
+        return "ax_char"
+    if type_id == 14 as u32:
+        return "void"
+    if type_id == 15 as u32:
+        return "ax_isize"
+    if type_id == 16 as u32:
+        return "ax_usize"
+    
+    if (type_id as i64) < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[type_id]
+        if entry.kind == TYPE_KIND_POINTER:
+            return "void*"
+        if entry.kind == TYPE_KIND_STRUCT:
+            if entry.name_id != 0 as u32:
+                let name = self.pool.get(entry.name_id)
+                // Return struct pointer name
+                mut res := @alloc(std.string.len(name) + 2) as ptr[u8]
+                @memcpy(res, name as ptr[u8], std.string.len(name))
+                res[std.string.len(name)] = '*' as u8
+                res[std.string.len(name) + 1] = 0 as u8
+                return res as str
+            return "void*"
+        if entry.kind == TYPE_KIND_SUM:
+            return "ax_i32"
+        if entry.kind == TYPE_KIND_SLICE:
+            return "ax_slice_void"
+    return "void*"
+
+pub fn is_stdlib_func(self: CGenerator, name: str) -> bool:
+    if name == "system" or name == "remove" or name == "fopen" or name == "fclose" or name == "fseek" or name == "ftell" or name == "rewind" or name == "fread" or name == "fwrite" or name == "printf" or name == "puts" or name == "putchar" or name == "getchar" or name == "fgetc" or name == "fgets" or name == "fputc" or name == "fputs" or name == "sprintf" or name == "snprintf" or name == "fprintf" or name == "scanf" or name == "fscanf" or name == "sscanf" or name == "malloc" or name == "free" or name == "realloc" or name == "calloc" or name == "exit" or name == "abort" or name == "memset" or name == "memcpy" or name == "memmove" or name == "println" or name == "print" or name == "eprint" or name == "eprintln" or name == "assert":
+        return true
+    
+    let name_ptr = name as ptr[u8]
+    let len = std.string.len(name)
+    if len >= 3 and name_ptr[0] == 'a' as u8 and name_ptr[1] == 'x' as u8 and name_ptr[2] == '_' as u8:
+        return true
+            
+    return false
+
+pub fn get_mangled_name_by_sym(self: CGenerator, sym_idx: u32) -> str:
+    mut fn_name := "func"
+    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[sym_idx as i64]
+        fn_name = self.pool.get(sym.name_id)
+        
+        if fn_name == "free":
+            let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+            if is_extern:
+                return "free"
+            return "ax_free"
+
+        if self.is_stdlib_func(fn_name):
+            return fn_name
+
+        let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+        if is_extern:
+            return fn_name
+
+        if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[sym.type_id as i64]
+            if entry.kind == TYPE_KIND_FUNC:
+                let fi = self.typetable.funcs.data[entry.extra as i64]
+                if fi.params.len > 0 as i64:
+                    mut first_param_type = fi.params.data[0]
+                    mut p_entry = self.typetable.entries.data[first_param_type as i64]
+                    if p_entry.kind == TYPE_KIND_POINTER:
+                        first_param_type = p_entry.extra
+                        p_entry = self.typetable.entries.data[first_param_type as i64]
+                    
+                    if p_entry.kind == TYPE_KIND_STRUCT and p_entry.name_id != 0 as u32:
+                        let struct_name = self.pool.get(p_entry.name_id)
+                        let struct_len = std.string.len(struct_name)
+                        let fn_len = std.string.len(fn_name)
+                        let total_len = 3 + struct_len + 1 + fn_len
+                        mut res := @alloc(total_len + 1) as ptr[u8]
+                        @memcpy(res, "ax_" as ptr[u8], 3)
+                        
+                        let dest1 = ((res as u64) + 3 as u64) as ptr[u8]
+                        @memcpy(dest1, struct_name as ptr[u8], struct_len)
+                        
+                        res[3 + struct_len] = '_' as u8
+                        
+                        let dest2 = ((res as u64) + 3 as u64 + struct_len as u64 + 1 as u64) as ptr[u8]
+                        @memcpy(dest2, fn_name as ptr[u8], fn_len)
+                        
+                        res[total_len] = 0 as u8
+                        return res as str
+
+    let fn_len = std.string.len(fn_name)
+    mut res := @alloc(3 + fn_len + 1) as ptr[u8]
+    @memcpy(res, "ax_" as ptr[u8], 3)
+    let dest = ((res as u64) + 3 as u64) as ptr[u8]
+    @memcpy(dest, fn_name as ptr[u8], fn_len)
+    res[3 + fn_len] = 0 as u8
+    return res as str
+
+fn str_to_null_terminated(s: str) -> ptr[u8]:
+    let len = std.string.len(s)
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, s as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf
+
+pub fn generate(mut self: CGenerator, out_filename: str) -> bool:
+    let filename_nt = str_to_null_terminated(out_filename)
+    self.file = fopen(filename_nt as ptr[void], "w")
+    @free(filename_nt)
+    if self.file == null as ptr[void]:
+        return false
+
+    mut has_main := false
+    mut main_has_args := false
+    mut fn_idx := 0 as i64
+    while fn_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[fn_idx]
+        let original_name = self.pool.get(f.name)
+        if original_name == "main":
+            has_main = true
+            if f.params.len > 0 as i64:
+                main_has_args = true
+        fn_idx = fn_idx + 1 as i64
+
+    fputs("// Generated automatically by AXIOM AirCGen Stage 1\n", self.file)
+    if has_main:
+        fputs("#define AX_EMIT_MAIN\n", self.file)
+        if main_has_args:
+            fputs("#define AX_MAIN_WITH_ARGS\n", self.file)
+    fputs("#include \"ax_runtime.h\"\n", self.file)
+    fputs("#include \"ax_stdlib.h\"\n\n", self.file)
+    fputs("#define r_0 0\n\n", self.file)
+
+    // 1. Forward declare all structs
+    fputs("// Forward Declarations\n", self.file)
+    mut i := 0 as i64
+    while i < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[i]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "typedef struct %s %s;\n", (name as ptr[u8]) as i64, (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        i = i + 1
+    fputs("\n", self.file)
+
+    // 2. Define structures
+    fputs("// Struct Definitions\n", self.file)
+    i = 0
+    while i < self.typetable.entries.len:
+        let entry = self.typetable.entries.data[i]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "struct %s {\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            let si = self.typetable.structs.data[entry.extra as i64]
+            mut f_idx := 0 as i64
+            while f_idx < si.fields.len:
+                let field = si.fields.data[f_idx]
+                let field_type = self.get_c_type(field.type_id)
+                // Declare field
+                fprintf(self.file, "    %s f_%d;\n", (field_type as ptr[u8]) as i64, f_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                f_idx = f_idx + 1 as i64
+            fputs("};\n\n", self.file)
+        i = i + 1
+
+    // 3. Function prototypes
+    fputs("// Function Prototypes\n", self.file)
+    mut f_idx := 0 as i64
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            f_idx = f_idx + 1 as i64
+        else:
+            let original_name = self.pool.get(f.name)
+            let mangled_name = self.get_mangled_name_by_sym(f.sym_id)
+            let ret_type = self.get_c_type(f.ret_type)
+            fprintf(self.file, "%s %s(", (ret_type as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                if p_idx > 0:
+                    fputs(", ", self.file)
+                mut param_type := self.get_c_type(f.params.data[p_idx])
+                if original_name == "main" and p_idx == 1 as i64:
+                    param_type = "ax_u8**"
+                fprintf(self.file, "%s p_%d", (param_type as ptr[u8]) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1 as i64
+            fputs(");\n", self.file)
+            if mangled_name != original_name and mangled_name != "free" and mangled_name != "ax_free":
+                @free(mangled_name as ptr[u8])
+            f_idx = f_idx + 1 as i64
+    fputs("\n", self.file)
+
+    // 4. Function definitions
+    fputs("// Function Definitions\n", self.file)
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            f_idx = f_idx + 1 as i64
+        else:
+            let original_name = self.pool.get(f.name)
+            let mangled_name = self.get_mangled_name_by_sym(f.sym_id)
+            let ret_type = self.get_c_type(f.ret_type)
+            
+            fprintf(self.file, "%s %s(", (ret_type as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                if p_idx > 0:
+                    fputs(", ", self.file)
+                mut param_type := self.get_c_type(f.params.data[p_idx])
+                if original_name == "main" and p_idx == 1 as i64:
+                    param_type = "ax_u8**"
+                fprintf(self.file, "%s p_%d", (param_type as ptr[u8]) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1 as i64
+            fputs(") {\n", self.file)
+            if mangled_name != original_name and mangled_name != "free" and mangled_name != "ax_free":
+                @free(mangled_name as ptr[u8])
+
+            // Declare all SSA registers
+            // First scan to collect maximum registers
+            mut max_reg := 0 as u32
+            mut inst_idx := 0 as i64
+            while inst_idx < f.insts.len:
+                let inst = f.insts.data[inst_idx]
+                if inst.dest > max_reg:
+                    max_reg = inst.dest
+                inst_idx = inst_idx + 1
+
+            // Initialize register array types dynamically
+            if max_reg > 0 as u32:
+                self.reg_types = @alloc((max_reg as i64 + 1) * 4) as ptr[u32]
+                mut r := 0 as i64
+                while r <= max_reg as i64:
+                    self.reg_types[r] = 0 as u32
+                    r = r + 1
+
+                // Pre-populate parameter register types
+                if f.params.data != null as ptr[u32]:
+                    mut p_idx := 0 as i64
+                    while p_idx < f.params.len:
+                        let p_reg = (p_idx + 1) as u32
+                        if p_reg <= max_reg:
+                            self.reg_types[p_reg] = f.params.data[p_idx]
+                        p_idx = p_idx + 1
+
+                inst_idx = 0
+                while inst_idx < f.insts.len:
+                    let inst = f.insts.data[inst_idx]
+                    if opcode_defines_dest(inst.opcode) and inst.dest > 0 as u32:
+                        mut t_id := inst.type_id as u32
+                        if inst.opcode == 0x010D as u16: // OP_GET_FIELD
+                            mut obj_type_id = inst.type_id as u32
+                            if obj_type_id == 0 as u32 and inst.src1 > 0 as u32:
+                                obj_type_id = self.reg_types[inst.src1]
+                            if (obj_type_id as i64) < self.typetable.entries.len:
+                                mut entry = self.typetable.entries.data[obj_type_id]
+                                if entry.kind == TYPE_KIND_POINTER:
+                                    let pointee_id = entry.extra
+                                    if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                                        entry = self.typetable.entries.data[pointee_id]
+                                if entry.kind == TYPE_KIND_STRUCT:
+                                    let si = self.typetable.structs.data[entry.extra as i64]
+                                    if (inst.src2 as i64) < si.fields.len:
+                                        t_id = si.fields.data[inst.src2 as i64].type_id
+                        elif (inst.opcode == 0x0105 as u16 or inst.opcode == 0x0109 as u16 or inst.opcode == 0x010F as u16) and t_id == 0 as u32: // OP_INDEX, OP_GEP or OP_DEREF
+                            if inst.src1 > 0 as u32 and self.reg_types[inst.src1] != 0 as u32:
+                                let src_type = self.reg_types[inst.src1]
+                                if (src_type as i64) < self.typetable.entries.len:
+                                    let entry = self.typetable.entries.data[src_type]
+                                    if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                                        t_id = entry.extra
+                        elif inst.opcode == OP_CALL: // OP_CALL
+                            let sym_idx = inst.type_id as u32
+                            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                                let sym = self.symtable.symbols.data[sym_idx as i64]
+                                let fn_name = self.pool.get(sym.name_id)
+                                if fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln" or fn_name == "assert" or fn_name == "free":
+                                    t_id = 14 as u32
+                                else:
+                                    let fn_type_id = sym.type_id
+                                    if fn_type_id != 0 as u32 and (fn_type_id as i64) < self.typetable.entries.len:
+                                        let entry = self.typetable.entries.data[fn_type_id]
+                                        if entry.kind == TYPE_KIND_FUNC:
+                                            let fi = self.typetable.funcs.data[entry.extra as i64]
+                                            t_id = fi.ret
+                        self.reg_types[inst.dest] = t_id
+                    inst_idx = inst_idx + 1
+
+                // Print register declarations
+                r = 1
+                while r <= max_reg as i64:
+                    if self.reg_types[r] != 14 as u32:
+                        let t_name = self.get_c_type(self.reg_types[r])
+                        fprintf(self.file, "    %s r_%d = {0};\n", (t_name as ptr[u8]) as i64, r, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    r = r + 1
+
+                // Copy parameters to registers
+                if f.params.data != null as ptr[u32]:
+                    mut p_idx := 0 as i64
+                    while p_idx < f.params.len:
+                        let r_idx = (p_idx + 1) as i64
+                        fprintf(self.file, "    r_%d = p_%d;\n", r_idx, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        p_idx = p_idx + 1
+
+            // Generate C statements block-by-block
+            mut b_idx := 0 as i64
+            while b_idx < f.blocks.len:
+                let bb = f.blocks.data[b_idx]
+                fprintf(self.file, "block_%d: ;\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+                mut inst_offset := 0 as i64
+                while inst_offset < bb.instrs_len as i64:
+                    let inst_pos = f.block_instrs.data[bb.instrs_start as i64 + inst_offset]
+                    let inst = f.insts.data[inst_pos as i64]
+                    self.translate_inst(f, inst)
+                    inst_offset = inst_offset + 1 as i64
+                b_idx = b_idx + 1 as i64
+
+            if max_reg > 0 as u32:
+                @free(self.reg_types as ptr[u8])
+                self.reg_types = null as ptr[u32]
+
+            fputs("}\n\n", self.file)
+            f_idx = f_idx + 1 as i64
+
+    fclose(self.file)
+    return true
+
+pub fn translate_inst(mut self: CGenerator, f: AirFunc, inst: AirInst):
+    let op = inst.opcode
+    if op == OP_NOP:
+        return
+
+    if op == OP_ICONST:
+        if inst.type_id == 12 as u16: // string
+            let str_val = self.pool.get(inst.src1)
+            mut val_ptr = str_val as ptr[u8]
+            mut val_len = std.string.len(str_val)
+            mut is_stripped := false
+            if val_len >= 2 as i64 and val_ptr[0] == '"' as u8 and val_ptr[val_len - 1] == '"' as u8:
+                val_ptr = ((val_ptr as u64) + 1 as u64) as ptr[u8]
+                val_len = val_len - 2 as i64
+                is_stripped = true
+            
+            mut print_buf := val_ptr
+            if is_stripped:
+                print_buf = @alloc(val_len + 1) as ptr[u8]
+                @memcpy(print_buf, val_ptr, val_len)
+                print_buf[val_len] = 0 as u8
+
+            // Emit AX_STR macro
+            fprintf(self.file, "    r_%d = AX_STR(\"%s\");\n", inst.dest as i64, (print_buf as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            if is_stripped:
+                @free(print_buf)
+        else:
+            fprintf(self.file, "    r_%d = %d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_FCONST:
+        fprintf(self.file, "    r_%d = %d.0;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_IADD:
+        fprintf(self.file, "    r_%d = r_%d + r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_ISUB:
+        fprintf(self.file, "    r_%d = r_%d - r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IMUL:
+        fprintf(self.file, "    r_%d = r_%d * r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IDIV:
+        fprintf(self.file, "    r_%d = r_%d / r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IMOD:
+        fprintf(self.file, "    r_%d = r_%d %% r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_EQ:
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32 and self.reg_types[inst.src1] == 12 as u32:
+            fprintf(self.file, "    r_%d = ax_str_eq(r_%d, r_%d);\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = r_%d == r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NE:
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32 and self.reg_types[inst.src1] == 12 as u32:
+            fprintf(self.file, "    r_%d = !ax_str_eq(r_%d, r_%d);\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = r_%d != r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_LT:
+        fprintf(self.file, "    r_%d = r_%d < r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_LE:
+        fprintf(self.file, "    r_%d = r_%d <= r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GT:
+        fprintf(self.file, "    r_%d = r_%d > r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GE:
+        fprintf(self.file, "    r_%d = r_%d >= r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_AND:
+        fprintf(self.file, "    r_%d = r_%d && r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_OR:
+        fprintf(self.file, "    r_%d = r_%d || r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_XOR:
+        fprintf(self.file, "    r_%d = r_%d ^ r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SHL:
+        fprintf(self.file, "    r_%d = r_%d << r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SHR:
+        fprintf(self.file, "    r_%d = r_%d >> r_%d;\n", inst.dest as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_NOT:
+        fprintf(self.file, "    r_%d = !r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NEG:
+        fprintf(self.file, "    r_%d = -r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_COPY or op == OP_MOVE or op == OP_ALIAS_REUSE:
+        fprintf(self.file, "    r_%d = r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_CAST:
+        if inst.type_id == 12 as u16:
+            fprintf(self.file, "    r_%d = (ax_string){.ptr = (const ax_u8*)r_%d, .len = strlen((const char*)r_%d)};\n", inst.dest as i64, inst.src1 as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            let t_name = self.get_c_type(inst.type_id as u32)
+            mut is_str_src := false
+            if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+                let src_type = self.reg_types[inst.src1]
+                if src_type == 12 as u32:
+                    is_str_src = true
+            if is_str_src:
+                fprintf(self.file, "    r_%d = (%s)r_%d.ptr;\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    r_%d = (%s)r_%d;\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_ALLOC:
+        let entry = self.typetable.entries.data[inst.type_id as i64]
+        if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+            let name = self.pool.get(entry.name_id)
+            fprintf(self.file, "    r_%d = (%s*)ax_alloc(sizeof(%s));\n", inst.dest as i64, (name as ptr[u8]) as i64, (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    r_%d = ax_alloc(%d);\n", inst.dest as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_FREE or op == OP_DESTROY:
+        fprintf(self.file, "    ax_free(r_%d);\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_MAKE_REF:
+        fprintf(self.file, "    r_%d = ax_make_ref(r_%d);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_DEREF:
+        fprintf(self.file, "    r_%d = ax_deref(r_%d);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_GET_FIELD:
+        mut obj_type_id := inst.type_id as u32
+        if obj_type_id == 0 as u32 and self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            obj_type_id = self.reg_types[inst.src1]
+        mut s_name := "void"
+        if obj_type_id != 0 as u32 and (obj_type_id as i64) < self.typetable.entries.len:
+            mut entry = self.typetable.entries.data[obj_type_id]
+            if entry.kind == TYPE_KIND_POINTER:
+                let pointee_id = entry.extra
+                if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                    entry = self.typetable.entries.data[pointee_id]
+            if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+                s_name = self.pool.get(entry.name_id)
+        fprintf(self.file, "    r_%d = ((struct %s*)r_%d)->f_%d;\n", inst.dest as i64, (s_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_SET_FIELD:
+        mut obj_type_id := inst.type_id as u32
+        if obj_type_id == 0 as u32 and self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            obj_type_id = self.reg_types[inst.src1]
+        mut s_name := "void"
+        if obj_type_id != 0 as u32 and (obj_type_id as i64) < self.typetable.entries.len:
+            mut entry = self.typetable.entries.data[obj_type_id]
+            if entry.kind == TYPE_KIND_POINTER:
+                let pointee_id = entry.extra
+                if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                    entry = self.typetable.entries.data[pointee_id]
+            if entry.kind == TYPE_KIND_STRUCT and entry.name_id != 0 as u32:
+                s_name = self.pool.get(entry.name_id)
+        fprintf(self.file, "    ((struct %s*)r_%d)->f_%d = r_%d;\n", (s_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_INDEX:
+        mut t_name := "void*"
+        if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+            let t_id = self.reg_types[inst.src1]
+            if t_id != 0 as u32 and (t_id as i64) < self.typetable.entries.len:
+                let entry = self.typetable.entries.data[t_id]
+                if entry.kind == TYPE_KIND_POINTER:
+                    let pointee = entry.extra
+                    t_name = self.get_c_type(pointee)
+        if t_name == "void*" or t_name == "void":
+            if self.reg_types != null as ptr[u32] and inst.dest > 0 as u32:
+                let dest_t = self.reg_types[inst.dest]
+                if dest_t != 0 as u32:
+                    t_name = self.get_c_type(dest_t)
+        if t_name == "void":
+            t_name = "void*"
+        fprintf(self.file, "    r_%d = ((%s*)r_%d)[r_%d];\n", inst.dest as i64, (t_name as ptr[u8]) as i64, inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_STORE:
+        if inst.src2 != 0 as u32:
+            mut t_name := "void*"
+            if self.reg_types != null as ptr[u32] and inst.dest > 0 as u32:
+                let t_id = self.reg_types[inst.dest]
+                if t_id != 0 as u32 and (t_id as i64) < self.typetable.entries.len:
+                    let entry = self.typetable.entries.data[t_id]
+                    if entry.kind == TYPE_KIND_POINTER:
+                        let pointee = entry.extra
+                        t_name = self.get_c_type(pointee)
+            if t_name == "void*" or t_name == "void":
+                if self.reg_types != null as ptr[u32] and inst.src1 > 0 as u32:
+                    let src_t = self.reg_types[inst.src1]
+                    if src_t != 0 as u32:
+                        t_name = self.get_c_type(src_t)
+            if t_name == "void":
+                t_name = "void*"
+            fprintf(self.file, "    ((%s*)r_%d)[r_%d] = r_%d;\n", (t_name as ptr[u8]) as i64, inst.dest as i64, inst.src2 as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "    *r_%d = r_%d;\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_JUMP:
+        fprintf(self.file, "    goto block_%d;\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_BRANCH:
+        fprintf(self.file, "    if (r_%d) goto block_%d; else goto block_%d;\n", inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    elif op == OP_RETURN:
+        if inst.src1 != 0 as u32:
+            fprintf(self.file, "    return r_%d;\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            if f.ret_type != 14 as u32: // not void
+                let t_name = self.get_c_type(f.ret_type)
+                fprintf(self.file, "    return (%s){0};\n", (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fputs("    return;\n", self.file)
+
+    elif op == OP_CALL:
+        // Handle argument list
+        let arg_start = inst.src2
+        let arg_count = f.extras.data[arg_start as i64]
+        mut is_assert := false
+        mut is_extern := false
+        
+        // Print callee
+        if inst.src1 == 0 as u32:
+            // Direct function call
+            // We find the function name from type_id (which is symbol idx in this case or typetable extra)
+            mut fn_name := "func"
+            let sym_idx = inst.type_id as u32
+            mut is_allocated := false
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                fn_name = self.get_mangled_name_by_sym(sym_idx)
+                let original_name = self.pool.get(self.symtable.symbols.data[sym_idx as i64].name_id)
+                if fn_name != original_name and fn_name != "free" and fn_name != "ax_free":
+                    is_allocated = true
+                let s_flags = self.symtable.symbols.data[sym_idx as i64].flags
+                if (s_flags & 4 as u16) != 0 as u16:
+                    is_extern = true
+            if fn_name == "assert":
+                fn_name = "ax_assert_axiom"
+                is_assert = true
+            elif fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln":
+                // Map to typed builtin
+                mut suffix := "_str"
+                if arg_count > 0 as u32:
+                    let first_arg_reg = f.extras.data[arg_start as i64 + 1]
+                    if self.reg_types != null as ptr[u32] and first_arg_reg > 0 as u32:
+                        let t_id = self.reg_types[first_arg_reg]
+                        if t_id == 3 as u32 or t_id == 4 as u32 or t_id == 7 as u32 or t_id == 8 as u32:
+                            suffix = "_i64"
+                        elif t_id == 9 as u32 or t_id == 10 as u32:
+                            suffix = "_f64"
+                        elif t_id == 11 as u32:
+                            suffix = "_bool"
+                
+                // Mangle to ax_<func_name><suffix>
+                let fn_len = std.string.len(fn_name)
+                let suffix_len = std.string.len(suffix)
+                mut mapped_name := @alloc(fn_len + suffix_len + 4) as ptr[u8]
+                @memcpy(mapped_name, "ax_" as ptr[u8], 3)
+                
+                let dest1 = ((mapped_name as u64) + 3 as u64) as ptr[u8]
+                @memcpy(dest1, fn_name as ptr[u8], fn_len)
+                
+                let dest2 = ((mapped_name as u64) + 3 as u64 + fn_len as u64) as ptr[u8]
+                @memcpy(dest2, suffix as ptr[u8], suffix_len)
+                
+                let term_idx = 3 + fn_len + suffix_len
+                mapped_name[term_idx] = 0 as u8
+                
+                fn_name = mapped_name as str
+                is_allocated = true
+
+            if inst.dest != 0 as u32 and (self.reg_types == null as ptr[u32] or self.reg_types[inst.dest] != 14 as u32):
+                if self.reg_types[inst.dest] == 0 as u32:
+                    fprintf(self.file, "    r_%d = (void*)%s(", inst.dest as i64, (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(self.file, "    r_%d = %s(", inst.dest as i64, (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    %s(", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            if is_allocated:
+                @free(fn_name as ptr[u8])
+        else:
+            // Indirect function call
+            if inst.dest != 0 as u32 and (self.reg_types == null as ptr[u32] or self.reg_types[inst.dest] != 14 as u32):
+                if self.reg_types[inst.dest] == 0 as u32:
+                    fprintf(self.file, "    r_%d = (void*)((void*(*)())r_%d)(", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(self.file, "    r_%d = ((void*(*)())r_%d)(", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "    ((void(*)())r_%d)(", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+        mut i := 0 as i64
+        while i < arg_count as i64:
+            if i > 0:
+                fputs(", ", self.file)
+            let arg_reg = f.extras.data[arg_start as i64 + 1 + i]
+            mut is_str := false
+            if self.reg_types != null as ptr[u32] and arg_reg > 0 as u32:
+                let t_id = self.reg_types[arg_reg]
+                if t_id == 12 as u32:
+                    is_str = true
+            if is_extern and is_str:
+                fprintf(self.file, "(const char*)(r_%d).ptr", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(self.file, "r_%d", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            i = i + 1
+        if is_assert:
+            fputs(", AX_STR(\"assertion failed\")", self.file)
+        fputs(");\n", self.file)
+// bootstrap/stage1/wasm.ax
+// SSA AIR to WebAssembly Text (WAT) Code Generator.
+
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
+extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+
+fn is_type_unsigned(type_id: u32) -> bool:
+    if type_id == 5 as u32 or type_id == 6 as u32 or type_id == 7 as u32 or type_id == 8 as u32 or type_id == 16 as u32:
+        return true
+    return false
+
+fn map_wasm_type(typetable: TypeTable, type_id: u32) -> str:
+    if type_id == 4 as u32 or type_id == 8 as u32: // i64, u64
+        return "i64"
+    if type_id == 9 as u32: // f32
+        return "f32"
+    if type_id == 10 as u32: // f64
+        return "f64"
+    if type_id == 14 as u32: // void
+        return ""
+    // all other integers and pointers map to i32 in wasm32
+    return "i32"
+
+fn wasm_opcode_defines_dest(op: u16) -> bool:
+    if op == 0 as u16: // OP_NOP
+        return false
+    if op == 0x0102 as u16: // OP_FREE
+        return false
+    if op == 0x010B as u16: // OP_DESTROY
+        return false
+    if op == 0x0104 as u16: // OP_STORE
+        return false
+    if op == 0x010E as u16: // OP_SET_FIELD
+        return false
+    if op == 0x0301 as u16: // OP_JUMP
+        return false
+    if op == 0x0302 as u16: // OP_BRANCH
+        return false
+    if op == 0x0304 as u16: // OP_RETURN
+        return false
+    return true
+
+pub struct WasmGenerator:
+    pub module: AirModule
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub file: ptr[void]
+    pub reg_types: ptr[u32]
+
+pub fn new_wasm_generator(mod: AirModule, tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> WasmGenerator:
+    return WasmGenerator(
+        module: mod,
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        file: null as ptr[void],
+        reg_types: null as ptr[u32],
+    )
+
+pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
+    if sym_id == 0 as u32:
+        return "main"
+    if sym_id == 4294967295 as u32:
+        return "malloc"
+    if sym_id == 4294967294 as u32:
+        return "free"
+    
+    let name = self.pool.get(name_id)
+    if std.string.len(name) > 0:
+        if name == "main" or name == "printf" or name == "malloc" or name == "free":
+            return name
+        
+        let ptr_name = name as ptr[u8]
+        if std.string.len(name) >= 4 and ptr_name[0] == '_' as u8 and ptr_name[1] == 'A' as u8 and ptr_name[2] == 'X' as u8 and ptr_name[3] == '_' as u8:
+            return name
+        
+        let new_len = 4 + std.string.len(name)
+        let buf = @alloc(new_len + 1) as ptr[u8]
+        @memcpy(buf, "_AX_" as ptr[u8], 4)
+        @memcpy(((buf as u64) + 4 as u64) as ptr[u8], name as ptr[u8], std.string.len(name))
+        buf[new_len] = 0 as u8
+        return buf as str
+    
+    let buf = @alloc(32) as ptr[u8]
+    snprintf(buf as ptr[void], 32, "_AX_f%d", sym_id as ptr[void], null as ptr[void])
+    return buf as str
+
+fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
+    let len = std.string.len(s)
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, s as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf
+
+pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
+    let filename_nt = wasm_str_to_null_terminated(out_filename)
+    self.file = fopen(filename_nt as ptr[void], "w")
+    @free(filename_nt)
+    if self.file == null as ptr[void]:
+        return false
+
+    fputs("(module\n", self.file)
+    fputs("  (memory (export \"memory\") 1)\n\n", self.file)
+
+    // 1. Declare all external functions as imports
+    mut f_idx := 0 as i64
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            let callee = self.resolve_sym_name(f.sym_id, f.name)
+            fprintf(self.file, "  (import \"env\" \"%s\" (func $%s", (callee as ptr[u8]) as i64, (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                let p_type = map_wasm_type(self.typetable, f.params.data[p_idx])
+                fprintf(self.file, " (param %s)", (p_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1
+            
+            if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+                let r_type = map_wasm_type(self.typetable, f.ret_type)
+                fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            fputs("))\n", self.file)
+            @free(callee as ptr[u8])
+        f_idx = f_idx + 1
+    
+    // Always import malloc and free if not already declared by externs
+    mut has_malloc := false
+    mut has_free := false
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            let name = self.pool.get(f.name)
+            if name == "malloc":
+                has_malloc = true
+            if name == "free":
+                has_free = true
+        f_idx = f_idx + 1
+    
+    if not has_malloc:
+        fputs("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n", self.file)
+    if not has_free:
+        fputs("  (import \"env\" \"free\" (func $free (param i32)))\n", self.file)
+    
+    fputs("\n", self.file)
+
+    // 2. Compile functions
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if not f.is_extern:
+            self.compile_func(f)
+        f_idx = f_idx + 1
+    
+    fputs(")\n", self.file)
+    fclose(self.file)
+    return true
+
+pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
+    let mangled_name = self.resolve_sym_name(f.sym_id, f.name)
+    fprintf(self.file, "  (func $%s (export \"%s\")", (mangled_name as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    @free(mangled_name as ptr[u8])
+
+    mut p_idx := 0 as i64
+    while p_idx < f.params.len:
+        let param_type = map_wasm_type(self.typetable, f.params.data[p_idx])
+        fprintf(self.file, " (param $p%d %s)", (p_idx + 1) as i64, (param_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        p_idx = p_idx + 1
+    
+    if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+        let r_type = map_wasm_type(self.typetable, f.ret_type)
+        fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    
+    fputs("\n", self.file)
+    fputs("    (local $state i32)\n", self.file)
+
+    // Declare SSA registers
+    mut max_reg := 0 as u32
+    mut inst_idx := 0 as i64
+    while inst_idx < f.insts.len:
+        let inst = f.insts.data[inst_idx]
+        if inst.dest > max_reg:
+            max_reg = inst.dest
+        inst_idx = inst_idx + 1
+
+    if max_reg > 0 as u32:
+        self.reg_types = @alloc((max_reg as i64 + 1) * 4) as ptr[u32]
+        mut r := 0 as i64
+        while r <= max_reg as i64:
+            self.reg_types[r] = 0 as u32
+            r = r + 1
+
+        if f.params.data != null as ptr[u32]:
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                let p_reg = (p_idx + 1) as u32
+                if p_reg <= max_reg:
+                    self.reg_types[p_reg] = f.params.data[p_idx]
+                p_idx = p_idx + 1
+
+        inst_idx = 0
+        while inst_idx < f.insts.len:
+            let inst = f.insts.data[inst_idx]
+            if wasm_opcode_defines_dest(inst.opcode) and inst.dest > 0 as u32:
+                mut t_id := inst.type_id as u32
+                if inst.opcode == 0x010D as u16: // OP_GET_FIELD
+                    mut obj_type_id = inst.type_id as u32
+                    if obj_type_id == 0 as u32 and inst.src1 > 0 as u32:
+                        obj_type_id = self.reg_types[inst.src1]
+                    if (obj_type_id as i64) < self.typetable.entries.len:
+                        mut entry = self.typetable.entries.data[obj_type_id]
+                        if entry.kind == TYPE_KIND_POINTER:
+                            let pointee_id = entry.extra
+                            if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                                entry = self.typetable.entries.data[pointee_id]
+                        if entry.kind == TYPE_KIND_STRUCT:
+                            let si = self.typetable.structs.data[entry.extra as i64]
+                            if (inst.src2 as i64) < si.fields.len:
+                                t_id = si.fields.data[inst.src2 as i64].type_id
+                elif (inst.opcode == 0x0105 as u16 or inst.opcode == 0x0109 as u16 or inst.opcode == 0x010F as u16) and t_id == 0 as u32: // OP_INDEX, OP_GEP, OP_DEREF
+                    if inst.src1 > 0 as u32 and self.reg_types[inst.src1] != 0 as u32:
+                        let src_type = self.reg_types[inst.src1]
+                        if (src_type as i64) < self.typetable.entries.len:
+                            let entry = self.typetable.entries.data[src_type]
+                            if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                                t_id = entry.extra
+                elif inst.opcode == OP_CALL: // OP_CALL
+                    let sym_idx = inst.type_id as u32
+                    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                        let sym = self.symtable.symbols.data[sym_idx as i64]
+                        let fn_name = self.pool.get(sym.name_id)
+                        if fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln" or fn_name == "assert" or fn_name == "free":
+                            t_id = 14 as u32
+                        else:
+                            let fn_type_id = sym.type_id
+                            if fn_type_id != 0 as u32 and (fn_type_id as i64) < self.typetable.entries.len:
+                                let entry = self.typetable.entries.data[fn_type_id]
+                                if entry.kind == TYPE_KIND_FUNC:
+                                    let fi = self.typetable.funcs.data[entry.extra as i64]
+                                    t_id = fi.ret
+                self.reg_types[inst.dest] = t_id
+            inst_idx = inst_idx + 1
+
+        r = 1 as i64
+        while r <= max_reg as i64:
+            if self.reg_types[r] != 14 as u32:
+                let t_name = map_wasm_type(self.typetable, self.reg_types[r])
+                fprintf(self.file, "    (local $r%d %s)\n", r, (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            r = r + 1
+
+    if f.blocks.len == 0 as i64:
+        fputs("    return\n  )\n\n", self.file)
+        if max_reg > 0 as u32:
+            @free(self.reg_types as ptr[u8])
+            self.reg_types = null as ptr[u32]
+        return
+
+    fputs("    (local.set $state (i32.const 0))\n\n", self.file)
+    fputs("    (block $outer\n", self.file)
+    fputs("      (loop $loop\n", self.file)
+
+    // Open all blocks hierarchically (N down to 0)
+    mut bi := f.blocks.len - 1
+    while bi >= 0:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, "        (block $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        bi = bi - 1
+    
+    // Emit br_table dispatcher
+    fputs("          (br_table", self.file)
+    bi = 0
+    while bi < f.blocks.len:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        bi = bi + 1
+    fputs(" $b_0 (local.get $state))\n", self.file)
+
+    // Close each block and emit its instructions
+    bi = 0
+    while bi < f.blocks.len:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, "        ) ;; end $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        ;; --- block_%d body ---\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut inst_offset := 0 as i64
+        while inst_offset < bb.instrs_len as i64:
+            let inst_pos = f.block_instrs.data[bb.instrs_start as i64 + inst_offset]
+            let inst = f.insts.data[inst_pos as i64]
+            self.lower_inst(f, inst)
+            inst_offset = inst_offset + 1
+        bi = bi + 1
+    
+    fputs("      )\n", self.file)
+    fputs("    )\n", self.file)
+
+    if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+        let r_type = map_wasm_type(self.typetable, f.ret_type)
+        fprintf(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    
+    fputs("  )\n\n", self.file)
+
+    if max_reg > 0 as u32:
+        @free(self.reg_types as ptr[u8])
+        self.reg_types = null as ptr[u32]
+
+pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
+    let op = inst.opcode
+    if op == OP_NOP:
+        return
+
+    if op == OP_ICONST:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_FCONST:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_COPY or op == OP_MOVE or op == OP_ALIAS_REUSE:
+        if inst.src1 <= f.params.len as u32 and inst.src1 > 0 as u32:
+            fprintf(self.file, "        (local.get $p%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IADD or op == OP_ISUB or op == OP_IMUL or op == OP_IDIV or op == OP_IMOD or op == OP_FADD or op == OP_FSUB or op == OP_FMUL or op == OP_FDIV:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut op_str := "add"
+        if op == OP_IADD or op == OP_FADD:
+            op_str = "add"
+        elif op == OP_ISUB or op == OP_FSUB:
+            op_str = "sub"
+        elif op == OP_IMUL or op == OP_FMUL:
+            op_str = "mul"
+        elif op == OP_IDIV:
+            if is_type_unsigned(inst.type_id as u32):
+                op_str = "div_u"
+            else:
+                op_str = "div_s"
+        elif op == OP_FDIV:
+            op_str = "div"
+        elif op == OP_IMOD:
+            if is_type_unsigned(inst.type_id as u32):
+                op_str = "rem_u"
+            else:
+                op_str = "rem_s"
+        
+        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (op_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_EQ or op == OP_NE or op == OP_LT or op == OP_LE or op == OP_GT or op == OP_GE:
+        mut src_type := "i32"
+        mut is_unsigned_cmp := false
+        if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let src1_type = self.reg_types[inst.src1]
+            src_type = map_wasm_type(self.typetable, src1_type)
+            is_unsigned_cmp = is_type_unsigned(src1_type)
+        
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut cmp_op := "eq"
+        if op == OP_EQ:
+            cmp_op = "eq"
+        elif op == OP_NE:
+            cmp_op = "ne"
+        elif op == OP_LT:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "lt"
+            elif is_unsigned_cmp:
+                cmp_op = "lt_u"
+            else:
+                cmp_op = "lt_s"
+        elif op == OP_LE:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "le"
+            elif is_unsigned_cmp:
+                cmp_op = "le_u"
+            else:
+                cmp_op = "le_s"
+        elif op == OP_GT:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "gt"
+            elif is_unsigned_cmp:
+                cmp_op = "gt_u"
+            else:
+                cmp_op = "gt_s"
+        elif op == OP_GE:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "ge"
+            elif is_unsigned_cmp:
+                cmp_op = "ge_u"
+            else:
+                cmp_op = "ge_s"
+        
+        fprintf(self.file, "        %s.%s\n", (src_type as ptr[u8]) as i64, (cmp_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_AND or op == OP_OR or op == OP_XOR or op == OP_SHL or op == OP_SHR:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut bit_op := "and"
+        if op == OP_AND:
+            bit_op = "and"
+        elif op == OP_OR:
+            bit_op = "or"
+        elif op == OP_XOR:
+            bit_op = "xor"
+        elif op == OP_SHL:
+            bit_op = "shl"
+        elif op == OP_SHR:
+            if is_type_unsigned(inst.type_id as u32):
+                bit_op = "shr_u"
+            else:
+                bit_op = "shr_s"
+        
+        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (bit_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NEG:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        if t == "f32" or t == "f64":
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        %s.neg\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "        (%s.const 0)\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        %s.sub\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NOT:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if t == "i64":
+            fputs("        (i64.const -1)\n", self.file)
+        else:
+            fputs("        (i32.const -1)\n", self.file)
+        fprintf(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
+        mut size := 8 as u32
+        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[inst.type_id]
+            if entry.size != 0 as u32:
+                size = entry.size
+        fprintf(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (call $malloc)\n", self.file)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_FREE or op == OP_DESTROY:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (call $free)\n", self.file)
+    elif op == OP_LOAD:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_STORE:
+        mut t := "i32"
+        if inst.src2 != 0 as u32:
+            // Store to pointer: src2 = index register, dest = base pointer register, src1 = value register
+            if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+                let val_type = self.reg_types[inst.src1]
+                t = map_wasm_type(self.typetable, val_type)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
+            fputs("        i32.add\n", self.file)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+        else:
+            // Dereference store: *dest = src1
+            if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+                let val_type = self.reg_types[inst.src1]
+                t = map_wasm_type(self.typetable, val_type)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GEP:
+        mut elem_size := 8 as u32
+        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[inst.type_id]
+            if entry.size != 0 as u32:
+                elem_size = entry.size
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.mul\n", self.file)
+        fputs("        i32.add\n", self.file)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GET_FIELD:
+        let offset = inst.src2 * 8 as u32
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SET_FIELD:
+        let offset = inst.src2 * 8 as u32
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        mut t := "i32"
+        if inst.dest > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let dest_type = self.reg_types[inst.dest]
+            t = map_wasm_type(self.typetable, dest_type)
+        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_INDEX:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_CALL:
+        let arg_start = inst.src2 as i64
+        mut arg_count := 0 as u32
+        if arg_start < f.extras.len:
+            arg_count = f.extras.data[arg_start]
+        
+        mut j := 0 as i64
+        while j < arg_count as i64:
+            let arg_reg = f.extras.data[arg_start + 1 + j]
+            fprintf(self.file, "        (local.get $r%d)\n", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            j = j + 1
+        
+        mut callee := ""
+        if inst.src1 == 0 as u32:
+            let sym_idx = inst.type_id as u32
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                let sym = self.symtable.symbols.data[sym_idx as i64]
+                callee = self.resolve_sym_name(sym_idx, sym.name_id)
+            else:
+                callee = self.resolve_sym_name(0 as u32, 0 as u32)
+        else:
+            callee = self.resolve_sym_name(0 as u32, 0 as u32)
+        
+        fprintf(self.file, "        (call $%s)\n", (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if inst.dest != 0 as u32:
+            fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        @free(callee as ptr[u8])
+    elif op == OP_CAST or op == OP_ZEXT or op == OP_SEXT or op == OP_TRUNC:
+        let dst_t = map_wasm_type(self.typetable, inst.type_id as u32)
+        mut src_t := "i32"
+        if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let src_type = self.reg_types[inst.src1]
+            src_t = map_wasm_type(self.typetable, src_type)
+        
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if src_t == "i64" and dst_t == "i32":
+            fputs("        i32.wrap_i64\n", self.file)
+        elif src_t == "i32" and dst_t == "i64":
+            if op == OP_ZEXT:
+                fputs("        i64.extend_i32_u\n", self.file)
+            else:
+                fputs("        i64.extend_i32_s\n", self.file)
+        
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_JUMP:
+        fprintf(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (br $loop)\n", self.file)
+    elif op == OP_BRANCH:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (if\n", self.file)
+        fputs("          (then\n", self.file)
+        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("          )\n", self.file)
+        fputs("          (else\n", self.file)
+        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("          )\n", self.file)
+        fputs("        )\n", self.file)
+        fputs("        (br $loop)\n", self.file)
+    elif op == OP_RETURN:
+        if inst.src1 != 0 as u32:
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        return\n", self.file)
+    else:
+        fputs("        nop\n", self.file)
 // bootstrap/stage1/main_air.ax
-// Test harness entry point for AXIOM self-hosted SSA AIR lowering & printer
+// Test harness entry point for AXIOM self-hosted compiler & driver
 
 
-extern "C" fn fopen(filename: ptr[u8], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
 extern "C" fn ftell(stream: ptr[void]) -> i64
 extern "C" fn rewind(stream: ptr[void])
-extern "C" fn fread(buffer: ptr[u8], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn puts(s: str) -> i32
+extern "C" fn system(command: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn remove(filename: ptr[void]) -> i32
 
 fn print_inst(inst: AirInst):
     let op = inst.opcode
@@ -4739,8 +8024,12 @@ fn print_inst(inst: AirInst):
         let is_binary = opcode_is_binary_alu(op)
 
         if has_dest:
-            if inst.type_id != 0 as u16:
-                printf("    %%%d: t%d = %s", inst.dest as i64, inst.type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut type_id := inst.type_id
+            if op == OP_CALL or op == OP_INDEX or op == OP_DEREF or op == OP_CAST or op == OP_AWAIT:
+                type_id = 0 as u16
+
+            if type_id != 0 as u16:
+                printf("    %%%d: t%d = %s", inst.dest as i64, type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 printf("    %%%d = %s", inst.dest as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
@@ -4805,11 +8094,68 @@ fn print_module(mod: AirModule):
 
 pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     if argc < 2:
-        puts("Usage: air_test <filename>")
+        puts("Usage: axc <command> [args]")
+        puts("Commands:")
+        puts("  dump-air <file.ax>")
+        puts("  emit-c <file.ax> [-o <out.c>]")
+        puts("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
         return 1
 
-    let filename_ptr = argv[1]
-    let file = fopen(filename_ptr, "rb")
+    mut is_dump_air := false
+    mut is_emit_c := false
+    mut is_build := false
+    mut file_arg_idx := 1
+    mut output_file := ""
+    mut target_wasm32 := false
+
+    let arg1 = argv[1] as str
+    if arg1 == "dump-air":
+        if argc < 3:
+            puts("Error: missing filename for dump-air")
+            return 1
+        is_dump_air = true
+        file_arg_idx = 2
+    elif arg1 == "emit-c":
+        if argc < 3:
+            puts("Error: missing filename for emit-c")
+            return 1
+        is_emit_c = true
+        file_arg_idx = 2
+    elif arg1 == "build":
+        if argc < 3:
+            puts("Error: missing filename for build")
+            return 1
+        is_build = true
+        file_arg_idx = 2
+    else:
+        // Compatibility mode (backward-compatible with triple_build.ps1 verification loop)
+        is_dump_air = true
+        file_arg_idx = 1
+
+    // Parse options starting after the file argument
+    mut opt_idx := file_arg_idx + 1
+    while opt_idx < argc:
+        let opt = argv[opt_idx] as str
+        if opt == "-o" or opt == "--output":
+            if opt_idx + 1 < argc:
+                output_file = argv[opt_idx + 1] as str
+                opt_idx = opt_idx + 1
+            else:
+                puts("Error: missing value for -o option")
+                return 1
+        elif opt == "--target" or opt == "-target":
+            if opt_idx + 1 < argc:
+                let target_triple = argv[opt_idx + 1] as str
+                if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
+                    target_wasm32 = true
+                opt_idx = opt_idx + 1
+            else:
+                puts("Error: missing value for --target option")
+                return 1
+        opt_idx = opt_idx + 1
+
+    let filename_ptr = argv[file_arg_idx]
+    let file = fopen(filename_ptr as ptr[void], "rb")
     if file == null as ptr[void]:
         puts("Error: could not open file")
         return 1
@@ -4829,7 +8175,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         fclose(file)
         return 1
 
-    let bytes_read = fread(buffer, 1, size, file)
+    let bytes_read = fread(buffer as ptr[void], 1, size, file)
     fclose(file)
 
     buffer[bytes_read] = 0 as u8
@@ -4856,13 +8202,96 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     checker.run_type_checker()
     typetable = checker.types
 
-    // 5. Build AIR
-    mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool)
+    // 5. Memory Safety & Ownership pipeline (only if NOT in dump-air/compatibility mode!)
+    if not is_dump_air:
+        mut ownership_chk := new_ownership_checker(parser.tree, parser.pool, resolver.symtable, typetable)
+        ownership_chk.check()
+
+        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
+        escape_an.run()
+
+        mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
+        ctgc_inj.run()
+
+        mut alias_opt := new_alias_reuse_optimizer(parser.tree, parser.pool, resolver.symtable, typetable)
+        alias_opt.run()
+
+    // 6. Build AIR
+    mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     mut air_builder := &air_builder_val
     air_builder.build_module()
 
-    // 6. Print AIR
-    print_module(air_builder.module)
+    // 7. Handle output phase
+    if is_dump_air:
+        print_module(air_builder.module)
+    elif is_emit_c:
+        mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+        if std.string.len(output_file) == 0:
+            output_file = "output.c"
+        let success = cgen.generate(output_file)
+        if not success:
+            puts("Error: could not generate C code")
+            return 1
+    elif is_build:
+        if target_wasm32:
+            mut wasm_gen := new_wasm_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+            if std.string.len(output_file) == 0:
+                output_file = "output.wat"
+            let success = wasm_gen.generate(output_file)
+            if not success:
+                puts("Error: could not generate Wasm Text code")
+                return 1
+            
+            @free(buffer)
+            if tokens.data != null as ptr[Token]:
+                @free(tokens.data as ptr[u8])
+            if lexer.tokens.data != null as ptr[Token]:
+                @free(lexer.tokens.data as ptr[u8])
+            if lexer.indent_stack.data != null as ptr[i32]:
+                @free(lexer.indent_stack.data as ptr[u8])
+            if lexer.newline_offsets.data != null as ptr[i32]:
+                @free(lexer.newline_offsets.data as ptr[u8])
+
+            if parser.tree.nodes.data != null as ptr[AstNode]:
+                @free(parser.tree.nodes.data as ptr[u8])
+            if parser.tree.extras.data != null as ptr[i32]:
+                @free(parser.tree.extras.data as ptr[u8])
+
+            free_air_module_builder(air_builder)
+            free_type_checker(checker)
+            free_typetable(typetable)
+            free_symtable(resolver.symtable)
+            free_pool(parser.pool)
+            return 0
+
+        mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+        let temp_c = "axiom_temp.c"
+        let success = cgen.generate(temp_c)
+        if not success:
+            puts("Error: could not generate C code")
+            return 1
+
+        if std.string.len(output_file) == 0:
+            output_file = "output.exe"
+
+        // Compile using gcc
+        let cmd_buf = @alloc(2048) as ptr[u8]
+        let output_file_nt = str_to_null_terminated(output_file)
+        let temp_c_nt = str_to_null_terminated(temp_c)
+
+        snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c", output_file_nt as ptr[void], temp_c_nt as ptr[void])
+
+        let status = system(cmd_buf as ptr[void])
+
+        // Clean up
+        // remove(temp_c_nt as ptr[void])
+        @free(output_file_nt)
+        @free(temp_c_nt)
+        @free(cmd_buf)
+
+        if status != 0:
+            puts("Error: C compilation failed")
+            return status
 
     // Free resources
     @free(buffer)

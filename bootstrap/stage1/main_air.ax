@@ -1,16 +1,19 @@
 // bootstrap/stage1/main_air.ax
-// Test harness entry point for AXIOM self-hosted SSA AIR lowering & printer
+// Test harness entry point for AXIOM self-hosted compiler & driver
 
 import std.string
 
-extern "C" fn fopen(filename: ptr[u8], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
 extern "C" fn ftell(stream: ptr[void]) -> i64
 extern "C" fn rewind(stream: ptr[void])
-extern "C" fn fread(buffer: ptr[u8], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn puts(s: str) -> i32
+extern "C" fn system(command: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn remove(filename: ptr[void]) -> i32
 
 fn print_inst(inst: AirInst):
     let op = inst.opcode
@@ -34,8 +37,12 @@ fn print_inst(inst: AirInst):
         let is_binary = opcode_is_binary_alu(op)
 
         if has_dest:
-            if inst.type_id != 0 as u16:
-                printf("    %%%d: t%d = %s", inst.dest as i64, inst.type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            mut type_id := inst.type_id
+            if op == OP_CALL or op == OP_INDEX or op == OP_DEREF or op == OP_CAST or op == OP_AWAIT:
+                type_id = 0 as u16
+
+            if type_id != 0 as u16:
+                printf("    %%%d: t%d = %s", inst.dest as i64, type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 printf("    %%%d = %s", inst.dest as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
@@ -100,11 +107,68 @@ fn print_module(mod: AirModule):
 
 pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     if argc < 2:
-        puts("Usage: air_test <filename>")
+        puts("Usage: axc <command> [args]")
+        puts("Commands:")
+        puts("  dump-air <file.ax>")
+        puts("  emit-c <file.ax> [-o <out.c>]")
+        puts("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
         return 1
 
-    let filename_ptr = argv[1]
-    let file = fopen(filename_ptr, "rb")
+    mut is_dump_air := false
+    mut is_emit_c := false
+    mut is_build := false
+    mut file_arg_idx := 1
+    mut output_file := ""
+    mut target_wasm32 := false
+
+    let arg1 = argv[1] as str
+    if arg1 == "dump-air":
+        if argc < 3:
+            puts("Error: missing filename for dump-air")
+            return 1
+        is_dump_air = true
+        file_arg_idx = 2
+    elif arg1 == "emit-c":
+        if argc < 3:
+            puts("Error: missing filename for emit-c")
+            return 1
+        is_emit_c = true
+        file_arg_idx = 2
+    elif arg1 == "build":
+        if argc < 3:
+            puts("Error: missing filename for build")
+            return 1
+        is_build = true
+        file_arg_idx = 2
+    else:
+        // Compatibility mode (backward-compatible with triple_build.ps1 verification loop)
+        is_dump_air = true
+        file_arg_idx = 1
+
+    // Parse options starting after the file argument
+    mut opt_idx := file_arg_idx + 1
+    while opt_idx < argc:
+        let opt = argv[opt_idx] as str
+        if opt == "-o" or opt == "--output":
+            if opt_idx + 1 < argc:
+                output_file = argv[opt_idx + 1] as str
+                opt_idx = opt_idx + 1
+            else:
+                puts("Error: missing value for -o option")
+                return 1
+        elif opt == "--target" or opt == "-target":
+            if opt_idx + 1 < argc:
+                let target_triple = argv[opt_idx + 1] as str
+                if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
+                    target_wasm32 = true
+                opt_idx = opt_idx + 1
+            else:
+                puts("Error: missing value for --target option")
+                return 1
+        opt_idx = opt_idx + 1
+
+    let filename_ptr = argv[file_arg_idx]
+    let file = fopen(filename_ptr as ptr[void], "rb")
     if file == null as ptr[void]:
         puts("Error: could not open file")
         return 1
@@ -124,7 +188,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         fclose(file)
         return 1
 
-    let bytes_read = fread(buffer, 1, size, file)
+    let bytes_read = fread(buffer as ptr[void], 1, size, file)
     fclose(file)
 
     buffer[bytes_read] = 0 as u8
@@ -151,13 +215,96 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     checker.run_type_checker()
     typetable = checker.types
 
-    // 5. Build AIR
-    mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool)
+    // 5. Memory Safety & Ownership pipeline (only if NOT in dump-air/compatibility mode!)
+    if not is_dump_air:
+        mut ownership_chk := new_ownership_checker(parser.tree, parser.pool, resolver.symtable, typetable)
+        ownership_chk.check()
+
+        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
+        escape_an.run()
+
+        mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
+        ctgc_inj.run()
+
+        mut alias_opt := new_alias_reuse_optimizer(parser.tree, parser.pool, resolver.symtable, typetable)
+        alias_opt.run()
+
+    // 6. Build AIR
+    mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     mut air_builder := &air_builder_val
     air_builder.build_module()
 
-    // 6. Print AIR
-    print_module(air_builder.module)
+    // 7. Handle output phase
+    if is_dump_air:
+        print_module(air_builder.module)
+    elif is_emit_c:
+        mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+        if std.string.len(output_file) == 0:
+            output_file = "output.c"
+        let success = cgen.generate(output_file)
+        if not success:
+            puts("Error: could not generate C code")
+            return 1
+    elif is_build:
+        if target_wasm32:
+            mut wasm_gen := new_wasm_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+            if std.string.len(output_file) == 0:
+                output_file = "output.wat"
+            let success = wasm_gen.generate(output_file)
+            if not success:
+                puts("Error: could not generate Wasm Text code")
+                return 1
+            
+            @free(buffer)
+            if tokens.data != null as ptr[Token]:
+                @free(tokens.data as ptr[u8])
+            if lexer.tokens.data != null as ptr[Token]:
+                @free(lexer.tokens.data as ptr[u8])
+            if lexer.indent_stack.data != null as ptr[i32]:
+                @free(lexer.indent_stack.data as ptr[u8])
+            if lexer.newline_offsets.data != null as ptr[i32]:
+                @free(lexer.newline_offsets.data as ptr[u8])
+
+            if parser.tree.nodes.data != null as ptr[AstNode]:
+                @free(parser.tree.nodes.data as ptr[u8])
+            if parser.tree.extras.data != null as ptr[i32]:
+                @free(parser.tree.extras.data as ptr[u8])
+
+            free_air_module_builder(air_builder)
+            free_type_checker(checker)
+            free_typetable(typetable)
+            free_symtable(resolver.symtable)
+            free_pool(parser.pool)
+            return 0
+
+        mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+        let temp_c = "axiom_temp.c"
+        let success = cgen.generate(temp_c)
+        if not success:
+            puts("Error: could not generate C code")
+            return 1
+
+        if std.string.len(output_file) == 0:
+            output_file = "output.exe"
+
+        // Compile using gcc
+        let cmd_buf = @alloc(2048) as ptr[u8]
+        let output_file_nt = str_to_null_terminated(output_file)
+        let temp_c_nt = str_to_null_terminated(temp_c)
+
+        snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c", output_file_nt as ptr[void], temp_c_nt as ptr[void])
+
+        let status = system(cmd_buf as ptr[void])
+
+        // Clean up
+        // remove(temp_c_nt as ptr[void])
+        @free(output_file_nt)
+        @free(temp_c_nt)
+        @free(cmd_buf)
+
+        if status != 0:
+            puts("Error: C compilation failed")
+            return status
 
     // Free resources
     @free(buffer)

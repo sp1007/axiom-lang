@@ -27,12 +27,20 @@ func TestStage1AirCorpus(t *testing.T) {
 	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
 	resolverPath := filepath.Join(workspaceDir, "bootstrap/stage1/resolver.ax")
 	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
+	connectionGraphPath := filepath.Join(workspaceDir, "bootstrap/stage1/connection_graph.ax")
+	ownershipPath := filepath.Join(workspaceDir, "bootstrap/stage1/ownership.ax")
+	escapePath := filepath.Join(workspaceDir, "bootstrap/stage1/escape.ax")
+	ctgcPath := filepath.Join(workspaceDir, "bootstrap/stage1/ctgc.ax")
+	aliasReusePath := filepath.Join(workspaceDir, "bootstrap/stage1/alias_reuse.ax")
 	airPath := filepath.Join(workspaceDir, "bootstrap/stage1/air.ax")
 	airBuilderPath := filepath.Join(workspaceDir, "bootstrap/stage1/air_builder.ax")
+	cgenPath := filepath.Join(workspaceDir, "bootstrap/stage1/cgen.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
 
 	sourceBytes, err := concatenateAxiomFiles(
-		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath, airPath, airBuilderPath, mainPath,
+		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath,
+		connectionGraphPath, ownershipPath, escapePath, ctgcPath, aliasReusePath,
+		airPath, airBuilderPath, cgenPath, mainPath,
 	)
 	if err != nil {
 		t.Fatalf("failed to concatenate air files: %v", err)

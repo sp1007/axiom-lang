@@ -1,0 +1,195 @@
+// bootstrap/stage1/escape.ax
+// EscapeAnalyser performs escape analysis using ConnectionGraph.
+
+import std.string
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+pub struct EscapeAnalyser:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub curr_cg: ConnectionGraph
+    pub escape_node_idx: u32
+
+pub fn new_escape_analyser(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> EscapeAnalyser:
+    return EscapeAnalyser(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        curr_cg: new_connection_graph(),
+        escape_node_idx: 0 as u32,
+    )
+
+pub fn run(mut self: EscapeAnalyser):
+    self.curr_cg = new_connection_graph()
+    self.escape_node_idx = 0 as u32
+    self.traverse_nodes(0 as u32)
+    free_connection_graph(self.curr_cg)
+
+pub fn traverse_nodes(mut self: EscapeAnalyser, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_FUNC_DECL:
+        // Build new connection graph for each function
+        let old_cg = self.curr_cg
+        self.curr_cg = new_connection_graph()
+        self.escape_node_idx = self.curr_cg.add_value_node(0 as u32, 0 as u32, 0 as u32)
+
+        // Register parameters
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_PARAM_DECL:
+                let sym_idx = child.payload
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
+            child_idx = child.next_sibling
+
+        // Analyze function body
+        child_idx = node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            child_idx = child.next_sibling
+
+        // Tag local variables that escape
+        mut idx := 0 as i64
+        while idx < self.curr_cg.nodes.len:
+            let cg_node = self.curr_cg.nodes.data[idx]
+            if cg_node.sym_id != 0 as u32:
+                let sym_idx = cg_node.sym_id
+                let is_escaping = self.curr_cg.escapes(cg_node.id)
+                if is_escaping:
+                    // Tag symbol and AST decl node
+                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | (FLAG_ESCAPES_TO_HEAP as u16)
+                    let decl_node = self.symtable.symbols.data[sym_idx].decl_node
+                    if decl_node != 0 as u32:
+                        self.tree.nodes.data[decl_node].flags = self.tree.nodes.data[decl_node].flags | (FLAG_ESCAPES_TO_HEAP as u16)
+            idx = idx + 1
+
+        free_connection_graph(self.curr_cg)
+        self.curr_cg = old_cg
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.traverse_nodes(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_block(mut self: EscapeAnalyser, block_idx: u32):
+    if block_idx == 0 as u32 or block_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[block_idx]
+    mut child_idx := node.first_child
+    while child_idx != 0 as u32:
+        self.analyze_stmt(child_idx)
+        child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_stmt(mut self: EscapeAnalyser, stmt_idx: u32):
+    if stmt_idx == 0 as u32 or stmt_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[stmt_idx]
+    let kind = node.kind
+
+    if kind == NODE_VAR_DECL:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            let cg_idx = self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
+            let init_idx = node.first_child
+            if init_idx != 0 as u32:
+                self.analyze_expr(init_idx, cg_idx)
+
+    elif kind == NODE_ASSIGN_STMT:
+        let lhs_idx = node.first_child
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        if lhs_idx != 0 as u32:
+            let lhs_kind = self.tree.nodes.data[lhs_idx].kind
+            if lhs_kind == NODE_IDENT:
+                let sym_idx = self.tree.nodes.data[lhs_idx].payload
+                if sym_idx != 0 as u32:
+                    let lhs_cg_idx = self.curr_cg.node_of_sym(sym_idx)
+                    if lhs_cg_idx != 0xffffffff as u32:
+                        self.analyze_expr(rhs_idx, lhs_cg_idx)
+            else:
+                // non-ident LHS means struct field or indexing, RHS escapes to heap
+                self.analyze_expr(rhs_idx, self.escape_node_idx)
+
+    elif kind == NODE_RETURN_STMT:
+        let val_idx = node.first_child
+        if val_idx != 0 as u32:
+            self.analyze_expr(val_idx, self.escape_node_idx)
+
+    elif kind == NODE_IF_STMT:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            else:
+                self.analyze_stmt(child_idx)
+            child_idx = child.next_sibling
+
+    elif kind == NODE_WHILE_STMT or kind == NODE_FOR_STMT:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            if child.kind == NODE_BLOCK:
+                self.analyze_block(child_idx)
+            child_idx = child.next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.analyze_stmt(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn analyze_expr(mut self: EscapeAnalyser, expr_idx: u32, flow_dest: u32):
+    if expr_idx == 0 as u32 or expr_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[expr_idx]
+    let kind = node.kind
+
+    if kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let cg_src = self.curr_cg.node_of_sym(sym_idx)
+            if cg_src != 0xffffffff as u32 and flow_dest != 0xffffffff as u32:
+                self.curr_cg.add_edge(cg_src, flow_dest, EDGE_FLOWS_TO)
+
+    elif kind == NODE_CALL_EXPR:
+        // Function call: arguments flow to return/escape
+        mut child_idx := node.first_child
+        if child_idx != 0 as u32:
+            // First is callee
+            self.analyze_expr(child_idx, self.escape_node_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+            while child_idx != 0 as u32:
+                self.analyze_expr(child_idx, self.escape_node_idx)
+                child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+    elif kind == NODE_STRUCT_LIT:
+        // Struct literal fields flow to the struct dest
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            let child = self.tree.nodes.data[child_idx]
+            let val_idx = child.first_child
+            if val_idx != 0 as u32:
+                self.analyze_expr(val_idx, flow_dest)
+            child_idx = child.next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.analyze_expr(child_idx, flow_dest)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling

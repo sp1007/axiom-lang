@@ -278,6 +278,7 @@ pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
     st.define_builtin("println", 0, intern)
     st.define_builtin("compiler_intrinsic", 0, intern)
     st.define_builtin("assert", 0, intern)
+    st.define_builtin("panic", 0, intern)
 
     return st
 
@@ -390,6 +391,55 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
     if kind == NODE_PROGRAM:
         self.resolve_children(node_idx)
 
+    elif kind == NODE_IMPORT_DECL:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
+        
+        let name = self.intern.get(name_id)
+        if name == "std.string":
+            let len_name = self.intern.intern_string("std.string.len")
+            self.symtable.define(len_name, SYM_FUNC, 0 as u16, node_idx)
+            let slice_name = self.intern.intern_string("std.string.slice")
+            self.symtable.define(slice_name, SYM_FUNC, 0 as u16, node_idx)
+            let concat_name = self.intern.intern_string("std.string.concat")
+            self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
+
+    elif kind == NODE_FIELD_EXPR:
+        let lhs_idx = self.tree.nodes.data[node_idx].first_child
+        if lhs_idx != 0 as u32:
+            let lhs_node = self.tree.nodes.data[lhs_idx]
+            mut is_module_import := false
+            
+            if lhs_node.kind == NODE_IDENT:
+                let lhs_name = self.intern.get(lhs_node.payload)
+                let rhs_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
+                let full_name = std.string.concat(lhs_name, std.string.concat(".", rhs_name))
+                let full_name_id = self.intern.intern_string(full_name)
+                let sym_idx = self.symtable.resolve(full_name_id)
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    if sym.kind == SYM_MODULE:
+                        self.tree.nodes.data[node_idx].payload = sym_idx
+                        is_module_import = true
+                        
+            if not is_module_import:
+                self.resolve_node(lhs_idx)
+                let updated_lhs_node = self.tree.nodes.data[lhs_idx]
+                if updated_lhs_node.kind == NODE_IDENT or updated_lhs_node.kind == NODE_FIELD_EXPR:
+                    let sym_idx = updated_lhs_node.payload
+                    if sym_idx != 0 as u32:
+                        let sym = self.symtable.symbols.data[sym_idx]
+                        if sym.kind == SYM_MODULE:
+                            let field_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
+                            let module_name = self.intern.get(sym.name_id)
+                            let full_name = std.string.concat(module_name, std.string.concat(".", field_name))
+                            let full_name_id = self.intern.intern_string(full_name)
+                            let resolved_idx = self.symtable.resolve(full_name_id)
+                            if resolved_idx != 0 as u32:
+                                self.tree.nodes.data[node_idx].payload = resolved_idx
+                                self.symtable.symbols.data[resolved_idx].flags = self.symtable.symbols.data[resolved_idx].flags | SYM_FLAG_USED
+
     elif kind == NODE_FUNC_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
         mut sym_flags := 0 as u16
@@ -458,7 +508,21 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
         self.tree.nodes.data[node_idx].payload = sym_idx
         self.symtable.push_scope(SCOPE_BLOCK)
         self.resolve_children(node_idx)
+        
+        let curr_scope_idx = self.symtable.current_scope()
         self.symtable.pop_scope()
+        let parent_scope_idx = self.symtable.current_scope()
+        
+        // Elevate variant symbols to parent scope
+        let curr_scope = self.symtable.scopes.data[curr_scope_idx]
+        mut i := 0 as i64
+        while i < curr_scope.capacity as i64:
+            let entry = curr_scope.entries[i]
+            if entry.name_id != 0 as u32:
+                let sym = self.symtable.symbols.data[entry.symbol_idx]
+                if sym.kind == SYM_VARIANT:
+                    self.symtable.scopes.data[parent_scope_idx].scope_put(entry.name_id, entry.symbol_idx)
+            i = i + 1
 
     elif kind == NODE_VARIANT_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload

@@ -57,7 +57,7 @@ func TestEmitBuiltinCall_Direct(t *testing.T) {
 		{"lcm", []string{"a", "b"}, "ax_lcm(a, b)"},
 		{"sqrt", []string{"x"}, "sqrt(x)"},
 		{"exit", []string{"0"}, "exit(0)"},
-		{"panic", []string{`"msg"`}, `ax_panic("msg")`},
+		{"panic", []string{`"msg"`}, `ax_panic((const char*)("msg").ptr)`},
 		{"str_len", []string{"s"}, "ax_str_len(s)"},
 		{"vec_push", []string{"&v", "&elem"}, "ax_vec_push(&v, &elem)"},
 		{"arena_new", []string{"4096"}, "ax_arena_new(4096)"},

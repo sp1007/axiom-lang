@@ -1,0 +1,586 @@
+// bootstrap/stage1/wasm.ax
+// SSA AIR to WebAssembly Text (WAT) Code Generator.
+
+import std.string
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
+extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+
+fn is_type_unsigned(type_id: u32) -> bool:
+    if type_id == 5 as u32 or type_id == 6 as u32 or type_id == 7 as u32 or type_id == 8 as u32 or type_id == 16 as u32:
+        return true
+    return false
+
+fn map_wasm_type(typetable: TypeTable, type_id: u32) -> str:
+    if type_id == 4 as u32 or type_id == 8 as u32: // i64, u64
+        return "i64"
+    if type_id == 9 as u32: // f32
+        return "f32"
+    if type_id == 10 as u32: // f64
+        return "f64"
+    if type_id == 14 as u32: // void
+        return ""
+    // all other integers and pointers map to i32 in wasm32
+    return "i32"
+
+fn wasm_opcode_defines_dest(op: u16) -> bool:
+    if op == 0 as u16: // OP_NOP
+        return false
+    if op == 0x0102 as u16: // OP_FREE
+        return false
+    if op == 0x010B as u16: // OP_DESTROY
+        return false
+    if op == 0x0104 as u16: // OP_STORE
+        return false
+    if op == 0x010E as u16: // OP_SET_FIELD
+        return false
+    if op == 0x0301 as u16: // OP_JUMP
+        return false
+    if op == 0x0302 as u16: // OP_BRANCH
+        return false
+    if op == 0x0304 as u16: // OP_RETURN
+        return false
+    return true
+
+pub struct WasmGenerator:
+    pub module: AirModule
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub file: ptr[void]
+    pub reg_types: ptr[u32]
+
+pub fn new_wasm_generator(mod: AirModule, tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> WasmGenerator:
+    return WasmGenerator(
+        module: mod,
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        file: null as ptr[void],
+        reg_types: null as ptr[u32],
+    )
+
+pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
+    if sym_id == 0 as u32:
+        return "main"
+    if sym_id == 4294967295 as u32:
+        return "malloc"
+    if sym_id == 4294967294 as u32:
+        return "free"
+    
+    let name = self.pool.get(name_id)
+    if std.string.len(name) > 0:
+        if name == "main" or name == "printf" or name == "malloc" or name == "free":
+            return name
+        
+        let ptr_name = name as ptr[u8]
+        if std.string.len(name) >= 4 and ptr_name[0] == '_' as u8 and ptr_name[1] == 'A' as u8 and ptr_name[2] == 'X' as u8 and ptr_name[3] == '_' as u8:
+            return name
+        
+        let new_len = 4 + std.string.len(name)
+        let buf = @alloc(new_len + 1) as ptr[u8]
+        @memcpy(buf, "_AX_" as ptr[u8], 4)
+        @memcpy(((buf as u64) + 4 as u64) as ptr[u8], name as ptr[u8], std.string.len(name))
+        buf[new_len] = 0 as u8
+        return buf as str
+    
+    let buf = @alloc(32) as ptr[u8]
+    snprintf(buf as ptr[void], 32, "_AX_f%d", sym_id as ptr[void], null as ptr[void])
+    return buf as str
+
+fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
+    let len = std.string.len(s)
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, s as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf
+
+pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
+    let filename_nt = wasm_str_to_null_terminated(out_filename)
+    self.file = fopen(filename_nt as ptr[void], "w")
+    @free(filename_nt)
+    if self.file == null as ptr[void]:
+        return false
+
+    fputs("(module\n", self.file)
+    fputs("  (memory (export \"memory\") 1)\n\n", self.file)
+
+    // 1. Declare all external functions as imports
+    mut f_idx := 0 as i64
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            let callee = self.resolve_sym_name(f.sym_id, f.name)
+            fprintf(self.file, "  (import \"env\" \"%s\" (func $%s", (callee as ptr[u8]) as i64, (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                let p_type = map_wasm_type(self.typetable, f.params.data[p_idx])
+                fprintf(self.file, " (param %s)", (p_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                p_idx = p_idx + 1
+            
+            if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+                let r_type = map_wasm_type(self.typetable, f.ret_type)
+                fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            fputs("))\n", self.file)
+            @free(callee as ptr[u8])
+        f_idx = f_idx + 1
+    
+    // Always import malloc and free if not already declared by externs
+    mut has_malloc := false
+    mut has_free := false
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if f.is_extern:
+            let name = self.pool.get(f.name)
+            if name == "malloc":
+                has_malloc = true
+            if name == "free":
+                has_free = true
+        f_idx = f_idx + 1
+    
+    if not has_malloc:
+        fputs("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n", self.file)
+    if not has_free:
+        fputs("  (import \"env\" \"free\" (func $free (param i32)))\n", self.file)
+    
+    fputs("\n", self.file)
+
+    // 2. Compile functions
+    f_idx = 0
+    while f_idx < self.module.funcs.len:
+        let f = self.module.funcs.data[f_idx]
+        if not f.is_extern:
+            self.compile_func(f)
+        f_idx = f_idx + 1
+    
+    fputs(")\n", self.file)
+    fclose(self.file)
+    return true
+
+pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
+    let mangled_name = self.resolve_sym_name(f.sym_id, f.name)
+    fprintf(self.file, "  (func $%s (export \"%s\")", (mangled_name as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    @free(mangled_name as ptr[u8])
+
+    mut p_idx := 0 as i64
+    while p_idx < f.params.len:
+        let param_type = map_wasm_type(self.typetable, f.params.data[p_idx])
+        fprintf(self.file, " (param $p%d %s)", (p_idx + 1) as i64, (param_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        p_idx = p_idx + 1
+    
+    if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+        let r_type = map_wasm_type(self.typetable, f.ret_type)
+        fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    
+    fputs("\n", self.file)
+    fputs("    (local $state i32)\n", self.file)
+
+    // Declare SSA registers
+    mut max_reg := 0 as u32
+    mut inst_idx := 0 as i64
+    while inst_idx < f.insts.len:
+        let inst = f.insts.data[inst_idx]
+        if inst.dest > max_reg:
+            max_reg = inst.dest
+        inst_idx = inst_idx + 1
+
+    if max_reg > 0 as u32:
+        self.reg_types = @alloc((max_reg as i64 + 1) * 4) as ptr[u32]
+        mut r := 0 as i64
+        while r <= max_reg as i64:
+            self.reg_types[r] = 0 as u32
+            r = r + 1
+
+        if f.params.data != null as ptr[u32]:
+            mut p_idx := 0 as i64
+            while p_idx < f.params.len:
+                let p_reg = (p_idx + 1) as u32
+                if p_reg <= max_reg:
+                    self.reg_types[p_reg] = f.params.data[p_idx]
+                p_idx = p_idx + 1
+
+        inst_idx = 0
+        while inst_idx < f.insts.len:
+            let inst = f.insts.data[inst_idx]
+            if wasm_opcode_defines_dest(inst.opcode) and inst.dest > 0 as u32:
+                mut t_id := inst.type_id as u32
+                if inst.opcode == 0x010D as u16: // OP_GET_FIELD
+                    mut obj_type_id = inst.type_id as u32
+                    if obj_type_id == 0 as u32 and inst.src1 > 0 as u32:
+                        obj_type_id = self.reg_types[inst.src1]
+                    if (obj_type_id as i64) < self.typetable.entries.len:
+                        mut entry = self.typetable.entries.data[obj_type_id]
+                        if entry.kind == TYPE_KIND_POINTER:
+                            let pointee_id = entry.extra
+                            if pointee_id != 0 as u32 and (pointee_id as i64) < self.typetable.entries.len:
+                                entry = self.typetable.entries.data[pointee_id]
+                        if entry.kind == TYPE_KIND_STRUCT:
+                            let si = self.typetable.structs.data[entry.extra as i64]
+                            if (inst.src2 as i64) < si.fields.len:
+                                t_id = si.fields.data[inst.src2 as i64].type_id
+                elif (inst.opcode == 0x0105 as u16 or inst.opcode == 0x0109 as u16 or inst.opcode == 0x010F as u16) and t_id == 0 as u32: // OP_INDEX, OP_GEP, OP_DEREF
+                    if inst.src1 > 0 as u32 and self.reg_types[inst.src1] != 0 as u32:
+                        let src_type = self.reg_types[inst.src1]
+                        if (src_type as i64) < self.typetable.entries.len:
+                            let entry = self.typetable.entries.data[src_type]
+                            if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
+                                t_id = entry.extra
+                elif inst.opcode == OP_CALL: // OP_CALL
+                    let sym_idx = inst.type_id as u32
+                    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                        let sym = self.symtable.symbols.data[sym_idx as i64]
+                        let fn_name = self.pool.get(sym.name_id)
+                        if fn_name == "println" or fn_name == "print" or fn_name == "eprint" or fn_name == "eprintln" or fn_name == "assert" or fn_name == "free":
+                            t_id = 14 as u32
+                        else:
+                            let fn_type_id = sym.type_id
+                            if fn_type_id != 0 as u32 and (fn_type_id as i64) < self.typetable.entries.len:
+                                let entry = self.typetable.entries.data[fn_type_id]
+                                if entry.kind == TYPE_KIND_FUNC:
+                                    let fi = self.typetable.funcs.data[entry.extra as i64]
+                                    t_id = fi.ret
+                self.reg_types[inst.dest] = t_id
+            inst_idx = inst_idx + 1
+
+        r = 1 as i64
+        while r <= max_reg as i64:
+            if self.reg_types[r] != 14 as u32:
+                let t_name = map_wasm_type(self.typetable, self.reg_types[r])
+                fprintf(self.file, "    (local $r%d %s)\n", r, (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            r = r + 1
+
+    if f.blocks.len == 0 as i64:
+        fputs("    return\n  )\n\n", self.file)
+        if max_reg > 0 as u32:
+            @free(self.reg_types as ptr[u8])
+            self.reg_types = null as ptr[u32]
+        return
+
+    fputs("    (local.set $state (i32.const 0))\n\n", self.file)
+    fputs("    (block $outer\n", self.file)
+    fputs("      (loop $loop\n", self.file)
+
+    // Open all blocks hierarchically (N down to 0)
+    mut bi := f.blocks.len - 1
+    while bi >= 0:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, "        (block $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        bi = bi - 1
+    
+    // Emit br_table dispatcher
+    fputs("          (br_table", self.file)
+    bi = 0
+    while bi < f.blocks.len:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        bi = bi + 1
+    fputs(" $b_0 (local.get $state))\n", self.file)
+
+    // Close each block and emit its instructions
+    bi = 0
+    while bi < f.blocks.len:
+        let bb = f.blocks.data[bi]
+        fprintf(self.file, "        ) ;; end $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        ;; --- block_%d body ---\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut inst_offset := 0 as i64
+        while inst_offset < bb.instrs_len as i64:
+            let inst_pos = f.block_instrs.data[bb.instrs_start as i64 + inst_offset]
+            let inst = f.insts.data[inst_pos as i64]
+            self.lower_inst(f, inst)
+            inst_offset = inst_offset + 1
+        bi = bi + 1
+    
+    fputs("      )\n", self.file)
+    fputs("    )\n", self.file)
+
+    if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
+        let r_type = map_wasm_type(self.typetable, f.ret_type)
+        fprintf(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    
+    fputs("  )\n\n", self.file)
+
+    if max_reg > 0 as u32:
+        @free(self.reg_types as ptr[u8])
+        self.reg_types = null as ptr[u32]
+
+pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
+    let op = inst.opcode
+    if op == OP_NOP:
+        return
+
+    if op == OP_ICONST:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_FCONST:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_COPY or op == OP_MOVE or op == OP_ALIAS_REUSE:
+        if inst.src1 <= f.params.len as u32 and inst.src1 > 0 as u32:
+            fprintf(self.file, "        (local.get $p%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_IADD or op == OP_ISUB or op == OP_IMUL or op == OP_IDIV or op == OP_IMOD or op == OP_FADD or op == OP_FSUB or op == OP_FMUL or op == OP_FDIV:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut op_str := "add"
+        if op == OP_IADD or op == OP_FADD:
+            op_str = "add"
+        elif op == OP_ISUB or op == OP_FSUB:
+            op_str = "sub"
+        elif op == OP_IMUL or op == OP_FMUL:
+            op_str = "mul"
+        elif op == OP_IDIV:
+            if is_type_unsigned(inst.type_id as u32):
+                op_str = "div_u"
+            else:
+                op_str = "div_s"
+        elif op == OP_FDIV:
+            op_str = "div"
+        elif op == OP_IMOD:
+            if is_type_unsigned(inst.type_id as u32):
+                op_str = "rem_u"
+            else:
+                op_str = "rem_s"
+        
+        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (op_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_EQ or op == OP_NE or op == OP_LT or op == OP_LE or op == OP_GT or op == OP_GE:
+        mut src_type := "i32"
+        mut is_unsigned_cmp := false
+        if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let src1_type = self.reg_types[inst.src1]
+            src_type = map_wasm_type(self.typetable, src1_type)
+            is_unsigned_cmp = is_type_unsigned(src1_type)
+        
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut cmp_op := "eq"
+        if op == OP_EQ:
+            cmp_op = "eq"
+        elif op == OP_NE:
+            cmp_op = "ne"
+        elif op == OP_LT:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "lt"
+            elif is_unsigned_cmp:
+                cmp_op = "lt_u"
+            else:
+                cmp_op = "lt_s"
+        elif op == OP_LE:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "le"
+            elif is_unsigned_cmp:
+                cmp_op = "le_u"
+            else:
+                cmp_op = "le_s"
+        elif op == OP_GT:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "gt"
+            elif is_unsigned_cmp:
+                cmp_op = "gt_u"
+            else:
+                cmp_op = "gt_s"
+        elif op == OP_GE:
+            if src_type == "f32" or src_type == "f64":
+                cmp_op = "ge"
+            elif is_unsigned_cmp:
+                cmp_op = "ge_u"
+            else:
+                cmp_op = "ge_s"
+        
+        fprintf(self.file, "        %s.%s\n", (src_type as ptr[u8]) as i64, (cmp_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_AND or op == OP_OR or op == OP_XOR or op == OP_SHL or op == OP_SHR:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        
+        mut bit_op := "and"
+        if op == OP_AND:
+            bit_op = "and"
+        elif op == OP_OR:
+            bit_op = "or"
+        elif op == OP_XOR:
+            bit_op = "xor"
+        elif op == OP_SHL:
+            bit_op = "shl"
+        elif op == OP_SHR:
+            if is_type_unsigned(inst.type_id as u32):
+                bit_op = "shr_u"
+            else:
+                bit_op = "shr_s"
+        
+        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (bit_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NEG:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        if t == "f32" or t == "f64":
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        %s.neg\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(self.file, "        (%s.const 0)\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fprintf(self.file, "        %s.sub\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_NOT:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if t == "i64":
+            fputs("        (i64.const -1)\n", self.file)
+        else:
+            fputs("        (i32.const -1)\n", self.file)
+        fprintf(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
+        mut size := 8 as u32
+        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[inst.type_id]
+            if entry.size != 0 as u32:
+                size = entry.size
+        fprintf(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (call $malloc)\n", self.file)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_FREE or op == OP_DESTROY:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (call $free)\n", self.file)
+    elif op == OP_LOAD:
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_STORE:
+        mut t := "i32"
+        if inst.src2 != 0 as u32:
+            // Store to pointer: src2 = index register, dest = base pointer register, src1 = value register
+            if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+                let val_type = self.reg_types[inst.src1]
+                t = map_wasm_type(self.typetable, val_type)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
+            fputs("        i32.add\n", self.file)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+        else:
+            // Dereference store: *dest = src1
+            if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+                let val_type = self.reg_types[inst.src1]
+                t = map_wasm_type(self.typetable, val_type)
+            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GEP:
+        mut elem_size := 8 as u32
+        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+            let entry = self.typetable.entries.data[inst.type_id]
+            if entry.size != 0 as u32:
+                elem_size = entry.size
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.mul\n", self.file)
+        fputs("        i32.add\n", self.file)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_GET_FIELD:
+        let offset = inst.src2 * 8 as u32
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_SET_FIELD:
+        let offset = inst.src2 * 8 as u32
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        mut t := "i32"
+        if inst.dest > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let dest_type = self.reg_types[inst.dest]
+            t = map_wasm_type(self.typetable, dest_type)
+        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_INDEX:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        i32.add\n", self.file)
+        let t = map_wasm_type(self.typetable, inst.type_id as u32)
+        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_CALL:
+        let arg_start = inst.src2 as i64
+        mut arg_count := 0 as u32
+        if arg_start < f.extras.len:
+            arg_count = f.extras.data[arg_start]
+        
+        mut j := 0 as i64
+        while j < arg_count as i64:
+            let arg_reg = f.extras.data[arg_start + 1 + j]
+            fprintf(self.file, "        (local.get $r%d)\n", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            j = j + 1
+        
+        mut callee := ""
+        if inst.src1 == 0 as u32:
+            let sym_idx = inst.type_id as u32
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                let sym = self.symtable.symbols.data[sym_idx as i64]
+                callee = self.resolve_sym_name(sym_idx, sym.name_id)
+            else:
+                callee = self.resolve_sym_name(0 as u32, 0 as u32)
+        else:
+            callee = self.resolve_sym_name(0 as u32, 0 as u32)
+        
+        fprintf(self.file, "        (call $%s)\n", (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if inst.dest != 0 as u32:
+            fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        @free(callee as ptr[u8])
+    elif op == OP_CAST or op == OP_ZEXT or op == OP_SEXT or op == OP_TRUNC:
+        let dst_t = map_wasm_type(self.typetable, inst.type_id as u32)
+        mut src_t := "i32"
+        if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
+            let src_type = self.reg_types[inst.src1]
+            src_t = map_wasm_type(self.typetable, src_type)
+        
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if src_t == "i64" and dst_t == "i32":
+            fputs("        i32.wrap_i64\n", self.file)
+        elif src_t == "i32" and dst_t == "i64":
+            if op == OP_ZEXT:
+                fputs("        i64.extend_i32_u\n", self.file)
+            else:
+                fputs("        i64.extend_i32_s\n", self.file)
+        
+        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == OP_JUMP:
+        fprintf(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (br $loop)\n", self.file)
+    elif op == OP_BRANCH:
+        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        (if\n", self.file)
+        fputs("          (then\n", self.file)
+        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("          )\n", self.file)
+        fputs("          (else\n", self.file)
+        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("          )\n", self.file)
+        fputs("        )\n", self.file)
+        fputs("        (br $loop)\n", self.file)
+    elif op == OP_RETURN:
+        if inst.src1 != 0 as u32:
+            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs("        return\n", self.file)
+    else:
+        fputs("        nop\n", self.file)

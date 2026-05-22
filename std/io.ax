@@ -2,6 +2,10 @@
 //
 // Input/Output interfaces and File operations.
 
+import std::os::win32
+import std::os::linux_sys
+import std::os
+
 /// A readable byte stream.
 pub interface Reader {
     fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str]
@@ -20,49 +24,342 @@ pub struct File {
     mode: i32,
 }
 
+fn str_to_c_str(s: str) -> ptr[u8] {
+    let len = s.len
+    let buf = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len {
+        (buf as i64 + i).* = (s.ptr as i64 + i).* as u8
+        i = i + 1
+    }
+    (buf as i64 + len).* = 0 as u8
+    return buf
+}
+
 impl File {
     pub fn open(path: str) -> Result[File, str] {
-        @compiler_intrinsic("file_open")
+        let cpath = str_to_c_str(path)
+        if std::os::IS_WINDOWS {
+            let h = std::os::win32::CreateFileA(
+                cpath,
+                0x80000000 as u32,
+                1 as u32,
+                null as ptr[void],
+                3 as u32,
+                0x80 as u32,
+                null as ptr[void]
+            )
+            @free(cpath)
+            if h as i64 == -1 as i64 {
+                return Err("could not open file")
+            }
+            return Ok(File { handle: h as i64, path: path, mode: 0 })
+        } else {
+            let fd = std::os::linux_sys::syscall(
+                2 as u64, // SYS_OPEN
+                cpath as u64,
+                0 as u64, // O_RDONLY
+                0 as u64,
+                0 as u64, 0 as u64, 0 as u64
+            )
+            @free(cpath)
+            if fd < 0 {
+                return Err("could not open file")
+            }
+            return Ok(File { handle: fd, path: path, mode: 0 })
+        }
     }
 
     pub fn create(path: str) -> Result[File, str] {
-        @compiler_intrinsic("file_create")
+        let cpath = str_to_c_str(path)
+        if std::os::IS_WINDOWS {
+            let h = std::os::win32::CreateFileA(
+                cpath,
+                0x40000000 as u32,
+                0 as u32,
+                null as ptr[void],
+                2 as u32,
+                0x80 as u32,
+                null as ptr[void]
+            )
+            @free(cpath)
+            if h as i64 == -1 as i64 {
+                return Err("could not create file")
+            }
+            return Ok(File { handle: h as i64, path: path, mode: 1 })
+        } else {
+            let fd = std::os::linux_sys::syscall(
+                2 as u64, // SYS_OPEN
+                cpath as u64,
+                577 as u64, // O_WRONLY | O_CREAT | O_TRUNC
+                0o644 as u64,
+                0 as u64, 0 as u64, 0 as u64
+            )
+            @free(cpath)
+            if fd < 0 {
+                return Err("could not create file")
+            }
+            return Ok(File { handle: fd, path: path, mode: 1 })
+        }
     }
 
     pub fn close(mut self) -> Result[void, str] {
-        @compiler_intrinsic("file_close")
+        if std::os::IS_WINDOWS {
+            let res = std::os::win32::CloseHandle(self.handle as ptr[void])
+            if res == 0 {
+                return Err("could not close file")
+            }
+            return Ok(())
+        } else {
+            let res = std::os::linux_sys::syscall(
+                3 as u64, // SYS_CLOSE
+                self.handle as u64,
+                0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
+            )
+            if res < 0 {
+                return Err("could not close file")
+            }
+            return Ok(())
+        }
     }
 
     pub fn read_all(self) -> Result[str, str] {
-        @compiler_intrinsic("file_read_all")
+        let cap = 4096 as i64
+        let buf = @alloc(cap) as ptr[u8]
+        mut total_read := 0 as i64
+        mut result_str := ""
+        mut temp_reader := self
+        
+        mut loop := true
+        while loop {
+            match temp_reader.read(buf, cap) {
+                Ok(n) => {
+                    if n == 0 {
+                        loop = false
+                    } else {
+                        let chunk = str { ptr: buf, len: n }
+                        result_str = result_str + chunk
+                    }
+                }
+                Err(e) => {
+                    @free(buf)
+                    return Err(e)
+                }
+            }
+        }
+        @free(buf)
+        return Ok(result_str)
     }
 
     pub fn write_all(mut self, data: str) -> Result[void, str] {
-        @compiler_intrinsic("file_write_all")
+        mut written := 0 as i64
+        while written < data.len {
+            match self.write((data.ptr as i64 + written) as ptr[u8], data.len - written) {
+                Ok(n) => {
+                    if n == 0 {
+                        return Err("failed to write any bytes")
+                    }
+                    written = written + n
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        return Ok(())
     }
 }
 
 impl Reader for File {
     fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        @compiler_intrinsic("file_read")
+        if std::os::IS_WINDOWS {
+            mut read_bytes := 0 as u32
+            let res = std::os::win32::ReadFile(
+                self.handle as ptr[void],
+                buf,
+                count as u32,
+                &read_bytes,
+                null as ptr[void]
+            )
+            if res == 0 {
+                return Err("could not read from file")
+            }
+            return Ok(read_bytes as i64)
+        } else {
+            let res = std::os::linux_sys::syscall(
+                0 as u64, // SYS_READ
+                self.handle as u64,
+                buf as u64,
+                count as u64,
+                0 as u64, 0 as u64, 0 as u64
+            )
+            if res < 0 {
+                return Err("could not read from file")
+            }
+            return Ok(res)
+        }
     }
 }
 
 impl Writer for File {
     fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        @compiler_intrinsic("file_write")
+        if std::os::IS_WINDOWS {
+            mut written := 0 as u32
+            let res = std::os::win32::WriteFile(
+                self.handle as ptr[void],
+                buf,
+                count as u32,
+                &written,
+                null as ptr[void]
+            )
+            if res == 0 {
+                return Err("could not write to file")
+            }
+            return Ok(written as i64)
+        } else {
+            let res = std::os::linux_sys::syscall(
+                1 as u64, // SYS_WRITE
+                self.handle as u64,
+                buf as u64,
+                count as u64,
+                0 as u64, 0 as u64, 0 as u64
+            )
+            if res < 0 {
+                return Err("could not write to file")
+            }
+            return Ok(res)
+        }
     }
+
     fn flush(mut self) -> Result[void, str] {
-        @compiler_intrinsic("file_flush")
+        return Ok(())
     }
 }
 
 /// Standard input/output/error.
-pub fn stdin()  -> File { @compiler_intrinsic("stdin") }
-pub fn stdout() -> File { @compiler_intrinsic("stdout") }
-pub fn stderr() -> File { @compiler_intrinsic("stderr") }
-
-/// Read a line from stdin.
-pub fn read_line() -> str {
-    @compiler_intrinsic("read_line")
+pub fn stdin()  -> File {
+    if std::os::IS_WINDOWS {
+        let h = std::os::win32::GetStdHandle(std::os::win32::STD_INPUT_HANDLE)
+        return File { handle: h as i64, path: "stdin", mode: 0 }
+    } else {
+        return File { handle: 0, path: "stdin", mode: 0 }
+    }
 }
+
+pub fn stdout() -> File {
+    if std::os::IS_WINDOWS {
+        let h = std::os::win32::GetStdHandle(std::os::win32::STD_OUTPUT_HANDLE)
+        return File { handle: h as i64, path: "stdout", mode: 1 }
+    } else {
+        return File { handle: 1, path: "stdout", mode: 1 }
+    }
+}
+
+pub fn stderr() -> File {
+    if std::os::IS_WINDOWS {
+        let h = std::os::win32::GetStdHandle(std::os::win32::STD_ERROR_HANDLE)
+        return File { handle: h as i64, path: "stderr", mode: 2 }
+    } else {
+        return File { handle: 2, path: "stderr", mode: 2 }
+    }
+}
+
+/// Buffered Reader wrapper.
+pub struct BufReader[R] {
+    pub reader: R,
+    pub buffer: ptr[u8],
+    pub capacity: i64,
+    pub pos: i64,
+    pub len: i64,
+}
+
+impl[R: Reader] BufReader[R] {
+    pub fn new(reader: R, capacity: i64) -> BufReader[R] {
+        BufReader {
+            reader: reader,
+            buffer: @alloc(capacity) as ptr[u8],
+            capacity: capacity,
+            pos: 0,
+            len: 0,
+        }
+    }
+
+    pub fn read(mut self, dest: ptr[u8], count: i64) -> Result[i64, str] {
+        if self.pos >= self.len {
+            match self.reader.read(self.buffer, self.capacity) {
+                Ok(n) => {
+                    self.len = n
+                    self.pos = 0
+                    if n == 0 {
+                        return Ok(0)
+                    }
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        let available = self.len - self.pos
+        let to_copy = if count < available { count } else { available }
+        mut i := 0 as i64
+        while i < to_copy {
+            (dest as i64 + i).* = (self.buffer as i64 + self.pos + i).* as u8
+            i = i + 1
+        }
+        self.pos = self.pos + to_copy
+        return Ok(to_copy)
+    }
+}
+
+/// Buffered Writer wrapper.
+pub struct BufWriter[W] {
+    pub writer: W,
+    pub buffer: ptr[u8],
+    pub capacity: i64,
+    pub len: i64,
+}
+
+impl[W: Writer] BufWriter[W] {
+    pub fn new(writer: W, capacity: i64) -> BufWriter[W] {
+        BufWriter {
+            writer: writer,
+            buffer: @alloc(capacity) as ptr[u8],
+            capacity: capacity,
+            len: 0,
+        }
+    }
+
+    pub fn write(mut self, src: ptr[u8], count: i64) -> Result[i64, str] {
+        mut written := 0 as i64
+        while written < count {
+            let available = self.capacity - self.len
+            if available == 0 {
+                match self.flush() {
+                    Ok(_) => {}
+                    Err(e) => return Err(e)
+                }
+            }
+            let to_write = if (count - written) < available { count - written } else { available }
+            mut i := 0 as i64
+            while i < to_write {
+                (self.buffer as i64 + self.len + i).* = (src as i64 + written + i).* as u8
+                i = i + 1
+            }
+            self.len = self.len + to_write
+            written = written + to_write
+        }
+        return Ok(written)
+    }
+
+    pub fn flush(mut self) -> Result[void, str] {
+        if self.len > 0 {
+            match self.writer.write(self.buffer, self.len) {
+                Ok(n) => {
+                    if n < self.len {
+                        return Err("failed to write whole buffer")
+                    }
+                    self.len = 0
+                }
+                Err(e) => return Err(e)
+            }
+        }
+        return Ok(())
+    }
+}
+

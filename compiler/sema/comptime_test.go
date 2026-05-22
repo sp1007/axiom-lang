@@ -238,3 +238,68 @@ func TestComptimeNonConstant(t *testing.T) {
 	}
 	_ = d
 }
+
+func TestComptimeRunEvaluation(t *testing.T) {
+	src := []byte(`fn main():
+    let TAU: f64 = #run 3.14 * 2.0
+    let MSG: string = #run "hello" + " " + "world"
+`)
+	pool := ast.NewInternPool(16)
+	toks, _, err := lexer.Lex(src)
+	if err != nil {
+		t.Fatalf("lexer error: %v", err)
+	}
+	tree, parseDiags := parser.Parse(toks, src, pool)
+	if len(parseDiags) > 0 {
+		for _, d := range parseDiags {
+			t.Logf("parser diag: %s", d.Message)
+		}
+	}
+
+	st := NewSymbolTable(pool)
+	tt := types.NewTypeTable()
+
+	// Run name resolution
+	lazy := NewLazyResolver(st, tt, nil)
+	nr := NewNameResolver(tree, pool, st, tt, lazy)
+	nr.Resolve()
+
+	// Run type inference
+	ie := NewInferenceEngine(tree, st, tt, nil)
+	tc := NewTypeChecker(tree, pool, st, tt, ie)
+	diags := tc.Check()
+
+	if len(diags) > 0 {
+		for _, d := range diags {
+			t.Logf("typecheck error: %s", d.Message)
+		}
+		t.Fatalf("expected 0 typechecker errors, got %d", len(diags))
+	}
+
+	// Verify that NodeComptime has been mutated to literal nodes
+	foundTauVal := false
+	foundMsgVal := false
+	for i := 0; i < tree.NodeCount(); i++ {
+		node := tree.Node(uint32(i))
+		if node.Kind == ast.NodeFloatLit {
+			txt := string(tree.TokenText(node.TokenIdx))
+			if txt == "6.28" {
+				foundTauVal = true
+			}
+		} else if node.Kind == ast.NodeStringLit {
+			txt := string(tree.TokenText(node.TokenIdx))
+			if txt == `"hello world"` {
+				foundMsgVal = true
+			}
+		} else if node.Kind == ast.NodeComptime {
+			t.Error("found NodeComptime which should have been substituted")
+		}
+	}
+
+	if !foundTauVal {
+		t.Error("expected to find substituted float literal 6.28 for TAU")
+	}
+	if !foundMsgVal {
+		t.Error("expected to find substituted string literal \"hello world\" for MSG")
+	}
+}

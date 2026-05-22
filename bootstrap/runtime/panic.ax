@@ -1,0 +1,27 @@
+// AXIOM Standard Library — bootstrap/runtime/panic.ax
+//
+// Self-hosted panic handler in AXIOM.
+// Bypasses libc completely by writing directly to OS standard error handle.
+
+import std::os::win32
+import std::os::linux_sys
+import std::os
+
+pub fn ax_panic(msg: str) {
+    if std::os::IS_WINDOWS {
+        let h_err = std::os::win32::GetStdHandle(std::os::win32::STD_ERROR_HANDLE)
+        let prefix = "\nAXIOM PANIC: "
+        mut written := 0 as u32
+        std::os::win32::WriteFile(h_err, prefix.ptr, prefix.len as u32, &written, null as ptr[void])
+        std::os::win32::WriteFile(h_err, msg.ptr, msg.len as u32, &written, null as ptr[void])
+        std::os::win32::WriteFile(h_err, "\n".ptr, 1 as u32, &written, null as ptr[void])
+        std::os::win32::ExitProcess(101 as u32)
+    } else {
+        // Linux: SYS_WRITE = 1, STDERR = 2, SYS_EXIT = 60
+        let prefix = "\nAXIOM PANIC: "
+        std::os::linux_sys::syscall(1 as u64, 2 as u64, prefix.ptr as u64, prefix.len as u64, 0 as u64, 0 as u64, 0 as u64)
+        std::os::linux_sys::syscall(1 as u64, 2 as u64, msg.ptr as u64, msg.len as u64, 0 as u64, 0 as u64, 0 as u64)
+        std::os::linux_sys::syscall(1 as u64, 2 as u64, "\n".ptr as u64, 1 as u64, 0 as u64, 0 as u64, 0 as u64)
+        std::os::linux_sys::syscall(60 as u64, 101 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    }
+}

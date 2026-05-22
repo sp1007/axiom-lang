@@ -400,6 +400,24 @@ func (tt *TypeTable) RegisterArray(elemTypeID TypeID, length uint32) TypeID {
 // nameID is the interned name of the template (e.g., "Box"), typeArgs are the concrete type arguments.
 // The GenericInstInfo is stored in a separate slice; Extra indexes into it.
 func (tt *TypeTable) RegisterGenericInst(nameID uint32, typeArgs []TypeID) TypeID {
+	for idx, entry := range tt.entries {
+		if entry.Kind == KindGenericInst && entry.NameID == nameID {
+			instInfo := tt.genericInsts[entry.Extra]
+			if len(instInfo.TypeArgs) == len(typeArgs) {
+				match := true
+				for j, arg := range instInfo.TypeArgs {
+					if arg != typeArgs[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					return TypeID(idx)
+				}
+			}
+		}
+	}
+
 	instIdx := uint32(len(tt.genericInsts))
 	tt.genericInsts = append(tt.genericInsts, GenericInstInfo{
 		TypeArgs: typeArgs,
@@ -477,3 +495,91 @@ func (tt *TypeTable) ArrayLength(id TypeID) uint32 {
 	}
 	return tt.arrays[entry.Extra].Length
 }
+
+// SubstituteGenericType substitutes template generic parameters (params) with concrete type arguments (args) in a type (t).
+func (tt *TypeTable) SubstituteGenericType(t TypeID, params []uint32, args []TypeID) TypeID {
+	if t == 0 || t == TypeUnknown {
+		return t
+	}
+	for i, param := range params {
+		if t == TypeID(param) {
+			return args[i]
+		}
+	}
+	entry := tt.Entry(t)
+	if entry.Kind == KindPointer {
+		elem := tt.PointerElem(t)
+		newElem := tt.SubstituteGenericType(elem, params, args)
+		if newElem != elem {
+			return tt.RegisterPointer(newElem)
+		}
+	}
+	if entry.Kind == KindSlice {
+		elem := tt.SliceElem(t)
+		newElem := tt.SubstituteGenericType(elem, params, args)
+		if newElem != elem {
+			return tt.RegisterSlice(newElem)
+		}
+	}
+	if entry.Kind == KindArray {
+		elem := tt.ArrayElem(t)
+		length := tt.ArrayLength(t)
+		newElem := tt.SubstituteGenericType(elem, params, args)
+		if newElem != elem {
+			return tt.RegisterArray(newElem, length)
+		}
+	}
+	if entry.Kind == KindRef {
+		elem := TypeID(entry.Extra)
+		newElem := tt.SubstituteGenericType(elem, params, args)
+		if newElem != elem {
+			for idx, ent := range tt.entries {
+				if ent.Kind == KindRef && ent.Extra == uint32(newElem) {
+					return TypeID(idx)
+				}
+			}
+			id := TypeID(len(tt.entries))
+			tt.entries = append(tt.entries, TypeEntry{
+				Kind:  KindRef,
+				Size:  8,
+				Align: 8,
+				Extra: uint32(newElem),
+			})
+			return id
+		}
+	}
+	if entry.Kind == KindFunction {
+		fInfo := &tt.funcs[entry.Extra]
+		changed := false
+		newParams := make([]TypeID, len(fInfo.Params))
+		for i, pVal := range fInfo.Params {
+			newParams[i] = tt.SubstituteGenericType(pVal, params, args)
+			if newParams[i] != pVal {
+				changed = true
+			}
+		}
+		newRet := tt.SubstituteGenericType(fInfo.Return, params, args)
+		if newRet != fInfo.Return {
+			changed = true
+		}
+		if changed {
+			return tt.RegisterFunction(newParams, newRet, fInfo.Effects)
+		}
+	}
+	if entry.Kind == KindGenericInst {
+		instArgs := tt.GenericInstArgs(t)
+		changed := false
+		newArgs := make([]TypeID, len(instArgs))
+		for i, arg := range instArgs {
+			newArgs[i] = tt.SubstituteGenericType(arg, params, args)
+			if newArgs[i] != arg {
+				changed = true
+			}
+		}
+		if changed {
+			return tt.RegisterGenericInst(entry.NameID, newArgs)
+		}
+	}
+	return t
+}
+

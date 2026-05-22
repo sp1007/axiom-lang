@@ -21,6 +21,7 @@ const (
 	ArchX86_64  ArchKind = iota // x86-64 / AMD64
 	ArchARM64                   // AArch64 / ARM64
 	ArchRISCV64                 // RISC-V 64-bit
+	ArchWasm32                  // WebAssembly 32-bit
 )
 
 // String returns the canonical name for the architecture.
@@ -32,6 +33,8 @@ func (a ArchKind) String() string {
 		return "aarch64"
 	case ArchRISCV64:
 		return "riscv64"
+	case ArchWasm32:
+		return "wasm32"
 	default:
 		return fmt.Sprintf("arch_%d", a)
 	}
@@ -44,6 +47,7 @@ const (
 	OSLinux   OSKind = iota // Linux
 	OSWindows               // Windows
 	OSmacOS                 // macOS / Darwin
+	OSWasm                  // WebAssembly environment
 )
 
 // String returns the canonical name for the OS.
@@ -55,6 +59,8 @@ func (o OSKind) String() string {
 		return "windows"
 	case OSmacOS:
 		return "macos"
+	case OSWasm:
+		return "wasm"
 	default:
 		return fmt.Sprintf("os_%d", o)
 	}
@@ -68,6 +74,7 @@ const (
 	ABIWin64                    // Windows x64 calling convention
 	ABIAAPCS64                  // ARM64 AAPCS64 (all ARM64 platforms)
 	ABIRISCVpsABI               // RISC-V psABI
+	ABIWasm                     // WebAssembly calling convention
 )
 
 // String returns the canonical name for the ABI.
@@ -81,6 +88,8 @@ func (a ABIKind) String() string {
 		return "aapcs64"
 	case ABIRISCVpsABI:
 		return "riscv-psabi"
+	case ABIWasm:
+		return "wasm"
 	default:
 		return fmt.Sprintf("abi_%d", a)
 	}
@@ -93,6 +102,7 @@ const (
 	BinELF   BinaryFmt = iota // ELF (Linux, FreeBSD)
 	BinPE                      // PE/COFF (Windows)
 	BinMachO                   // Mach-O (macOS)
+	BinWasm                    // WebAssembly Text / Binary
 )
 
 // String returns the format name.
@@ -104,6 +114,8 @@ func (f BinaryFmt) String() string {
 		return "pe"
 	case BinMachO:
 		return "macho"
+	case BinWasm:
+		return "wasm"
 	default:
 		return fmt.Sprintf("fmt_%d", f)
 	}
@@ -207,6 +219,8 @@ func (t Target) BinaryFormat() BinaryFmt {
 		return BinPE
 	case OSmacOS:
 		return BinMachO
+	case OSWasm:
+		return BinWasm
 	default:
 		return BinELF
 	}
@@ -267,6 +281,8 @@ func inferABI(arch ArchKind, os OSKind) ABIKind {
 		return ABIAAPCS64
 	case ArchRISCV64:
 		return ABIRISCVpsABI
+	case ArchWasm32:
+		return ABIWasm
 	default:
 		return ABISysV
 	}
@@ -278,8 +294,13 @@ func inferABI(arch ArchKind, os OSKind) ABIKind {
 //   - "x86_64-linux-sysv"  (arch-os-abi)
 //   - "aarch64-macos"      (arch-os, ABI inferred)
 //   - "x86_64-windows"     (arch-os, ABI inferred)
+//   - "wasm32"             (synthesized as wasm32-unknown-unknown)
 func ParseTarget(triple string) (Target, error) {
-	parts := strings.Split(strings.TrimSpace(triple), "-")
+	tripleNorm := strings.TrimSpace(triple)
+	if tripleNorm == "wasm32" || tripleNorm == "wasm" || tripleNorm == "wasm32-unknown-unknown" {
+		tripleNorm = "wasm32-unknown-unknown"
+	}
+	parts := strings.Split(tripleNorm, "-")
 	if len(parts) < 2 {
 		return Target{}, fmt.Errorf("invalid target triple %q: expected at least arch-os", triple)
 	}
@@ -294,6 +315,8 @@ func ParseTarget(triple string) (Target, error) {
 		t.Arch = ArchARM64
 	case "riscv64":
 		t.Arch = ArchRISCV64
+	case "wasm32", "wasm":
+		t.Arch = ArchWasm32
 	default:
 		return Target{}, fmt.Errorf("unknown architecture %q in triple %q", parts[0], triple)
 	}
@@ -306,6 +329,8 @@ func ParseTarget(triple string) (Target, error) {
 		t.OS = OSWindows
 	case "macos", "darwin", "apple":
 		t.OS = OSmacOS
+	case "wasm", "unknown", "wasi":
+		t.OS = OSWasm
 	default:
 		return Target{}, fmt.Errorf("unknown OS %q in triple %q", parts[1], triple)
 	}
@@ -321,6 +346,8 @@ func ParseTarget(triple string) (Target, error) {
 			t.ABI = ABIAAPCS64
 		case "riscv-psabi", "lp64d", "lp64":
 			t.ABI = ABIRISCVpsABI
+		case "wasm", "unknown":
+			t.ABI = ABIWasm
 		default:
 			// Unknown env/ABI → infer from arch + OS
 			t.ABI = inferABI(t.Arch, t.OS)

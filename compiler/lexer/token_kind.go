@@ -110,6 +110,8 @@ const (
 
 	TokenDotDot // ..
 
+	TokenHash // #
+
 	TokenKindCount // sentinel — total count; must remain last
 )
 
@@ -228,6 +230,7 @@ var tokenKindNames = [TokenKindCount]string{
 	TokenEOF:   "EOF",
 	TokenError: "ERROR",
 	TokenDotDot:    "'..'",
+	TokenHash:      "'#'",
 }
 
 // Keywords maps identifier text to the corresponding keyword TokenKind.

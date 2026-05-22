@@ -141,7 +141,8 @@ func compileCBackendWithActor(t *testing.T, source []byte, outPath string, runti
 		return fmt.Errorf("name resolution errors:\n%s", formatted)
 	}
 
-	infer := sema.NewInferenceEngine(tree, symbols, table, nil)
+	mono := sema.NewMonomorphizer(tree, intern, symbols, table)
+	infer := sema.NewInferenceEngine(tree, symbols, table, mono)
 	if errs := infer.Infer(); hasErrors(errs) {
 		opts := diagnostics.DefaultFormatOptions()
 		opts.UseColor = false

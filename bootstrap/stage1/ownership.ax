@@ -1,0 +1,105 @@
+// bootstrap/stage1/ownership.ax
+// OwnershipChecker checks single ownership, moves, and mutability.
+
+import std.string
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+extern "C" fn exit(code: i32)
+
+pub struct OwnershipChecker:
+    pub tree: AstTree
+    pub pool: InternPool
+    pub symtable: SymbolTable
+    pub typetable: TypeTable
+    pub errors: u32
+
+pub fn new_ownership_checker(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> OwnershipChecker:
+    return OwnershipChecker(
+        tree: tree,
+        pool: pool,
+        symtable: symtable,
+        typetable: typetable,
+        errors: 0 as u32,
+    )
+
+pub fn check(mut self: OwnershipChecker):
+    self.check_node(0 as u32)
+    if self.errors > 0 as u32:
+        puts("Ownership check failed.")
+        exit(1)
+
+pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
+    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+        return
+
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+
+    if kind == NODE_VAR_DECL:
+        let init_idx = node.first_child
+        if init_idx != 0 as u32:
+            self.check_node(init_idx)
+            self.check_move(init_idx)
+        
+    elif kind == NODE_ASSIGN_STMT:
+        let lhs_idx = node.first_child
+        let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
+        self.check_node(lhs_idx)
+        self.check_node(rhs_idx)
+
+        if lhs_idx != 0 as u32:
+            let lhs_kind = self.tree.nodes.data[lhs_idx].kind
+            if lhs_kind == NODE_IDENT:
+                let sym_idx = self.tree.nodes.data[lhs_idx].payload
+                if sym_idx != 0 as u32:
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    if (sym.flags & SYM_FLAG_MUT) == 0 as u16:
+                        let tok = self.tree.tokens.data[node.token_idx]
+                        printf("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.errors = self.errors + 1 as u32
+            
+            self.check_move(rhs_idx)
+
+    elif kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            if (sym.flags & SYM_FLAG_MOVED) != 0 as u16:
+                let tok = self.tree.tokens.data[node.token_idx]
+                printf("error[E4001]: use of moved value at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.errors = self.errors + 1 as u32
+
+    elif kind == NODE_CALL_EXPR:
+        mut arg_idx := node.first_child
+        if arg_idx != 0 as u32:
+            self.check_node(arg_idx)
+            arg_idx = self.tree.nodes.data[arg_idx].next_sibling
+            while arg_idx != 0 as u32:
+                self.check_node(arg_idx)
+                self.check_move(arg_idx)
+                arg_idx = self.tree.nodes.data[arg_idx].next_sibling
+
+    else:
+        mut child_idx := node.first_child
+        while child_idx != 0 as u32:
+            self.check_node(child_idx)
+            child_idx = self.tree.nodes.data[child_idx].next_sibling
+
+pub fn check_move(mut self: OwnershipChecker, node_idx: u32):
+    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
+        return
+    let node = self.tree.nodes.data[node_idx]
+    if node.kind == NODE_IDENT:
+        let sym_idx = node.payload
+        if sym_idx != 0 as u32:
+            let sym = self.symtable.symbols.data[sym_idx]
+            mut is_copyable := true
+            let type_id = sym.type_id
+            if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
+                let entry = self.typetable.entries.data[type_id]
+                if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_POINTER:
+                    is_copyable = false
+            
+            if not is_copyable:
+                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_MOVED

@@ -104,7 +104,7 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 		}
 	}
 
-	for _, sym := range chk.symtable.Symbols {
+	for idx, sym := range chk.symtable.Symbols {
 		if sym.Kind == SymFunc {
 			tID := types.TypeID(sym.TypeID)
 			if tID != types.TypeUnknown && chk.types.Entry(tID).Kind == types.KindFunction {
@@ -114,9 +114,15 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 					// Check if first parameter is exactly the struct type, or a ref to it.
 					// For simplicity, we only match exact struct type right now.
 					if chk.baseTypeEquals(firstParamType, structType) {
+						nameID := sym.NameID
+						if chk.symtable.InstantiatedToOriginalName != nil {
+							if origNameID, ok := chk.symtable.InstantiatedToOriginalName[uint32(idx)]; ok {
+								nameID = origNameID
+							}
+						}
 						// Add method without the first 'self' parameter
 						m := types.MethodSig{
-							NameID: sym.NameID,
+							NameID: nameID,
 							Params: append([]types.TypeID(nil), fInfo.Params[1:]...),
 							Return: fInfo.Return,
 						}
@@ -133,14 +139,39 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 
 func (chk *Interfaces) baseTypeEquals(t1, target types.TypeID) bool {
 	// Strip reference/pointer modifiers if any
-	entry := chk.types.Entry(t1)
-	if entry.Kind == types.KindPointer {
-		return chk.types.PointerElem(t1) == target
+	entry1 := chk.types.Entry(t1)
+	if entry1.Kind == types.KindPointer {
+		t1 = chk.types.PointerElem(t1)
+		entry1 = chk.types.Entry(t1)
+	} else if entry1.Kind == types.KindRef {
+		t1 = types.TypeID(entry1.Extra)
+		entry1 = chk.types.Entry(t1)
 	}
-	if entry.Kind == types.KindRef {
-		return types.TypeID(entry.Extra) == target
+
+	entry2 := chk.types.Entry(target)
+	if entry2.Kind == types.KindPointer {
+		target = chk.types.PointerElem(target)
+		entry2 = chk.types.Entry(target)
+	} else if entry2.Kind == types.KindRef {
+		target = types.TypeID(entry2.Extra)
+		entry2 = chk.types.Entry(target)
 	}
-	return t1 == target
+
+	if t1 == target {
+		return true
+	}
+
+	// If either is a GenericInst or Sum/Struct, check if their base NameID matches
+	name1 := entry1.NameID
+	name2 := entry2.NameID
+	if name1 != 0 && name2 != 0 && name1 == name2 {
+		if (entry1.Kind == types.KindGenericInst || entry1.Kind == types.KindStruct || entry1.Kind == types.KindSum) &&
+			(entry2.Kind == types.KindGenericInst || entry2.Kind == types.KindStruct || entry2.Kind == types.KindSum) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isBuiltinImpl checks if a primitive type implements a builtin interface.

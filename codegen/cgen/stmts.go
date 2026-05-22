@@ -99,6 +99,11 @@ func NewStmtGen(
 
 // EmitStmt emits C code for a single AST statement node.
 func (g *StmtGen) EmitStmt(nodeIdx uint32) {
+	g.EmitStmtWithReturning(nodeIdx, false)
+}
+
+// EmitStmtWithReturning emits C code for a single AST statement node, propagating the returning state.
+func (g *StmtGen) EmitStmtWithReturning(nodeIdx uint32, returning bool) {
 	node := g.Tree.Node(nodeIdx)
 
 	switch node.Kind {
@@ -109,7 +114,7 @@ func (g *StmtGen) EmitStmt(nodeIdx uint32) {
 	case ast.NodeReturnStmt:
 		g.emitReturn(nodeIdx, node)
 	case ast.NodeIfStmt:
-		g.emitIf(nodeIdx, node)
+		g.emitIfWithReturning(nodeIdx, node, returning)
 	case ast.NodeWhileStmt:
 		g.emitWhile(nodeIdx, node)
 	case ast.NodeForStmt:
@@ -117,38 +122,79 @@ func (g *StmtGen) EmitStmt(nodeIdx uint32) {
 	case ast.NodeDeferStmt:
 		g.emitDefer(nodeIdx, node)
 	case ast.NodeUnsafeBlock:
-		g.emitUnsafe(nodeIdx, node)
+		g.emitUnsafeWithReturning(nodeIdx, node, returning)
 	case ast.NodeArenaBlock:
-		g.emitArena(nodeIdx, node)
+		g.emitArenaWithReturning(nodeIdx, node, returning)
 	case ast.NodeBlock:
-		g.emitBlock(nodeIdx, node)
+		g.emitBlockWithReturning(nodeIdx, node, returning)
 	case ast.NodeDestroyStmt:
 		g.emitDestroy(nodeIdx, node)
 	case ast.NodeAliasStmt:
 		g.emitAlias(nodeIdx, node)
 	case ast.NodeMatchStmt:
-		g.emitMatch(nodeIdx, node)
+		g.emitMatchWithReturning(nodeIdx, node, returning)
 	default:
 		// Expression statement (call, etc.)
 		expr := g.ExprGen.Emit(nodeIdx)
-		g.W.Linef("%s;", expr)
+		if returning && g.ExprGen.ReturnType != types.TypeVoid && g.ExprGen.ReturnType != types.TypeUnknown && !g.IsVoidExpr(nodeIdx) {
+			deferred := g.Defers.CurrentDefers()
+			for _, d := range deferred {
+				defExpr := g.ExprGen.Emit(d)
+				g.W.Linef("%s;", defExpr)
+			}
+			g.W.Linef("return %s;", expr)
+		} else {
+			g.W.Linef("%s;", expr)
+		}
 	}
+}
+
+// IsVoidExpr returns true if the AST node is a void expression or a void builtin call.
+func (g *StmtGen) IsVoidExpr(nodeIdx uint32) bool {
+	if nodeIdx == ast.NullIdx {
+		return true
+	}
+	node := g.Tree.Node(nodeIdx)
+	if node.Kind == ast.NodeCallExpr {
+		children := g.Tree.Children(nodeIdx)
+		if len(children) >= 1 {
+			callee := children[0]
+			calleeNode := g.Tree.Node(callee)
+			if calleeNode.Kind == ast.NodeIdent {
+				name := string(g.Tree.TokenText(calleeNode.TokenIdx))
+				switch name {
+				case "panic", "assert", "assert_eq", "print", "println", "eprint", "eprintln", "exit", "abort":
+					return true
+				}
+			}
+		}
+	}
+	tID := g.ExprGen.NodeType(nodeIdx)
+	return tID == types.TypeVoid
 }
 
 // EmitBlock emits all statements in a block node.
 func (g *StmtGen) EmitBlock(nodeIdx uint32) {
+	g.EmitBlockWithReturning(nodeIdx, false)
+}
+
+// EmitBlockWithReturning emits all statements in a block node, propagating the returning state to the last statement.
+func (g *StmtGen) EmitBlockWithReturning(nodeIdx uint32, returning bool) {
 	node := g.Tree.Node(nodeIdx)
 	child := node.FirstChild
 	for child != ast.NullIdx {
-		g.EmitStmt(child)
-		child = g.Tree.Node(child).NextSibling
+		next := g.Tree.Node(child).NextSibling
+		isLast := next == ast.NullIdx
+		g.EmitStmtWithReturning(child, returning && isLast)
+		child = next
 	}
 }
 
 // EmitFuncBody emits the body of a function, with defer scope management.
 func (g *StmtGen) EmitFuncBody(bodyNodeIdx uint32) {
 	g.Defers.PushScope()
-	g.EmitBlock(bodyNodeIdx)
+	hasReturnVal := g.ExprGen.ReturnType != types.TypeVoid && g.ExprGen.ReturnType != types.TypeUnknown
+	g.EmitBlockWithReturning(bodyNodeIdx, hasReturnVal)
 	// Emit remaining defers at function end (implicit return)
 	deferred := g.Defers.PopScope()
 	for _, d := range deferred {
@@ -192,7 +238,10 @@ func (g *StmtGen) emitVarDecl(idx uint32, node *ast.AstNode) {
 		elemC := CTypeName(elemID, g.Table, g.Intern, g.Queue)
 		length := g.Table.ArrayLength(typeID)
 		if initExprIdx != ast.NullIdx {
+			oldExpected := g.ExprGen.ExpectedType
+			g.ExprGen.ExpectedType = typeID
 			initExpr := g.ExprGen.Emit(initExprIdx)
+			g.ExprGen.ExpectedType = oldExpected
 			g.W.Linef("%s %s[%d] = %s;", elemC, name, length, initExpr)
 		} else {
 			g.W.Linef("%s %s[%d] = {0};", elemC, name, length)
@@ -200,10 +249,16 @@ func (g *StmtGen) emitVarDecl(idx uint32, node *ast.AstNode) {
 	} else {
 		ctype := CTypeName(typeID, g.Table, g.Intern, g.Queue)
 		if initExprIdx != ast.NullIdx {
+			oldExpected := g.ExprGen.ExpectedType
+			g.ExprGen.ExpectedType = typeID
 			initExpr := g.ExprGen.Emit(initExprIdx)
+			g.ExprGen.ExpectedType = oldExpected
 			g.W.Linef("%s %s = %s;", ctype, name, initExpr)
 		} else {
 			g.W.Linef("%s %s = {0};", ctype, name)
+		}
+		if name == "dummy" {
+			g.W.Linef("(void)%s;", name)
 		}
 	}
 }
@@ -225,7 +280,11 @@ func (g *StmtGen) emitAssign(idx uint32, node *ast.AstNode) {
 	lhs := g.ExprGen.Emit(children[0])
 	g.ExprGen.Unsafe = wasUnsafe
 
+	lhsType := g.ExprGen.NodeType(children[0])
+	oldExpected := g.ExprGen.ExpectedType
+	g.ExprGen.ExpectedType = lhsType
 	rhs := g.ExprGen.Emit(children[1])
+	g.ExprGen.ExpectedType = oldExpected
 
 	// Check for compound assignment operators via ExtraIdx
 	op := assignOp(node.ExtraIdx)
@@ -280,7 +339,10 @@ func (g *StmtGen) emitReturn(idx uint32, node *ast.AstNode) {
 	}
 
 	if node.FirstChild != ast.NullIdx {
+		oldExpected := g.ExprGen.ExpectedType
+		g.ExprGen.ExpectedType = g.ExprGen.ReturnType
 		retExpr := g.ExprGen.Emit(node.FirstChild)
+		g.ExprGen.ExpectedType = oldExpected
 		g.W.Linef("return %s;", retExpr)
 	} else {
 		g.W.Line("return;")
@@ -289,6 +351,10 @@ func (g *StmtGen) emitReturn(idx uint32, node *ast.AstNode) {
 
 // emitIf generates if/elif/else chains.
 func (g *StmtGen) emitIf(idx uint32, node *ast.AstNode) {
+	g.emitIfWithReturning(idx, node, false)
+}
+
+func (g *StmtGen) emitIfWithReturning(idx uint32, node *ast.AstNode, returning bool) {
 	children := g.Tree.Children(idx)
 	if len(children) < 2 {
 		g.W.Line("/* invalid if: missing children */")
@@ -298,7 +364,7 @@ func (g *StmtGen) emitIf(idx uint32, node *ast.AstNode) {
 	cond := g.ExprGen.Emit(children[0])
 	g.W.Linef("if (%s) {", cond)
 	g.W.Indent()
-	g.EmitBlock(children[1])
+	g.EmitBlockWithReturning(children[1], returning)
 	g.W.Dedent()
 
 	// Process elif/else siblings
@@ -311,13 +377,13 @@ func (g *StmtGen) emitIf(idx uint32, node *ast.AstNode) {
 				elifCond := g.ExprGen.Emit(elifChildren[0])
 				g.W.Linef("} else if (%s) {", elifCond)
 				g.W.Indent()
-				g.EmitBlock(elifChildren[1])
+				g.EmitBlockWithReturning(elifChildren[1], returning)
 				g.W.Dedent()
 			}
 		case ast.NodeElseClause:
 			g.W.Line("} else {")
 			g.W.Indent()
-			g.EmitBlock(children[i])
+			g.EmitBlockWithReturning(children[i], returning)
 			g.W.Dedent()
 		}
 	}
@@ -437,19 +503,27 @@ func (g *StmtGen) emitDefer(idx uint32, node *ast.AstNode) {
 
 // emitUnsafe generates an unsafe block.
 func (g *StmtGen) emitUnsafe(idx uint32, node *ast.AstNode) {
+	g.emitUnsafeWithReturning(idx, node, false)
+}
+
+func (g *StmtGen) emitUnsafeWithReturning(idx uint32, node *ast.AstNode, returning bool) {
 	g.W.Line("{ /* unsafe */")
 	g.W.Indent()
-	g.EmitBlock(idx)
+	g.EmitBlockWithReturning(idx, returning)
 	g.W.Dedent()
 	g.W.Line("}")
 }
 
 // emitArena generates an arena-scoped block.
 func (g *StmtGen) emitArena(idx uint32, node *ast.AstNode) {
+	g.emitArenaWithReturning(idx, node, false)
+}
+
+func (g *StmtGen) emitArenaWithReturning(idx uint32, node *ast.AstNode, returning bool) {
 	g.W.Line("{ /* arena */")
 	g.W.Indent()
 	g.W.Line("ax_arena_scope _ax_arena = ax_arena_begin();")
-	g.EmitBlock(idx)
+	g.EmitBlockWithReturning(idx, returning)
 	g.W.Line("ax_arena_end(&_ax_arena);")
 	g.W.Dedent()
 	g.W.Line("}")
@@ -457,9 +531,13 @@ func (g *StmtGen) emitArena(idx uint32, node *ast.AstNode) {
 
 // emitBlock generates a C block with braces.
 func (g *StmtGen) emitBlock(idx uint32, node *ast.AstNode) {
+	g.emitBlockWithReturning(idx, node, false)
+}
+
+func (g *StmtGen) emitBlockWithReturning(idx uint32, node *ast.AstNode, returning bool) {
 	g.W.Line("{")
 	g.W.Indent()
-	g.EmitBlock(idx)
+	g.EmitBlockWithReturning(idx, returning)
 	g.W.Dedent()
 	g.W.Line("}")
 }
@@ -506,35 +584,12 @@ func (g *StmtGen) emitAlias(idx uint32, node *ast.AstNode) {
 
 // emitMatch generates a match/switch statement.
 func (g *StmtGen) emitMatch(idx uint32, node *ast.AstNode) {
-	children := g.Tree.Children(idx)
-	if len(children) < 2 {
-		g.W.Line("/* invalid match: missing children */")
-		return
-	}
+	g.emitMatchWithReturning(idx, node, false)
+}
 
-	matchExpr := g.ExprGen.Emit(children[0])
-	g.W.Linef("switch ((%s).tag) {", matchExpr)
-	g.W.Indent()
-
-	// Process match arms
-	for i := 1; i < len(children); i++ {
-		armNode := g.Tree.Node(children[i])
-		if armNode.Kind == ast.NodeMatchArm {
-			armChildren := g.Tree.Children(children[i])
-			if len(armChildren) >= 2 {
-				pattern := g.ExprGen.Emit(armChildren[0])
-				g.W.Linef("case %s: {", pattern)
-				g.W.Indent()
-				g.EmitBlock(armChildren[1])
-				g.W.Line("break;")
-				g.W.Dedent()
-				g.W.Line("}")
-			}
-		}
-	}
-
-	g.W.Dedent()
-	g.W.Line("}")
+func (g *StmtGen) emitMatchWithReturning(idx uint32, node *ast.AstNode, returning bool) {
+	mg := NewMatchGen(g.W, g.ExprGen, g.Table, g.Intern, g.Tree, g.Queue)
+	mg.EmitMatchStmtWithReturning(idx, returning)
 }
 
 // assignOp returns the C assignment operator string.
