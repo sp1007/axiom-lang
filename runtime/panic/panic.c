@@ -22,6 +22,13 @@ static size_t my_strlen(const char* s) {
 #endif
 #include <windows.h>
 
+// Stub for extern "C" fn syscall on Windows to satisfy the linker.
+// This is never called at runtime on Windows because memory allocations are routed via VirtualAlloc/VirtualFree.
+long long syscall(long long num, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6) {
+    (void)num; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return 0;
+}
+
 AX_NORETURN void ax_panic(const char* msg) {
     HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
     if (hErr != INVALID_HANDLE_VALUE) {

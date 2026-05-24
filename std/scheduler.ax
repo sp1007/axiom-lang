@@ -48,11 +48,11 @@ pub fn init(mut self: runq):
 
 pub fn push(mut self: runq, id: u64) -> i32:
     let b = self.bottom
-    let t = self.top
+    let t = @compiler_intrinsic("atomic_load", &self.top)
     if b - t >= 4096 as u64:
         return -1 as i32
     self.buffer[(b % 4096 as u64) as i64] = id
-    self.bottom = b + 1 as u64
+    @compiler_intrinsic("atomic_store", &self.bottom, b + 1 as u64)
     return 0 as i32
 
 pub fn pop(mut self: runq) -> u64:
@@ -61,32 +61,35 @@ pub fn pop(mut self: runq) -> u64:
         return 0 as u64
     
     b = b - 1 as u64
-    self.bottom = b
-    let t = self.top
+    @compiler_intrinsic("atomic_store", &self.bottom, b)
+    let t = @compiler_intrinsic("atomic_load", &self.top)
     
-    if t <= b:
-        return self.buffer[(b % 4096 as u64) as i64]
+    if t > b:
+        @compiler_intrinsic("atomic_store", &self.bottom, t)
+        return 0 as u64
         
+    mut id := self.buffer[(b % 4096 as u64) as i64]
     if t == b:
-        self.bottom = t + 1 as u64
-        self.top = t + 1 as u64
-        return self.buffer[(b % 4096 as u64) as i64]
-        
-    self.bottom = t
-    return 0 as u64
+        if not @compiler_intrinsic("atomic_cas", &self.top, t, t + 1 as u64):
+            id = 0 as u64
+        @compiler_intrinsic("atomic_store", &self.bottom, t + 1 as u64)
+    return id
 
 pub fn steal(mut self: runq) -> u64:
-    let t = self.top
-    let b = self.bottom
+    let t = @compiler_intrinsic("atomic_load", &self.top)
+    let b = @compiler_intrinsic("atomic_load", &self.bottom)
     if t >= b:
         return 0 as u64
         
     let id = self.buffer[(t % 4096 as u64) as i64]
-    self.top = t + 1 as u64
-    return id
+    if @compiler_intrinsic("atomic_cas", &self.top, t, t + 1 as u64):
+        return id
+    return 0 as u64
 
 pub fn empty(lent self: runq) -> i32:
-    if self.top >= self.bottom:
+    let t = @compiler_intrinsic("atomic_load", &self.top)
+    let b = @compiler_intrinsic("atomic_load", &self.bottom)
+    if t >= b:
         return 1 as i32
     return 0 as i32
 

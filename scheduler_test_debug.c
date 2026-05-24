@@ -162,6 +162,7 @@ extern const ax_u32 ax_ACTOR_HEAP_MAGIC;
 const ax_u32 ax_ACTOR_HEAP_MAGIC = 0xAC704EA0;
 
 /* Function prototypes */
+ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset);
 ax_i32 ax_munmap(void* addr, ax_u64 length);
 struct ax_AxGlobalState* ax_get_global_state(void);
@@ -224,16 +225,25 @@ ax_i32 ax_main_usr(void);
 
 
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset) {
-    return ((void*)(NULL));
+    ax_i64 res = syscall(((ax_u64)(9)), ((ax_u64)(addr)), length, ((ax_u64)(prot)), ((ax_u64)(flags)), ((ax_u64)(((ax_i64)(fd)))), ((ax_u64)(offset)));
+    return ((void*)(res));
 }
 
 ax_i32 ax_munmap(void* addr, ax_u64 length) {
-    return ((ax_i32)(0));
+    ax_i64 res = syscall(((ax_u64)(11)), ((ax_u64)(addr)), length, ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+    return ((ax_i32)(res));
 }
 
 struct ax_AxGlobalState* ax_get_global_state(void) {
     void* addr = ((void*)(0x50000000));
-    struct ax_AxGlobalState* state = ((struct ax_AxGlobalState*)(VirtualAlloc(addr, ((ax_u64)(4096)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+    struct ax_AxGlobalState* state = ((struct ax_AxGlobalState*)(NULL));
+    if (1) {
+        state = ((struct ax_AxGlobalState*)(VirtualAlloc(addr, ((ax_u64)(4096)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+    } else {
+        {
+            state = ((struct ax_AxGlobalState*)(ax_mmap(addr, ((ax_u64)(4096)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+        }
+    }
     if ((state == ((struct ax_AxGlobalState*)(NULL)))) {
         return ((struct ax_AxGlobalState*)(0x50000000));
     }
@@ -254,7 +264,13 @@ struct ax_Segment** ax_std_mem_alloc_get_free_pool(void) {
 struct ax_Segment* ax_std_mem_alloc_get_slab(void) {
     struct ax_AxGlobalState* state = ax_get_global_state();
     if ((state->g_slab == ((struct ax_Segment*)(NULL)))) {
-        state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+        if (1) {
+            state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+        } else {
+            {
+                state->g_slab = ((struct ax_Segment*)(ax_mmap(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+            }
+        }
     }
     return state->g_slab;
 }
@@ -689,13 +705,13 @@ void ax_runq_init(struct ax_runq* self) {
 
 ax_i32 ax_runq_push(struct ax_runq* self, ax_u64 id) {
     ax_u64 b = self->bottom;
-    ax_u64 t = self->top;
+    ax_u64 t = __atomic_load_n(&(self->top), __ATOMIC_SEQ_CST);
     if (((b - t) >= ((ax_u64)(4096)))) {
         return (-((ax_i32)(1)));
     }
     ax_bounds_check((ax_u64)(((ax_i64)((b % ((ax_u64)(4096)))))), (ax_u64)(4096));
     ((self->buffer)[((ax_i64)((b % ((ax_u64)(4096)))))]) = id;
-    self->bottom = (b + ((ax_u64)(1)));
+    __atomic_store_n(&(self->bottom), (b + ((ax_u64)(1))), __ATOMIC_SEQ_CST);
     return ((ax_i32)(0));
 }
 
@@ -705,33 +721,39 @@ ax_u64 ax_runq_pop(struct ax_runq* self) {
         return ((ax_u64)(0));
     }
     b = (b - ((ax_u64)(1)));
-    self->bottom = b;
-    ax_u64 t = self->top;
-    if ((t <= b)) {
-        return (ax_bounds_check((ax_u64)(((ax_i64)((b % ((ax_u64)(4096)))))), (ax_u64)(4096)), (self->buffer)[((ax_i64)((b % ((ax_u64)(4096)))))]);
+    __atomic_store_n(&(self->bottom), b, __ATOMIC_SEQ_CST);
+    ax_u64 t = __atomic_load_n(&(self->top), __ATOMIC_SEQ_CST);
+    if ((t > b)) {
+        __atomic_store_n(&(self->bottom), t, __ATOMIC_SEQ_CST);
+        return ((ax_u64)(0));
     }
+    ax_u64 id = (ax_bounds_check((ax_u64)(((ax_i64)((b % ((ax_u64)(4096)))))), (ax_u64)(4096)), (self->buffer)[((ax_i64)((b % ((ax_u64)(4096)))))]);
     if ((t == b)) {
-        self->bottom = (t + ((ax_u64)(1)));
-        self->top = (t + ((ax_u64)(1)));
-        return (ax_bounds_check((ax_u64)(((ax_i64)((b % ((ax_u64)(4096)))))), (ax_u64)(4096)), (self->buffer)[((ax_i64)((b % ((ax_u64)(4096)))))]);
+        if ((!__sync_bool_compare_and_swap(&(self->top), t, (t + ((ax_u64)(1)))))) {
+            id = ((ax_u64)(0));
+        }
+        __atomic_store_n(&(self->bottom), (t + ((ax_u64)(1))), __ATOMIC_SEQ_CST);
     }
-    self->bottom = t;
-    return ((ax_u64)(0));
+    return id;
 }
 
 ax_u64 ax_runq_steal(struct ax_runq* self) {
-    ax_u64 t = self->top;
-    ax_u64 b = self->bottom;
+    ax_u64 t = __atomic_load_n(&(self->top), __ATOMIC_SEQ_CST);
+    ax_u64 b = __atomic_load_n(&(self->bottom), __ATOMIC_SEQ_CST);
     if ((t >= b)) {
         return ((ax_u64)(0));
     }
     ax_u64 id = (ax_bounds_check((ax_u64)(((ax_i64)((t % ((ax_u64)(4096)))))), (ax_u64)(4096)), (self->buffer)[((ax_i64)((t % ((ax_u64)(4096)))))]);
-    self->top = (t + ((ax_u64)(1)));
-    return id;
+    if (__sync_bool_compare_and_swap(&(self->top), t, (t + ((ax_u64)(1))))) {
+        return id;
+    }
+    return ((ax_u64)(0));
 }
 
 ax_i32 ax_runq_empty(const struct ax_runq* self) {
-    if ((self->top >= self->bottom)) {
+    ax_u64 t = __atomic_load_n(&(self->top), __ATOMIC_SEQ_CST);
+    ax_u64 b = __atomic_load_n(&(self->bottom), __ATOMIC_SEQ_CST);
+    if ((t >= b)) {
         return ((ax_i32)(1));
     }
     return ((ax_i32)(0));

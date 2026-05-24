@@ -16,6 +16,12 @@ fn ax_memset(s: ptr[void], c: i32, n: u64) -> ptr[void]:
 extern "C" fn ax_future_new(type_tag: u32) -> ptr[void]
 extern "C" fn ax_future_resolve(f: ptr[void], result: ptr[void], size: u64)
 extern "C" fn ax_future_is_ready(f: ptr[void]) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+pub struct EpollEvent:
+    pub events: u32
+    pub padding: u32
+    pub data: u64
 
 // IO Event flags
 pub const IO_READ: u32 = 1 as u32
@@ -64,17 +70,39 @@ pub fn init(mut self: ioloop) -> i32:
     let p = (&self) as ptr[void]
     let sz = @compiler_intrinsic("size_of")[ioloop]()
     ax_memset(p, 0 as i32, sz as u64)
-    self.backend_fd = -1 as i32
+    mut backend := -1 as i32
+    if not @compiler_intrinsic("is_windows"):
+        // Linux: epoll_create1(0) = syscall 291
+        backend = syscall(291 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64) as i32
+    self.backend_fd = backend
     self.running = 0 as i32
+    self.pending_count = 0 as u32
     return 0 as i32
 
 pub fn destroy(mut self: ioloop):
     self.running = 0 as i32
+    if not @compiler_intrinsic("is_windows") and self.backend_fd >= 0:
+        // Linux: close(fd) = syscall 3
+        syscall(3 as u64, self.backend_fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        self.backend_fd = -1 as i32
     self.pending_count = 0 as u32
 
 pub fn register(mut self: ioloop, req: ptr[IORequest]) -> i32:
     if self.pending_count >= 1024 as u32:
         return -1 as i32
+
+    if not @compiler_intrinsic("is_windows") and self.backend_fd >= 0:
+        mut events := 0 as u32
+        if req.events & IO_READ != 0:
+            events = events | 0x001 as u32 // EPOLLIN
+        if req.events & IO_WRITE != 0:
+            events = events | 0x004 as u32 // EPOLLOUT
+        
+        mut ev = EpollEvent(events: events, padding: 0 as u32, data: req.fd as u64)
+        // Linux: epoll_ctl(backend_fd, EPOLL_CTL_ADD=1, fd, &ev) = syscall 233
+        let res = syscall(233 as u64, self.backend_fd as u64, 1 as u64, req.fd as u64, (&ev) as u64, 0 as u64, 0 as u64)
+        if res < 0 as i64:
+            return -1 as i32
 
     let target_idx = self.pending_count
     self.pending[target_idx as i64].fd = req.fd
@@ -99,6 +127,11 @@ pub fn unregister(mut self: ioloop, fd: i32) -> i32:
             i = i + 1 as u32
 
     if found != 0 as i32:
+        if not @compiler_intrinsic("is_windows") and self.backend_fd >= 0:
+            mut ev = EpollEvent(events: 0 as u32, padding: 0 as u32, data: 0 as u64)
+            // Linux: epoll_ctl(backend_fd, EPOLL_CTL_DEL=2, fd, &ev) = syscall 233
+            syscall(233 as u64, self.backend_fd as u64, 2 as u64, fd as u64, (&ev) as u64, 0 as u64, 0 as u64)
+
         mut j := i
         while j < self.pending_count - 1 as u32:
             self.pending[j as i64].fd = self.pending[(j + 1 as u32) as i64].fd
@@ -115,16 +148,39 @@ pub fn unregister(mut self: ioloop, fd: i32) -> i32:
 
 pub fn poll(mut self: ioloop, timeout_ms: i32) -> i32:
     mut processed := 0 as i32
-    mut i := 0 as u32
-    while i < self.pending_count:
-        let fut = self.pending[i as i64].future
-        if fut != null as ptr[void]:
-            if ax_future_is_ready(fut) == 0 as i32:
-                let size = self.pending[i as i64].buf_size
-                let res_ptr = (&size) as ptr[void]
-                ax_future_resolve(fut, res_ptr, 8 as u64) // u64 size is 8 bytes
-                processed = processed + 1 as i32
-        i = i + 1 as u32
+    if @compiler_intrinsic("is_windows"):
+        mut i := 0 as u32
+        while i < self.pending_count:
+            let fut = self.pending[i as i64].future
+            if fut != null as ptr[void]:
+                if ax_future_is_ready(fut) == 0 as i32:
+                    let size = self.pending[i as i64].buf_size
+                    let res_ptr = (&size) as ptr[void]
+                    ax_future_resolve(fut, res_ptr, 8 as u64)
+                    processed = processed + 1 as i32
+            i = i + 1 as u32
+    else:
+        if self.backend_fd >= 0 and self.pending_count > 0 as u32:
+            mut ev = EpollEvent(events: 0 as u32, padding: 0 as u32, data: 0 as u64)
+            // Linux: epoll_wait(backend_fd, &ev, 1, timeout_ms) = syscall 232
+            let res = syscall(232 as u64, self.backend_fd as u64, (&ev) as u64, 1 as u64, timeout_ms as u64, 0 as u64, 0 as u64)
+            if res > 0 as i64:
+                let ready_fd = ev.data as i32
+                mut i := 0 as u32
+                mut stop_loop := 0 as i32
+                while i < self.pending_count and stop_loop == 0 as i32:
+                    let req = &self.pending[i as i64]
+                    if req.fd == ready_fd:
+                        let fut = req.future
+                        if fut != null as ptr[void]:
+                            if ax_future_is_ready(fut) == 0 as i32:
+                                let size = req.buf_size
+                                let res_ptr = (&size) as ptr[void]
+                                ax_future_resolve(fut, res_ptr, 8 as u64)
+                                processed = processed + 1 as i32
+                                stop_loop = 1 as i32
+                    if stop_loop == 0 as i32:
+                        i = i + 1 as u32
 
     self.events_processed = self.events_processed + (processed as u64)
     return processed

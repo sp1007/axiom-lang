@@ -88,6 +88,7 @@ extern const ax_u32 ax_ACTOR_HEAP_MAGIC;
 const ax_u32 ax_ACTOR_HEAP_MAGIC = 0xAC704EA0;
 
 /* Function prototypes */
+ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset);
 ax_i32 ax_munmap(void* addr, ax_u64 length);
 struct ax_AxGlobalState* ax_get_global_state(void);
@@ -128,16 +129,25 @@ ax_i32 ax_main_usr(void);
 
 
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset) {
-    return ((void*)(NULL));
+    ax_i64 res = syscall(((ax_u64)(9)), ((ax_u64)(addr)), length, ((ax_u64)(prot)), ((ax_u64)(flags)), ((ax_u64)(((ax_i64)(fd)))), ((ax_u64)(offset)));
+    return ((void*)(res));
 }
 
 ax_i32 ax_munmap(void* addr, ax_u64 length) {
-    return ((ax_i32)(0));
+    ax_i64 res = syscall(((ax_u64)(11)), ((ax_u64)(addr)), length, ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+    return ((ax_i32)(res));
 }
 
 struct ax_AxGlobalState* ax_get_global_state(void) {
     void* addr = ((void*)(0x50000000));
-    struct ax_AxGlobalState* state = ((struct ax_AxGlobalState*)(VirtualAlloc(addr, ((ax_u64)(4096)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+    struct ax_AxGlobalState* state = ((struct ax_AxGlobalState*)(NULL));
+    if (1) {
+        state = ((struct ax_AxGlobalState*)(VirtualAlloc(addr, ((ax_u64)(4096)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+    } else {
+        {
+            state = ((struct ax_AxGlobalState*)(ax_mmap(addr, ((ax_u64)(4096)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+        }
+    }
     if ((state == ((struct ax_AxGlobalState*)(NULL)))) {
         return ((struct ax_AxGlobalState*)(0x50000000));
     }
@@ -158,7 +168,13 @@ struct ax_Segment** ax_std_mem_alloc_get_free_pool(void) {
 struct ax_Segment* ax_std_mem_alloc_get_slab(void) {
     struct ax_AxGlobalState* state = ax_get_global_state();
     if ((state->g_slab == ((struct ax_Segment*)(NULL)))) {
-        state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+        if (1) {
+            state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+        } else {
+            {
+                state->g_slab = ((struct ax_Segment*)(ax_mmap(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+            }
+        }
     }
     return state->g_slab;
 }
