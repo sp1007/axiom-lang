@@ -3,8 +3,8 @@
 
 import std.string
 
-extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn puts(s: str) -> i32
+// extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// extern "C" fn puts(s: str) -> i32
 extern "C" fn exit(code: i32)
 
 pub struct OwnershipChecker:
@@ -26,7 +26,7 @@ pub fn new_ownership_checker(tree: AstTree, pool: InternPool, symtable: SymbolTa
 pub fn check(mut self: OwnershipChecker):
     self.check_node(0 as u32)
     if self.errors > 0 as u32:
-        puts("Ownership check failed.")
+        ax_puts_local("Ownership check failed.")
         exit(1)
 
 pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
@@ -56,7 +56,7 @@ pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
                     let sym = self.symtable.symbols.data[sym_idx]
                     if (sym.flags & SYM_FLAG_MUT) == 0 as u16:
                         let tok = self.tree.tokens.data[node.token_idx]
-                        printf("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        ax_printf_local("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.errors = self.errors + 1 as u32
             
             self.check_move(rhs_idx)
@@ -67,7 +67,7 @@ pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
             let sym = self.symtable.symbols.data[sym_idx]
             if (sym.flags & SYM_FLAG_MOVED) != 0 as u16:
                 let tok = self.tree.tokens.data[node.token_idx]
-                printf("error[E4001]: use of moved value at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("error[E4001]: use of moved value at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 self.errors = self.errors + 1 as u32
 
     elif kind == NODE_CALL_EXPR:

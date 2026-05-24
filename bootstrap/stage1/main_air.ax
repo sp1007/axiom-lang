@@ -3,19 +3,19 @@
 
 import std.string
 
-extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
 extern "C" fn ftell(stream: ptr[void]) -> i64
 extern "C" fn rewind(stream: ptr[void])
 extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn puts(s: str) -> i32
+// extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// extern "C" fn puts(s: str) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
+// extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
+extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
 
 fn print_inst(inst: AirInst):
     let op = inst.opcode
@@ -24,13 +24,13 @@ fn print_inst(inst: AirInst):
 
     if op == OP_RETURN:
         if inst.src1 != 0 as u32:
-            printf("    ret %%%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local("    ret %%%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            puts("    ret")
+            ax_puts_local("    ret")
     elif op == OP_JUMP:
-        printf("    jump block_%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("    jump block_%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_BRANCH:
-        printf("    branch %%%d block_%d block_%d\n", inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("    branch %%%d block_%d block_%d\n", inst.src1 as i64, inst.src2 as i64, inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     else:
         let mnemonic = opcode_mnemonic(op)
         let has_dest = (inst.dest != 0 as u32)
@@ -44,33 +44,33 @@ fn print_inst(inst: AirInst):
                 type_id = 0 as u16
 
             if type_id != 0 as u16:
-                printf("    %%%d: t%d = %s", inst.dest as i64, type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("    %%%d: t%d = %s", inst.dest as i64, type_id as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                printf("    %%%d = %s", inst.dest as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("    %%%d = %s", inst.dest as i64, (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            printf("    %s", (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local("    %s", (mnemonic as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
         if is_binary and has_src1 and has_src2:
-            printf(" %%%d, %%%d\n", inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local(" %%%d, %%%d\n", inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         elif has_src1 and has_src2:
-            printf(" %%%d, %%%d\n", inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local(" %%%d, %%%d\n", inst.src1 as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         elif has_src1:
-            printf(" %%%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local(" %%%d\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         elif has_src2:
-            printf(" %%%d\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local(" %%%d\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            puts("")
+            ax_puts_local("")
 
 fn print_block(f: AirFunc, mut bb: BasicBlock):
-    printf("  block_%d:", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("  block_%d:", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     if bb.is_entry and bb.is_exit:
-        puts("  ; entry exit")
+        ax_puts_local("  ; entry exit")
     elif bb.is_entry:
-        puts("  ; entry")
+        ax_puts_local("  ; entry")
     elif bb.is_exit:
-        puts("  ; exit")
+        ax_puts_local("  ; exit")
     else:
-        puts("")
+        ax_puts_local("")
 
     mut i := 0 as i64
     while i < bb.instrs_len as i64:
@@ -81,17 +81,17 @@ fn print_block(f: AirFunc, mut bb: BasicBlock):
         i = i + 1
 
 fn print_func(f: AirFunc):
-    printf("fn @%d(", f.name as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("fn @%d(", f.name as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     mut i := 0 as i64
     while i < f.params.len:
         if i > 0:
-            printf(", ", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        printf("t%d", f.params.data[i] as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local(", ", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("t%d", f.params.data[i] as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         i = i + 1
-    printf(")", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local(")", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     if f.ret_type != 0 as u32:
-        printf(" -> t%d", f.ret_type as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    puts(":")
+        ax_printf_local(" -> t%d", f.ret_type as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_puts_local(":")
 
     mut bi := 0 as i64
     while bi < f.blocks.len:
@@ -103,12 +103,12 @@ fn print_module(mod: AirModule):
     mut i := 0 as i64
     while i < mod.funcs.len:
         if i > 0:
-            puts("")
+            ax_puts_local("")
         print_func(mod.funcs.data[i])
         i = i + 1
 
 fn read_file_content(path: str) -> str:
-    let file = fopen(path as ptr[void], "rb")
+    let file = fopen(path as ptr[void], get_str_ptr("rb"))
     if file == null as ptr[void]:
         return ""
     fseek(file, 0, 2)
@@ -229,7 +229,7 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
                 args[count] = local_wslice_to_str(final_ptr, final_len)
                 count = count + 1
     else:
-        let file = fopen("/proc/self/cmdline" as ptr[void], "rb")
+        let file = fopen("/proc/self/cmdline" as ptr[void], get_str_ptr("rb"))
         if file != null as ptr[void]:
             let buf = @alloc(8192) as ptr[u8]
             let n = fread(buf as ptr[void], 1, 8192, file)
@@ -258,12 +258,12 @@ pub fn main() -> i32:
     mut argc := 0 as i32
     let args = get_freestanding_args(&argc)
     if argc < 2:
-        puts("Usage: axc <command> [args]")
-        puts("Commands:")
-        puts("  dump-air <file.ax>")
-        puts("  emit-c <file.ax> [-o <out.c>]")
-        puts("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
-        puts("  fmt <file.ax>")
+        ax_puts_local("Usage: axc <command> [args]")
+        ax_puts_local("Commands:")
+        ax_puts_local("  dump-air <file.ax>")
+        ax_puts_local("  emit-c <file.ax> [-o <out.c>]")
+        ax_puts_local("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
+        ax_puts_local("  fmt <file.ax>")
         return 1
 
     mut is_dump_air := false
@@ -304,7 +304,7 @@ pub fn main() -> i32:
                 output_file = args[opt_idx as i64 + 1 as i64]
                 opt_idx = opt_idx + 1
             else:
-                puts("Error: missing value for -o option")
+                ax_puts_local("Error: missing value for -o option")
                 return 1
         elif opt == "--target" or opt == "-target":
             if opt_idx + 1 < argc:
@@ -313,7 +313,7 @@ pub fn main() -> i32:
                     target_wasm32 = true
                 opt_idx = opt_idx + 1
             else:
-                puts("Error: missing value for --target option")
+                ax_puts_local("Error: missing value for --target option")
                 return 1
         elif opt == "-self-link" or opt == "--self-link":
             self_link = true
@@ -325,9 +325,9 @@ pub fn main() -> i32:
 
     let filename = args[file_arg_idx as i64]
     let filename_ptr = filename as ptr[u8]
-    let file = fopen(filename_ptr as ptr[void], "rb")
+    let file = fopen(filename_ptr as ptr[void], get_str_ptr("rb"))
     if file == null as ptr[void]:
-        puts("Error: could not open file")
+        ax_puts_local("Error: could not open file")
         return 1
 
     fseek(file, 0, 2) // SEEK_END = 2
@@ -335,13 +335,13 @@ pub fn main() -> i32:
     rewind(file)
 
     if size < 0:
-        puts("Error: could not get file size")
+        ax_puts_local("Error: could not get file size")
         fclose(file)
         return 1
 
     let buffer = @alloc(size + 1) as ptr[u8]
     if buffer == null as ptr[u8]:
-        puts("Error: memory allocation failed")
+        ax_puts_local("Error: memory allocation failed")
         fclose(file)
         return 1
 
@@ -353,62 +353,62 @@ pub fn main() -> i32:
     mut src := buffer as str
 
     if is_fmt:
-        puts("[Debug] Running pure-AXIOM Formatter...")
+        ax_puts_local("[Debug] Running pure-AXIOM Formatter...")
         mut formatter := new_formatter()
         let formatted = formatter.format(src)
         
-        let out_file = fopen(filename_ptr as ptr[void], "wb")
+        let out_file = fopen(filename_ptr as ptr[void], get_str_ptr("wb"))
         if out_file != null as ptr[void]:
-            fputs(formatted, out_file)
+            fputs(get_str_ptr(formatted), out_file)
             fclose(out_file)
-            puts("[Debug] Formatted file successfully!")
+            ax_puts_local("[Debug] Formatted file successfully!")
         else:
-            puts("Error: could not write formatted file")
+            ax_puts_local("Error: could not write formatted file")
         
-        @free(formatted as ptr[u8])
+        @free(get_str_ptr(formatted))
         @free(buffer)
         return 0
 
     if self_link:
-        puts("[Debug] Reading alloc.ax...")
+        ax_puts_local("[Debug] Reading alloc.ax...")
         fflush(null as ptr[void])
         let raw_alloc = read_file_content("std/mem/alloc.ax")
-        puts("[Debug] Reading scheduler.ax...")
+        ax_puts_local("[Debug] Reading scheduler.ax...")
         fflush(null as ptr[void])
         let raw_sched = read_file_content("std/scheduler.ax")
-        puts("[Debug] Reading runtime.ax...")
+        ax_puts_local("[Debug] Reading runtime.ax...")
         fflush(null as ptr[void])
         let raw_rt = read_file_content("std/runtime.ax")
-        puts("[Debug] Reading os.ax...")
+        ax_puts_local("[Debug] Reading os.ax...")
         fflush(null as ptr[void])
         let raw_os = read_file_content("std/os.ax")
         
-        puts("[Debug] Stripping imports from alloc.ax...")
+        ax_puts_local("[Debug] Stripping imports from alloc.ax...")
         fflush(null as ptr[void])
         let alloc_src_raw = strip_imports(raw_alloc)
         let alloc_src = strip_package_prefixes(alloc_src_raw)
 
-        puts("[Debug] Stripping imports from scheduler.ax...")
+        ax_puts_local("[Debug] Stripping imports from scheduler.ax...")
         fflush(null as ptr[void])
         let sched_src_raw = strip_imports(raw_sched)
         let sched_src = strip_package_prefixes(sched_src_raw)
 
-        puts("[Debug] Stripping imports from runtime.ax...")
+        ax_puts_local("[Debug] Stripping imports from runtime.ax...")
         fflush(null as ptr[void])
         let rt_src_raw = strip_imports(raw_rt)
         let rt_src = strip_package_prefixes(rt_src_raw)
 
-        puts("[Debug] Stripping imports from os.ax...")
+        ax_puts_local("[Debug] Stripping imports from os.ax...")
         fflush(null as ptr[void])
         let os_src_raw = strip_imports(raw_os)
         let os_src = strip_package_prefixes(os_src_raw)
 
-        puts("[Debug] Stripping imports from src...")
+        ax_puts_local("[Debug] Stripping imports from src...")
         fflush(null as ptr[void])
         let clean_src_raw = strip_imports(src)
         let clean_src = strip_package_prefixes(clean_src_raw)
         
-        puts("[Debug] Concatenating buffers...")
+        ax_puts_local("[Debug] Concatenating buffers...")
         fflush(null as ptr[void])
         let len_src = std.string.len(clean_src)
         let len_alloc = std.string.len(alloc_src)
@@ -417,7 +417,7 @@ pub fn main() -> i32:
         let len_os = std.string.len(os_src)
         
         let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_src
-        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_os, len_src, total_len, 0 as i64, 0 as i64)
+        ax_printf_local("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_os, len_src, total_len, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
         let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
         
@@ -440,7 +440,7 @@ pub fn main() -> i32:
         @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
         new_buf[total_len] = 0 as u8
         
-        puts("[Debug] Cleaning up...")
+        ax_puts_local("[Debug] Cleaning up...")
         fflush(null as ptr[void])
         if std.string.len(raw_alloc) > 0 as i64:
             @free(raw_alloc as ptr[u8])
@@ -472,22 +472,22 @@ pub fn main() -> i32:
         @free(clean_src_raw as ptr[u8])
             
         src = new_buf as str
-        puts("[Debug] Concatenation finished successfully!")
+        ax_puts_local("[Debug] Concatenation finished successfully!")
         fflush(null as ptr[void])
         
-        let out_file = fopen("scratch/self_linked_concatenated.ax" as ptr[void], "wb")
+        let out_file = fopen("scratch/self_linked_concatenated.ax" as ptr[void], get_str_ptr("wb"))
         if out_file != null as ptr[void]:
-            fputs(src, out_file)
+            fputs(get_str_ptr(src), out_file)
             fclose(out_file)
 
     if not is_dump_air:
-        puts("[Debug] Stage 1: Starting compilation...")
+        ax_puts_local("[Debug] Stage 1: Starting compilation...")
         fflush(null as ptr[void])
     // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
     if not is_dump_air:
-        puts("[Debug] Finished Lexing.")
+        ax_puts_local("[Debug] Finished Lexing.")
         fflush(null as ptr[void])
 
     // 2. Parse
@@ -495,7 +495,7 @@ pub fn main() -> i32:
     mut parser := new_parser(tokens, src, pool)
     parser.parse_program()
     if not is_dump_air:
-        puts("[Debug] Finished Parsing.")
+        ax_puts_local("[Debug] Finished Parsing.")
         fflush(null as ptr[void])
 
     // 3. Resolve
@@ -504,7 +504,7 @@ pub fn main() -> i32:
     resolver.resolve()
     parser.pool = resolver.intern
     if not is_dump_air:
-        puts("[Debug] Finished Resolving.")
+        ax_puts_local("[Debug] Finished Resolving.")
         fflush(null as ptr[void])
 
     // 4. Typecheck
@@ -513,31 +513,31 @@ pub fn main() -> i32:
     checker.run_type_checker()
     typetable = checker.types
     if not is_dump_air:
-        puts("[Debug] Finished Typechecking.")
+        ax_puts_local("[Debug] Finished Typechecking.")
         fflush(null as ptr[void])
 
     if not is_dump_air:
-        puts("[Debug] Running Ownership Checker...")
+        ax_puts_local("[Debug] Running Ownership Checker...")
         fflush(null as ptr[void])
         mut ownership_chk := new_ownership_checker(parser.tree, parser.pool, resolver.symtable, typetable)
         ownership_chk.check()
 
-        puts("[Debug] Running Escape Analyser...")
+        ax_puts_local("[Debug] Running Escape Analyser...")
         fflush(null as ptr[void])
         mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
         escape_an.run()
 
-        puts("[Debug] Running CTGC Injector...")
+        ax_puts_local("[Debug] Running CTGC Injector...")
         fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
         ctgc_inj.run()
 
-        puts("[Debug] Running Alias Reuse Optimizer...")
+        ax_puts_local("[Debug] Running Alias Reuse Optimizer...")
         fflush(null as ptr[void])
         mut alias_opt := new_alias_reuse_optimizer(parser.tree, parser.pool, resolver.symtable, typetable)
         alias_opt.run()
 
-        puts("[Debug] Running AIR Builder...")
+        ax_puts_local("[Debug] Running AIR Builder...")
         fflush(null as ptr[void])
 
     // 6. Build AIR
@@ -546,7 +546,7 @@ pub fn main() -> i32:
     air_builder.build_module()
     parser.pool = air_builder.pool
     if not is_dump_air:
-        puts("[Debug] Stage 2: Finished building AIR module.")
+        ax_puts_local("[Debug] Stage 2: Finished building AIR module.")
 
     if optimize:
         mut optimizer := new_ssa_optimizer()
@@ -561,7 +561,7 @@ pub fn main() -> i32:
             output_file = "output.c"
         let success = cgen.generate(output_file)
         if not success:
-            puts("Error: could not generate C code")
+            ax_puts_local("Error: could not generate C code")
             return 1
     elif is_build:
         if target_wasm32:
@@ -570,7 +570,7 @@ pub fn main() -> i32:
                 output_file = "output.wat"
             let success = wasm_gen.generate(output_file)
             if not success:
-                puts("Error: could not generate Wasm Text code")
+                ax_puts_local("Error: could not generate Wasm Text code")
                 return 1
             
             @free(buffer)
@@ -596,32 +596,32 @@ pub fn main() -> i32:
             return 0
 
         let temp_obj = "axiom_temp.obj"
-        puts("[Debug] Stage 3: Starting native code generation...")
+        ax_puts_local("[Debug] Stage 3: Starting native code generation...")
         let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff", self_link)
         if not success:
-            puts("Error: could not generate native binary code")
+            ax_puts_local("Error: could not generate native binary code")
             return 1
         let temp_asm = "axiom_temp.asm"
         compile_native_asm(temp_asm, air_builder.module, resolver.symtable, parser.pool, typetable, "nasm")
-        puts("[Debug] Stage 4: Finished native code generation.")
+        ax_puts_local("[Debug] Stage 4: Finished native code generation.")
 
         if std.string.len(output_file) == 0:
             output_file = "output.exe"
 
         if self_link:
-            puts("[Debug] Stage 5: Starting self-linking...")
+            ax_puts_local("[Debug] Stage 5: Starting self-linking...")
             mut linker := new_axiom_linker()
             axiom_linker_add_input(&linker, temp_obj)
             linker.output_path = output_file
             let link_success = axiom_linker_link(&linker)
-            puts("[Debug] Stage 6: Finished self-linking.")
+            ax_puts_local("[Debug] Stage 6: Finished self-linking.")
             
             let temp_obj_nt = str_to_null_terminated(temp_obj)
             // remove(temp_obj_nt as ptr[void])
             @free(temp_obj_nt)
             
             if not link_success:
-                puts("Error: Self-linking failed")
+                ax_puts_local("Error: Self-linking failed")
                 return 1
         else:
             // Link using gcc directly on the generated object file
@@ -630,7 +630,7 @@ pub fn main() -> i32:
             let temp_obj_nt = str_to_null_terminated(temp_obj)
 
             // Run gcc: gcc -O2 -o output.exe axiom_temp.obj -Iruntime runtime/axalloc/axalloc.c ...
-            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], output_file_nt as ptr[void], temp_obj_nt as ptr[void])
+            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], output_file_nt as ptr[void], temp_obj_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up
@@ -640,7 +640,7 @@ pub fn main() -> i32:
             @free(cmd_buf)
 
             if link_status != 0:
-                puts("Error: Linking failed")
+                ax_puts_local("Error: Linking failed")
                 return link_status
 
     // Free resources
@@ -666,6 +666,6 @@ pub fn main() -> i32:
     free_pool(parser.pool)
 
     if self_link:
-        @free(src as ptr[u8])
+        @free(get_str_ptr(src))
 
     return 0

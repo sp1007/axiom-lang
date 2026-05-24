@@ -1,0 +1,352 @@
+// bootstrap/stage1/print_helpers.ax
+// Natively implemented safe formatting and console output functions.
+
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+
+pub fn get_str_ptr(s: str) -> ptr[u8]:
+    return ((&s) as ptr[ptr[u8]]).*
+
+fn print_raw(s: str):
+    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
+    mut written := 0 as u32
+    let s_ptr = s as ptr[void]
+    let s_len = std.string.len(s) as u32
+    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
+
+pub fn ax_puts_local(s: str) -> i32:
+    print_raw(s)
+    print_raw("\n")
+    return 0
+
+fn print_i64_raw(val: i64):
+    if val == 0:
+        print_raw("0")
+        return
+        
+    mut v := val
+    mut is_neg := false
+    if v < 0:
+        is_neg = true
+        v = -v
+        
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        let digit = (v % 10) as u8
+        buf[len] = '0' as u8 + digit
+        len = len + 1
+        v = v / 10
+        
+    if is_neg:
+        buf[len] = '-' as u8
+        len = len + 1
+        
+    // Reverse buffer
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+        
+    buf[len] = 0 as u8
+    
+    // Convert to str and print
+    let s = std.string.slice(buf as str, 0, len as i64)
+    print_raw(s)
+    @free(buf)
+
+pub fn ax_printf_local(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    let s_ptr = fmt as ptr[u8]
+    let s_len = std.string.len(fmt)
+    mut arg_idx := 0
+    mut i := 0 as i64
+    mut start := 0 as i64
+    
+    while i < s_len:
+        if s_ptr[i] == '%' as u8:
+            if i > start:
+                print_raw(std.string.slice(fmt, start, i))
+                
+            if i + 1 < s_len:
+                if s_ptr[i + 1] == '%' as u8:
+                    print_raw("%")
+                    i = i + 1
+                elif s_ptr[i + 1] == 'd' as u8:
+                    mut val := 0 as i64
+                    if arg_idx == 0:
+                        val = a1
+                    elif arg_idx == 1:
+                        val = a2
+                    elif arg_idx == 2:
+                        val = a3
+                    elif arg_idx == 3:
+                        val = a4
+                    elif arg_idx == 4:
+                        val = a5
+                    elif arg_idx == 5:
+                        val = a6
+                    elif arg_idx == 6:
+                        val = a7
+                    elif arg_idx == 7:
+                        val = a8
+                    
+                    print_i64_raw(val)
+                    arg_idx = arg_idx + 1
+                    i = i + 1
+                elif s_ptr[i + 1] == 's' as u8:
+                    mut val_ptr_raw := 0 as i64
+                    if arg_idx == 0:
+                        val_ptr_raw = a1
+                    elif arg_idx == 1:
+                        val_ptr_raw = a2
+                    elif arg_idx == 2:
+                        val_ptr_raw = a3
+                    elif arg_idx == 3:
+                        val_ptr_raw = a4
+                    elif arg_idx == 4:
+                        val_ptr_raw = a5
+                    elif arg_idx == 5:
+                        val_ptr_raw = a6
+                    elif arg_idx == 6:
+                        val_ptr_raw = a7
+                    elif arg_idx == 7:
+                        val_ptr_raw = a8
+                    
+                    if val_ptr_raw != 0:
+                        let c_ptr = val_ptr_raw as ptr[u8]
+                        mut len := 0 as i64
+                        while c_ptr[len] != 0 as u8:
+                            len = len + 1
+                        print_raw(std.string.slice(c_ptr as str, 0, len))
+                    arg_idx = arg_idx + 1
+                    i = i + 1
+                start = i + 1
+        i = i + 1
+        
+    if i > start:
+        print_raw(std.string.slice(fmt, start, i))
+        
+    return 0
+
+pub fn ax_snprintf_local(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32:
+    let dest = buf as ptr[u8]
+    mut dest_idx := 0 as i64
+    mut fmt_idx := 0 as i64
+    mut arg_idx := 0
+    
+    while format[fmt_idx] != 0 as u8 and dest_idx < size - 1:
+        if format[fmt_idx] == '%' as u8 and format[fmt_idx + 1] == 's' as u8:
+            mut val_ptr := null as ptr[u8]
+            if arg_idx == 0:
+                val_ptr = a1 as ptr[u8]
+            else:
+                val_ptr = a2 as ptr[u8]
+            
+            if val_ptr != null as ptr[u8]:
+                mut k := 0 as i64
+                while val_ptr[k] != 0 as u8 and dest_idx < size - 1:
+                    dest[dest_idx] = val_ptr[k]
+                    dest_idx = dest_idx + 1
+                    k = k + 1
+            arg_idx = arg_idx + 1
+            fmt_idx = fmt_idx + 2
+        else:
+            dest[dest_idx] = format[fmt_idx]
+            dest_idx = dest_idx + 1
+            fmt_idx = fmt_idx + 1
+            
+    dest[dest_idx] = 0 as u8
+    return dest_idx as i32
+
+fn print_to_file(stream: ptr[void], s: str):
+    fputs(get_str_ptr(s), stream)
+
+fn print_i64_to_file(stream: ptr[void], val: i64):
+    if val == 0:
+        print_to_file(stream, "0")
+        return
+        
+    mut v := val
+    mut is_neg := false
+    if v < 0:
+        is_neg = true
+        v = -v
+        
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        let digit = (v % 10) as u8
+        buf[len] = '0' as u8 + digit
+        len = len + 1
+        v = v / 10
+        
+    if is_neg:
+        buf[len] = '-' as u8
+        len = len + 1
+        
+    // Reverse buffer
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+        
+    buf[len] = 0 as u8
+    
+    // Convert to str and print
+    let s = std.string.slice(buf as str, 0, len as i64)
+    print_to_file(stream, s)
+    @free(buf)
+
+pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    let s_ptr = fmt as ptr[u8]
+    let s_len = std.string.len(fmt)
+    mut arg_idx := 0
+    mut i := 0 as i64
+    mut start := 0 as i64
+    
+    while i < s_len:
+        if s_ptr[i] == '%' as u8:
+            if i > start:
+                print_to_file(stream, std.string.slice(fmt, start, i))
+                
+            if i + 1 < s_len:
+                if s_ptr[i + 1] == '%' as u8:
+                    print_to_file(stream, "%")
+                    i = i + 1
+                elif s_ptr[i + 1] == 'd' as u8:
+                    mut val := 0 as i64
+                    if arg_idx == 0:
+                        val = a1
+                    elif arg_idx == 1:
+                        val = a2
+                    elif arg_idx == 2:
+                        val = a3
+                    elif arg_idx == 3:
+                        val = a4
+                    elif arg_idx == 4:
+                        val = a5
+                    elif arg_idx == 5:
+                        val = a6
+                    elif arg_idx == 6:
+                        val = a7
+                    elif arg_idx == 7:
+                        val = a8
+                    
+                    print_i64_to_file(stream, val)
+                    arg_idx = arg_idx + 1
+                    i = i + 1
+                elif s_ptr[i + 1] == 's' as u8:
+                    mut val_ptr_raw := 0 as i64
+                    if arg_idx == 0:
+                        val_ptr_raw = a1
+                    elif arg_idx == 1:
+                        val_ptr_raw = a2
+                    elif arg_idx == 2:
+                        val_ptr_raw = a3
+                    elif arg_idx == 3:
+                        val_ptr_raw = a4
+                    elif arg_idx == 4:
+                        val_ptr_raw = a5
+                    elif arg_idx == 5:
+                        val_ptr_raw = a6
+                    elif arg_idx == 6:
+                        val_ptr_raw = a7
+                    elif arg_idx == 7:
+                        val_ptr_raw = a8
+                    
+                    if val_ptr_raw != 0:
+                        let c_ptr = val_ptr_raw as ptr[u8]
+                        mut len := 0 as i64
+                        while c_ptr[len] != 0 as u8:
+                            len = len + 1
+                        print_to_file(stream, std.string.slice(c_ptr as str, 0, len))
+                    arg_idx = arg_idx + 1
+                    i = i + 1
+                start = i + 1
+        i = i + 1
+        
+    if i > start:
+        print_to_file(stream, std.string.slice(fmt, start, i))
+        
+    return 0
+
+pub fn ax_sprintf_local(buf: ptr[u8], format: ptr[u8], val: f64) -> i32:
+    mut dest := buf
+    mut v := val
+    mut prefix_len := 0 as i64
+    if v < 0.0:
+        dest[0] = '-' as u8
+        dest = ((dest as u64) + 1 as u64) as ptr[u8]
+        v = -v
+        prefix_len = 1
+        
+    // Integer part
+    let int_part = v as i64
+    let frac = v - int_part as f64
+    
+    // Format integer part
+    mut temp_buf := @alloc(32) as ptr[u8]
+    mut temp_len := 0
+    mut temp_val := int_part
+    if temp_val == 0:
+        temp_buf[0] = '0' as u8
+        temp_len = 1
+    else:
+        while temp_val > 0:
+            let digit = (temp_val % 10) as u8
+            temp_buf[temp_len] = '0' as u8 + digit
+            temp_len = temp_len + 1
+            temp_val = temp_val / 10
+            
+    // Reverse integer part into dest
+    mut i := 0
+    while i < temp_len:
+        dest[i] = temp_buf[temp_len - 1 - i]
+        i = i + 1
+    @free(temp_buf)
+    
+    mut dest_idx := temp_len as i64
+    dest[dest_idx] = '.' as u8
+    dest_idx = dest_idx + 1
+    
+    // Fractional part (6 digits precision)
+    mut frac_val := (frac * 1000000.0 + 0.5) as i64
+    if frac_val >= 1000000:
+        frac_val = 999999
+        
+    // Format fractional part with leading zeros
+    mut frac_buf := @alloc(32) as ptr[u8]
+    mut j := 0
+    mut f_val := frac_val
+    while j < 6:
+        let digit = (f_val % 10) as u8
+        frac_buf[5 - j] = '0' as u8 + digit
+        f_val = f_val / 10
+        j = j + 1
+        
+    j = 0
+    while j < 6:
+        dest[dest_idx] = frac_buf[j]
+        dest_idx = dest_idx + 1
+        j = j + 1
+    @free(frac_buf)
+    
+    // Strip trailing zeros and the dot if all fractional digits are zero
+    while dest_idx > 0 and dest[dest_idx - 1] == '0' as u8:
+        dest_idx = dest_idx - 1
+    if dest_idx > 0 and dest[dest_idx - 1] == '.' as u8:
+        dest_idx = dest_idx - 1
+        
+    if dest_idx == 0:
+        dest[0] = '0' as u8
+        dest_idx = 1
+        
+    dest[dest_idx] = 0 as u8
+    return (dest_idx + prefix_len) as i32

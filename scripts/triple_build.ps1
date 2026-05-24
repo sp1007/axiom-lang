@@ -69,6 +69,7 @@ function Concatenate-Axiom-Files {
 }
 
 $frontendFiles = @(
+    "bootstrap/stage1/print_helpers.ax",
     "bootstrap/stage1/token.ax",
     "bootstrap/stage1/lexer.ax",
     "bootstrap/stage1/ast.ax",

@@ -1,0 +1,89 @@
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+
+fn print_raw(s: str):
+    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
+    mut written := 0 as u32
+    let s_ptr = s as ptr[void]
+    let s_len = 10 as u32
+    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
+
+pub fn ax_sprintf_local(buf: ptr[u8], format: ptr[u8], val: f64) -> i32:
+    mut dest := buf
+    mut v := val
+    mut prefix_len := 0 as i64
+    if v < 0.0:
+        dest[0] = '-' as u8
+        dest = ((dest as u64) + 1 as u64) as ptr[u8]
+        v = -v
+        prefix_len = 1
+        
+    // Integer part
+    let int_part = v as i64
+    let frac = v - int_part as f64
+    
+    // Format integer part
+    mut temp_buf := @alloc(32) as ptr[u8]
+    mut temp_len := 0
+    mut temp_val := int_part
+    if temp_val == 0:
+        temp_buf[0] = '0' as u8
+        temp_len = 1
+    else:
+        while temp_val > 0:
+            let digit = (temp_val % 10) as u8
+            temp_buf[temp_len] = '0' as u8 + digit
+            temp_len = temp_len + 1
+            temp_val = temp_val / 10
+            
+    // Reverse integer part into dest
+    mut i := 0
+    while i < temp_len:
+        dest[i] = temp_buf[temp_len - 1 - i]
+        i = i + 1
+    @free(temp_buf)
+    
+    mut dest_idx := temp_len as i64
+    dest[dest_idx] = '.' as u8
+    dest_idx = dest_idx + 1
+    
+    // Fractional part (6 digits precision)
+    mut frac_val := (frac * 1000000.0 + 0.5) as i64
+    if frac_val >= 1000000:
+        frac_val = 999999
+        
+    // Format fractional part with leading zeros
+    mut frac_buf := @alloc(32) as ptr[u8]
+    mut j := 0
+    mut f_val := frac_val
+    while j < 6:
+        let digit = (f_val % 10) as u8
+        frac_buf[5 - j] = '0' as u8 + digit
+        f_val = f_val / 10
+        j = j + 1
+        
+    j = 0
+    while j < 6:
+        dest[dest_idx] = frac_buf[j]
+        dest_idx = dest_idx + 1
+        j = j + 1
+    @free(frac_buf)
+    
+    // Strip trailing zeros and the dot if all fractional digits are zero
+    while dest_idx > 0 and dest[dest_idx - 1] == '0' as u8:
+        dest_idx = dest_idx - 1
+    if dest_idx > 0 and dest[dest_idx - 1] == '.' as u8:
+        dest_idx = dest_idx - 1
+        
+    if dest_idx == 0:
+        dest[0] = '0' as u8
+        dest_idx = 1
+        
+    dest[dest_idx] = 0 as u8
+    return (dest_idx + prefix_len) as i32
+
+pub fn main() -> i32:
+    mut buf := @alloc(64) as ptr[u8]
+    ax_sprintf_local(buf, "test" as ptr[u8], 123.456)
+    @free(buf)
+    return 0

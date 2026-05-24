@@ -4,10 +4,15 @@ import (
 	"debug/pe"
 	"fmt"
 	"log"
+	"os"
 )
 
 func main() {
-	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\minimal.exe")
+	target := "minimal.exe"
+	if len(os.Args) > 1 {
+		target = os.Args[1]
+	}
+	file, err := pe.Open(target)
 	if err != nil {
 		log.Fatalf("Error opening PE file: %v", err)
 	}

@@ -3,10 +3,10 @@
 
 import std.string
 
-extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn strlen(s: ptr[u8]) -> i64
-extern "C" fn sprintf(buf: ptr[u8], format: ptr[u8], val: f64) -> i32
-extern "C" fn atof(s: str) -> f64
+// extern "C" fn sprintf(buf: ptr[u8], format: ptr[u8], val: f64) -> i32
+extern "C" fn atof(s: ptr[u8]) -> f64
 
 
 
@@ -64,7 +64,7 @@ pub fn format_int(val: i64) -> str:
 
 pub fn format_float(val: f64) -> str:
     let buf = @alloc(64) as ptr[u8]
-    sprintf(buf, "%g" as ptr[u8], val)
+    ax_sprintf_local(buf, "%g" as ptr[u8], val)
     let len = strlen(buf)
     let result = alloc_str_from_raw(buf, len)
     @free(buf)
@@ -191,7 +191,7 @@ pub fn eval_comptime(mut self: TypeChecker, node_idx: u32) -> ComptimeValue:
         
     elif kind == NODE_FLOAT_LIT:
         let text = self.node_text(node_idx)
-        let val = atof(text)
+        let val = atof(get_str_ptr(text))
         return ComptimeValue(kind: TYPE_F64, int_val: 0 as i64, float_val: val, bool_val: false, str_val: "")
         
     elif kind == NODE_BOOL_LIT:
@@ -768,7 +768,7 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             
             if is_generic_call:
                 let decl_node = self.symtable.symbols.data[template_sym_idx].decl_node
-                printf("[DEBUG-TC-GEN] is_generic_call=true, template_sym_idx=%d, decl_node=%d\n", template_sym_idx as i64, decl_node as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("[DEBUG-TC-GEN] is_generic_call=true, template_sym_idx=%d, decl_node=%d\n", template_sym_idx as i64, decl_node as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 
                 // Collect generic parameter name_ids
                 mut gen_params := new_u32_vec()
@@ -846,7 +846,7 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     self.infer_node(cloned_root, TYPE_UNKNOWN)
                 
                 self.tree.nodes.data[callee].payload = inst_sym_idx
-                printf("[DEBUG-TC-GEN] specialized call ok, inst_sym_idx=%d\n", inst_sym_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("[DEBUG-TC-GEN] specialized call ok, inst_sym_idx=%d\n", inst_sym_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 
                 if gen_params.data != null as ptr[u32]:
                     @free(gen_params.data as ptr[u8])

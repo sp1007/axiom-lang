@@ -58,88 +58,88 @@ pub fn format_operand(op: MachOperand, format: str, allocs: ptr[RegAllocation]) 
 pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegAllocation], format: str, symbols: SymbolTable, pool: InternPool):
     let op = inst.op
     if op == MACH_NOP:
-        fprintf(file, "    nop\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    nop\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_LABEL:
         let lbl_id = inst.dst.label
         if format == "winasm":
-            fprintf(file, "L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, ".L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, ".L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_RET:
-        fprintf(file, "    ret\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    ret\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_MOV:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    mov %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_MOV_IMM:
         let dst = format_operand(inst.dst, format, allocs)
         if inst.src1.vreg == 1 as u32:
             let sym_name = x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
             if format == "winasm":
-                fprintf(file, "    mov %s, OFFSET %s\n", (dst as ptr[u8]) as i64, (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    mov %s, OFFSET %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(sym_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    mov %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(sym_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
             let src = format_operand(inst.src1, format, allocs)
-            fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    mov %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_XOR_ZERO:
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    xor %s, %s\n", (dst as ptr[u8]) as i64, (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    xor %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_ADD:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    add %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    add %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_SUB:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    sub %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    sub %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_IMUL:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    imul %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    imul %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_IDIV:
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    idiv %s\n", (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    idiv %s\n", (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_CQO:
-        fprintf(file, "    cqo\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    cqo\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_NEG:
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    neg %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    neg %s\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_NOT:
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    not %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    not %s\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_AND:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    and %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    and %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_OR:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    or %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    or %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_XOR:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    xor %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    xor %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_SHL:
         let dst = format_operand(inst.dst, format, allocs)
         if inst.src1.kind == OPND_IMM:
-            fprintf(file, "    shl %s, %d\n", (dst as ptr[u8]) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    shl %s, %d\n", (get_str_ptr(dst)) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, "    shl %s, cl\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    shl %s, cl\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_SAR:
         let dst = format_operand(inst.dst, format, allocs)
         if inst.src1.kind == OPND_IMM:
-            fprintf(file, "    sar %s, %d\n", (dst as ptr[u8]) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    sar %s, %d\n", (get_str_ptr(dst)) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, "    sar %s, cl\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    sar %s, cl\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_CMP:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    cmp %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    cmp %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_TEST:
         let dst = format_operand(inst.dst, format, allocs)
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    test %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    test %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_SETCC:
         mut dst_reg := REG_NONE
         if inst.dst.kind == OPND_PHYS:
@@ -148,7 +148,7 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
             dst_reg = allocs[inst.dst.vreg].phys
         let byte_reg = to_byte_reg(dst_reg)
         let cc_str = cond_code_to_str(inst.cc)
-        fprintf(file, "    set%s %s\n", (cc_str as ptr[u8]) as i64, (byte_reg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    set%s %s\n", (get_str_ptr(cc_str)) as i64, (get_str_ptr(byte_reg)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_MOVZX_B:
         mut src_reg := REG_NONE
         if inst.src1.kind == OPND_PHYS:
@@ -157,20 +157,20 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
             src_reg = allocs[inst.src1.vreg].phys
         let byte_reg = to_byte_reg(src_reg)
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    movzx %s, %s\n", (dst as ptr[u8]) as i64, (byte_reg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    movzx %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(byte_reg)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_PUSH:
         let src = format_operand(inst.src1, format, allocs)
-        fprintf(file, "    push %s\n", (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    push %s\n", (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_POP:
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    pop %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    pop %s\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_JMP:
         let dst = format_operand(inst.dst, format, allocs)
-        fprintf(file, "    jmp %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    jmp %s\n", (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_JCC:
         let dst = format_operand(inst.dst, format, allocs)
         let cc_str = cond_code_to_str(inst.cc)
-        fprintf(file, "    j%s %s\n", (cc_str as ptr[u8]) as i64, (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "    j%s %s\n", (get_str_ptr(cc_str)) as i64, (get_str_ptr(dst)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == MACH_LOAD:
         let base = format_operand(inst.src1, format, allocs)
         mut disp := 0 as i64
@@ -187,9 +187,9 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
             
         let dst = format_operand(inst.dst, format, allocs)
         if format == "winasm":
-            fprintf(file, "    mov %s, qword ptr %s\n", (dst as ptr[u8]) as i64, (addr_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    mov %s, qword ptr %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(addr_str)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (addr_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    mov %s, %s\n", (get_str_ptr(dst)) as i64, (get_str_ptr(addr_str)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
     elif op == MACH_STORE:
         let base = format_operand(inst.dst, format, allocs)
@@ -207,44 +207,44 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
             
         let src = format_operand(inst.src1, format, allocs)
         if format == "winasm":
-            fprintf(file, "    mov qword ptr %s, %s\n", (addr_str as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    mov qword ptr %s, %s\n", (get_str_ptr(addr_str)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, "    mov %s, %s\n", (addr_str as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    mov %s, %s\n", (get_str_ptr(addr_str)) as i64, (get_str_ptr(src)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
     elif op == MACH_CALL:
         if inst.src1.imm <= 0 as i64:
             if inst.src1.imm == -1 as i64:
-                fprintf(file, "    call malloc\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call malloc\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -2 as i64:
-                fprintf(file, "    call free\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call free\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -3 as i64:
-                fprintf(file, "    call ax_actor_spawn\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_actor_spawn\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -4 as i64:
-                fprintf(file, "    call __ax_runtime_init\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call __ax_runtime_init\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -5 as i64:
-                fprintf(file, "    call __ax_runtime_shutdown\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call __ax_runtime_shutdown\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -10 as i64:
-                fprintf(file, "    call ax_println_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_println_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -11 as i64:
-                fprintf(file, "    call ax_println_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_println_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -12 as i64:
-                fprintf(file, "    call ax_println_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_println_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -13 as i64:
-                fprintf(file, "    call ax_println_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_println_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -14 as i64:
-                fprintf(file, "    call ax_print_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_print_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -15 as i64:
-                fprintf(file, "    call ax_print_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_print_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -16 as i64:
-                fprintf(file, "    call ax_print_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_print_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -17 as i64:
-                fprintf(file, "    call ax_print_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ax_print_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -20 as i64:
-                fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -21 as i64:
-                fprintf(file, "    call strlen\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call strlen\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fprintf(file, "    call %s\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "    call %s\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
             mut sym_name := x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
             if sym_name == "std.string.len":
@@ -255,13 +255,13 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
                 sym_name = "ax_str_replace"
             elif sym_name == "std.string.slice":
                 sym_name = "ax_str_slice"
-            fprintf(file, "    call %s\n", (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "    call %s\n", (get_str_ptr(sym_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
 pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], format: str, symbols: SymbolTable, pool: InternPool):
     if format == "winasm":
-        fprintf(file, "%s PROC\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "%s PROC\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     else:
-        fprintf(file, "%s:\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "%s:\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     mut prologue := new_mach_inst_vec()
     emit_prologue(frame, &prologue)
@@ -288,13 +288,13 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
             
             if is_entry:
                 if @compiler_intrinsic("is_windows"):
-                    fprintf(file, "    mov ecx, eax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fprintf(file, "    sub rsp, 40\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    mov ecx, eax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    sub rsp, 40\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 else:
-                    fprintf(file, "    mov rdi, rax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fprintf(file, "    mov rax, 60\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fprintf(file, "    syscall\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    mov rdi, rax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    mov rax, 60\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_fprintf_local(file, "    syscall\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
         else:
@@ -302,9 +302,9 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
         i = i + 1
 
     if format == "winasm":
-        fprintf(file, "%s ENDP\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "%s ENDP\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 
 fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
@@ -316,24 +316,24 @@ fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
 
 pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str) -> bool:
     let output_asm_file_nt = x86_str_to_null_terminated(output_asm_file)
-    let file = fopen(output_asm_file_nt as ptr[void], "wb")
+    let file = fopen(output_asm_file_nt as ptr[void], get_str_ptr("wb"))
     @free(output_asm_file_nt)
     if file == null as ptr[void]:
         return false
 
     // 1. Emit assembler-specific header
     if format == "fasm":
-        fprintf(file, "; Generated by AXIOM Compiler (FASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(file, "format ELF64 executable\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(file, "segment readable executable\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "; Generated by AXIOM Compiler (FASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "format ELF64 executable\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "segment readable executable\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif format == "winasm":
-        fprintf(file, "; Generated by AXIOM Compiler (WinAsm / MASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(file, ".code\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "; Generated by AXIOM Compiler (WinAsm / MASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, ".code\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     else:
         // Default to NASM
-        fprintf(file, "; Generated by AXIOM Compiler (NASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(file, "bits 64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(file, "section .text\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "; Generated by AXIOM Compiler (NASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "bits 64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "section .text\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     // 2. Declare external symbols
     mut fi := 0 as i64
@@ -342,20 +342,20 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
         if fn_ptr.is_extern:
             let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
             if format == "fasm":
-                fprintf(file, "extrn %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "extrn %s\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif format == "winasm":
-                fprintf(file, "EXTERN %s:PROC\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "EXTERN %s:PROC\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fprintf(file, "extern %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "extern %s\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fi = fi + 1
     if @compiler_intrinsic("is_windows"):
         if format == "fasm":
-            fprintf(file, "extrn ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "extrn ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         elif format == "winasm":
-            fprintf(file, "EXTERN ExitProcess:PROC\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "EXTERN ExitProcess:PROC\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(file, "extern ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "extern ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_fprintf_local(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     // 3. Declare global symbols
     fi = 0
@@ -364,13 +364,13 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
         if not fn_ptr.is_extern:
             let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
             if format == "fasm":
-                fprintf(file, "public %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "public %s\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif format == "winasm":
-                fprintf(file, "PUBLIC %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "PUBLIC %s\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fprintf(file, "global %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(file, "global %s\n", (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fi = fi + 1
-    fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_fprintf_local(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     // 4. Compile each function to assembly text
     let abi = "win64"
@@ -407,7 +407,7 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
             
             // Emit ASM
             emit_function(file, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, format, symbols, pool)
-            fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
             // Free structures
             @free(cs_regs)
@@ -422,7 +422,7 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
         fi = fi + 1
 
     if format == "winasm":
-        fprintf(file, "END\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(file, "END\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     fclose(file)
     return true

@@ -3,7 +3,7 @@
 
 import std.string
 
-extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
@@ -442,10 +442,11 @@ pub fn get_dll_for_symbol(name: str) -> str:
         name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle" or
         name == "CreateDirectoryA" or name == "RemoveDirectoryA" or name == "DeleteFileA" or
         name == "MoveFileA" or name == "CopyFileA" or name == "GetFileAttributesA" or
-        name == "GetCommandLineA" or name == "GetEnvironmentVariableA" or name == "SetEnvironmentVariableA"):
+        name == "GetCommandLineA" or name == "GetEnvironmentVariableA" or name == "SetEnvironmentVariableA" or
+        name == "GetCommandLineW"):
         return "kernel32.dll"
         
-    let ptr = name as ptr[u8]
+    let ptr = get_str_ptr(name)
     let len = std.string.len(name)
     if len >= 3 and ptr[0] == 'a' as u8 and ptr[1] == 'x' as u8 and ptr[2] == '_' as u8:
         return "ax_runtime.dll"
@@ -726,11 +727,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     while i < self.input_files.len:
         let path = self.input_files.data[i]
         let path_nt = x86_str_to_null_terminated(path)
-        let file = fopen(path_nt as ptr[void], "rb")
+        let file = fopen(path_nt as ptr[void], get_str_ptr("rb"))
         @free(path_nt)
         if file == null as ptr[void]:
-            puts("Error: Linker could not open input file: ")
-            puts(path)
+            ax_puts_local("Error: Linker could not open input file: ")
+            ax_puts_local(path)
             return false
             
         fseek(file, 0, 2)
@@ -738,8 +739,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         rewind(file)
         
         if size <= 4:
-            puts("Error: Input file too small: ")
-            puts(path)
+            ax_puts_local("Error: Input file too small: ")
+            ax_puts_local(path)
             fclose(file)
             return false
             
@@ -755,8 +756,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             obj = linker_parse_coff(buffer, size)
             format = "coff"
         else:
-            puts("Error: Unsupported object format in: ")
-            puts(path)
+            ax_puts_local("Error: Unsupported object format in: ")
+            ax_puts_local(path)
             @free(buffer)
             return false
             
@@ -962,7 +963,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 push_byte(&idata_buf, 0 as u8)
                 let name = kernel32_imports.data[j]
                 let len = std.string.len(name)
-                let ptr = name as ptr[u8]
+                let ptr = get_str_ptr(name)
                 mut c_i := 0 as i64
                 while c_i < len:
                     push_byte(&idata_buf, ptr[c_i])
@@ -981,7 +982,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 push_byte(&idata_buf, 0 as u8)
                 let name = ax_runtime_imports.data[j]
                 let len = std.string.len(name)
-                let ptr = name as ptr[u8]
+                let ptr = get_str_ptr(name)
                 mut c_i := 0 as i64
                 while c_i < len:
                     push_byte(&idata_buf, ptr[c_i])
@@ -1000,7 +1001,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 push_byte(&idata_buf, 0 as u8)
                 let name = ucrtbase_imports.data[j]
                 let len = std.string.len(name)
-                let ptr = name as ptr[u8]
+                let ptr = get_str_ptr(name)
                 mut c_i := 0 as i64
                 while c_i < len:
                     push_byte(&idata_buf, ptr[c_i])
@@ -1224,7 +1225,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             lib_str_offsets[lib_i] = dynstr_buf.len as u64
             let name = dyn_libs.data[lib_i]
             let name_len = std.string.len(name)
-            let name_ptr = name as ptr[u8]
+            let name_ptr = get_str_ptr(name)
             mut char_i := 0 as i64
             while char_i < name_len:
                 push_byte(&dynstr_buf, name_ptr[char_i])
@@ -1238,7 +1239,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             sym_str_offsets[sym_i] = dynstr_buf.len as u64
             let name = dyn_imports.data[sym_i]
             let name_len = std.string.len(name)
-            let name_ptr = name as ptr[u8]
+            let name_ptr = get_str_ptr(name)
             mut char_i := 0 as i64
             while char_i < name_len:
                 push_byte(&dynstr_buf, name_ptr[char_i])
@@ -1556,10 +1557,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         
     // 4. Emit Executable
     let output_path_nt = x86_str_to_null_terminated(self.output_path)
-    let file = fopen(output_path_nt as ptr[void], "wb")
+    let file = fopen(output_path_nt as ptr[void], get_str_ptr("wb"))
     @free(output_path_nt)
     if file == null as ptr[void]:
-        puts("Error: Linker could not write output file")
+        ax_puts_local("Error: Linker could not write output file")
         return false
         
     if format == "coff":

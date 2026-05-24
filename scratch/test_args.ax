@@ -1,0 +1,70 @@
+// scratch/test_args.ax
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn GetCommandLineW() -> ptr[u16]
+
+fn print_raw(s: str):
+    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
+    mut written := 0 as u32
+    let s_ptr = s as ptr[void]
+    let s_len = std.string.len(s) as u32
+    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
+
+fn print_i64(val: i64):
+    if val == 0:
+        print_raw("0")
+        return
+    mut v := val
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        let digit = (v % 10) as u8
+        buf[len] = '0' as u8 + digit
+        len = len + 1
+        v = v / 10
+    // reverse
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+    buf[len] = 0 as u8
+    print_raw(std.string.slice(buf as str, 0, len as i64))
+    @free(buf)
+
+fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
+    let res = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len:
+        let val = data[i]
+        res[i] = val as u8
+        i = i + 1
+    res[len] = 0 as u8
+    return res as str
+
+fn main() -> i32:
+    let cmdline = GetCommandLineW()
+    print_raw("Raw cmdline ptr: ")
+    print_i64(cmdline as i64)
+    print_raw("\n")
+    if cmdline == null as ptr[u16]:
+        print_raw("cmdline is null!\n")
+        return 1
+    
+    // Print first 50 characters of raw command line
+    print_raw("First 20 chars: ")
+    mut j := 0
+    while j < 20 and cmdline[j] != 0 as u16:
+        let ch = cmdline[j]
+        let buf = @alloc(2) as ptr[u8]
+        buf[0] = ch as u8
+        buf[1] = 0 as u8
+        print_raw(buf as str)
+        @free(buf)
+        j = j + 1
+    print_raw("\n")
+
+    return 0

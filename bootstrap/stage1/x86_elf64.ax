@@ -3,7 +3,7 @@
 
 import std.string
 
-extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn fclose(stream: ptr[void]) -> i32
 
@@ -284,7 +284,7 @@ pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], relocs: ptr[Re
     elf64_serialize(code, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
-    let file = fopen(filename_nt as ptr[void], "wb")
+    let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
     @free(filename_nt)
     if file == null as ptr[void]:
         if out_bytes.data != null as ptr[u8]:

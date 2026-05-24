@@ -3,11 +3,11 @@
 
 import std.string
 
-extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
-extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// extern "C" fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// extern "C" fn ax_snprintf_local(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 
 fn is_type_unsigned(type_id: u32) -> bool:
     if type_id == 5 as u32 or type_id == 6 as u32 or type_id == 7 as u32 or type_id == 8 as u32 or type_id == 16 as u32:
@@ -90,7 +90,7 @@ pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
         return buf as str
     
     let buf = @alloc(32) as ptr[u8]
-    snprintf(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as ptr[void], null as ptr[void])
+    ax_snprintf_local(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as ptr[void], null as ptr[void])
     return buf as str
 
 fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
@@ -102,13 +102,13 @@ fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
 
 pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
     let filename_nt = wasm_str_to_null_terminated(out_filename)
-    self.file = fopen(filename_nt as ptr[void], "w")
+    self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
     @free(filename_nt)
     if self.file == null as ptr[void]:
         return false
 
-    fputs("(module\n", self.file)
-    fputs("  (memory (export \"memory\") 1)\n\n", self.file)
+    fputs(get_str_ptr("(module\n"), self.file)
+    fputs(get_str_ptr("  (memory (export \"memory\") 1)\n\n"), self.file)
 
     // 1. Declare all external functions as imports
     mut f_idx := 0 as i64
@@ -116,19 +116,19 @@ pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
         let f = self.module.funcs.data[f_idx]
         if f.is_extern:
             let callee = self.resolve_sym_name(f.sym_id, f.name)
-            fprintf(self.file, "  (import \"env\" \"%s\" (func $%s", (callee as ptr[u8]) as i64, (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "  (import \"env\" \"%s\" (func $%s", (callee as ptr[u8]) as i64, (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
             mut p_idx := 0 as i64
             while p_idx < f.params.len:
                 let p_type = map_wasm_type(self.typetable, f.params.data[p_idx])
-                fprintf(self.file, " (param %s)", (p_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(self.file, " (param %s)", (p_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 p_idx = p_idx + 1
             
             if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
                 let r_type = map_wasm_type(self.typetable, f.ret_type)
-                fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
-            fputs("))\n", self.file)
+            fputs(get_str_ptr("))\n"), self.file)
             @free(callee as ptr[u8])
         f_idx = f_idx + 1
     
@@ -147,11 +147,11 @@ pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
         f_idx = f_idx + 1
     
     if not has_malloc:
-        fputs("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n", self.file)
+        fputs(get_str_ptr("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n"), self.file)
     if not has_free:
-        fputs("  (import \"env\" \"free\" (func $free (param i32)))\n", self.file)
+        fputs(get_str_ptr("  (import \"env\" \"free\" (func $free (param i32)))\n"), self.file)
     
-    fputs("\n", self.file)
+    fputs(get_str_ptr("\n"), self.file)
 
     // 2. Compile functions
     f_idx = 0
@@ -161,27 +161,27 @@ pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
             self.compile_func(f)
         f_idx = f_idx + 1
     
-    fputs(")\n", self.file)
+    fputs(get_str_ptr(")\n"), self.file)
     fclose(self.file)
     return true
 
 pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
     let mangled_name = self.resolve_sym_name(f.sym_id, f.name)
-    fprintf(self.file, "  (func $%s (export \"%s\")", (mangled_name as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_fprintf_local(self.file, "  (func $%s (export \"%s\")", (mangled_name as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     @free(mangled_name as ptr[u8])
 
     mut p_idx := 0 as i64
     while p_idx < f.params.len:
         let param_type = map_wasm_type(self.typetable, f.params.data[p_idx])
-        fprintf(self.file, " (param $p%d %s)", (p_idx + 1) as i64, (param_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, " (param $p%d %s)", (p_idx + 1) as i64, (param_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         p_idx = p_idx + 1
     
     if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
         let r_type = map_wasm_type(self.typetable, f.ret_type)
-        fprintf(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs("\n", self.file)
-    fputs("    (local $state i32)\n", self.file)
+    fputs(get_str_ptr("\n"), self.file)
+    fputs(get_str_ptr("    (local $state i32)\n"), self.file)
 
     // Declare SSA registers
     mut max_reg := 0 as u32
@@ -254,42 +254,42 @@ pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
         while r <= max_reg as i64:
             if self.reg_types[r] != 14 as u32:
                 let t_name = map_wasm_type(self.typetable, self.reg_types[r])
-                fprintf(self.file, "    (local $r%d %s)\n", r, (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_fprintf_local(self.file, "    (local $r%d %s)\n", r, (t_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             r = r + 1
 
     if f.blocks.len == 0 as i64:
-        fputs("    return\n  )\n\n", self.file)
+        fputs(get_str_ptr("    return\n  )\n\n"), self.file)
         if max_reg > 0 as u32:
             @free(self.reg_types as ptr[u8])
             self.reg_types = null as ptr[u32]
         return
 
-    fputs("    (local.set $state (i32.const 0))\n\n", self.file)
-    fputs("    (block $outer\n", self.file)
-    fputs("      (loop $loop\n", self.file)
+    fputs(get_str_ptr("    (local.set $state (i32.const 0))\n\n"), self.file)
+    fputs(get_str_ptr("    (block $outer\n"), self.file)
+    fputs(get_str_ptr("      (loop $loop\n"), self.file)
 
     // Open all blocks hierarchically (N down to 0)
     mut bi := f.blocks.len - 1
     while bi >= 0:
         let bb = f.blocks.data[bi]
-        fprintf(self.file, "        (block $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (block $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         bi = bi - 1
     
     // Emit br_table dispatcher
-    fputs("          (br_table", self.file)
+    fputs(get_str_ptr("          (br_table"), self.file)
     bi = 0
     while bi < f.blocks.len:
         let bb = f.blocks.data[bi]
-        fprintf(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         bi = bi + 1
-    fputs(" $b_0 (local.get $state))\n", self.file)
+    fputs(get_str_ptr(" $b_0 (local.get $state))\n"), self.file)
 
     // Close each block and emit its instructions
     bi = 0
     while bi < f.blocks.len:
         let bb = f.blocks.data[bi]
-        fprintf(self.file, "        ) ;; end $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        ;; --- block_%d body ---\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        ) ;; end $b_%d\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        ;; --- block_%d body ---\n", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         
         mut inst_offset := 0 as i64
         while inst_offset < bb.instrs_len as i64:
@@ -299,14 +299,14 @@ pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
             inst_offset = inst_offset + 1
         bi = bi + 1
     
-    fputs("      )\n", self.file)
-    fputs("    )\n", self.file)
+    fputs(get_str_ptr("      )\n"), self.file)
+    fputs(get_str_ptr("    )\n"), self.file)
 
     if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
         let r_type = map_wasm_type(self.typetable, f.ret_type)
-        fprintf(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs("  )\n\n", self.file)
+    fputs(get_str_ptr("  )\n\n"), self.file)
 
     if max_reg > 0 as u32:
         @free(self.reg_types as ptr[u8])
@@ -319,22 +319,22 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
 
     if op == OP_ICONST:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_FCONST:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (%s.const %d)\n", (t as ptr[u8]) as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_COPY or op == OP_MOVE or op == OP_ALIAS_REUSE:
         if inst.src1 <= f.params.len as u32 and inst.src1 > 0 as u32:
-            fprintf(self.file, "        (local.get $p%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $p%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_IADD or op == OP_ISUB or op == OP_IMUL or op == OP_IDIV or op == OP_IMOD or op == OP_FADD or op == OP_FSUB or op == OP_FMUL or op == OP_FDIV:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         
         mut op_str := "add"
         if op == OP_IADD or op == OP_FADD:
@@ -356,8 +356,8 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             else:
                 op_str = "rem_s"
         
-        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (op_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (op_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_EQ or op == OP_NE or op == OP_LT or op == OP_LE or op == OP_GT or op == OP_GE:
         mut src_type := "i32"
         mut is_unsigned_cmp := false
@@ -366,8 +366,8 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             src_type = map_wasm_type(self.typetable, src1_type)
             is_unsigned_cmp = is_type_unsigned(src1_type)
         
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         
         mut cmp_op := "eq"
         if op == OP_EQ:
@@ -403,12 +403,12 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             else:
                 cmp_op = "ge_s"
         
-        fprintf(self.file, "        %s.%s\n", (src_type as ptr[u8]) as i64, (cmp_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.%s\n", (src_type as ptr[u8]) as i64, (cmp_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_AND or op == OP_OR or op == OP_XOR or op == OP_SHL or op == OP_SHR:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         
         mut bit_op := "and"
         if op == OP_AND:
@@ -425,44 +425,44 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             else:
                 bit_op = "shr_s"
         
-        fprintf(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (bit_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.%s\n", (t as ptr[u8]) as i64, (bit_op as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_NEG:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         if t == "f32" or t == "f64":
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fprintf(self.file, "        %s.neg\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        %s.neg\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            fprintf(self.file, "        (%s.const 0)\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fprintf(self.file, "        %s.sub\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (%s.const 0)\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        %s.sub\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_NOT:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if t == "i64":
-            fputs("        (i64.const -1)\n", self.file)
+            fputs(get_str_ptr("        (i64.const -1)\n"), self.file)
         else:
-            fputs("        (i32.const -1)\n", self.file)
-        fprintf(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fputs(get_str_ptr("        (i32.const -1)\n"), self.file)
+        ax_fprintf_local(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
         mut size := 8 as u32
         if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[inst.type_id]
             if entry.size != 0 as u32:
                 size = entry.size
-        fprintf(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        (call $malloc)\n", self.file)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        (call $malloc)\n"), self.file)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_FREE or op == OP_DESTROY:
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        (call $free)\n", self.file)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        (call $free)\n"), self.file)
     elif op == OP_LOAD:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_STORE:
         mut t := "i32"
         if inst.src2 != 0 as u32:
@@ -470,56 +470,56 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
                 let val_type = self.reg_types[inst.src1]
                 t = map_wasm_type(self.typetable, val_type)
-            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
-            fputs("        i32.add\n", self.file)
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
+            fputs(get_str_ptr("        i32.add\n"), self.file)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
         else:
             // Dereference store: *dest = src1
             if inst.src1 > 0 as u32 and self.reg_types != null as ptr[u32]:
                 let val_type = self.reg_types[inst.src1]
                 t = map_wasm_type(self.typetable, val_type)
-            fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
-        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
+        ax_fprintf_local(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_GEP:
         mut elem_size := 8 as u32
         if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[inst.type_id]
             if entry.size != 0 as u32:
                 elem_size = entry.size
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        i32.mul\n", self.file)
-        fputs("        i32.add\n", self.file)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        i32.mul\n"), self.file)
+        fputs(get_str_ptr("        i32.add\n"), self.file)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_GET_FIELD:
         let offset = inst.src2 * 8 as u32
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        i32.add\n", self.file)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_SET_FIELD:
         let offset = inst.src2 * 8 as u32
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        i32.add\n", self.file)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        i32.add\n"), self.file)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         mut t := "i32"
         if inst.dest > 0 as u32 and self.reg_types != null as ptr[u32]:
             let dest_type = self.reg_types[inst.dest]
             t = map_wasm_type(self.typetable, dest_type)
-        fprintf(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_INDEX:
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        i32.add\n", self.file)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
-        fprintf(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_CALL:
         let arg_start = inst.src2 as i64
         mut arg_count := 0 as u32
@@ -529,7 +529,7 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
         mut j := 0 as i64
         while j < arg_count as i64:
             let arg_reg = f.extras.data[arg_start + 1 + j]
-            fprintf(self.file, "        (local.get $r%d)\n", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             j = j + 1
         
         mut callee := ""
@@ -543,9 +543,9 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
         else:
             callee = self.resolve_sym_name(0 as u32, 0 as u32)
         
-        fprintf(self.file, "        (call $%s)\n", (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (call $%s)\n", (callee as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if inst.dest != 0 as u32:
-            fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         @free(callee as ptr[u8])
     elif op == OP_CAST or op == OP_ZEXT or op == OP_SEXT or op == OP_TRUNC:
         let dst_t = map_wasm_type(self.typetable, inst.type_id as u32)
@@ -554,33 +554,33 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
             let src_type = self.reg_types[inst.src1]
             src_t = map_wasm_type(self.typetable, src_type)
         
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if src_t == "i64" and dst_t == "i32":
-            fputs("        i32.wrap_i64\n", self.file)
+            fputs(get_str_ptr("        i32.wrap_i64\n"), self.file)
         elif src_t == "i32" and dst_t == "i64":
             if op == OP_ZEXT:
-                fputs("        i64.extend_i32_u\n", self.file)
+                fputs(get_str_ptr("        i64.extend_i32_u\n"), self.file)
             else:
-                fputs("        i64.extend_i32_s\n", self.file)
+                fputs(get_str_ptr("        i64.extend_i32_s\n"), self.file)
         
-        fprintf(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_JUMP:
-        fprintf(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        (br $loop)\n", self.file)
+        ax_fprintf_local(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_BRANCH:
-        fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        (if\n", self.file)
-        fputs("          (then\n", self.file)
-        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("          )\n", self.file)
-        fputs("          (else\n", self.file)
-        fprintf(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("          )\n", self.file)
-        fputs("        )\n", self.file)
-        fputs("        (br $loop)\n", self.file)
+        ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        (if\n"), self.file)
+        fputs(get_str_ptr("          (then\n"), self.file)
+        ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("          )\n"), self.file)
+        fputs(get_str_ptr("          (else\n"), self.file)
+        ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("          )\n"), self.file)
+        fputs(get_str_ptr("        )\n"), self.file)
+        fputs(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_RETURN:
         if inst.src1 != 0 as u32:
-            fprintf(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs("        return\n", self.file)
+            ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fputs(get_str_ptr("        return\n"), self.file)
     else:
-        fputs("        nop\n", self.file)
+        fputs(get_str_ptr("        nop\n"), self.file)

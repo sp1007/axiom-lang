@@ -158,7 +158,7 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let imm = inst.src1.imm
-        printf("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
         if dst != REG_NONE:
             if inst.src1.vreg == 1 as u32: // Symbol index!
@@ -308,14 +308,20 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         mut disp := 0 as i32
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
-        x86_encode_mov_load(dst, base, disp, buf)
+        mut size := inst.padding
+        if size == 0 as u8:
+            size = 8 as u8
+        x86_encode_mov_load_sized(dst, base, disp, size, buf)
     elif op == MACH_STORE:
         let base = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
         mut disp := 0 as i32
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
-        x86_encode_mov_store(base, disp, src, buf)
+        mut size := inst.padding
+        if size == 0 as u8:
+            size = 8 as u8
+        x86_encode_mov_store_sized(base, disp, src, size, buf)
 
 pub fn emitter_resolve_fixups(mut e: ptr[MachEmitter]):
     mut i := 0 as i64
