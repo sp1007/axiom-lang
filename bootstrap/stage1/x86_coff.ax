@@ -260,10 +260,10 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
     if sym_idx >= 0xE0000000 as i64:
         let str_id = sym_idx - 0xE0000000 as i64
         let sym_name_buf = @alloc(64) as ptr[u8]
-        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as ptr[void], null as ptr[void])
-        let name_id = pool.intern(sym_name_buf as str)
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as ptr[void], null as ptr[void])
+        let res = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
         @free(sym_name_buf)
-        return pool.get(name_id)
+        return res
     if sym_idx == -1 as i64:
         return "malloc"
 
@@ -277,8 +277,12 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
         return "__ax_runtime_shutdown"
     if sym_idx == -8 as i64:
         return "abort"
+    if sym_idx == -20 as i64:
+        return "ExitProcess"
+    if sym_idx == -21 as i64:
+        return "strlen"
     if sym_idx == -10 as i64:
-        return "ax_println_str_native"
+        return "ax_println_str"
     if sym_idx == -11 as i64:
         return "ax_println_i64"
     if sym_idx == -12 as i64:
@@ -286,7 +290,7 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
     if sym_idx == -13 as i64:
         return "ax_println_bool"
     if sym_idx == -14 as i64:
-        return "ax_print_str_native"
+        return "ax_print_str"
     if sym_idx == -15 as i64:
         return "ax_print_i64"
     if sym_idx == -16 as i64:
@@ -308,7 +312,7 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
 
 
 
-pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str) -> bool:
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str, self_link: bool) -> bool:
     mut abi := "win64"
     if format == "elf64":
         abi = "sysv"
@@ -328,9 +332,20 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     while scan_fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[scan_fi]
         if not fn_ptr.is_extern:
+            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            let name_nt = str_to_null_terminated(fn_name_str)
+            printf("[Debug Scan Fn] %s has %d insts\n", name_nt as i64, fn_ptr.insts.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(name_nt)
             mut inst_i := 0 as i64
             while inst_i < fn_ptr.insts.len:
                 let inst = &fn_ptr.insts.data[inst_i]
+                if inst.opcode == OP_ICONST:
+                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+                    let name_nt = str_to_null_terminated(fn_name_str)
+                    printf("[Debug Scan] OP_ICONST in %s: type_id=%d, src1=%d\n", name_nt as i64, inst.type_id as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fflush(null as ptr[void])
+                    @free(name_nt)
                 if inst.opcode == OP_ICONST and inst.type_id == 12 as u16:
                     let str_id = inst.src1
                     mut found := false
@@ -361,9 +376,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
         let str_id = str_keys.data[str_i]
         let offset = str_offsets.data[str_i]
         let sym_name_buf = @alloc(64) as ptr[u8]
-        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as i64 as ptr[void], null as ptr[void])
-        let sym_name = pool.intern(sym_name_buf as str)
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as i64 as ptr[void], null as ptr[void])
+        let temp_str = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
+        let sym_name = pool.intern(temp_str)
         let sym_name_str = pool.get(sym_name)
+        @free(temp_str as ptr[u8])
         if format == "elf64":
             push_elf64_sym(&elf_syms, ELF64Sym(name_str: sym_name_str, value: offset as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 2 as u16))
         else:
@@ -408,9 +425,21 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             fflush(null as ptr[void])
             let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
             
+            mut num_str_lits := 0 as i32
+            mut loop_i := 0 as i64
+            while loop_i < mach_insts.len:
+                let inst = mach_insts.data[loop_i]
+                if inst.op == MACH_MOV_IMM and inst.src1.vreg == 2 as u32:
+                    num_str_lits = num_str_lits + 1
+                loop_i = loop_i + 1
+
+            mut local_bytes := 0 as i32
+            if num_str_lits > 0:
+                local_bytes = 16 + num_str_lits * 16
+
             mut cs_len := 0 as i64
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
-            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
             printf("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -420,7 +449,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
 
             printf("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame)
+            let is_windows = (format == "coff")
+            mut str_lit_counter := 0 as i32
+            emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
             printf("[Debug]   emit_function_binary done, pushing compiled info\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -543,6 +574,21 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                 mut reloc_type := IMAGE_REL_AMD64_REL32
                 if r.kind == RELOC_ABS64:
                     reloc_type = IMAGE_REL_AMD64_ADDR64
+                    let val = r.addend
+                    all_code.data[reloc_offset as i64 + 0] = (val & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 1] = ((val >> 8 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 4] = ((val >> 32 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 5] = ((val >> 40 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 6] = ((val >> 48 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 7] = ((val >> 56 as i64) & 0xFF as i64) as u8
+                else:
+                    let val = r.addend as i32
+                    all_code.data[reloc_offset as i64 + 0] = (val & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 1] = ((val >> 8 as i32) & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i32) & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i32) & 0xFF as i32) as u8
                 push_coff_reloc(&coff_relocs, COFFReloc(virt_addr: reloc_offset, sym_table_idx: target_sym_idx as u32, reloc_type: reloc_type))
                 
             r_i = r_i + 1

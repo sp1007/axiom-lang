@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\test_malloc.exe")
+	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\minimal.exe")
 	if err != nil {
 		log.Fatalf("Error opening PE: %v", err)
 	}

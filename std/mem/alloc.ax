@@ -122,9 +122,9 @@ pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
     let state = get_global_state()
     if state.g_slab == null as ptr[Segment]:
         if @compiler_intrinsic("is_windows"):
-            state.g_slab = VirtualAlloc(null as ptr[void], 4096 as u64 * 48 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+            state.g_slab = VirtualAlloc(null as ptr[void], 196608 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
         else:
-            state.g_slab = mmap(null as ptr[void], 4096 as u64 * 48 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[Segment]
+            state.g_slab = mmap(null as ptr[void], 196608 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[Segment]
     return state.g_slab
 
 // --------------------------------------------------------------------------
@@ -278,7 +278,7 @@ pub fn ax_segment_manager_init():
     let free_pool_ptr = std_mem_alloc_get_free_pool()
     free_pool_ptr.* = null as ptr[Segment]
     let slab_ptr = std_mem_alloc_get_slab()
-    @memset(slab_ptr as ptr[u8], 0 as u8, 4096 as i64 * @compiler_intrinsic("size_of")[Segment]() as i64)
+    @memset(slab_ptr as ptr[u8], 0 as u8, 196608 as i64)
 
 pub fn ax_segment_manager_shutdown():
     let slab_used_ptr = std_mem_alloc_get_slab_used()

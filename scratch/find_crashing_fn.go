@@ -37,7 +37,7 @@ func main() {
 	})
 
 	fmt.Println("Functions in axiom_temp.obj sorted by offset:")
-	crashOffset := uint32(0x3B46)
+	crashOffset := uint32(0x2DF2)
 	var crashingFn FuncSym
 	found := false
 

@@ -2,6 +2,9 @@
 //
 // OS abstraction: paths, filesystem, signals, platform detection.
 
+import std::os::win32
+import std::os::linux_sys
+
 // --------------------------------------------------------------------------
 // Platform Constants (set at compile time)
 // --------------------------------------------------------------------------
@@ -14,105 +17,429 @@ pub const ARCH_NAME:  str  = @compiler_intrinsic("arch_name")
 pub const PATH_SEP:   str  = @compiler_intrinsic("path_separator")
 
 // --------------------------------------------------------------------------
-// PathBuf — Platform-aware path manipulation
+// PathBuf — Platform-aware path manipulation (Freestanding, no impl)
 // --------------------------------------------------------------------------
 
-pub struct PathBuf {
-    inner: str,
-}
+pub struct PathBuf:
+    inner: str
 
-impl PathBuf {
-    pub fn new(s: str) -> PathBuf { PathBuf { inner: s } }
+pub fn pathbuf_new(s: str) -> PathBuf:
+    return PathBuf(inner: s)
 
-    pub fn join(self, component: str) -> PathBuf {
-        PathBuf { inner: self.inner + PATH_SEP + component }
-    }
+pub fn pathbuf_join(self: PathBuf, component: str) -> PathBuf:
+    return PathBuf(inner: self.inner + PATH_SEP + component)
 
-    pub fn parent(self) -> Option[PathBuf] {
-        @compiler_intrinsic("path_parent")
-    }
+pub fn pathbuf_parent(self: PathBuf) -> Option[PathBuf]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        i = i + 1
+    if last_sep >= 0:
+        return Some(pathbuf_new(std.string.slice(s, 0, last_sep)))
+    return None
 
-    pub fn file_name(self) -> Option[str] {
-        @compiler_intrinsic("path_file_name")
-    }
+pub fn pathbuf_file_name(self: PathBuf) -> Option[str]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        i = i + 1
+    if last_sep >= 0:
+        return Some(std.string.slice(s, last_sep + 1, s.len))
+    return Some(s)
 
-    pub fn extension(self) -> Option[str] {
-        @compiler_intrinsic("path_extension")
-    }
+pub fn pathbuf_extension(self: PathBuf) -> Option[str]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut last_dot := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        elif ch.* == '.' as u8:
+            last_dot = i
+        i = i + 1
+    if last_dot > last_sep:
+        return Some(std.string.slice(s, last_dot + 1, s.len))
+    return None
 
-    pub fn with_extension(self, ext: str) -> PathBuf {
-        @compiler_intrinsic("path_with_extension")
-    }
+pub fn pathbuf_with_extension(self: PathBuf, ext: str) -> PathBuf:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut last_dot := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        elif ch.* == '.' as u8:
+            last_dot = i
+        i = i + 1
+    if last_dot > last_sep:
+        return pathbuf_new(std.string.slice(s, 0, last_dot) + "." + ext)
+    return pathbuf_new(s + "." + ext)
 
-    pub fn is_absolute(self) -> bool {
-        @compiler_intrinsic("path_is_absolute")
-    }
+pub fn pathbuf_is_absolute(self: PathBuf) -> bool:
+    let s = self.inner
+    if s.len == 0:
+        return false
+    if IS_WINDOWS:
+        if s.len >= 2:
+            let c1 = ((s.ptr as i64) + 0) as ptr[u8]
+            let c2 = ((s.ptr as i64) + 1) as ptr[u8]
+            let is_letter = (c1.* >= 'a' as u8 and c1.* <= 'z' as u8) or (c1.* >= 'A' as u8 and c1.* <= 'Z' as u8)
+            if is_letter and c2.* == ':' as u8:
+                return true
+        return false
+    else:
+        let c1 = s.ptr
+        return c1.* == '/' as u8
 
-    pub fn to_str(self) -> str { self.inner }
-}
+pub fn pathbuf_to_str(self: PathBuf) -> str:
+    return self.inner
 
 // --------------------------------------------------------------------------
 // Filesystem Operations
 // --------------------------------------------------------------------------
 
-pub struct FileMetadata {
-    size: u64,
-    modified: u64,     // nanoseconds since epoch
-    created: u64,
-    is_file: bool,
-    is_dir: bool,
-    is_symlink: bool,
-    mode: u32,         // Unix permissions
-}
+pub struct FileMetadata:
+    pub size: u64
+    pub modified: u64     // nanoseconds since epoch
+    pub created: u64
+    pub is_file: bool
+    pub is_dir: bool
+    pub is_symlink: bool
+    pub mode: u32         // Unix permissions
 
-pub fn metadata(path: str) -> Result[FileMetadata, str] {
-    @compiler_intrinsic("fs_metadata")
-}
+extern "C" fn GetFileAttributesA(lpFileName: ptr[u8]) -> u32
+extern "C" fn CreateDirectoryA(lpPathName: ptr[u8], lpSecurityAttributes: ptr[void]) -> i32
+extern "C" fn RemoveDirectoryA(lpPathName: ptr[u8]) -> i32
+extern "C" fn DeleteFileA(lpFileName: ptr[u8]) -> i32
+extern "C" fn MoveFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8]) -> i32
+extern "C" fn CopyFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8], bFailIfExists: i32) -> i32
 
-pub fn exists(path: str) -> bool {
-    metadata(path).is_ok()
-}
+fn str_to_c_str(s: str) -> ptr[u8]:
+    let len = s.len
+    let buf = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len:
+        (buf as i64 + i).* = (s.ptr as i64 + i).* as u8
+        i = i + 1
+    (buf as i64 + len).* = 0 as u8
+    return buf
 
-pub fn create_dir(path: str) -> Result[void, str] {
-    @compiler_intrinsic("fs_create_dir")
-}
+pub fn metadata(path: str) -> Result[FileMetadata, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let attrs = GetFileAttributesA(cpath)
+        @free(cpath)
+        if attrs == 0xFFFFFFFF as u32:
+            return Err("file not found")
+        let is_dir = (attrs & 0x10 as u32) != 0 as u32
+        let is_symlink = (attrs & 0x400 as u32) != 0 as u32
+        return Ok(FileMetadata(
+            size: 0 as u64,
+            modified: 0 as u64,
+            created: 0 as u64,
+            is_file: not is_dir,
+            is_dir: is_dir,
+            is_symlink: is_symlink,
+            mode: 0 as u32
+        ))
+    else:
+        // struct stat is 144 bytes on Linux x86_64
+        let stat_buf = @alloc(144) as ptr[u8]
+        let res = std::os::linux_sys::syscall(
+            4 as u64, // SYS_STAT
+            cpath as u64,
+            stat_buf as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            @free(stat_buf)
+            return Err("file not found")
+        let st_mode = ((stat_buf as i64 + 24) as ptr[u32]).*
+        let st_size = ((stat_buf as i64 + 48) as ptr[u64]).*
+        let st_mtime = ((stat_buf as i64 + 88) as ptr[u64]).*
+        
+        let is_dir = (st_mode & 0xF000 as u32) == 0x4000 as u32
+        let is_lnk = (st_mode & 0xF000 as u32) == 0xA000 as u32
+        
+        @free(stat_buf)
+        return Ok(FileMetadata(
+            size: st_size,
+            modified: st_mtime * 1000000000 as u64,
+            created: 0 as u64,
+            is_file: not is_dir and not is_lnk,
+            is_dir: is_dir,
+            is_symlink: is_lnk,
+            mode: st_mode
+        ))
 
-pub fn create_dir_all(path: str) -> Result[void, str] {
-    @compiler_intrinsic("fs_create_dir_all")
-}
+pub fn exists(path: str) -> bool:
+    return metadata(path).is_ok()
 
-pub fn remove_file(path: str) -> Result[void, str] {
-    @compiler_intrinsic("fs_remove_file")
-}
+pub fn create_dir(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = CreateDirectoryA(cpath, null as ptr[void])
+        @free(cpath)
+        if res == 0:
+            return Err("could not create directory")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            83 as u64, // SYS_MKDIR
+            cpath as u64,
+            0o777 as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not create directory")
+        return Ok(void)
 
-pub fn remove_dir(path: str) -> Result[void, str] {
-    @compiler_intrinsic("fs_remove_dir")
-}
+pub fn create_dir_all(path: str) -> Result[void, str]:
+    if exists(path):
+        return Ok(void)
+    let p = pathbuf_new(path)
+    let parent_opt = pathbuf_parent(p)
+    if parent_opt.is_some():
+        let parent = parent_opt.unwrap()
+        let parent_str = pathbuf_to_str(parent)
+        if parent_str.len > 0:
+            let res = create_dir_all(parent_str)
+            if res.is_err():
+                return res
+    return create_dir(path)
 
-pub fn rename(from: str, to: str) -> Result[void, str] {
-    @compiler_intrinsic("fs_rename")
-}
+pub fn remove_file(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = DeleteFileA(cpath)
+        @free(cpath)
+        if res == 0:
+            return Err("could not remove file")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            87 as u64, // SYS_UNLINK
+            cpath as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not remove file")
+        return Ok(void)
 
-pub fn copy(from: str, to: str) -> Result[u64, str] {
-    @compiler_intrinsic("fs_copy")
-}
+pub fn remove_dir(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = RemoveDirectoryA(cpath)
+        @free(cpath)
+        if res == 0:
+            return Err("could not remove directory")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            84 as u64, // SYS_RMDIR
+            cpath as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not remove directory")
+        return Ok(void)
 
-pub fn temp_dir() -> PathBuf {
-    @compiler_intrinsic("fs_temp_dir")
-}
+pub fn rename(from: str, to: str) -> Result[void, str]:
+    let cfrom = str_to_c_str(from)
+    let cto = str_to_c_str(to)
+    if IS_WINDOWS:
+        let res = MoveFileA(cfrom, cto)
+        @free(cfrom)
+        @free(cto)
+        if res == 0:
+            return Err("could not rename")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            82 as u64, // SYS_RENAME
+            cfrom as u64,
+            cto as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cfrom)
+        @free(cto)
+        if res < 0:
+            return Err("could not rename")
+        return Ok(void)
+
+pub fn copy(from: str, to: str) -> Result[u64, str]:
+    let cfrom = str_to_c_str(from)
+    let cto = str_to_c_str(to)
+    if IS_WINDOWS:
+        let res = CopyFileA(cfrom, cto, 0 as i32)
+        @free(cfrom)
+        @free(cto)
+        if res == 0:
+            return Err("could not copy file")
+        return Ok(0 as u64)
+    else:
+        @free(cfrom)
+        @free(cto)
+        return Err("copy not implemented on Linux in freestanding mode")
+
+pub fn temp_dir() -> PathBuf:
+    let t = env("TMPDIR")
+    if t.is_some():
+        return pathbuf_new(t.unwrap())
+    let t2 = env("TEMP")
+    if t2.is_some():
+        return pathbuf_new(t2.unwrap())
+    if IS_WINDOWS:
+        return pathbuf_new("C:\\Windows\\Temp")
+    return pathbuf_new("/tmp")
 
 // --------------------------------------------------------------------------
 // Signals
 // --------------------------------------------------------------------------
 
-pub enum Signal {
-    SIGINT,
-    SIGTERM,
-    SIGHUP,
-    SIGUSR1,
-    SIGUSR2,
-}
+pub enum Signal:
+    SIGINT
+    SIGTERM
+    SIGHUP
+    SIGUSR1
+    SIGUSR2
 
-pub fn trap_signal(sig: Signal, handler: fn()) {
-    @compiler_intrinsic("trap_signal")
-}
+pub fn trap_signal(sig: Signal, handler: fn()):
+    // Freestanding stub
+    return
+
+// --------------------------------------------------------------------------
+// Command Line Arguments & Environment Variables (C-Independent PEB/procfs)
+// --------------------------------------------------------------------------
+
+extern "C" fn GetCommandLineA() -> ptr[u8]
+extern "C" fn GetEnvironmentVariableA(lpName: ptr[u8], lpBuffer: ptr[u8], nSize: u32) -> u32
+
+pub fn parse_cmdline(cmdline: ptr[u8]) -> Vec[str]:
+    mut res := Vec.new()
+    if cmdline == null as ptr[u8]:
+        return res
+    mut i := 0 as i64
+    while (cmdline as i64 + i).* != 0 as u8:
+        while (cmdline as i64 + i).* == ' ' as u8 or (cmdline as i64 + i).* == '\t' as u8 or (cmdline as i64 + i).* == '\r' as u8 or (cmdline as i64 + i).* == '\n' as u8:
+            i = i + 1
+        if (cmdline as i64 + i).* == 0 as u8:
+            break
+        mut arg_buf := Vec.new()
+        mut in_quotes := false
+        while (cmdline as i64 + i).* != 0 as u8:
+            let ch = (cmdline as i64 + i).*
+            if ch == '"' as u8:
+                in_quotes = not in_quotes
+            elif (ch == ' ' as u8 or ch == '\t' as u8) and not in_quotes:
+                break
+            else:
+                arg_buf.push(ch)
+            i = i + 1
+        let arg_len = arg_buf.len()
+        let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+        mut j := 0 as i64
+        while j < arg_len:
+            s_ptr[j] = arg_buf.get(j)
+            j = j + 1
+        s_ptr[arg_len] = 0 as u8
+        res.push(s_ptr as str)
+        arg_buf.destroy()
+    return res
+
+pub fn parse_proc_cmdline(buf: ptr[u8], len: i64) -> Vec[str]:
+    mut res := Vec.new()
+    mut start := 0 as i64
+    mut i := 0 as i64
+    while i < len:
+        if buf[i] == 0 as u8:
+            if i > start:
+                let arg_len = i - start
+                let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+                @memcpy(s_ptr, buf + start, arg_len)
+                s_ptr[arg_len] = 0 as u8
+                res.push(s_ptr as str)
+            start = i + 1
+        i = i + 1
+    return res
+
+fn linux_read_file(path: str, buf: ptr[u8], max_len: i64) -> i64:
+    let cpath = str_to_c_str(path)
+    // SYS_OPEN = 2, O_RDONLY = 0
+    let fd = std::os::linux_sys::syscall(2 as u64, cpath as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    @free(cpath)
+    if fd < 0:
+        return -1
+    // SYS_READ = 0
+    let n = std::os::linux_sys::syscall(0 as u64, fd as u64, buf as u64, max_len as u64, 0 as u64, 0 as u64, 0 as u64)
+    // SYS_CLOSE = 3
+    std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    return n
+
+pub fn args() -> Vec[str]:
+    if IS_WINDOWS:
+        let cmdline = GetCommandLineA()
+        return parse_cmdline(cmdline)
+    else:
+        // Direct read of /proc/self/cmdline on Linux using syscalls
+        let buf = @alloc(8192) as ptr[u8]
+        let n = linux_read_file("/proc/self/cmdline", buf, 8192)
+        if n < 0:
+            @free(buf)
+            return Vec.new()
+        let res = parse_proc_cmdline(buf, n)
+        @free(buf)
+        return res
+
+pub fn env(key: str) -> Option[str]:
+    if IS_WINDOWS:
+        let ckey = str_to_c_str(key)
+        let buf = @alloc(4096) as ptr[u8]
+        let n = GetEnvironmentVariableA(ckey, buf, 4096 as u32)
+        @free(ckey)
+        if n == 0 as u32:
+            @free(buf)
+            return None
+        let res_str = std.string.slice(buf as str, 0, n as i64)
+        @free(buf)
+        return Some(res_str)
+    else:
+        // Direct read of /proc/self/environ on Linux using syscalls
+        let buf = @alloc(16384) as ptr[u8]
+        let n = linux_read_file("/proc/self/environ", buf, 16384)
+        if n < 0:
+            @free(buf)
+            return None
+        
+        // Search for KEY=
+        let prefix = key + "="
+        mut start := 0 as i64
+        mut i := 0 as i64
+        while i < n:
+            if buf[i] == 0 as u8:
+                if i > start:
+                    let entry = std.string.slice(buf as str, start, i)
+                    if std.string.starts_with(entry, prefix):
+                        let val = std.string.slice(entry, prefix.len, entry.len)
+                        @free(buf)
+                        return Some(val)
+                start = i + 1
+            i = i + 1
+        @free(buf)
+        return None

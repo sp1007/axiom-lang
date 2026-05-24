@@ -7,9 +7,13 @@ import (
 )
 
 func main() {
-	f, err := pe.Open("test_malloc_native.exe")
+	target := "minimal.exe"
+	if len(os.Args) > 1 {
+		target = os.Args[1]
+	}
+	f, err := pe.Open(target)
 	if err != nil {
-		fmt.Printf("Failed to open PE: %v\n", err)
+		fmt.Printf("Failed to open PE %s: %v\n", target, err)
 		os.Exit(1)
 	}
 	defer f.Close()

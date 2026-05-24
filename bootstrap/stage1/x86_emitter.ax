@@ -140,7 +140,7 @@ pub fn emitter_resolve_reg(op: MachOperand, allocs: ptr[RegAllocation]) -> u8:
         return alloc.phys
     return REG_NONE
 
-pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation]):
+pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation], pool: InternPool, frame: ptr[StackFrame], mut str_lit_counter: ptr[i32]):
     let op = inst.op
     let buf = &e.code
     
@@ -157,8 +157,10 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             x86_encode_mov_rr(dst, src, buf)
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
+        let imm = inst.src1.imm
+        printf("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
         if dst != REG_NONE:
-            let imm = inst.src1.imm
             if inst.src1.vreg == 1 as u32: // Symbol index!
                 let offset = buf.len + 2 as i64
                 push_reloc(&e.relocs, Relocation(
@@ -182,6 +184,18 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                     addend: -4 as i64
                 ))
                 x86_encode_lea_rip(dst, 0 as i32, buf)
+                
+                let text = pool.get(imm as u32)
+                let len = std.string.len(text)
+                
+                let struct_offset = (frame.callee_saved_len * 8) + (frame.spill_slots * 8) + 16 + str_lit_counter[0] * 16
+                let len_offset = struct_offset - 8
+                str_lit_counter[0] = str_lit_counter[0] + 1
+                
+                x86_encode_mov_store(REG_RBP, 0 as i32 - struct_offset as i32, dst, buf)
+                x86_encode_mov_ri64(dst, len, buf)
+                x86_encode_mov_store(REG_RBP, 0 as i32 - len_offset as i32, dst, buf)
+                x86_encode_lea(dst, REG_RBP, 0 as i32 - struct_offset as i32, buf)
 
             else:
                 if imm >= -2147483648 as i64 and imm <= 2147483647 as i64:
@@ -330,16 +344,17 @@ pub fn emitter_resolve_fixups(mut e: ptr[MachEmitter]):
             e.code.data[fix.offset + 3] = ((rel >> 24) & 0xFF as i32) as u8
         i = i + 1
 
-pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame]):
+pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], is_windows: bool, pool: InternPool, mut str_lit_counter: ptr[i32], self_link: bool):
     mut prologue := new_mach_inst_vec()
     emit_prologue(frame, &prologue)
     mut i := 0 as i64
     while i < prologue.len:
-        emit_mach_inst(e, prologue.data[i], allocs)
+        emit_mach_inst(e, prologue.data[i], allocs, pool, frame, str_lit_counter)
         i = i + 1
     if prologue.data != null as ptr[MachInst]:
         @free(prologue.data as ptr[u8])
         
+    let is_entry = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
     i = 0 as i64
     while i < insts_len:
         let inst = insts[i]
@@ -348,11 +363,51 @@ pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[Ma
             emit_epilogue(frame, &epilogue)
             mut j := 0 as i64
             while j < epilogue.len:
-                emit_mach_inst(e, epilogue.data[j], allocs)
+                emit_mach_inst(e, epilogue.data[j], allocs, pool, frame, str_lit_counter)
                 j = j + 1
             if epilogue.data != null as ptr[MachInst]:
                 @free(epilogue.data as ptr[u8])
-        emit_mach_inst(e, inst, allocs)
+                
+            if is_entry and self_link:
+                if is_windows:
+                    // mov ecx, eax -> 89 C1
+                    push_byte(&e.code, 0x89 as u8)
+                    push_byte(&e.code, 0xC1 as u8)
+                    // sub rsp, 40 -> 48 83 EC 28
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0x83 as u8)
+                    push_byte(&e.code, 0xEC as u8)
+                    push_byte(&e.code, 0x28 as u8)
+                    // call ExitProcess (relocation sym_name = -20)
+                    let offset = e.code.len + 1 as i64
+                    push_reloc(&e.relocs, Relocation(
+                        offset: offset,
+                        kind: RELOC_PC32,
+                        padding1: 0 as u8,
+                        padding2: 0 as u16,
+                        sym_name: 4294967276 as u32, // -20 as i64 represented as u32
+                        addend: -4 as i64
+                    ))
+                    push_byte(&e.code, 0xE8 as u8)
+                    push_u32_le(&e.code, 0 as u32)
+                else:
+                    // Linux exit syscall:
+                    // mov rdi, rax -> 48 89 C7
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0x89 as u8)
+                    push_byte(&e.code, 0xC7 as u8)
+                    // mov rax, 60 -> 48 C7 C0 3C 00 00 00
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0xC7 as u8)
+                    push_byte(&e.code, 0xC0 as u8)
+                    push_u32_le(&e.code, 60 as u32)
+                    // syscall -> 0F 05
+                    push_byte(&e.code, 0x0F as u8)
+                    push_byte(&e.code, 0x05 as u8)
+            else:
+                emit_mach_inst(e, inst, allocs, pool, frame, str_lit_counter)
+        else:
+            emit_mach_inst(e, inst, allocs, pool, frame, str_lit_counter)
         i = i + 1
         
     emitter_resolve_fixups(e)

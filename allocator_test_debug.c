@@ -169,10 +169,10 @@ struct ax_Segment* ax_std_mem_alloc_get_slab(void) {
     struct ax_AxGlobalState* state = ax_get_global_state();
     if ((state->g_slab == ((struct ax_Segment*)(NULL)))) {
         if (1) {
-            state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+            state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), ((ax_u64)(196608)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
         } else {
             {
-                state->g_slab = ((struct ax_Segment*)(ax_mmap(((void*)(NULL)), (((ax_u64)(4096)) * ((ax_u64)(48))), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+                state->g_slab = ((struct ax_Segment*)(ax_mmap(((void*)(NULL)), ((ax_u64)(196608)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
             }
         }
     }
@@ -363,7 +363,7 @@ void ax_ax_segment_manager_init(void) {
     struct ax_Segment** free_pool_ptr = ax_std_mem_alloc_get_free_pool();
     (*(free_pool_ptr)) = ((struct ax_Segment*)(NULL));
     struct ax_Segment* slab_ptr = ax_std_mem_alloc_get_slab();
-    memset(((ax_u8*)(slab_ptr)), ((ax_u8)(0)), (((ax_i64)(4096)) * ((ax_i64)(sizeof(struct ax_Segment)))));
+    memset(((ax_u8*)(slab_ptr)), ((ax_u8)(0)), ((ax_i64)(196608)));
 }
 
 void ax_ax_segment_manager_shutdown(void) {

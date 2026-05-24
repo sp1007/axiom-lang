@@ -27,10 +27,11 @@ ax_i64 ax_str_char_count(ax_string s) {
 
 ax_string ax_str_concat(ax_string a, ax_string b) {
     ax_u64 total = a.len + b.len;
-    ax_u8* buf = (ax_u8*)ax_alloc(total);
+    ax_u8* buf = (ax_u8*)ax_alloc(total + 1);
     if (!buf) ax_panic("out of memory in string concat");
     memcpy(buf, a.ptr, a.len);
     memcpy(buf + a.len, b.ptr, b.len);
+    buf[total] = 0;
     return (ax_string){ .ptr = buf, .len = total };
 }
 

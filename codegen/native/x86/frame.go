@@ -49,7 +49,7 @@ func ComputeFrame(calleeSaved []PhysReg, spillCount int, localBytes int) StackFr
 // SpillOffset returns the stack offset for a spill slot relative to RBP.
 // Spill slots are at [RBP - 8*(slot+1)] (below saved registers).
 func (f *StackFrame) SpillOffset(slotIdx int) int32 {
-	return -int32((slotIdx + 1) * 8)
+	return -int32((len(f.CalleeSaved) + 1 + slotIdx) * 8)
 }
 
 // EmitPrologue generates the function prologue MachInsts.

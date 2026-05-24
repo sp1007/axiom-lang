@@ -948,8 +948,8 @@ pub fn clone_subtree(mut self: AstTree, node_idx: u32) -> u32:
         child_idx = self.nodes.data[child_idx].next_sibling
 
     return new_idx
-// bootstrap/stage1/intern.ax
-// Open-addressing string interning pool for AXIOM compiler frontend.
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn fflush(stream: ptr[void]) -> i32
 
 pub struct InternEntry:
     hash: u32
@@ -2669,6 +2669,11 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
             self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
             let replace_name = self.intern.intern_string("std.string.replace")
             self.symtable.define(replace_name, SYM_FUNC, 0 as u16, node_idx)
+        elif name == "std.os":
+            let args_name = self.intern.intern_string("std.os.args")
+            self.symtable.define(args_name, SYM_FUNC, 0 as u16, node_idx)
+            let env_name = self.intern.intern_string("std.os.env")
+            self.symtable.define(env_name, SYM_FUNC, 0 as u16, node_idx)
 
     elif kind == NODE_FIELD_EXPR:
         let lhs_idx = self.tree.nodes.data[node_idx].first_child
@@ -3519,9 +3524,21 @@ pub fn strip_quotes(s: str) -> str:
 
 pub fn format_int(val: i64) -> str:
     if val == 0 as i64:
-        return "0"
+        let buf = @alloc(2) as ptr[u8]
+        buf[0] = '0' as u8
+        buf[1] = 0 as u8
+        let result = alloc_str_from_raw(buf, 1)
+        @free(buf)
+        return result
     if val == -9223372036854775808 as i64:
-        return "-9223372036854775808"
+        let s = "-9223372036854775808"
+        let len = std.string.len(s)
+        let buf = @alloc(len + 1) as ptr[u8]
+        @memcpy(buf, s as ptr[u8], len)
+        buf[len] = 0 as u8
+        let result = alloc_str_from_raw(buf, len)
+        @free(buf)
+        return result
     mut temp := val
     mut is_neg := false
     if val < 0 as i64:
@@ -4397,12 +4414,20 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     name_id = self.symtable.symbols.data[sym_idx as i64].name_id
             // Check if name is ptr
             let text = self.intern.get(name_id)
-            if text == "ptr":
+            let ptr_text = text as ptr[u8]
+            mut is_ptr := false
+            mut is_slice := false
+            if std.string.len(text) == 3 as i64 and ptr_text[0] == 'p' as u8 and ptr_text[1] == 't' as u8 and ptr_text[2] == 'r' as u8:
+                is_ptr = true
+            elif std.string.len(text) == 5 as i64 and ptr_text[0] == 's' as u8 and ptr_text[1] == 'l' as u8 and ptr_text[2] == 'i' as u8 and ptr_text[3] == 'c' as u8 and ptr_text[4] == 'e' as u8:
+                is_slice = true
+
+            if is_ptr:
                 let arg_idx = base_node.next_sibling
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
                     result_type = self.types.register_pointer(inner)
-            elif text == "slice":
+            elif is_slice:
                 let arg_idx = base_node.next_sibling
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
@@ -4527,7 +4552,25 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if entry.kind == TYPE_KIND_POINTER:
                     obj_type = entry.extra
                     entry = self.types.entries.data[obj_type]
-                if entry.kind == TYPE_KIND_STRUCT:
+                if obj_type == TYPE_STRING:
+                    let field_name_id = self.tree.nodes.data[node_idx].payload
+                    let field_name = self.intern.get(field_name_id)
+                    let ptr_field := field_name as ptr[u8]
+                    mut is_ptr_field := false
+                    mut is_len_field := false
+                    if std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'p' as u8 and ptr_field[1] == 't' as u8 and ptr_field[2] == 'r' as u8:
+                        is_ptr_field = true
+                    elif std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'l' as u8 and ptr_field[1] == 'e' as u8 and ptr_field[2] == 'n' as u8:
+                        is_len_field = true
+
+                    if is_ptr_field:
+                        result_type = self.types.register_pointer(5 as u32)
+                        self.tree.nodes.data[node_idx].extra_idx = 0 as u32
+                    elif is_len_field:
+                        result_type = 4 as u32
+                        self.tree.nodes.data[node_idx].extra_idx = 1 as u32
+                    @free(field_name as ptr[u8])
+                elif entry.kind == TYPE_KIND_STRUCT:
                     let struct_info = self.types.structs.data[entry.extra]
                     let field_name_id = self.tree.nodes.data[node_idx].payload
                     mut found := false
@@ -9453,7 +9496,7 @@ extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
 extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 
 fn is_type_unsigned(type_id: u32) -> bool:
     if type_id == 5 as u32 or type_id == 6 as u32 or type_id == 7 as u32 or type_id == 8 as u32 or type_id == 16 as u32:
@@ -9536,7 +9579,7 @@ pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
         return buf as str
     
     let buf = @alloc(32) as ptr[u8]
-    snprintf(buf as ptr[void], 32, "_AX_f%d", sym_id as ptr[void], null as ptr[void])
+    snprintf(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as ptr[void], null as ptr[void])
     return buf as str
 
 fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
@@ -10351,11 +10394,15 @@ pub fn field_offset(table: TypeTable, struct_type_id: u32, field_idx: u32) -> u3
     if struct_type_id == 0 as u32:
         return field_idx * 8 as u32
     let entry = table.entries.data[struct_type_id]
+    printf("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", struct_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
     if entry.kind != TYPE_KIND_STRUCT:
         return field_idx * 8 as u32
     
     let struct_idx = entry.extra
     let info = table.structs.data[struct_idx]
+    printf("[field_offset] info.fields.len=%d, info.fields.data=%x\n", info.fields.len as i64, (info.fields.data as i64) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
     mut offset := 0 as u32
     mut i := 0 as i64
     while i < info.fields.len:
@@ -10367,6 +10414,8 @@ pub fn field_offset(table: TypeTable, struct_type_id: u32, field_idx: u32) -> u3
             f_align = 8 as u32
         // Align offset
         offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
+        printf("[field_offset]   field %d: name_id=%d, type_id=%d, f_size=%d, f_align=%d, aligned_offset=%d\n", i as i64, f.name_id as i64, f.type_id as i64, f_size as i64, f_align as i64, offset as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
         if i as u32 == field_idx:
             return offset
         offset = offset + f_size
@@ -10429,6 +10478,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             mut vreg_flag := 0 as u32
             if is_str:
                 vreg_flag = 2 as u32
+            printf("[Debug select_inst] OP_ICONST dest=%d, type_id=%d, src1=%d, is_str=%d, vreg_flag=%d\n", inst.dest as i64, inst.type_id as i64, inst.src1 as i64, is_str as i64, vreg_flag as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
             out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: vreg_flag, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
 
@@ -10436,7 +10487,7 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         let val = inst.src1 as i64
         out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-    elif op == OP_COPY or op == OP_MOVE or op == OP_CAST:
+    elif op == OP_COPY or op == OP_MOVE:
         if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
             let param_idx = sel.param_idx_processed
             sel.param_idx_processed = sel.param_idx_processed + 1
@@ -10445,6 +10496,48 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 return
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_CAST:
+        if inst.type_id == 12 as u16:
+            let tmp_struct = next_vreg(sel)
+            let tmp_len = next_vreg(sel)
+            let arg0 = abi_int_arg_reg(sel.abi_name, 0)
+            
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: arg0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -21 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_len, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: arg0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_len, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
+                let param_idx = sel.param_idx_processed
+                sel.param_idx_processed = sel.param_idx_processed + 1
+                let phys = abi_int_arg_reg(sel.abi_name, param_idx as i64)
+                if phys != REG_NONE:
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    return
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_IADD:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -10520,15 +10613,29 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         
         if fn_name_ret == "main":
-            if inst.src1 != 0 as u32:
-                out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             if sel.abi_name == "win64":
-                out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                if inst.src1 != 0 as u32:
+                    out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64)))
+                else:
+                    out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                if inst.src1 != 0 as u32:
+                    out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
             out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -5 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
             if sel.abi_name == "win64":
-                out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            if inst.src1 != 0 as u32:
-                out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                if inst.src1 != 0 as u32:
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64)))
+                    out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                else:
+                    out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                if inst.src1 != 0 as u32:
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_RET, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_JUMP:
@@ -10581,8 +10688,15 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if arg_start < sel.fn_ptr.extras.len as u32:
             arg_count = sel.fn_ptr.extras.data[arg_start]
 
-        mut target_name := x86_resolve_sym_name(inst.type_id as u32, sel.symbols, sel.pool)
-        mut sym_imm := inst.type_id as i64
+        mut target_name := "none"
+        mut sym_imm := 0 as i64
+        if inst.src1 == 0 as u32:
+            target_name = x86_resolve_sym_name(inst.type_id as u32, sel.symbols, sel.pool)
+            sym_imm = inst.type_id as i64
+        let target_len = std.string.len(target_name)
+        let target_ptr = target_name as ptr[u8]
+        printf("[Debug selector] OP_CALL target=%.*s, arg_count=%d\n", target_len, target_ptr as i64, arg_count as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
 
         if target_name == "println" or target_name == "print":
             mut is_println := target_name == "println"
@@ -10948,10 +11062,31 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
             src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
+        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, 
             dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
             src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
             src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+        let type_id = get_register_type(sel, inst.dest)
+        mut type_size := 8 as u32
+        if type_id < sel.table.entries.len as u32:
+            type_size = sel.table.entries.data[type_id].size
+
+        if type_size == 1 as u32:
+            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8,
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 255 as i64)))
+        elif type_size == 2 as u32:
+            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8,
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64)))
+        elif type_size == 4 as u32:
+            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8,
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64),
+                src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64)))
 
     else:
         out_insts.push(MachInst(op: MACH_NOP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -11087,7 +11222,15 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                 let iv = @alloc(12) as ptr[LiveInterval]
                 iv.vreg = v
                 iv.start = i as i32
-                iv.end = i as i32
+                mut is_param := false
+                if inst.op == MACH_MOV and inst.src1.kind == OPND_PHYS:
+                    let phys = inst.src1.phys
+                    if phys == REG_RCX or phys == REG_RDX or phys == REG_R8 or phys == REG_R9 or phys == REG_RDI or phys == REG_RSI:
+                        is_param = true
+                if is_param:
+                    iv.end = (insts_len - 1) as i32
+                else:
+                    iv.end = i as i32
                 interval_map[v] = iv
 
         if inst.src1.kind == OPND_VREG and inst.src1.vreg != 0 as u32:
@@ -11126,6 +11269,35 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     interval_map[v] = iv
                 elif (i as i32) > iv.end:
                     iv.end = i as i32
+        i = i + 1
+
+    // Scan for back-edges and extend lifetimes
+    i = 0 as i64
+    while i < insts_len:
+        let inst = &insts[i]
+        if inst.op == MACH_JMP or inst.op == MACH_JCC:
+            if inst.dst.kind == OPND_LABEL:
+                let target_label = inst.dst.label
+                // Find the target instruction index
+                mut target_idx := -1 as i64
+                mut search_idx := 0 as i64
+                while search_idx < insts_len:
+                    if insts[search_idx].op == MACH_LABEL and insts[search_idx].dst.label == target_label:
+                        target_idx = search_idx
+                        break
+                    search_idx = search_idx + 1
+                
+                // If it is a back-edge (target_idx < i)
+                if target_idx != -1 as i64 and target_idx < i:
+                    // For any virtual register live at target_idx, extend its end to i
+                    mut v_scan := 0 as i64
+                    while v_scan < map_size:
+                        let iv = interval_map[v_scan]
+                        if iv != null as ptr[LiveInterval]:
+                            if iv.start <= target_idx as i32 and iv.end >= target_idx as i32:
+                                if iv.end < i as i32:
+                                    iv.end = i as i32
+                        v_scan = v_scan + 1
         i = i + 1
 
     mut result := new_live_interval_vec()
@@ -11199,6 +11371,47 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         i = i + 1
 
     let graph_size = (max_vreg + 1 as u32) as i64
+
+    let param_idx_of_vreg = @alloc(graph_size * 4) as ptr[i32]
+    mut param_vi := 0 as i64
+    while param_vi < graph_size:
+        param_idx_of_vreg[param_vi] = -1 as i32
+        param_vi = param_vi + 1
+
+    mut inst_idx := 0 as i64
+    while inst_idx < insts_len:
+        let inst = insts[inst_idx]
+        if inst.op == MACH_MOV and inst.dst.kind == OPND_VREG and inst.src1.kind == OPND_PHYS:
+            let phys = inst.src1.phys
+            mut p_idx := -1 as i32
+            if abi == "win64":
+                if phys == REG_RCX:
+                    p_idx = 0 as i32
+                elif phys == REG_RDX:
+                    p_idx = 1 as i32
+                elif phys == REG_R8:
+                    p_idx = 2 as i32
+                elif phys == REG_R9:
+                    p_idx = 3 as i32
+            else:
+                if phys == REG_RDI:
+                    p_idx = 0 as i32
+                elif phys == REG_RSI:
+                    p_idx = 1 as i32
+                elif phys == REG_RDX:
+                    p_idx = 2 as i32
+                elif phys == REG_RCX:
+                    p_idx = 3 as i32
+                elif phys == REG_R8:
+                    p_idx = 4 as i32
+                elif phys == REG_R9:
+                    p_idx = 5 as i32
+            
+            if p_idx != -1 as i32:
+                let vr = inst.dst.vreg
+                if vr < max_vreg + 1 as u32:
+                    param_idx_of_vreg[vr as i64] = p_idx
+        inst_idx = inst_idx + 1
 
     // Determine for each virtual register if its live interval spans any call instruction
     let spans_call = @alloc(graph_size) as ptr[bool]
@@ -11319,6 +11532,15 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         let forbidden = @alloc(256) as ptr[bool]
         @memset(forbidden as ptr[u8], 0 as u8, 256)
 
+        let p_idx = param_idx_of_vreg[vreg as i64]
+        if p_idx != -1 as i32:
+            mut j := (p_idx + 1) as i64
+            while j < 6 as i64:
+                let r = abi_int_arg_reg(abi, j)
+                if r != REG_NONE:
+                    forbidden[r as i64] = true
+                j = j + 1
+
         mut n_idx := 0 as i64
         while n_idx < adj[vreg].len:
             let neighbor = adj[vreg].data[n_idx]
@@ -11357,6 +11579,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(degrees as ptr[u8])
     @free(assigned_colors)
     @free(spans_call as ptr[u8])
+    @free(param_idx_of_vreg as ptr[u8])
     if stack.data != null as ptr[u32]:
         @free(stack.data as ptr[u8])
 
@@ -11484,7 +11707,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             let v = inst.src1.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let offset = -((alloc.spill_idx + 1) * 8)
+                let offset = -((frame.callee_saved_len + 1 + alloc.spill_idx as i64) * 8)
                 result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                 inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
 
@@ -11492,7 +11715,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             let v = inst.src2.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let offset = -((alloc.spill_idx + 1) * 8)
+                let offset = -((frame.callee_saved_len + 1 + alloc.spill_idx as i64) * 8)
                 result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                 inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
 
@@ -11507,7 +11730,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
 
         if dst_spilled:
             let behavior = get_dst_behavior(inst.op)
-            let offset = -((dst_alloc.spill_idx + 1) * 8)
+            let offset = -((frame.callee_saved_len + 1 + dst_alloc.spill_idx as i64) * 8)
 
             if behavior == DST_READ_ONLY:
                 result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
@@ -11753,12 +11976,38 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
                 fprintf(file, "    call __ax_runtime_init\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -5 as i64:
                 fprintf(file, "    call __ax_runtime_shutdown\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            elif inst.src1.imm == -8 as i64:
-                fprintf(file, "    call abort\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -10 as i64:
+                fprintf(file, "    call ax_println_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -11 as i64:
+                fprintf(file, "    call ax_println_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -12 as i64:
+                fprintf(file, "    call ax_println_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -13 as i64:
+                fprintf(file, "    call ax_println_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -14 as i64:
+                fprintf(file, "    call ax_print_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -15 as i64:
+                fprintf(file, "    call ax_print_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -16 as i64:
+                fprintf(file, "    call ax_print_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -17 as i64:
+                fprintf(file, "    call ax_print_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -20 as i64:
+                fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -21 as i64:
+                fprintf(file, "    call strlen\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 fprintf(file, "    call %s\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            let sym_name = x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            mut sym_name := x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            if sym_name == "std.string.len":
+                sym_name = "ax_str_len"
+            elif sym_name == "std.string.concat":
+                sym_name = "ax_str_concat"
+            elif sym_name == "std.string.replace":
+                sym_name = "ax_str_replace"
+            elif sym_name == "std.string.slice":
+                sym_name = "ax_str_slice"
             fprintf(file, "    call %s\n", (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
 pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], format: str, symbols: SymbolTable, pool: InternPool):
@@ -11776,6 +12025,7 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
     if prologue.data != null as ptr[MachInst]:
         @free(prologue.data as ptr[u8])
 
+    let is_entry = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
     i = 0 as i64
     while i < insts_len:
         let inst = insts[i]
@@ -11788,7 +12038,20 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
                 j = j + 1
             if epilogue.data != null as ptr[MachInst]:
                 @free(epilogue.data as ptr[u8])
-        emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
+            
+            if is_entry:
+                if @compiler_intrinsic("is_windows"):
+                    fprintf(file, "    mov ecx, eax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    sub rsp, 40\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(file, "    mov rdi, rax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    mov rax, 60\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    syscall\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
+        else:
+            emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
         i = i + 1
 
     if format == "winasm":
@@ -11838,6 +12101,13 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
             else:
                 fprintf(file, "extern %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fi = fi + 1
+    if @compiler_intrinsic("is_windows"):
+        if format == "fasm":
+            fprintf(file, "extrn ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        elif format == "winasm":
+            fprintf(file, "EXTERN ExitProcess:PROC\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "extern ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     // 3. Declare global symbols
@@ -11870,10 +12140,21 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
             mut gpr_len := 0 as i64
             let avail_gprs = get_allocatable_gprs(&gpr_len)
             let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
-            
+            mut num_str_lits := 0 as i32
+            mut loop_i := 0 as i64
+            while loop_i < mach_insts.len:
+                let inst = mach_insts.data[loop_i]
+                if inst.op == MACH_MOV_IMM and inst.src1.vreg == 2 as u32:
+                    num_str_lits = num_str_lits + 1
+                loop_i = loop_i + 1
+
+            mut local_bytes := 0 as i32
+            if num_str_lits > 0:
+                local_bytes = 16 + num_str_lits * 16
+
             mut cs_len := 0 as i64
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
-            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
             let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame)
             
@@ -12614,7 +12895,7 @@ pub fn emitter_resolve_reg(op: MachOperand, allocs: ptr[RegAllocation]) -> u8:
         return alloc.phys
     return REG_NONE
 
-pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation]):
+pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation], pool: InternPool, frame: ptr[StackFrame], mut str_lit_counter: ptr[i32]):
     let op = inst.op
     let buf = &e.code
     
@@ -12631,8 +12912,10 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             x86_encode_mov_rr(dst, src, buf)
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
+        let imm = inst.src1.imm
+        printf("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
         if dst != REG_NONE:
-            let imm = inst.src1.imm
             if inst.src1.vreg == 1 as u32: // Symbol index!
                 let offset = buf.len + 2 as i64
                 push_reloc(&e.relocs, Relocation(
@@ -12656,6 +12939,18 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                     addend: -4 as i64
                 ))
                 x86_encode_lea_rip(dst, 0 as i32, buf)
+                
+                let text = pool.get(imm as u32)
+                let len = std.string.len(text)
+                
+                let struct_offset = (frame.callee_saved_len * 8) + (frame.spill_slots * 8) + 16 + str_lit_counter[0] * 16
+                let len_offset = struct_offset - 8
+                str_lit_counter[0] = str_lit_counter[0] + 1
+                
+                x86_encode_mov_store(REG_RBP, 0 as i32 - struct_offset as i32, dst, buf)
+                x86_encode_mov_ri64(dst, len, buf)
+                x86_encode_mov_store(REG_RBP, 0 as i32 - len_offset as i32, dst, buf)
+                x86_encode_lea(dst, REG_RBP, 0 as i32 - struct_offset as i32, buf)
 
             else:
                 if imm >= -2147483648 as i64 and imm <= 2147483647 as i64:
@@ -12804,16 +13099,17 @@ pub fn emitter_resolve_fixups(mut e: ptr[MachEmitter]):
             e.code.data[fix.offset + 3] = ((rel >> 24) & 0xFF as i32) as u8
         i = i + 1
 
-pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame]):
+pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], is_windows: bool, pool: InternPool, mut str_lit_counter: ptr[i32], self_link: bool):
     mut prologue := new_mach_inst_vec()
     emit_prologue(frame, &prologue)
     mut i := 0 as i64
     while i < prologue.len:
-        emit_mach_inst(e, prologue.data[i], allocs)
+        emit_mach_inst(e, prologue.data[i], allocs, pool, frame, str_lit_counter)
         i = i + 1
     if prologue.data != null as ptr[MachInst]:
         @free(prologue.data as ptr[u8])
         
+    let is_entry = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
     i = 0 as i64
     while i < insts_len:
         let inst = insts[i]
@@ -12822,11 +13118,51 @@ pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[Ma
             emit_epilogue(frame, &epilogue)
             mut j := 0 as i64
             while j < epilogue.len:
-                emit_mach_inst(e, epilogue.data[j], allocs)
+                emit_mach_inst(e, epilogue.data[j], allocs, pool, frame, str_lit_counter)
                 j = j + 1
             if epilogue.data != null as ptr[MachInst]:
                 @free(epilogue.data as ptr[u8])
-        emit_mach_inst(e, inst, allocs)
+                
+            if is_entry and self_link:
+                if is_windows:
+                    // mov ecx, eax -> 89 C1
+                    push_byte(&e.code, 0x89 as u8)
+                    push_byte(&e.code, 0xC1 as u8)
+                    // sub rsp, 40 -> 48 83 EC 28
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0x83 as u8)
+                    push_byte(&e.code, 0xEC as u8)
+                    push_byte(&e.code, 0x28 as u8)
+                    // call ExitProcess (relocation sym_name = -20)
+                    let offset = e.code.len + 1 as i64
+                    push_reloc(&e.relocs, Relocation(
+                        offset: offset,
+                        kind: RELOC_PC32,
+                        padding1: 0 as u8,
+                        padding2: 0 as u16,
+                        sym_name: 4294967276 as u32, // -20 as i64 represented as u32
+                        addend: -4 as i64
+                    ))
+                    push_byte(&e.code, 0xE8 as u8)
+                    push_u32_le(&e.code, 0 as u32)
+                else:
+                    // Linux exit syscall:
+                    // mov rdi, rax -> 48 89 C7
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0x89 as u8)
+                    push_byte(&e.code, 0xC7 as u8)
+                    // mov rax, 60 -> 48 C7 C0 3C 00 00 00
+                    push_byte(&e.code, 0x48 as u8)
+                    push_byte(&e.code, 0xC7 as u8)
+                    push_byte(&e.code, 0xC0 as u8)
+                    push_u32_le(&e.code, 60 as u32)
+                    // syscall -> 0F 05
+                    push_byte(&e.code, 0x0F as u8)
+                    push_byte(&e.code, 0x05 as u8)
+            else:
+                emit_mach_inst(e, inst, allocs, pool, frame, str_lit_counter)
+        else:
+            emit_mach_inst(e, inst, allocs, pool, frame, str_lit_counter)
         i = i + 1
         
     emitter_resolve_fixups(e)
@@ -13389,10 +13725,10 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
     if sym_idx >= 0xE0000000 as i64:
         let str_id = sym_idx - 0xE0000000 as i64
         let sym_name_buf = @alloc(64) as ptr[u8]
-        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as ptr[void], null as ptr[void])
-        let name_id = pool.intern(sym_name_buf as str)
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as ptr[void], null as ptr[void])
+        let res = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
         @free(sym_name_buf)
-        return pool.get(name_id)
+        return res
     if sym_idx == -1 as i64:
         return "malloc"
 
@@ -13406,8 +13742,12 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
         return "__ax_runtime_shutdown"
     if sym_idx == -8 as i64:
         return "abort"
+    if sym_idx == -20 as i64:
+        return "ExitProcess"
+    if sym_idx == -21 as i64:
+        return "strlen"
     if sym_idx == -10 as i64:
-        return "ax_println_str_native"
+        return "ax_println_str"
     if sym_idx == -11 as i64:
         return "ax_println_i64"
     if sym_idx == -12 as i64:
@@ -13415,7 +13755,7 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
     if sym_idx == -13 as i64:
         return "ax_println_bool"
     if sym_idx == -14 as i64:
-        return "ax_print_str_native"
+        return "ax_print_str"
     if sym_idx == -15 as i64:
         return "ax_print_i64"
     if sym_idx == -16 as i64:
@@ -13437,7 +13777,7 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
 
 
 
-pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str) -> bool:
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str, self_link: bool) -> bool:
     mut abi := "win64"
     if format == "elf64":
         abi = "sysv"
@@ -13457,9 +13797,20 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     while scan_fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[scan_fi]
         if not fn_ptr.is_extern:
+            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            let name_nt = str_to_null_terminated(fn_name_str)
+            printf("[Debug Scan Fn] %s has %d insts\n", name_nt as i64, fn_ptr.insts.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(name_nt)
             mut inst_i := 0 as i64
             while inst_i < fn_ptr.insts.len:
                 let inst = &fn_ptr.insts.data[inst_i]
+                if inst.opcode == OP_ICONST:
+                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+                    let name_nt = str_to_null_terminated(fn_name_str)
+                    printf("[Debug Scan] OP_ICONST in %s: type_id=%d, src1=%d\n", name_nt as i64, inst.type_id as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fflush(null as ptr[void])
+                    @free(name_nt)
                 if inst.opcode == OP_ICONST and inst.type_id == 12 as u16:
                     let str_id = inst.src1
                     mut found := false
@@ -13490,9 +13841,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
         let str_id = str_keys.data[str_i]
         let offset = str_offsets.data[str_i]
         let sym_name_buf = @alloc(64) as ptr[u8]
-        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as i64 as ptr[void], null as ptr[void])
-        let sym_name = pool.intern(sym_name_buf as str)
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as i64 as ptr[void], null as ptr[void])
+        let temp_str = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
+        let sym_name = pool.intern(temp_str)
         let sym_name_str = pool.get(sym_name)
+        @free(temp_str as ptr[u8])
         if format == "elf64":
             push_elf64_sym(&elf_syms, ELF64Sym(name_str: sym_name_str, value: offset as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 2 as u16))
         else:
@@ -13537,9 +13890,21 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             fflush(null as ptr[void])
             let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
             
+            mut num_str_lits := 0 as i32
+            mut loop_i := 0 as i64
+            while loop_i < mach_insts.len:
+                let inst = mach_insts.data[loop_i]
+                if inst.op == MACH_MOV_IMM and inst.src1.vreg == 2 as u32:
+                    num_str_lits = num_str_lits + 1
+                loop_i = loop_i + 1
+
+            mut local_bytes := 0 as i32
+            if num_str_lits > 0:
+                local_bytes = 16 + num_str_lits * 16
+
             mut cs_len := 0 as i64
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
-            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
             printf("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -13549,7 +13914,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
 
             printf("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame)
+            let is_windows = (format == "coff")
+            mut str_lit_counter := 0 as i32
+            emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
             printf("[Debug]   emit_function_binary done, pushing compiled info\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -13672,6 +14039,21 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                 mut reloc_type := IMAGE_REL_AMD64_REL32
                 if r.kind == RELOC_ABS64:
                     reloc_type = IMAGE_REL_AMD64_ADDR64
+                    let val = r.addend
+                    all_code.data[reloc_offset as i64 + 0] = (val & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 1] = ((val >> 8 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 4] = ((val >> 32 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 5] = ((val >> 40 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 6] = ((val >> 48 as i64) & 0xFF as i64) as u8
+                    all_code.data[reloc_offset as i64 + 7] = ((val >> 56 as i64) & 0xFF as i64) as u8
+                else:
+                    let val = r.addend as i32
+                    all_code.data[reloc_offset as i64 + 0] = (val & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 1] = ((val >> 8 as i32) & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i32) & 0xFF as i32) as u8
+                    all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i32) & 0xFF as i32) as u8
                 push_coff_reloc(&coff_relocs, COFFReloc(virt_addr: reloc_offset, sym_table_idx: target_sym_idx as u32, reloc_type: reloc_type))
                 
             r_i = r_i + 1
@@ -14173,9 +14555,18 @@ pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
         push_byte(vec, 0 as u8)
 
 pub fn get_dll_for_symbol(name: str) -> str:
-    if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or 
+    if (name == "steals_attempted" or name == "steals_succeeded" or name == "tasks_executed" or
+        name == "running" or name == "head" or name == "total_executed" or
+        name == "worker_count" or name == "total_submitted" or name == "total_steals" or
+        name == "alloc" or name == "q" or name == "msg" or name == "actor" or name == "SEGMENT_MAGIC"):
+        return "none"
+
+    if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or name == "TerminateProcess" or 
         name == "GetLastError" or name == "GetStdHandle" or name == "WriteFile" or
-        name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle"):
+        name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle" or
+        name == "CreateDirectoryA" or name == "RemoveDirectoryA" or name == "DeleteFileA" or
+        name == "MoveFileA" or name == "CopyFileA" or name == "GetFileAttributesA" or
+        name == "GetCommandLineA" or name == "GetEnvironmentVariableA" or name == "SetEnvironmentVariableA"):
         return "kernel32.dll"
         
     let ptr = name as ptr[u8]
@@ -14538,6 +14929,9 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                             add_unique_import(&kernel32_imports, target_name)
                         elif dll == "ax_runtime.dll":
                             add_unique_import(&ax_runtime_imports, target_name)
+                        elif dll == "none" or dll == "":
+                            // Skip dynamic import for dummy/clashed field symbols
+                            is_defined = true
                         else:
                             add_unique_import(&ucrtbase_imports, target_name)
             r_i = r_i + 1
@@ -15696,7 +16090,7 @@ extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void])
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn puts(s: str) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
@@ -15863,12 +16257,84 @@ fn strip_imports(s: str) -> str:
 fn strip_package_prefixes(s: str) -> str:
     let r1 = std.string.replace(s, "std.mem.alloc.", "")
     let r2 = std.string.replace(r1, "std.scheduler.", "")
+    let r3 = std.string.replace(r2, "std.os.", "")
     if r1 as ptr[u8] != s as ptr[u8] and r1 as ptr[u8] != r2 as ptr[u8]:
         @free(r1 as ptr[u8])
-    return r2
+    if r2 as ptr[u8] != r1 as ptr[u8] and r2 as ptr[u8] != r3 as ptr[u8]:
+        @free(r2 as ptr[u8])
+    return r3
 
 
-pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
+extern "C" fn GetCommandLineW() -> ptr[u16]
+
+fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
+    let res = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len:
+        let val = data[i]
+        res[i] = val as u8
+        i = i + 1
+    res[len] = 0 as u8
+    return res as str
+
+fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
+    let args = @alloc(64 * 16) as ptr[str]
+    mut count := 0 as i64
+    if @compiler_intrinsic("is_windows"):
+        let cmdline = GetCommandLineW()
+        if cmdline != null as ptr[u16]:
+            mut i := 0 as i64
+            while cmdline[i] != 0 as u16 and count < 64:
+                while cmdline[i] == ' ' as u16 or cmdline[i] == '\t' as u16 or cmdline[i] == '\r' as u16 or cmdline[i] == '\n' as u16:
+                    i = i + 1
+                if cmdline[i] == 0 as u16:
+                    break
+                let start = i
+                mut in_quotes := false
+                while cmdline[i] != 0 as u16:
+                    let ch = cmdline[i]
+                    if ch == '"' as u16:
+                        in_quotes = not in_quotes
+                    elif (ch == ' ' as u16 or ch == '\t' as u16) and not in_quotes:
+                        break
+                    i = i + 1
+                let arg_len = i - start
+                mut final_ptr := ((cmdline as i64) + start * 2) as ptr[u16]
+                mut final_len := arg_len
+                if arg_len >= 2 and cmdline[start] == '"' as u16 and cmdline[i - 1] == '"' as u16:
+                    final_ptr = ((cmdline as i64) + (start + 1) * 2) as ptr[u16]
+                    final_len = arg_len - 2
+                args[count] = local_wslice_to_str(final_ptr, final_len)
+                count = count + 1
+    else:
+        let file = fopen("/proc/self/cmdline" as ptr[void], "rb")
+        if file != null as ptr[void]:
+            let buf = @alloc(8192) as ptr[u8]
+            let n = fread(buf as ptr[void], 1, 8192, file)
+            fclose(file)
+            mut start := 0 as i64
+            mut i := 0 as i64
+            while i < n and count < 64:
+                if buf[i] == 0 as u8:
+                    if i > start:
+                        let arg_len = i - start
+                        let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+                        @memcpy(s_ptr, ((buf as i64) + start) as ptr[u8], arg_len)
+                        s_ptr[arg_len] = 0 as u8
+                        args[count] = s_ptr as str
+                        count = count + 1
+                    start = i + 1
+                i = i + 1
+            @free(buf)
+    out_argc[0] = count as i32
+    return args
+
+
+
+
+pub fn main() -> i32:
+    mut argc := 0 as i32
+    let args = get_freestanding_args(&argc)
     if argc < 2:
         puts("Usage: axc <command> [args]")
         puts("Commands:")
@@ -15889,7 +16355,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut optimize := false
 
     // Parse commands
-    let cmd = argv[1] as str
+    let cmd = args[1]
     if cmd == "dump-air":
         is_dump_air = true
         file_arg_idx = 2
@@ -15898,6 +16364,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         file_arg_idx = 2
     elif cmd == "build":
         is_build = true
+        self_link = true
         file_arg_idx = 2
     elif cmd == "fmt":
         is_fmt = true
@@ -15909,17 +16376,17 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     // Parse options starting after the file argument
     mut opt_idx := file_arg_idx + 1
     while opt_idx < argc:
-        let opt = argv[opt_idx] as str
+        let opt = args[opt_idx as i64]
         if opt == "-o" or opt == "--output":
             if opt_idx + 1 < argc:
-                output_file = argv[opt_idx + 1] as str
+                output_file = args[opt_idx as i64 + 1 as i64]
                 opt_idx = opt_idx + 1
             else:
                 puts("Error: missing value for -o option")
                 return 1
         elif opt == "--target" or opt == "-target":
             if opt_idx + 1 < argc:
-                let target_triple = argv[opt_idx + 1] as str
+                let target_triple = args[opt_idx as i64 + 1 as i64]
                 if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
                     target_wasm32 = true
                 opt_idx = opt_idx + 1
@@ -15928,11 +16395,14 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
                 return 1
         elif opt == "-self-link" or opt == "--self-link":
             self_link = true
+        elif opt == "-use-gcc" or opt == "--use-gcc":
+            self_link = false
         elif opt == "-O1" or opt == "--opt":
             optimize = true
         opt_idx = opt_idx + 1
 
-    let filename_ptr = argv[file_arg_idx]
+    let filename = args[file_arg_idx as i64]
+    let filename_ptr = filename as ptr[u8]
     let file = fopen(filename_ptr as ptr[void], "rb")
     if file == null as ptr[void]:
         puts("Error: could not open file")
@@ -15987,6 +16457,9 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         puts("[Debug] Reading runtime.ax...")
         fflush(null as ptr[void])
         let raw_rt = read_file_content("std/runtime.ax")
+        puts("[Debug] Reading os.ax...")
+        fflush(null as ptr[void])
+        let raw_os = read_file_content("std/os.ax")
         
         puts("[Debug] Stripping imports from alloc.ax...")
         fflush(null as ptr[void])
@@ -16003,6 +16476,11 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         let rt_src_raw = strip_imports(raw_rt)
         let rt_src = strip_package_prefixes(rt_src_raw)
 
+        puts("[Debug] Stripping imports from os.ax...")
+        fflush(null as ptr[void])
+        let os_src_raw = strip_imports(raw_os)
+        let os_src = strip_package_prefixes(os_src_raw)
+
         puts("[Debug] Stripping imports from src...")
         fflush(null as ptr[void])
         let clean_src_raw = strip_imports(src)
@@ -16014,9 +16492,10 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         let len_alloc = std.string.len(alloc_src)
         let len_sched = std.string.len(sched_src)
         let len_rt = std.string.len(rt_src)
+        let len_os = std.string.len(os_src)
         
-        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_src
-        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_src, total_len, 0 as i64, 0 as i64, 0 as i64)
+        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_src
+        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_os, len_src, total_len, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
         let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
         
@@ -16031,7 +16510,11 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
         new_buf[off_rt + len_rt] = 10 as u8
         
-        let off_src = off_rt + len_rt + 1 as i64
+        let off_os = off_rt + len_rt + 1 as i64
+        @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
+        new_buf[off_os + len_os] = 10 as u8
+        
+        let off_src = off_os + len_os + 1 as i64
         @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
         new_buf[total_len] = 0 as u8
         
@@ -16043,6 +16526,8 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             @free(raw_sched as ptr[u8])
         if std.string.len(raw_rt) > 0 as i64:
             @free(raw_rt as ptr[u8])
+        if std.string.len(raw_os) > 0 as i64:
+            @free(raw_os as ptr[u8])
             
         if alloc_src as ptr[u8] != alloc_src_raw as ptr[u8]:
             @free(alloc_src as ptr[u8])
@@ -16055,6 +16540,10 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         if rt_src as ptr[u8] != rt_src_raw as ptr[u8]:
             @free(rt_src as ptr[u8])
         @free(rt_src_raw as ptr[u8])
+
+        if os_src as ptr[u8] != os_src_raw as ptr[u8]:
+            @free(os_src as ptr[u8])
+        @free(os_src_raw as ptr[u8])
         
         if clean_src as ptr[u8] != clean_src_raw as ptr[u8]:
             @free(clean_src as ptr[u8])
@@ -16091,6 +16580,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut symtable := new_symbol_table(parser.pool)
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
     resolver.resolve()
+    parser.pool = resolver.intern
     if not is_dump_air:
         puts("[Debug] Finished Resolving.")
         fflush(null as ptr[void])
@@ -16132,6 +16622,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     mut air_builder := &air_builder_val
     air_builder.build_module()
+    parser.pool = air_builder.pool
     if not is_dump_air:
         puts("[Debug] Stage 2: Finished building AIR module.")
 
@@ -16184,7 +16675,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
 
         let temp_obj = "axiom_temp.obj"
         puts("[Debug] Stage 3: Starting native code generation...")
-        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff")
+        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff", self_link)
         if not success:
             puts("Error: could not generate native binary code")
             return 1
@@ -16217,7 +16708,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             let temp_obj_nt = str_to_null_terminated(temp_obj)
 
             // Run gcc: gcc -O2 -o output.exe axiom_temp.obj -Iruntime runtime/axalloc/axalloc.c ...
-            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c", output_file_nt as ptr[void], temp_obj_nt as ptr[void])
+            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], output_file_nt as ptr[void], temp_obj_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up

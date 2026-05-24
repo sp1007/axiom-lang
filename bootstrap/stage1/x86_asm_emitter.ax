@@ -223,12 +223,38 @@ pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegA
                 fprintf(file, "    call __ax_runtime_init\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             elif inst.src1.imm == -5 as i64:
                 fprintf(file, "    call __ax_runtime_shutdown\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            elif inst.src1.imm == -8 as i64:
-                fprintf(file, "    call abort\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -10 as i64:
+                fprintf(file, "    call ax_println_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -11 as i64:
+                fprintf(file, "    call ax_println_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -12 as i64:
+                fprintf(file, "    call ax_println_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -13 as i64:
+                fprintf(file, "    call ax_println_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -14 as i64:
+                fprintf(file, "    call ax_print_str\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -15 as i64:
+                fprintf(file, "    call ax_print_i64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -16 as i64:
+                fprintf(file, "    call ax_print_f64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -17 as i64:
+                fprintf(file, "    call ax_print_bool\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -20 as i64:
+                fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -21 as i64:
+                fprintf(file, "    call strlen\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 fprintf(file, "    call %s\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         else:
-            let sym_name = x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            mut sym_name := x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            if sym_name == "std.string.len":
+                sym_name = "ax_str_len"
+            elif sym_name == "std.string.concat":
+                sym_name = "ax_str_concat"
+            elif sym_name == "std.string.replace":
+                sym_name = "ax_str_replace"
+            elif sym_name == "std.string.slice":
+                sym_name = "ax_str_slice"
             fprintf(file, "    call %s\n", (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
 pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], format: str, symbols: SymbolTable, pool: InternPool):
@@ -246,6 +272,7 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
     if prologue.data != null as ptr[MachInst]:
         @free(prologue.data as ptr[u8])
 
+    let is_entry = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
     i = 0 as i64
     while i < insts_len:
         let inst = insts[i]
@@ -258,7 +285,20 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
                 j = j + 1
             if epilogue.data != null as ptr[MachInst]:
                 @free(epilogue.data as ptr[u8])
-        emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
+            
+            if is_entry:
+                if @compiler_intrinsic("is_windows"):
+                    fprintf(file, "    mov ecx, eax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    sub rsp, 40\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    call ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                else:
+                    fprintf(file, "    mov rdi, rax\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    mov rax, 60\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    fprintf(file, "    syscall\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
+        else:
+            emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
         i = i + 1
 
     if format == "winasm":
@@ -308,6 +348,13 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
             else:
                 fprintf(file, "extern %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fi = fi + 1
+    if @compiler_intrinsic("is_windows"):
+        if format == "fasm":
+            fprintf(file, "extrn ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        elif format == "winasm":
+            fprintf(file, "EXTERN ExitProcess:PROC\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "extern ExitProcess\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     // 3. Declare global symbols
@@ -340,10 +387,21 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolT
             mut gpr_len := 0 as i64
             let avail_gprs = get_allocatable_gprs(&gpr_len)
             let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
-            
+            mut num_str_lits := 0 as i32
+            mut loop_i := 0 as i64
+            while loop_i < mach_insts.len:
+                let inst = mach_insts.data[loop_i]
+                if inst.op == MACH_MOV_IMM and inst.src1.vreg == 2 as u32:
+                    num_str_lits = num_str_lits + 1
+                loop_i = loop_i + 1
+
+            mut local_bytes := 0 as i32
+            if num_str_lits > 0:
+                local_bytes = 16 + num_str_lits * 16
+
             mut cs_len := 0 as i64
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
-            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
             let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame)
             

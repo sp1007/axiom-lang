@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\test_malloc.exe")
+	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\scratch\\test_sizeof.exe")
 	if err != nil {
 		log.Fatalf("Error opening PE: %v", err)
 	}
@@ -18,7 +18,7 @@ func main() {
 		log.Fatalf("Error getting imports: %v", err)
 	}
 
-	fmt.Printf("Imported Libraries in test_malloc.exe (%d):\n", len(imports))
+	fmt.Printf("Imported Libraries in test_sizeof.exe (%d):\n", len(imports))
 	for i, lib := range imports {
 		fmt.Printf("  [%d] %s\n", i, lib)
 	}

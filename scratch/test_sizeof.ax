@@ -20,6 +20,22 @@ struct runq:
     pub top: u64
     pub bottom: u64
 
+struct worker:
+    pub id: u32
+    pub runq: runq
+    pub tasks_executed: u64
+    pub steals_attempted: u64
+    pub steals_succeeded: u64
+    pub running: i32
+
+struct scheduler:
+    pub workers: [worker; 256]
+    pub worker_count: u32
+    pub running: i32
+    pub total_submitted: u64
+
 fn main() -> i32:
     print_u64(@compiler_intrinsic("size_of")[runq]())
+    print_u64(@compiler_intrinsic("size_of")[worker]())
+    print_u64(@compiler_intrinsic("size_of")[scheduler]())
     return 0

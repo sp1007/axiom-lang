@@ -2,6 +2,7 @@
 bits 64
 section .text
 
+extern ExitProcess
 
 global mmap
 global munmap
@@ -48,9 +49,6 @@ global ax_msgq_push
 global ax_msgq_pop
 global ax_actor_send
 global ax_actor_spawn
-global ax_actor_step
-global ax_actor_is_running
-global ax_actor_has_messages
 global has_active_actors
 global run
 global worker_loop
@@ -73,37 +71,128 @@ global ax_str_len
 global ax_str_concat
 global ax_str_slice
 global ax_str_replace
+global pathbuf_new
+global pathbuf_join
+global pathbuf_parent
+global pathbuf_file_name
+global pathbuf_extension
+global pathbuf_with_extension
+global pathbuf_is_absolute
+global pathbuf_to_str
+global str_to_c_str
+global metadata
+global exists
+global create_dir
+global create_dir_all
+global remove_file
+global remove_dir
+global rename
+global copy
+global temp_dir
+global trap_signal
+global parse_cmdline
+global parse_proc_cmdline
+global linux_read_file
+global args
+global env
 global main
 
 mmap:
     push rbp
     mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
     sub rsp, 32
 .L_b_0:
+    mov r14, rcx
+    mov r13, rdx
+    mov r12, r8
+    mov rdi, r9
+    mov rcx, rcx
+    mov r9, r9
+    mov rax, 9
+    mov r8, rax
+    mov rsi, r14
+    mov rbx, r12
+    mov rdx, rdi
     mov rax, rcx
-    mov rax, rdx
-    mov rax, r8
+    mov rcx, rax
     mov rax, r9
-    mov rax, rax
-    mov rax, rax
-    xor rcx, rcx
+    sub rsp, 64
+    push rbx
+    push r13
+    push rsi
+    push r8
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rdx
+    mov [rsp + 40], rcx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rcx, rax
     mov rax, rcx
     mov rax, rax
     add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
 munmap:
     push rbp
     mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
     sub rsp, 32
 .L_b_0:
-    mov rax, rcx
-    mov rax, rdx
+    mov r12, rcx
+    mov rdi, rdx
+    mov rax, 11
+    mov r9, rax
+    mov r8, r12
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
     xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push rdi
+    push r8
+    push r9
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rcx, rax
     mov rax, rcx
     mov rax, rax
     add rsp, 32
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
@@ -112,12 +201,27 @@ get_global_state:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    push r12
+    sub rsp, 64
 .L_b_0:
     mov rax, 1342177280
-    mov rsi, rax
-    mov rax, 4096
+    mov r12, rax
+    xor rax, rax
     mov rbx, rax
+    mov rax, 520
+    sub rsp, 32
+    push rax
+    pop rcx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    mov rax, 4096
+    mov rsi, rax
     mov rax, 12288
     mov rdx, rax
     mov rcx, 4
@@ -125,38 +229,75 @@ get_global_state:
     sub rsp, 32
     push rax
     push rdx
-    push rbx
     push rsi
+    push r12
     pop rcx
     pop rdx
     pop r8
     pop r9
     call VirtualAlloc
     add rsp, 32
-    mov rax, rax
+    mov rcx, rax
+    mov rax, rcx
+    mov rbx, rax
+    jmp .L_b_3
+.L_b_2:
+    mov rax, 4096
+    mov r8, rax
+    mov rax, 3
+    mov rdi, rax
+    mov rax, 34
+    mov rsi, rax
+    mov rcx, 1
+    mov rax, rcx
     mov rdx, rax
+    neg rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rdx, rax
+    sub rsp, 48
+    push rsi
+    push rdi
+    push r8
+    push r12
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rdx
+    mov [rsp + 40], rax
+    call mmap
+    add rsp, 48
+    mov rcx, rax
+    mov rax, rcx
+    mov rbx, rax
+    jmp .L_b_3
+.L_b_3:
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
-    jne .L_b_1
-    jmp .L_b_2
-.L_b_1:
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_4:
     mov rcx, 1342177280
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 64
+    pop r12
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
     ret
-.L_b_2:
-    jmp .L_b_3
-.L_b_3:
-    mov rax, rdx
-    add rsp, 32
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    mov rax, rbx
+    add rsp, 64
+    pop r12
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -208,30 +349,48 @@ std_mem_alloc_get_slab:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    sub rsp, 72
 .L_b_0:
     sub rsp, 32
     call get_global_state
     add rsp, 32
-    mov rsi, rax
-    mov rdx, [rsi + 32]
+    mov rdi, rax
+    mov rdx, [rdi + 32]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
-    jne .L_b_1âFö‘WïâÀ
-    jmp .L_b_2
+    jne .L_b_1
+    jmp .L_b_2
 .L_b_1:
+    mov rax, 520
+    sub rsp, 32
+    push rax
+    pop rcx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    mov rax, [rdi + 32]
+    mov rax, rax
+    add rsp, 72
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
     xor rax, rax
-    mov rdi, rax
-    mov rax, 4096
-    mov rdx, rax
-    mov rcx, 48
-    mov rax, rcx
-    mov rbx, rdx
-    imul rbx, rax
+    mov rsi, rax
+    mov rax, 196608
+    mov rbx, rax
     mov rax, 12288
     mov rdx, rax
     mov rcx, 4
@@ -240,7 +399,7 @@ std_mem_alloc_get_slab:
     push rax
     push rdx
     push rbx
-    push rdi
+    push rsi
     pop rcx
     pop rdx
     pop r8
@@ -249,19 +408,42 @@ std_mem_alloc_get_slab:
     add rsp, 32
     mov rcx, rax
     mov rax, rcx
-    mov [rsi + 32], rax
+    mov [rdi + 32], rax
+    jmp .L_b_6
+.L_b_5:
+    xor rax, rax
+    mov r9, rax
+    mov rax, 196608
+    mov r8, rax
+    mov rax, 3
+    mov rsi, rax
+    mov rax, 34
+    mov rbx, rax
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rax
+    neg rdx
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 48
+    push rbx
+    push rsi
+    push r8
+    push r9
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rdx
+    mov [rsp + 40], rax
+    call mmap
+    add rsp, 48
+    mov rcx, rax
+    mov rax, rcx
+    mov [rdi + 32], rax
+    jmp .L_b_6
+.L_b_6:
     jmp .L_b_3
-.L_b_2:
-    jmp .L_b_3
-.L_b_3:
-    mov rax, [rsi + 32]
-    mov rax, rax
-    add rsp, 40
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
 
 ax_size_class_size:
     push rbp
@@ -283,7 +465,7 @@ ax_size_class_size:
     pop rbp
     ret
 .L_b_2:
-    jmp .L_b_3ùñ‘kï…Õ
+    jmp .L_b_3
 .L_b_3:
     mov rax, 1
     cmp rcx, rax
@@ -299,14 +481,14 @@ ax_size_class_size:
     pop rbp
     ret
 .L_b_5:
-    jmp .L_b_6√Ñ‘yï∂÷
+    jmp .L_b_6
 .L_b_6:
     mov rax, 2
     cmp rcx, rax
     sete al
     movzx rax, al
     test rax, rax
-    jne .L_b_7¿∏‘uïâ‹
+    jne .L_b_7
     jmp .L_b_8
 .L_b_7:
     mov rax, 32
@@ -440,12 +622,12 @@ ax_size_class_for:
     mov rbp, rsp
     sub rsp, 32
 .L_b_0:
+    mov rcx, rcx
+    mov rax, 8
     mov rdx, rcx
+    add rdx, rax
     mov rax, 8
-    mov rcx, rdx
-    add rcx, rax
-    mov rax, 8
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -461,7 +643,7 @@ ax_size_class_for:
     jmp .L_b_3
 .L_b_3:
     mov rax, 16
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -477,7 +659,7 @@ ax_size_class_for:
     jmp .L_b_6
 .L_b_6:
     mov rax, 32
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -493,7 +675,7 @@ ax_size_class_for:
     jmp .L_b_9
 .L_b_9:
     mov rax, 64
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -509,7 +691,7 @@ ax_size_class_for:
     jmp .L_b_12
 .L_b_12:
     mov rax, 128
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -525,7 +707,7 @@ ax_size_class_for:
     jmp .L_b_15
 .L_b_15:
     mov rax, 256
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -541,7 +723,7 @@ ax_size_class_for:
     jmp .L_b_18
 .L_b_18:
     mov rax, 512
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -557,7 +739,7 @@ ax_size_class_for:
     jmp .L_b_21
 .L_b_21:
     mov rax, 1024
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -573,7 +755,7 @@ ax_size_class_for:
     jmp .L_b_24
 .L_b_24:
     mov rax, 2048
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -586,10 +768,10 @@ ax_size_class_for:
     pop rbp
     ret
 .L_b_26:
-    jmp .L_b_27’¢Ûï
+    jmp .L_b_27
 .L_b_27:
     mov rax, 4096
-    cmp rcx, rax
+    cmp rdx, rax
     setle al
     movzx rax, al
     test rax, rax
@@ -617,17 +799,17 @@ ax_get_segment_list:
     push rsi
     sub rsp, 32
 .L_b_0:
-    mov rbx, rcx
-    mov rsi, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rax, rax
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rdx, rbx
+    mov rdx, rsi
     mov rax, 16
     mov rcx, rdx
     add rcx, rax
@@ -642,14 +824,14 @@ ax_get_segment_list:
     jmp .L_b_3
 .L_b_3:
     mov rax, 1
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -667,14 +849,14 @@ ax_get_segment_list:
     jmp .L_b_6
 .L_b_6:
     mov rax, 2
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_7
     jmp .L_b_8
 .L_b_7:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -692,14 +874,14 @@ ax_get_segment_list:
     jmp .L_b_9
 .L_b_9:
     mov rax, 3
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
-    jne .L_b_10I¢ï
+    jne .L_b_10
     jmp .L_b_11
 .L_b_10:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -717,14 +899,14 @@ ax_get_segment_list:
     jmp .L_b_12
 .L_b_12:
     mov rax, 4
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_13
     jmp .L_b_14
 .L_b_13:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -742,14 +924,14 @@ ax_get_segment_list:
     jmp .L_b_15
 .L_b_15:
     mov rax, 5
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_16
     jmp .L_b_17
 .L_b_16:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -767,14 +949,14 @@ ax_get_segment_list:
     jmp .L_b_18
 .L_b_18:
     mov rax, 6
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_19
     jmp .L_b_20
 .L_b_19:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -792,14 +974,14 @@ ax_get_segment_list:
     jmp .L_b_21
 .L_b_21:
     mov rax, 7
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_22
     jmp .L_b_23
 .L_b_22:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -817,14 +999,14 @@ ax_get_segment_list:
     jmp .L_b_24
 .L_b_24:
     mov rax, 8
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_25
     jmp .L_b_26
 .L_b_25:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -842,14 +1024,14 @@ ax_get_segment_list:
     jmp .L_b_27
 .L_b_27:
     mov rax, 9
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_28
     jmp .L_b_29
 .L_b_28:
-    mov rcx, rbx
+    mov rcx, rsi
     mov rax, 16
     mov rdx, rcx
     add rdx, rax
@@ -879,28 +1061,30 @@ ax_get_free_list:
     push rbp
     mov rbp, rsp
     push rbx
-    sub rsp, 40
+    push rsi
+    sub rsp, 32
 .L_b_0:
-    mov rax, rcx
-    mov rbx, rdx
-    mov rdx, rax
+    mov rbx, rcx
+    mov rdx, rdx
+    mov rsi, rbx
     mov rax, 16
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, 240
-    mov rdx, rcx
-    add rdx, rax
+    mov rsi, rcx
+    add rsi, rax
     xor rax, rax
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, rdx
+    mov rax, rsi
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -908,7 +1092,7 @@ ax_get_free_list:
     jmp .L_b_3
 .L_b_3:
     mov rax, 1
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -916,11 +1100,12 @@ ax_get_free_list:
     jmp .L_b_5
 .L_b_4:
     mov rax, 16
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -928,7 +1113,7 @@ ax_get_free_list:
     jmp .L_b_6
 .L_b_6:
     mov rax, 2
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -936,11 +1121,12 @@ ax_get_free_list:
     jmp .L_b_8
 .L_b_7:
     mov rax, 32
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -948,7 +1134,7 @@ ax_get_free_list:
     jmp .L_b_9
 .L_b_9:
     mov rax, 3
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -956,11 +1142,12 @@ ax_get_free_list:
     jmp .L_b_11
 .L_b_10:
     mov rax, 48
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -968,7 +1155,7 @@ ax_get_free_list:
     jmp .L_b_12
 .L_b_12:
     mov rax, 4
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -976,11 +1163,12 @@ ax_get_free_list:
     jmp .L_b_14
 .L_b_13:
     mov rax, 64
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -988,7 +1176,7 @@ ax_get_free_list:
     jmp .L_b_15
 .L_b_15:
     mov rax, 5
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -996,11 +1184,12 @@ ax_get_free_list:
     jmp .L_b_17
 .L_b_16:
     mov rax, 80
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1008,7 +1197,7 @@ ax_get_free_list:
     jmp .L_b_18
 .L_b_18:
     mov rax, 6
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1016,11 +1205,12 @@ ax_get_free_list:
     jmp .L_b_20
 .L_b_19:
     mov rax, 96
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1028,7 +1218,7 @@ ax_get_free_list:
     jmp .L_b_21
 .L_b_21:
     mov rax, 7
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1036,11 +1226,12 @@ ax_get_free_list:
     jmp .L_b_23
 .L_b_22:
     mov rax, 112
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1048,7 +1239,7 @@ ax_get_free_list:
     jmp .L_b_24
 .L_b_24:
     mov rax, 8
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1056,11 +1247,12 @@ ax_get_free_list:
     jmp .L_b_26
 .L_b_25:
     mov rax, 128
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1068,7 +1260,7 @@ ax_get_free_list:
     jmp .L_b_27
 .L_b_27:
     mov rax, 9
-    cmp rbx, rax
+    cmp rdx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1076,11 +1268,12 @@ ax_get_free_list:
     jmp .L_b_29
 .L_b_28:
     mov rax, 144
-    mov rcx, rdx
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1090,7 +1283,8 @@ ax_get_free_list:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1099,24 +1293,26 @@ ax_free_list_push:
     push rbp
     mov rbp, rsp
     push rbx
-    sub rsp, 40
+    push rsi
+    sub rsp, 32
 .L_b_0:
-    mov rbx, rcx
-    mov rax, rdx
-    mov rdx, rax
+    mov rsi, rcx
+    mov rbx, rdx
+    mov rdx, rbx
     mov rcx, 8
     mov rax, rdx
     add rax, rcx
     mov rcx, rax
-    mov rax, [rbx]
+    mov rax, [rsi]
     mov [rcx], rax
-    mov [rbx], rcx
-    mov rdx, [rbx + 8]
+    mov [rsi], rcx
+    mov rdx, [rsi + 8]
     mov rcx, 1
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 8], rax
-    add rsp, 40
+    mov [rsi + 8], rax
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -1128,11 +1324,11 @@ ax_free_list_pop:
     push rsi
     sub rsp, 32
 .L_b_0:
-    mov rsi, rcx
-    mov rbx, [rsi]
+    mov rbx, rcx
+    mov rsi, [rbx]
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1150,14 +1346,14 @@ ax_free_list_pop:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, [rbx]
-    mov [rsi], rax
-    mov rdx, [rsi + 8]
+    mov rax, [rsi]
+    mov [rbx], rax
+    mov rdx, [rbx + 8]
     mov rcx, 1
     mov rax, rdx
     sub rax, rcx
-    mov [rsi + 8], rax
-    mov rdx, rbx
+    mov [rbx + 8], rax
+    mov rdx, rsi
     mov rax, 8
     mov rcx, rdx
     sub rcx, rax
@@ -1176,10 +1372,10 @@ ax_os_alloc:
     push rsi
     push rdi
     push r12
-    sub rsp, 32
+    sub rsp, 64
 .L_b_0:
     mov r12, rcx
-    mov rax, 316
+    mov rax, 520
     sub rsp, 32
     push rax
     pop rcx
@@ -1210,7 +1406,7 @@ ax_os_alloc:
     add rsp, 32
     mov rax, rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 64
     pop r12
     pop rdi
     pop rsi
@@ -1246,7 +1442,7 @@ ax_os_alloc:
     add rsp, 48
     mov rax, rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 64
     pop r12
     pop rdi
     pop rsi
@@ -1254,7 +1450,7 @@ ax_os_alloc:
     pop rbp
     ret
 .L_b_3:
-    add rsp, 32
+    add rsp, 64
     pop r12
     pop rdi
     pop rsi
@@ -1267,7 +1463,7 @@ ax_os_free:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    sub rsp, 64
 .L_b_0:
     mov rsi, rcx
     mov rbx, rdx
@@ -1280,7 +1476,7 @@ ax_os_free:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    add rsp, 32
+    add rsp, 64
     pop rsi
     pop rbx
     pop rbp
@@ -1288,7 +1484,7 @@ ax_os_free:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, 316
+    mov rax, 520
     sub rsp, 32
     push rax
     pop rcx
@@ -1326,7 +1522,7 @@ ax_os_free:
     mov rax, rax
     jmp .L_b_6
 .L_b_6:
-    add rsp, 32
+    add rsp, 64
     pop rsi
     pop rbx
     pop rbp
@@ -1336,8 +1532,7 @@ ax_segment_manager_init:
     push rbp
     mov rbp, rsp
     push rbx
-    push rsi
-    sub rsp, 32
+    sub rsp, 40
 .L_b_0:
     sub rsp, 32
     call std_mem_alloc_get_slab_used
@@ -1356,27 +1551,22 @@ ax_segment_manager_init:
     call std_mem_alloc_get_slab
     add rsp, 32
     mov rax, rax
-    mov rsi, rax
-    xor rax, rax
     mov rbx, rax
-    mov rax, 4096
+    xor rax, rax
     mov rdx, rax
-    mov rax, 48
-    mov rcx, rax
-    mov rax, rdx
-    imul rax, rcx
+    mov rcx, 196608
+    mov rax, rcx
     sub rsp, 32
     push rax
+    push rdx
     push rbx
-    push rsi
     pop rcx
     pop rdx
     pop r8
     call memset
     add rsp, 32
     mov rax, rax
-    add rsp, 32
-    pop rsi
+    add rsp, 40
     pop rbx
     pop rbp
     ret
@@ -1397,17 +1587,17 @@ ax_segment_manager_shutdown:
     sub rsp, 32
     call std_mem_alloc_get_slab
     add rsp, 32
-    mov r12, rax
+    mov rsi, rax
     xor rax, rax
     mov rbx, rax
     jmp .L_b_1
 .L_b_1:
-    mov rsi, rdi
-    and rsi, rsi
-    test rsi, rsi
-    jne .L_b_1000001E
+    mov r12, rdi
+    and r12, r12
+    test r12, r12
+    jne .L_b_1000001
     sub rsp, 32
-    call abort
+    call ax_segment_manager_shutdown
     add rsp, 32
 .L_b_1000001:
     mov rcx, rdi
@@ -1415,15 +1605,15 @@ ax_segment_manager_shutdown:
     and rcx, rcx
     test rcx, rcx
     je .L_b_1000002
-    mov rax, [rsi - 8]
+    mov rax, [r12 - 8]
     and rax, rax
     cmp rcx, rax
-    je .L_b_1000002
+    je .L_b_1000002
     sub rsp, 32
-    call abort
+    call ax_segment_manager_shutdown
     add rsp, 32
 .L_b_1000002:
-    mov rax, rsi
+    mov rax, [r12]
     cmp rbx, rax
     setl al
     movzx rax, al
@@ -1431,15 +1621,15 @@ ax_segment_manager_shutdown:
     jne .L_b_2
     jmp .L_b_3
 .L_b_2:
-    mov rdx, r12
+    mov rdx, rsi
     mov rcx, 48
     mov rax, rcx
     mov rcx, rbx
     imul rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov rsi, rax
-    mov rax, [rsi + 40]
+    mov r12, rax
+    mov rax, [r12 + 40]
     cmp rax, rax
     sete al
     movzx rax, al
@@ -1464,7 +1654,7 @@ ax_segment_manager_shutdown:
     pop rbp
     ret
 .L_b_4:
-    mov rcx, [rsi]
+    mov rcx, [r12]
     mov rax, rcx
     sub rsp, 32
     push rax
@@ -1476,7 +1666,7 @@ ax_segment_manager_shutdown:
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi + 40], rax
+    mov [r12 + 40], rax
     jmp .L_b_6
 .L_b_5:
     jmp .L_b_6
@@ -1504,7 +1694,7 @@ alloc_segment_meta:
     test rbx, rbx
     jne .L_b_1000001
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000001:
     mov rcx, rsi
@@ -1517,10 +1707,10 @@ alloc_segment_meta:
     cmp rcx, rax
     je .L_b_1000002
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000002:
-    mov rdx, rbx
+    mov rdx, [rbx]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -1535,7 +1725,7 @@ alloc_segment_meta:
     test rbx, rbx
     jne .L_b_1000003
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000003:
     mov rcx, rsi
@@ -1546,12 +1736,12 @@ alloc_segment_meta:
     mov rax, [rbx - 8]
     and rax, rax
     cmp rcx, rax
-    je .L_b_1000004
+    je .L_b_1000004
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000004:
-    mov rcx, rbx
+    mov rcx, [rbx]
     mov rax, [rcx + 32]
     mov [rsi], rax
     mov rax, rcx
@@ -1571,9 +1761,9 @@ alloc_segment_meta:
     mov rbx, rdi
     and rbx, rbx
     test rbx, rbx
-    jne .L_b_1000005
+    jne .L_b_1000005
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000005:
     mov rcx, rdi
@@ -1586,10 +1776,10 @@ alloc_segment_meta:
     cmp rcx, rax
     je .L_b_1000006
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000006:
-    mov rdx, rbx
+    mov rdx, [rbx]
     mov rcx, 4096
     mov rax, rcx
     cmp rdx, rax
@@ -1621,7 +1811,7 @@ alloc_segment_meta:
     test rbx, rbx
     jne .L_b_1000007
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000007:
     mov rcx, rdi
@@ -1634,10 +1824,10 @@ alloc_segment_meta:
     cmp rcx, rax
     je .L_b_1000008
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000008:
-    mov rdx, rbx
+    mov rdx, [rbx]
     mov rcx, 48
     mov rax, rcx
     mov rcx, rdx
@@ -1648,9 +1838,9 @@ alloc_segment_meta:
     mov rbx, rdi
     and rbx, rbx
     test rbx, rbx
-    jne .L_b_1000009
+    jne .L_b_1000009
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000009:
     mov rcx, rdi
@@ -1661,12 +1851,12 @@ alloc_segment_meta:
     mov rax, [rbx - 8]
     and rax, rax
     cmp rcx, rax
-    je .L_b_1000010±
+    je .L_b_1000010
     sub rsp, 32
-    call abort
+    call alloc_segment_meta
     add rsp, 32
 .L_b_1000010:
-    mov rdx, rbx
+    mov rdx, [rbx]
     mov rcx, 1
     mov rax, rdx
     add rax, rcx
@@ -1711,7 +1901,7 @@ free_segment_meta:
     test rbx, rbx
     jne .L_b_1000001
     sub rsp, 32
-    call abort
+    call free_segment_meta
     add rsp, 32
 .L_b_1000001:
     mov rcx, rsi
@@ -1722,14 +1912,14 @@ free_segment_meta:
     mov rax, [rbx - 8]
     and rax, rax
     cmp rcx, rax
-    je .L_b_1000002
+    je .L_b_1000002
     sub rsp, 32
-    call abort
+    call free_segment_meta
     add rsp, 32
 .L_b_1000002:
-    mov rax, rbx
+    mov rax, [rbx]
     mov [rdi + 32], rax
-    mov [rsi], rdi
+    mov [rsi], rdi
     add rsp, 40
     pop rdi
     pop rsi
@@ -1745,7 +1935,7 @@ ax_segment_acquire:
     push rdi
     sub rsp, 40
 .L_b_0:
-    mov rdi, rcx
+    mov rsi, rcx
     sub rsp, 32
     call alloc_segment_meta
     add rsp, 32
@@ -1777,10 +1967,10 @@ ax_segment_acquire:
     call ax_os_alloc
     add rsp, 32
     mov rax, rax
-    mov rsi, rax
+    mov rdi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -1805,18 +1995,18 @@ ax_segment_acquire:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    mov [rbx], rsi
-    mov [rbx + 8], rsi
-    mov rax, rsi
+    mov [rbx], rdi
+    mov [rbx + 8], rdi
+    mov rax, rdi
     mov rcx, rax
     add rcx, rax
     mov rax, rcx
     mov [rbx + 16], rax
-    mov [rbx + 24], rdi
+    mov [rbx + 24], rsi
     xor rcx, rcx
     mov rax, rcx
     mov [rbx + 32], rax
-    mov [rbx + 40], rax
+    mov [rbx + 40], rax
     mov rax, rbx
     add rsp, 40
     pop rdi
@@ -1886,17 +2076,17 @@ ax_segment_get_active:
     push rdi
     sub rsp, 40
 .L_b_0:
-    mov rbx, rcx
-    mov rsi, rdx
-    mov rdx, [rbx]
+    mov rsi, rcx
+    mov rbx, rdx
+    mov rdx, [rsi]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
     setne dil
     movzx rdi, dil
-    mov rax, [rbx]
+    mov rax, [rsi]
     mov rdx, [rax + 8]
-    mov rcx, [rbx]
+    mov rcx, [rsi]
     mov rax, [rcx + 16]
     cmp rdx, rax
     setl cl
@@ -1907,7 +2097,7 @@ ax_segment_get_active:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, [rbx]
+    mov rax, [rsi]
     mov rax, rax
     add rsp, 40
     pop rdi
@@ -1918,7 +2108,7 @@ ax_segment_get_active:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, [rbx]
+    mov rdx, [rsi]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -1928,27 +2118,27 @@ ax_segment_get_active:
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rcx, [rbx]
-    mov rax, [rbx + 8]
+    mov rcx, [rsi]
+    mov rax, [rsi + 8]
     mov [rcx + 32], rax
-    mov rax, [rbx]
-    mov [rbx + 8], rax
-    mov rdx, [rbx + 16]
+    mov rax, [rsi]
+    mov [rsi + 8], rax
+    mov rdx, [rsi + 16]
     mov rcx, 1
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 16], rax
+    mov [rsi + 16], rax
     jmp .L_b_6
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
     sub rsp, 32
-    push rsi
+    push rbx
     pop rcx
     call ax_segment_acquire
     add rsp, 32
     mov rax, rax
-    mov [rbx], rax
+    mov [rsi], rax
     mov rax, rax
     add rsp, 40
     pop rdi
@@ -1962,10 +2152,11 @@ ax_segment_list_release_all:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    sub rsp, 40
 .L_b_0:
-    mov rsi, rcx
-    mov rdx, [rsi]
+    mov rdi, rcx
+    mov rdx, [rdi]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -1975,7 +2166,7 @@ ax_segment_list_release_all:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, [rsi]
+    mov rax, [rdi]
     sub rsp, 32
     push rax
     pop rcx
@@ -1984,39 +2175,40 @@ ax_segment_list_release_all:
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi], rax
+    mov [rdi], rax
     jmp .L_b_3
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, [rsi + 8]
+    mov rsi, [rdi + 8]
     jmp .L_b_4
 .L_b_4:
     xor rcx, rcx
     mov rax, rcx
-    cmp rdx, rax
+    cmp rsi, rax
     setne al
     movzx rax, al
     test rax, rax
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rbx, [rdx + 32]
+    mov rbx, [rsi + 32]
     sub rsp, 32
-    push rdx
+    push rsi
     pop rcx
     call ax_segment_release
     add rsp, 32
     mov rax, rax
-    mov rdx, rbx
+    mov rsi, rbx
     jmp .L_b_4
 .L_b_6:
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi + 8], rax
+    mov [rdi + 8], rax
     xor rax, rax
-    mov [rsi + 16], rax
-    add rsp, 32
+    mov [rdi + 16], rax
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2027,17 +2219,18 @@ ax_segment_bump_alloc:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    sub rsp, 40
 .L_b_0:
-    mov rbx, rcx
-    mov rsi, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rsi, rax
     sete dl
     movzx rdx, dl
     mov rax, 10
-    cmp rsi, rax
+    cmp rbx, rax
     setge cl
     movzx rcx, cl
     mov rax, rdx
@@ -2049,7 +2242,8 @@ ax_segment_bump_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2058,16 +2252,16 @@ ax_segment_bump_alloc:
     jmp .L_b_3
 .L_b_3:
     sub rsp, 32
-    push rsi
+    push rbx
     pop rcx
     call ax_size_class_size
     add rsp, 32
-    mov rsi, rax
-    mov rcx, [rbx + 8]
+    mov rdi, rax
+    mov rcx, [rsi + 8]
     mov rax, rcx
     mov rdx, rax
-    add rdx, rsi
-    mov rcx, [rbx + 16]
+    add rdx, rdi
+    mov rcx, [rsi + 16]
     mov rax, rcx
     cmp rdx, rax
     setg al
@@ -2079,7 +2273,8 @@ ax_segment_bump_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2087,15 +2282,16 @@ ax_segment_bump_alloc:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    mov rdx, [rbx + 8]
-    mov rcx, [rbx + 8]
+    mov rdx, [rsi + 8]
+    mov rcx, [rsi + 8]
     mov rax, rcx
     mov rcx, rax
-    add rcx, rsi
+    add rcx, rdi
     mov rax, rcx
-    mov [rbx + 8], rax
+    mov [rsi + 8], rax
     mov rax, rdx
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2105,12 +2301,13 @@ ax_large_alloc:
     push rbp
     mov rbp, rsp
     push rbx
-    sub rsp, 40
+    push rsi
+    sub rsp, 32
 .L_b_0:
-    mov rcx, rcx
+    mov rbx, rcx
     mov rax, 8
     mov rdx, rax
-    add rdx, rcx
+    add rdx, rbx
     mov rax, 4095
     mov rcx, rdx
     add rcx, rax
@@ -2128,10 +2325,10 @@ ax_large_alloc:
     call ax_os_alloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov rsi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2141,27 +2338,29 @@ ax_large_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, rbx
+    mov rdx, rsi
     mov rcx, 1
     mov rax, rcx
     mov [rdx], rax
     mov rcx, 10
     mov rax, rcx
-    mov [rdx + 4]Hâ¿HÅƒ , rax
-    mov rdx, rbx
+    mov [rdx + 4], rax
+    mov rdx, rsi
     mov rax, 8
     mov rcx, rdx
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -2171,20 +2370,22 @@ ax_large_free:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    sub rsp, 40
 .L_b_0:
-    mov rbx, rcx
-    mov rsi, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2192,14 +2393,14 @@ ax_large_free:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, rbx
+    mov rdx, rsi
     mov rcx, 8
     mov rax, rdx
     sub rax, rcx
-    mov rbx, rax
+    mov rdi, rax
     mov rax, 8
     mov rdx, rax
-    add rdx, rsi
+    add rdx, rbx
     mov rax, 4095
     mov rcx, rdx
     add rcx, rax
@@ -2211,7 +2412,7 @@ ax_large_free:
     mov rax, 4096
     mov rcx, rdx
     imul rcx, rax
-    mov rax, rbx
+    mov rax, rdi
     sub rsp, 32
     push rcx
     push rax
@@ -2220,7 +2421,8 @@ ax_large_free:
     call ax_os_free
     add rsp, 32
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -2400,16 +2602,17 @@ ax_actor_alloc:
     push rdi
     push r12
     push r13
-    sub rsp, 40
+    push r14
+    sub rsp, 32
 .L_b_0:
-    mov r13, rcx
-    mov r12, rdx
+    mov r14, rcx
+    mov r13, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp r13, rax
+    cmp r14, rax
     sete dl
     movzx rdx, dl
-    mov rax, [r13 + 8]
+    mov rax, [r14 + 8]
     cmp rax, rax
     setne cl
     movzx rcx, cl
@@ -2422,7 +2625,8 @@ ax_actor_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2434,13 +2638,13 @@ ax_actor_alloc:
     jmp .L_b_3
 .L_b_3:
     sub rsp, 32
-    push r12
+    push r13
     pop rcx
     call ax_size_class_for
     add rsp, 32
-    mov rdi, rax
+    mov r12, rax
     mov rax, 10
-    cmp rdi, rax
+    cmp r12, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2448,14 +2652,14 @@ ax_actor_alloc:
     jmp .L_b_5
 .L_b_4:
     sub rsp, 32
-    push r12
+    push r13
     pop rcx
     call ax_large_alloc
     add rsp, 32
-    mov rsi, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -2465,8 +2669,8 @@ ax_actor_alloc:
     jmp .L_b_6
 .L_b_6:
     sub rsp, 32
-    push rdi
-    push r13
+    push r12
+    push r14
     pop rcx
     pop rdx
     call ax_get_free_list
@@ -2477,33 +2681,34 @@ ax_actor_alloc:
     pop rcx
     call ax_free_list_pop
     add rsp, 32
-    mov rbx, rax
+    mov rdi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_10
     jmp .L_b_11
 .L_b_7:
-    mov rdx, [r13 + 416]
-    mov rcx, r12
+    mov rdx, [r14 + 416]
+    mov rcx, r13
     mov rax, rdx
     add rax, rcx
-    mov [r13 + 416], rax
-    mov rdx, [r13 + 432]
+    mov [r14 + 416], rax
+    mov rdx, [r14 + 432]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [r13 + 432], rax
+    mov [r14 + 432], rax
     jmp .L_b_9
 .L_b_8:
     jmp .L_b_9
 .L_b_9:
-    mov rax, rsi
-    add rsp, 40
+    mov rax, rbx
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2513,24 +2718,24 @@ ax_actor_alloc:
     ret
 .L_b_10:
     sub rsp, 32
-    push rdi
-    push r13
+    push r12
+    push r14
     pop rcx
     pop rdx
     call ax_get_segment_list
     add rsp, 32
-    mov r12, rax
+    mov rsi, rax
     sub rsp, 32
-    push rdi
     push r12
+    push rsi
     pop rcx
     pop rdx
     call ax_segment_get_active
     add rsp, 32
-    mov rsi, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2539,36 +2744,37 @@ ax_actor_alloc:
 .L_b_11:
     jmp .L_b_12
 .L_b_12:
-    mov rdx, rbx
+    mov rdx, rdi
     mov rcx, 1
     mov rax, rcx
     mov [rdx], rax
-    mov rax, rdi
+    mov rax, r12
     mov [rdx + 4], rax
     sub rsp, 32
-    push rdi
+    push r12
     pop rcx
     call ax_size_class_size
     add rsp, 32
     mov rax, rax
-    mov rdx, [r13 + 416]
+    mov rdx, [r14 + 416]
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [r13 + 416], rax
-    mov rdx, [r13 + 432]
+    mov [r14 + 416], rax
+    mov rdx, [r14 + 432]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [r13 + 432], rax
-    mov rdx, rbx
+    mov [r14 + 432], rax
+    mov rdx, rdi
     mov rax, 8
     mov rcx, rdx
     add rcx, rax
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2580,7 +2786,8 @@ ax_actor_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2592,17 +2799,17 @@ ax_actor_alloc:
     jmp .L_b_15
 .L_b_15:
     sub rsp, 32
-    push rdi
-    push rsi
+    push r12
+    push rbx
     pop rcx
     pop rdx
     call ax_segment_bump_alloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov rdi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2610,17 +2817,17 @@ ax_actor_alloc:
     jmp .L_b_17
 .L_b_16:
     sub rsp, 32
-    push rdi
     push r12
+    push rsi
     pop rcx
     pop rdx
     call ax_segment_get_active
     add rsp, 32
     mov rax, rax
-    mov rsi, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2634,7 +2841,8 @@ ax_actor_alloc:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2646,27 +2854,28 @@ ax_actor_alloc:
     jmp .L_b_21
 .L_b_21:
     sub rsp, 32
-    push rdi
-    push rsi
+    push r12
+    push rbx
     pop rcx
     pop rdx
     call ax_segment_bump_alloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov rdi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_22
-    jmp .L_b_23:ÛÛï
+    jmp .L_b_23
 .L_b_22:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -2685,23 +2894,24 @@ ax_actor_free:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    push r12
+    sub rsp, 32
 .L_b_0:
-    mov rdi, rcx
-    mov rsi, rdx
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rdi, rax
-    sete bl
-    movzx rbx, bl
+    mov rsi, rcx
+    mov rbx, rdx
     xor rcx, rcx
     mov rax, rcx
     cmp rsi, rax
+    sete dil
+    movzx rdi, dil
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rbx, rax
     sete al
     movzx rax, al
-    mov rdx, rbx
+    mov rdx, rdi
     or rdx, rax
-    mov rax, [rdi + 8]
+    mov rax, [rsi + 8]
     cmp rax, rax
     setne cl
     movzx rcx, cl
@@ -2711,7 +2921,8 @@ ax_actor_free:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    add rsp, 40
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2720,25 +2931,25 @@ ax_actor_free:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, rsi
+    mov rdx, rbx
     mov rcx, 8
     mov rax, rdx
     sub rax, rcx
-    mov rsi, rax
-    mov rdx, rsi
+    mov rdi, rax
+    mov rdx, rdi
     mov rax, [rdx + 4]
     mov rcx, 15
     mov rax, rcx
-    mov rbx, r8
+    mov r12, r8
     xor rcx, rcx
     mov rax, rcx
     mov [rdx], rax
     mov rax, 10
-    cmp rbx, rax
+    cmp r12, rax
     sete dl
     movzx rdx, dl
     mov rax, 10
-    cmp rbx, rax
+    cmp r12, rax
     setge cl
     movzx rcx, cl
     mov rax, rdx
@@ -2747,7 +2958,8 @@ ax_actor_free:
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    add rsp, 40
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2757,39 +2969,40 @@ ax_actor_free:
     jmp .L_b_6
 .L_b_6:
     sub rsp, 32
-    push rbx
+    push r12
     pop rcx
     call ax_size_class_size
     add rsp, 32
     mov rax, rax
-    mov rdx, [rdi + 424]
+    mov rdx, [rsi + 424]
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rdi + 424], rax
-    mov rdx, [rdi + 440]
+    mov [rsi + 424], rax
+    mov rdx, [rsi + 440]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rdi + 440], rax
+    mov [rsi + 440], rax
     sub rsp, 32
-    push rbx
-    push rdi
+    push r12
+    push rsi
     pop rcx
     pop rdx
     call ax_get_free_list
     add rsp, 32
     mov rax, rax
     sub rsp, 32
-    push rsi
+    push rdi
     push rax
     pop rcx
     pop rdx
     call ax_free_list_push
     add rsp, 32
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2799,12 +3012,14 @@ ax_actor_free:
 ax_numa_alloc:
     push rbp
     mov rbp, rsp
+    push rbx
+    push rsi
     sub rsp, 32
 .L_b_0:
-    mov rcx, rcx
-    mov rax, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     sub rsp, 32
-    push rcx
+    push rsi
     pop rcx
     call ax_os_alloc
     add rsp, 32
@@ -2812,6 +3027,8 @@ ax_numa_alloc:
     mov rax, rcx
     mov rax, rax
     add rsp, 32
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
@@ -2819,39 +3036,16 @@ init:
     push rbp
     mov rbp, rsp
     push rbx
-    push rsi
-    push rdi
     sub rsp, 40
 .L_b_0:
-    mov rsi, rcx
-    mov rdi, rsi
-    xor rax, rax
-    mov rbx, rax
-    mov rax, 4096
-    mov rdx, rax
-    mov rax, 8
-    mov rcx, rax
-    mov rax, rdx
-    imul rax, rcx
-    sub rsp, 32
-    push rax
-    push rbx
-    push rdi
-    pop rcx
-    pop rdx
-    pop r8
-    call memset
-    add rsp, 32
-    mov rax, rax
+    mov rbx, rcx
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi + 32768], rax
+    mov [rbx + 32768], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi + 32776], rax
+    mov [rbx + 32776], rax
     add rsp, 40
-    pop rdi
-    pop rsi
     pop rbx
     pop rbp
     ret
@@ -2862,13 +3056,24 @@ push:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    push r12
+    push r13
+    sub rsp, 88
 .L_b_0:
-    mov rsi, rcx
-    mov rdi, rdx
-    mov rbx, [rsi + 32776]
-    mov rax, [rsi + 32768]
-    mov rdx, rbx
+    mov rdi, rcx
+    mov rsi, rdx
+    mov r12, [rdi + 32776]
+    mov rcx, 521
+    mov rax, [rdi + 32768]
+    sub rsp, 32
+    push rdx
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    mov rdx, r12
     sub rdx, rax
     mov rcx, 4096
     mov rax, rcx
@@ -2884,7 +3089,9 @@ push:
     mov rax, rcx
     neg rax
     mov rax, rax
-    add rsp, 40
+    add rsp, 88
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2893,24 +3100,37 @@ push:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, [rsi]
+    mov rdx, [rdi]
     mov rcx, 4096
     mov rax, rcx
-    mov rax, rbx
+    mov rax, r12
     cqo
     idiv rax
-    mov rcx, rdx
-    mov rax, rcx
-    mov [rdx], rdi
+    mov rbx, rdx
+    mov rax, rbx
+    mov [rdx], rsi
+    mov rdx, 522
+    mov rax, [rdi + 32776]
     mov rax, 1
     mov rcx, rax
-    mov rax, rbx
+    mov rax, r12
     add rax, rcx
-    mov [rsi + 32776], rax
+    sub rsp, 32
+    push rax
+    push r13
+    push rdx
+    pop rcx
+    pop rdx
+    pop r8
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 88
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2923,13 +3143,17 @@ pop:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 136
 .L_b_0:
-    mov rbx, rcx
-    mov rdi, [rbx + 32776]
+    mov rdi, rcx
+    mov r15, [rdi + 32776]
     xor rcx, rcx
     mov rax, rcx
-    cmp rdi, rax
+    cmp r15, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -2939,7 +3163,11 @@ pop:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 136
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2950,29 +3178,58 @@ pop:
 .L_b_3:
     mov rax, 1
     mov rcx, rax
-    mov rax, rdi
+    mov rax, r15
     sub rax, rcx
-    mov rdi, rax
-    mov [rbx + 32776], rdi
-    mov rdx, [rbx + 32768]^[]√È
-    cmp rdx, rdi
-    setle al
+    mov r15, rax
+    mov rcx, 522
+    mov rax, [rdi + 32776]
+    sub rsp, 32
+    push r15
+    push rdx
+    push rcx
+    pop rcx
+    pop rdx
+    pop r8
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    mov rcx, 521
+    mov rax, [rdi + 32768]
+    sub rsp, 32
+    push rsi
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rsi, rax
+    cmp rsi, r15
+    setg al
     movzx rax, al
     test rax, rax
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rax, [rbx]
-    mov rcx, 4096
+    mov rcx, 522
+    mov rax, [rdi + 32776]
+    sub rsp, 32
+    push rsi
+    push rbx
+    push rcx
+    pop rcx
+    pop rdx
+    pop r8
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    xor rcx, rcx
     mov rax, rcx
-    mov rax, rdi
-    cqo
-    idiv rax
-    mov rcx, rdx
-    mov rax, rcx
-    nop
-    mov rax, r8
-    add rsp, 40
+    mov rax, rax
+    add rsp, 136
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -2981,64 +3238,118 @@ pop:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    cmp rdx, rdi
+    mov rax, [rdi]
+    mov rcx, 4096
+    mov rax, rcx
+    mov rax, r15
+    cqo
+    idiv rax
+    mov rbx, rdx
+    mov rax, rbx
+    nop
+    cmp rsi, r15
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_7
     jmp .L_b_8
 .L_b_7:
+    mov rdx, 523
+    mov rax, [rdi + 32768]
     mov rax, 1
     mov rcx, rax
-    mov rax, rdx
-    add rax, rcx
-    mov [rbx + 32776], rax
-    mov rax, 1
-    mov rcx, rax
-    mov rax, rdx
-    add rax, rcx
-    mov [rbx + 32768]ƒ , rax
-    mov rax, [rbx]
-    mov rcx, 4096
-    mov rax, rcx
-    mov rax, rdi
-    cqo
-    idiv rax
-    mov rcx, rdx
-    mov rax, rcx
-    nop
     mov rax, rsi
-    add rsp, 40
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
+    add rax, rcx
+    sub rsp, 32
+    push rax
+    push rsi
+    push r14
+    push rdx
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
 .L_b_8:
     jmp .L_b_9
 .L_b_9:
-    mov [rbx + 32776]»Hâ¿HÅƒ , rdx
-    xor rcx, rcx
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 40
+    mov rax, r13
+    add rsp, 136
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
     pop rbp
     ret
+.L_b_10:
+    xor rcx, rcx
+    mov rax, rcx
+    mov r13, rax
+    jmp .L_b_12
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    mov rdx, 522
+    mov rax, [rdi + 32776]
+    mov rax, 1
+    mov rcx, rax
+    mov rax, rsi
+    add rax, rcx
+    sub rsp, 32
+    push rax
+    push r12
+    push rdx
+    pop rcx
+    pop rdx
+    pop r8
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_9
 
 steal:
     push rbp
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    push r12
+    push r13
+    sub rsp, 104
 .L_b_0:
-    mov rbx, rcx
-    mov rdx, [rbx + 32768]9¡î¿H∂¿HÖ»”ó
-    mov rax, [rbx + 32776]
-    cmp rdx, rax
+    mov rsi, rcx
+    mov rcx, 521
+    mov rax, [rsi + 32768]
+    sub rsp, 32
+    push rdx
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rdi, rax
+    mov rcx, 521
+    mov rax, [rsi + 32776]
+    sub rsp, 32
+    push rbx
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    cmp rdi, rax
     setge al
     movzx rax, al
     test rax, rax
@@ -3048,7 +3359,10 @@ steal:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 104
+    pop r13
+    pop r12
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -3056,22 +3370,56 @@ steal:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, [rbx]
+    mov rax, [rsi]
     mov rcx, 4096
     mov rax, rcx
-    mov rax, rdx
+    mov rax, rdi
     cqo
     idiv rax
-    mov rcx, rdx
-    mov rax, rcx
+    mov rbx, rdx
+    mov rax, rbx
     nop
+    mov rdx, 523
+    mov rax, [rsi + 32768]
     mov rax, 1
     mov rcx, rax
-    mov rax, rdx
+    mov rax, rdi
     add rax, rcx
-    mov [rbx + 32768], rax
-    mov rax, rsi
+    sub rsp, 32
+    push rax
+    push rdi
+    push r13
+    push rdx
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    call compiler_intrinsic
     add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_4:
+    mov rax, r12
+    add rsp, 104
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    xor rcx, rcx
+    mov rax, rcx
+    mov rax, rax
+    add rsp, 104
+    pop r13
+    pop r12
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -3080,12 +3428,33 @@ steal:
 empty:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 88
 .L_b_0:
-    mov rdx, rcx
-    mov rcx, [rdx + 32768]
-    mov rax, [rdx + 32776]
-    cmp rcx, rax
+    mov rsi, rcx
+    mov rcx, 521
+    mov rax, [rsi + 32768]
+    sub rsp, 32
+    push rdx
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rbx, rax
+    mov rcx, 521
+    mov rax, [rsi + 32776]
+    sub rsp, 32
+    push rdi
+    push rcx
+    pop rcx
+    pop rdx
+    call compiler_intrinsic
+    add rsp, 32
+    mov rax, rax
+    cmp rbx, rax
     setge al
     movzx rax, al
     test rax, rax
@@ -3095,7 +3464,10 @@ empty:
     mov rcx, 1
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 88
+    pop rdi
+    pop rsi
+    pop rbx
     pop rbp
     ret
 .L_b_2:
@@ -3104,7 +3476,10 @@ empty:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 88
+    pop rdi
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
@@ -3114,18 +3489,20 @@ init:
     push rbx
     push rsi
     push rdi
+    push r12
+    push r13
     sub rsp, 40
 .L_b_0:
-    mov rdi, rcx
-    mov rsi, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     sete dl
     movzx rdx, dl
     mov rcx, 256
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     setg cl
     movzx rcx, cl
     mov rax, rdx
@@ -3140,6 +3517,8 @@ init:
     neg rax
     mov rax, rax
     add rsp, 40
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3148,47 +3527,32 @@ init:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rbx, rdi
-    mov rdx, 8402960
-    xor rax, rax
-    mov rcx, rax
-    mov rax, rdx
-    sub rsp, 32
-    push rax
-    push rcx
-    push rbx
-    pop rcx
-    pop rdx
-    pop r8
-    call memset
-    add rsp, 32
-    mov rax, rax
-    mov [rdi + 8402944], rsi
+    mov [rsi + 8402944], rbx
     xor rcx, rcx
     mov rax, rcx
-    mov [rdi + 8402948], rax
+    mov [rsi + 8402948], rax
     xor rax, rax
-    mov rbx, rax
+    mov rdi, rax
     jmp .L_b_4
 .L_b_4:
-    cmp rbx, rsi
+    cmp rdi, rbx
     setl al
     movzx rax, al
     test rax, rax
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rsi, rdi
-    mov rdx, rbx
+    mov r8, r12
+    mov rdx, rdi
     mov rcx, 32824
     mov rax, rcx
     mov rcx, rdx
     imul rcx, rax
-    mov rax, rsi
+    mov rax, r8
     add rax, rcx
-    mov rsi, rax
-    mov [rsi], rbx
-    mov rdx, rsi
+    mov r13, rax
+    mov [r13], rdi
+    mov rdx, r13
     mov rcx, 8
     mov rax, rcx
     mov rcx, rdx
@@ -3202,18 +3566,20 @@ init:
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi + 32816], rax
+    mov [r13 + 32816], rax
     mov rax, 1
     mov rcx, rax
-    mov rax, rbx
+    mov rax, rdi
     add rax, rcx
-    mov rbx, rax
+    mov rdi, rax
     jmp .L_b_4
 .L_b_6:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
     add rsp, 40
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3226,13 +3592,14 @@ submit:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    push r12
+    sub rsp, 32
 .L_b_0:
-    mov rsi, rcx
-    mov rbx, rdx
+    mov r12, rcx
+    mov rdi, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -3244,7 +3611,8 @@ submit:
     mov rax, rcx
     neg rax
     mov rax, rax
-    add rsp, 40
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3253,21 +3621,21 @@ submit:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rdx, [rsi + 8402952]
-    mov rcx, [rsi + 8402944]
+    mov rdx, [r12 + 8402952]
+    mov rcx, [r12 + 8402944]
     mov rax, rcx
     mov rax, rdx
     cqo
     idiv rax
-    mov rcx, rdx
-    mov rax, rcx
-    mov rdi, rsi
+    mov rsi, rdx
+    mov rax, rsi
+    mov rbx, r8
     mov rdx, rax
     mov rax, 32824
     mov rcx, rax
     mov rax, rdx
     imul rax, rcx
-    mov rcx, rdi
+    mov rcx, rbx
     add rcx, rax
     mov rax, rcx
     mov rdx, rax
@@ -3277,7 +3645,7 @@ submit:
     add rcx, rax
     mov rax, rcx
     sub rsp, 32
-    push rbx
+    push rdi
     push rax
     pop rcx
     pop rdx
@@ -3293,18 +3661,19 @@ submit:
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rdx, [rsi + 8402952]
+    mov rdx, [r12 + 8402952]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rsi + 8402952], rax
+    mov [r12 + 8402952], rax
     jmp .L_b_6
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
     mov rax, rbx
-    add rsp, 40
+    add rsp, 32
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3386,7 +3755,7 @@ ax_actor_system_init:
     mov rcx, rax
     mov rax, rcx
     mov [rdi], rax
-    mov rax, [rdi]
+    mov rax, [rdi]
     mov rdx, rax
     xor rcx, rcx
     mov rax, rcx
@@ -3438,26 +3807,28 @@ ax_actor_lookup:
     push rbx
     push rsi
     push rdi
+    push r12
+    push r13
     sub rsp, 40
 .L_b_0:
-    mov rdi, rcx
+    mov r12, rcx
     sub rsp, 32
     call get_state
     add rsp, 32
     mov rcx, rax
     mov rax, [rcx + 48]
-    mov rdx, rax
+    mov r8, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rdx, rax
-    sete bl
-    movzx rbx, bl
+    cmp r8, rax
+    sete dl
+    movzx rdx, dl
     xor rcx, rcx
     mov rax, rcx
-    cmp rdi, rax
+    cmp r12, rax
     sete cl
     movzx rcx, cl
-    mov rax, rbx
+    mov rax, rdx
     or rax, rcx
     test rax, rax
     jne .L_b_1
@@ -3467,6 +3838,8 @@ ax_actor_lookup:
     mov rax, rcx
     mov rax, rax
     add rsp, 40
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3477,11 +3850,11 @@ ax_actor_lookup:
 .L_b_3:
     mov rcx, 1024
     mov rax, rcx
-    mov rax, rdi
+    mov rax, r12
     cqo
     idiv rax
-    mov rax, rdx
-    mov r8, rax
+    mov rdi, rdx
+    mov rsi, rdi
     xor rax, rax
     mov rbx, rax
     jmp .L_b_4
@@ -3495,9 +3868,9 @@ ax_actor_lookup:
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rax, [rdx]
-    mov rsi, rax
-    mov rdx, r8
+    mov rax, [r8]
+    mov r9, rax
+    mov rdx, rsi
     add rdx, rbx
     mov rcx, 1024
     mov rax, rcx
@@ -3509,19 +3882,19 @@ ax_actor_lookup:
     mov rax, rcx
     mov rcx, rdx
     imul rcx, rax
-    mov rax, rsi
+    mov rax, r9
     add rax, rcx
-    mov rsi, rax
-    mov rax, [rsi]
-    cmp rax, rdi
-    sete dl
-    movzx rdx, dl
-    mov rcx, [rsi + 8]
+    mov r9, rax
+    mov rax, [r9]
+    cmp rax, r12
+    sete bpl
+    movzx r13, bpl
+    mov rcx, [r9 + 8]
     mov rax, 3
     cmp rcx, rax
     setne cl
     movzx rcx, cl
-    mov rax, rdx
+    mov rax, r13
     and rax, rcx
     test rax, rax
     jne .L_b_7
@@ -3531,15 +3904,19 @@ ax_actor_lookup:
     mov rax, rcx
     mov rax, rax
     add rsp, 40
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
     pop rbp
     ret
 .L_b_7:
-    mov rax, rsi
+    mov rax, r9
     mov rax, rax
     add rsp, 40
+    pop r13
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -3558,22 +3935,24 @@ ax_actor_lookup:
 ax_msgq_init:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    sub rsp, 40
 .L_b_0:
-    mov rdx, rcx
+    mov rbx, rcx
     xor rcx, rcx
     mov rax, rcx
-    mov [rdx], rax
+    mov [rbx], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rdx + 8], rax
+    mov [rbx + 8], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rdx + 16], rax
+    mov [rbx + 16], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rdx + 24], rax
-    add rsp, 32
+    mov [rbx + 24], rax
+    add rsp, 40
+    pop rbx
     pop rbp
     ret
 
@@ -3584,12 +3963,12 @@ ax_msgq_push:
     push rsi
     sub rsp, 32
 .L_b_0:
-    mov rbx, rcx
-    mov rsi, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rcx, rcx
     mov rax, rcx
-    mov [rsi], rax
-    mov rdx, [rbx + 8]
+    mov [rbx], rax
+    mov rdx, [rsi + 8]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -3599,27 +3978,27 @@ ax_msgq_push:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov [rbx], rsi
-    mov [rbx + 8], rsi
+    mov [rsi], rbx
+    mov [rsi + 8], rbx
     jmp .L_b_3
 .L_b_2:
-    mov rax, [rbx + 8]
-    mov [rax], rsi
-    mov [rbx + 8], rsi
+    mov rax, [rsi + 8]
+    mov [rax], rbx
+    mov [rsi + 8], rbx
     jmp .L_b_3
 .L_b_3:
-    mov rdx, [rbx + 16]
+    mov rdx, [rsi + 16]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 16], rax
-    mov rdx, [rbx + 24]
+    mov [rsi + 16], rax
+    mov rdx, [rsi + 24]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 24], rax
+    mov [rsi + 24], rax
     add rsp, 32
     pop rsi
     pop rbx
@@ -3674,7 +4053,7 @@ ax_msgq_pop:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    mov rdx, [rsi + 24]
+    mov rdx, [rsi + 24]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
@@ -3696,23 +4075,24 @@ ax_actor_send:
     push r12
     push r13
     push r14
-    sub rsp, 32
+    push r15
+    sub rsp, 40
 .L_b_0:
-    mov rax, rcx
-    mov r14, rdx
-    mov r13, r8
-    mov r12, r9
-    mov rdi, rdi
+    mov r12, rcx
+    mov rdi, rdx
+    mov rsi, r8
+    mov rbx, r9
+    mov r15, r15
     sub rsp, 32
-    push rax
+    push r12
     pop rcx
     call ax_actor_lookup
     add rsp, 32
     mov rax, rax
-    mov rsi, rax
+    mov r14, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp r14, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -3724,7 +4104,8 @@ ax_actor_send:
     mov rax, rcx
     neg rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -3738,10 +4119,10 @@ ax_actor_send:
 .L_b_3:
     mov rax, 24
     mov rdx, rax
-    mov rax, rdi
+    mov rax, r15
     mov rcx, rdx
     add rcx, rax
-    mov rax, [rsi + 72]
+    mov rax, [r14 + 72]
     sub rsp, 32
     push rcx
     push rax
@@ -3750,10 +4131,10 @@ ax_actor_send:
     call ax_actor_alloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov r13, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp r13, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -3765,7 +4146,8 @@ ax_actor_send:
     mov rax, rcx
     neg rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -3779,18 +4161,18 @@ ax_actor_send:
 .L_b_6:
     xor rcx, rcx
     mov rax, rcx
-    mov [rbx], rax
-    mov [rbx + 8], r14
-    mov [rbx + 16], r13
-    mov [rbx + 20], rdi
+    mov [r13], rax
+    mov [r13 + 8], rdi
+    mov [r13 + 16], rsi
+    mov [r13 + 20], r15
     xor rcx, rcx
     mov rax, rcx
-    cmp r12, rax
+    cmp rbx, rax
     setne dl
     movzx rdx, dl
     xor rcx, rcx
     mov rax, rcx
-    cmp rdi, rax
+    cmp r15, rax
     setg cl
     movzx rcx, cl
     mov rax, rdx
@@ -3799,14 +4181,14 @@ ax_actor_send:
     jne .L_b_7
     jmp .L_b_8
 .L_b_7:
-    mov rdx, rbx
+    mov rdx, r13
     mov rax, 24
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
     mov rdx, rax
-    mov rcx, r12
-    mov rax, rdi
+    mov rcx, rbx
+    mov rax, r15
     sub rsp, 32
     push rax
     push rcx
@@ -3821,14 +4203,14 @@ ax_actor_send:
 .L_b_8:
     jmp .L_b_9
 .L_b_9:
-    mov rdx, rsi
+    mov rdx, r14
     mov rcx, 16
     mov rax, rcx
     mov rcx, rdx
     add rcx, rax
     mov rax, rcx
     sub rsp, 32
-    push rbx
+    push r13
     push rax
     pop rcx
     pop rdx
@@ -3838,7 +4220,8 @@ ax_actor_send:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -3861,15 +4244,16 @@ ax_actor_spawn:
     sub rsp, 56
 .L_b_0:
     mov r11, rcx
-    mov [rbp - 16], r11
+    mov [rbp - 80], r11
     mov r11, rdx
-    mov [rbp - 8], r11
-    mov r15, r8
+    mov [rbp - 72], r11
+    mov r11, r8
+    mov [rbp - 64], r11
     sub rsp, 32
     call get_state
     add rsp, 32
-    mov r14, rax
-    mov rax, [r14 + 48]
+    mov r15, rax
+    mov rax, [r15 + 48]
     mov rdx, rax
     xor rcx, rcx
     mov rax, rcx
@@ -3888,11 +4272,11 @@ ax_actor_spawn:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, [r14 + 48]
-    mov r13, rax
+    mov rax, [r15 + 48]
+    mov r14, rax
     xor rcx, rcx
     mov rax, rcx
-    mov r11, [rbp - 16]
+    mov r11, [rbp - 80]
     cmp r11, rax
     sete al
     movzx rax, al
@@ -3916,29 +4300,29 @@ ax_actor_spawn:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    mov r12, [r13 + 8]
+    mov r13, [r14 + 8]
     mov rax, 1
     mov rcx, rax
-    mov rax, r12
+    mov rax, r13
     add rax, rcx
-    mov [r13 + 8], rax
+    mov [r14 + 8], rax
     mov rcx, 1024
     mov rax, rcx
-    mov rax, r12
+    mov rax, r13
     cqo
     idiv rax
-    mov rax, rdx
-    mov rcx, rax
+    mov r12, rdx
+    mov r9, r12
     xor rax, rax
     mov r8, rax
-    mov rdx, 1
-    mov rax, rdx
+    mov rcx, 1
+    mov rax, rcx
     mov rdi, rax
     neg rdi
     jmp .L_b_7
 .L_b_7:
-    mov rdx, 1024
-    mov rax, rdx
+    mov rcx, 1024
+    mov rax, rcx
     cmp r8, rax
     setl al
     movzx rax, al
@@ -3946,7 +4330,7 @@ ax_actor_spawn:
     jne .L_b_8
     jmp .L_b_9
 .L_b_8:
-    mov rdx, rcx
+    mov rdx, r9
     add rdx, r8
     mov rcx, 1024
     mov rax, rcx
@@ -3954,7 +4338,7 @@ ax_actor_spawn:
     cqo
     idiv rax
     mov rsi, rdx
-    mov rax, [r13]
+    mov rax, [r14]
     mov rdx, rax
     mov rcx, 80
     mov rax, rcx
@@ -4019,7 +4403,7 @@ ax_actor_spawn:
 .L_b_14:
     jmp .L_b_15
 .L_b_15:
-    mov rax, [r13]
+    mov rax, [r14]
     mov rdx, rax
     mov rcx, 80
     mov rax, rcx
@@ -4027,8 +4411,8 @@ ax_actor_spawn:
     imul rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov rbx, rax
-    mov rdx, rbx
+    mov rdi, rax
+    mov rdx, rdi
     xor rax, rax
     mov rcx, rax
     mov rax, 80
@@ -4042,47 +4426,49 @@ ax_actor_spawn:
     call memset
     add rsp, 32
     mov rax, rax
-    mov [rbx], r12
+    mov [rdi], r13
     xor rax, rax
-    mov [rbx + 8], rax
-    mov r10, [rbp - 16]
-    mov [rbx + 48], r10
+    mov [rdi + 8], rax
+    mov r10, [rbp - 80]
+    mov [rdi + 48], r10
     sub rsp, 32
-    push r12
+    push r13
     pop rcx
     call ax_actor_heap_create
     add rsp, 32
-    mov rdx, rax
-    mov [rbx + 72], rdx
+    mov rbx, rax
+    mov [rdi + 72], rbx
     xor rcx, rcx
     mov rax, rcx
-    mov r11, [rbp - 8]
+    mov r11, [rbp - 72]
     cmp r11, rax
-    setne sil
-    movzx rsi, sil
+    setne dl
+    movzx rdx, dl
     xor rcx, rcx
     mov rax, rcx
-    cmp r15, rax
+    mov r11, [rbp - 64]
+    cmp r11, rax
     setg cl
     movzx rcx, cl
-    mov rax, rsi
+    mov rax, rdx
     and rax, rcx
     test rax, rax
     jne .L_b_16
     jmp .L_b_17
 .L_b_16:
-    mov rax, r15
+    mov r10, [rbp - 64]
+    mov rax, r10
     sub rsp, 32
     push rax
-    push rdx
+    push rbx
     pop rcx
     pop rdx
     call ax_actor_alloc
     add rsp, 32
-    mov rsi, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rsi, rax
+    cmp rbx, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -4092,24 +4478,25 @@ ax_actor_spawn:
     jmp .L_b_18
 .L_b_18:
     mov rax, 1
-    mov [rbx + 8], rax
-    mov rdx, [r13 + 16]
+    mov [rdi + 8], rax
+    mov rdx, [r14 + 16]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [r13 + 16], rax
+    mov [r14 + 16], rax
     xor rax, rax
     mov rdx, rax
     xor rax, rax
     mov rcx, rax
-    mov rax, r15
+    mov r10, [rbp - 64]
+    mov rax, r10
     sub rsp, 48
-    mov r10, [rbp - 8]
+    mov r10, [rbp - 72]
     push r10
     push rcx
     push rdx
-    push r12
+    push r13
     pop rcx
     pop rdx
     pop r8
@@ -4118,37 +4505,39 @@ ax_actor_spawn:
     call ax_actor_send
     add rsp, 48
     mov rax, rax
-    mov rax, [r14 + 1]
+    mov rax, [r15 + 1]
     test rax, rax
     jne .L_b_22
     jmp .L_b_23
 .L_b_19:
-    mov r10, [rbp - 8]
+    mov r10, [rbp - 72]
     mov rcx, r10
-    mov rax, r15
+    mov r10, [rbp - 64]
+    mov rax, r10
     sub rsp, 32
     push rax
     push rcx
-    push rsi
+    push rbx
     pop rcx
     pop rdx
     pop r8
     call memcpy
     add rsp, 32
     mov rax, rax
-    mov rax, rsi
-    mov [rbx + 56], rax
-    mov [rbx + 64], r15
-    jmp .L_b_21p∆Gï
+    mov rax, rbx
+    mov [rdi + 56], rax
+    mov r10, [rbp - 64]
+    mov [rdi + 64], r10
+    jmp .L_b_21
 .L_b_20:
     jmp .L_b_21
 .L_b_21:
     jmp .L_b_18
 .L_b_22:
-    mov rcx, [r14 + 56]
+    mov rcx, [r15 + 56]
     mov rax, rcx
     sub rsp, 32
-    push r12
+    push r13
     push rax
     pop rcx
     pop rdx
@@ -4159,7 +4548,7 @@ ax_actor_spawn:
 .L_b_23:
     jmp .L_b_24
 .L_b_24:
-    mov rax, r12
+    mov rax, r13
     add rsp, 56
     pop r15
     pop r14
@@ -4171,215 +4560,23 @@ ax_actor_spawn:
     pop rbp
     ret
 
-ax_actor_step:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    push rsi
-    sub rsp, 32
-.L_b_0:
-    mov rax, rcx
-    mov rsi, rax
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rsi, rax
-    sete dl
-    movzx rdx, dl
-    mov rcx, [rsi + 8]
-    mov rax, 1
-    cmp rcx, rax
-    setne cl
-    movzx rcx, cl
-    mov rax, rdx
-    or rax, rcx
-    test rax, rax
-    jne .L_b_1
-    jmp .L_b_2
-.L_b_1:
-    xor rcx, rcx
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 32
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-.L_b_2:
-    jmp .L_b_3
-.L_b_3:
-    mov rdx, rsi
-    mov rcx, 16
-    mov rax, rcx
-    mov rcx, rdx
-    add rcx, rax
-    mov rax, rcx
-    sub rsp, 32
-    push rax
-    pop rcx
-    call ax_msgq_pop
-    add rsp, 32
-    mov rbx, rax
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rbx, rax
-    sete al
-    movzx rax, al
-    test rax, rax
-    jne .L_b_4
-    jmp .L_b_5
-.L_b_4:
-    xor rcx, rcx
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 32
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-.L_b_5:
-    jmp .L_b_6
-.L_b_6:
-    mov rcx, [rsi + 48]
-    mov rax, rcx
-    mov rdx, rbx
-    mov rax, 24
-    mov rcx, rax
-    mov rax, rdx
-    add rax, rcx
-    mov rdx, rax
-    mov rcx, rsi
-    mov rax, [rbx + 16]
-    sub rsp, 32
-    push rax
-    push rdx
-    push rcx
-    pop rcx
-    pop rdx
-    pop r8
-    call handler_fn
-    add rsp, 32
-    mov rax, rax
-    mov rcx, [rsi + 72]
-    mov rax, rbx
-    sub rsp, 32
-    push rax
-    push rcx
-    pop rcx
-    pop rdx
-    call ax_actor_free
-    add rsp, 32
-    mov rax, rax
-    mov rcx, 1
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 32
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-
-ax_actor_is_running:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    sub rsp, 40
-.L_b_0:
-    mov rax, rcx
-    mov rbx, rax
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rbx, rax
-    setne dl
-    movzx rdx, dl
-    mov rcx, [rbx + 8]
-    mov rax, 1
-    cmp rcx, rax
-    sete cl
-    movzx rcx, cl
-    mov rax, rdx
-    and rax, rcx
-    test rax, rax
-    jne .L_b_1
-    jmp .L_b_2
-.L_b_1:
-    mov rcx, 1
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 40
-    pop rbx
-    pop rbp
-    ret
-.L_b_2:
-    jmp .L_b_3
-.L_b_3:
-    xor rcx, rcx
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 40
-    pop rbx
-    pop rbp
-    ret
-
-ax_actor_has_messages:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    sub rsp, 40
-.L_b_0:
-    mov rax, rcx
-    mov rdx, rax
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rdx, rax
-    setne bl
-    movzx rbx, bl
-    mov rax, [rdx + 16]
-    mov rdx, [rax]
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rdx, rax
-    setne cl
-    movzx rcx, cl
-    mov rax, rbx
-    and rax, rcx
-    test rax, rax
-    jne .L_b_1
-    jmp .L_b_2
-.L_b_1:
-    mov rcx, 1
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 40
-    pop rbx
-    pop rbp
-    ret
-.L_b_2:
-    jmp .L_b_3
-.L_b_3:
-    xor rcx, rcx
-    mov rax, rcx
-    mov rax, rax
-    add rsp, 40
-    pop rbx
-    pop rbp
-    ret
-
 has_active_actors:
     push rbp
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    sub rsp, 40
 .L_b_0:
     sub rsp, 32
     call get_state
     add rsp, 32
     mov rcx, rax
     mov rax, [rcx + 48]
-    mov rdx, rax
+    mov rsi, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rdx, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -4388,7 +4585,8 @@ has_active_actors:
 .L_b_1:
     xor rax, rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -4409,7 +4607,7 @@ has_active_actors:
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rax, [rdx]
+    mov rax, [rsi]
     mov rdx, rax
     mov rcx, 80
     mov rax, rcx
@@ -4417,14 +4615,14 @@ has_active_actors:
     imul rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov rsi, rax
-    mov rdx, [rsi]
+    mov rdi, rax
+    mov rdx, [rdi]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
     setne dl
     movzx rdx, dl
-    mov rcx, [rsi + 8]
+    mov rcx, [rdi + 8]
     mov rax, 1
     cmp rcx, rax
     sete cl
@@ -4437,13 +4635,14 @@ has_active_actors:
 .L_b_6:
     xor rax, rax
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
     ret
 .L_b_7:
-    mov rax, [rsi + 16]
+    mov rax, [rdi + 16]
     mov rdx, [rax + 24]
     xor rcx, rcx
     mov rax, rcx
@@ -4465,7 +4664,8 @@ has_active_actors:
 .L_b_10:
     mov rax, 1
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -4483,17 +4683,19 @@ run:
     push rdi
     push r12
     push r13
+    push r14
+    push r15
     sub rsp, 40
 .L_b_0:
-    mov rsi, rcx
+    mov r14, rcx
     mov rcx, 1
     mov rax, rcx
-    mov [rsi + 8402948], rax
+    mov [r14 + 8402948], rax
     xor rax, rax
     mov rbx, rax
     jmp .L_b_1
 .L_b_1:
-    mov rax, [rsi + 8402944]
+    mov rax, [r14 + 8402944]
     cmp rbx, rax
     setl al
     movzx rax, al
@@ -4538,6 +4740,8 @@ run:
     mov rax, rcx
     mov rax, rax
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -4546,7 +4750,7 @@ run:
     pop rbp
     ret
 .L_b_7:
-    mov rax, [rsi + 8402944]
+    mov rax, [r14 + 8402944]
     cmp r13, rax
     setl al
     movzx rax, al
@@ -4554,7 +4758,7 @@ run:
     jne .L_b_8
     jmp .L_b_9
 .L_b_8:
-    mov rbx, rsi
+    mov rbx, r15
     mov rdx, r13
     mov rcx, 32824
     mov rax, rcx
@@ -4562,8 +4766,8 @@ run:
     imul rcx, rax
     mov rax, rbx
     add rax, rcx
-    mov rbx, rax
-    mov rdx, rbx
+    mov r12, rax
+    mov rdx, r12
     mov rax, 8
     mov rcx, rax
     mov rax, rdx
@@ -4591,10 +4795,10 @@ run:
     pop rcx
     call ax_actor_lookup
     add rsp, 32
-    mov r12, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp r12, rax
+    cmp rbx, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -4617,7 +4821,7 @@ run:
     jmp .L_b_12
 .L_b_16:
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_step
     add rsp, 32
@@ -4631,16 +4835,16 @@ run:
     jne .L_b_17
     jmp .L_b_18
 .L_b_17:
-    mov rdx, [rbx + 32792]
+    mov rdx, [r12 + 32792]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 32792], rax
+    mov [r12 + 32792], rax
     jmp .L_b_16
 .L_b_18:
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_is_running
     add rsp, 32
@@ -4649,9 +4853,12 @@ run:
     mov rax, rcx
     cmp rdx, rax
     setne bl
-    movzx rbx, bl
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    movzx r11, dl
+    mov [rbp - 64], r11
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_has_messages
     add rsp, 32
@@ -4661,7 +4868,8 @@ run:
     cmp rdx, rax
     setne cl
     movzx rcx, cl
-    mov rax, rbx
+    mov r10, [rbp - 64]
+    mov rax, r10
     and rax, rcx
     test rax, rax
     jne .L_b_19
@@ -4689,11 +4897,13 @@ worker_loop:
     push rdi
     push r12
     push r13
+    push r14
+    push r15
     sub rsp, 40
 .L_b_0:
     mov r13, rcx
-    mov rbx, rdx
-    mov rdx, rbx
+    mov r12, rdx
+    mov rdx, r12
     mov rax, 8
     mov rcx, rax
     mov rax, rdx
@@ -4701,7 +4911,7 @@ worker_loop:
     mov rdi, rax
     jmp .L_b_1
 .L_b_1:
-    mov rdx, [rbx + 32816]
+    mov rdx, [r12 + 32816]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -4727,6 +4937,8 @@ worker_loop:
     jmp .L_b_5
 .L_b_3:
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -4736,9 +4948,9 @@ worker_loop:
     ret
 .L_b_4:
     xor rax, rax
-    mov r12, rax
+    mov r15, rax
     xor rax, rax
-    mov r8, rax
+    mov rbx, rax
     jmp .L_b_7
 .L_b_5:
     jmp .L_b_6
@@ -4753,12 +4965,12 @@ worker_loop:
     jmp .L_b_17
 .L_b_7:
     mov rax, [r13 + 8402944]
-    cmp r12, rax
+    cmp r15, rax
     setl dl
     movzx rdx, dl
     xor rcx, rcx
     mov rax, rcx
-    cmp r8, rax
+    cmp rbx, rax
     sete cl
     movzx rcx, cl
     mov rax, rdx
@@ -4767,8 +4979,8 @@ worker_loop:
     jne .L_b_8
     jmp .L_b_9
 .L_b_8:
-    mov rax, [rbx]
-    cmp r12, rax
+    mov rax, [r12]
+    cmp r15, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -4777,19 +4989,19 @@ worker_loop:
 .L_b_9:
     jmp .L_b_6
 .L_b_10:
-    mov rdx, [rbx + 32800]
+    mov rdx, [r12 + 32800]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 32800], rax
-    mov r8, r13
-    mov rdx, r12
+    mov [r12 + 32800], rax
+    mov rdx, r14
+    mov r8, r15
     mov rax, 32824
     mov rcx, rax
-    mov rax, rdx
+    mov rax, r8
     imul rax, rcx
-    mov rcx, r8
+    mov rcx, rdx
     add rcx, rax
     mov rax, rcx
     mov rdx, rax
@@ -4817,21 +5029,21 @@ worker_loop:
 .L_b_12:
     mov rax, 1
     mov rcx, rax
-    mov rax, r12
+    mov rax, r15
     add rax, rcx
-    mov r12, rax
+    mov r15, rax
     jmp .L_b_7
 .L_b_13:
     mov rsi, rdx
-    mov rdx, [rbx + 32808]
+    mov r8, [r12 + 32808]
     mov rax, 1
     mov rcx, rax
-    mov rax, rdx
+    mov rax, r8
     add rax, rcx
-    mov [rbx + 32808], rax
+    mov [r12 + 32808], rax
     mov rcx, 1
     mov rax, rcx
-    mov r8, rax
+    mov rbx, rax
     jmp .L_b_15
 .L_b_14:
     jmp .L_b_15
@@ -4839,6 +5051,8 @@ worker_loop:
     jmp .L_b_12
 .L_b_16:
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -4854,10 +5068,10 @@ worker_loop:
     pop rcx
     call ax_actor_lookup
     add rsp, 32
-    mov r12, rax
+    mov rbx, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp r12, rax
+    cmp rbx, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -4871,7 +5085,7 @@ worker_loop:
     jmp .L_b_1
 .L_b_22:
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_step
     add rsp, 32
@@ -4885,16 +5099,16 @@ worker_loop:
     jne .L_b_23
     jmp .L_b_24
 .L_b_23:
-    mov rdx, [rbx + 32792]
+    mov rdx, [r12 + 32792]
     mov rax, 1
     mov rcx, rax
     mov rax, rdx
     add rax, rcx
-    mov [rbx + 32792], rax
+    mov [r12 + 32792], rax
     jmp .L_b_22
 .L_b_24:
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_is_running
     add rsp, 32
@@ -4902,10 +5116,10 @@ worker_loop:
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
-    setne bl
-    movzx rbx, bl
+    setne dil
+    movzx r15, dil
     sub rsp, 32
-    push r12
+    push rbx
     pop rcx
     call ax_actor_has_messages
     add rsp, 32
@@ -4915,7 +5129,7 @@ worker_loop:
     cmp rdx, rax
     setne cl
     movzx rcx, cl
-    mov rax, rbx
+    mov rax, r15
     and rax, rcx
     test rax, rax
     jne .L_b_25
@@ -4940,17 +5154,18 @@ shutdown:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    push rdi
+    sub rsp, 40
 .L_b_0:
-    mov rdx, rcx
+    mov rsi, rcx
     xor rcx, rcx
     mov rax, rcx
-    mov [rdx + 8402948], rax
+    mov [rsi + 8402948], rax
     xor rax, rax
     mov rbx, rax
     jmp .L_b_1
 .L_b_1:
-    mov rax, [rdx + 8402944]
+    mov rax, [rsi + 8402944]
     cmp rbx, rax
     setl al
     movzx rax, al
@@ -4958,13 +5173,13 @@ shutdown:
     jne .L_b_2
     jmp .L_b_3
 .L_b_2:
-    mov rsi, rdx
+    mov r8, rdi
     mov rdx, rbx
     mov rcx, 32824
     mov rax, rcx
     mov rcx, rdx
     imul rcx, rax
-    mov rax, rsi
+    mov rax, r8
     add rax, rcx
     mov rdx, rax
     xor rcx, rcx
@@ -4977,7 +5192,8 @@ shutdown:
     mov rbx, rax
     jmp .L_b_1
 .L_b_3:
-    add rsp, 32
+    add rsp, 40
+    pop rdi
     pop rsi
     pop rbx
     pop rbp
@@ -4991,11 +5207,11 @@ stats:
     push rdi
     sub rsp, 40
 .L_b_0:
-    mov rdx, rcx
-    mov rdi, rdx
+    mov rdi, rcx
+    mov rsi, rdx
     xor rcx, rcx
     mov rax, rcx
-    cmp rdi, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
@@ -5011,52 +5227,52 @@ stats:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, [rdx + 8402944]
-    mov [rdi], rax
-    mov rax, [rdx + 8402952]
-    mov [rdi + 8], rax
+    mov rax, [rdi + 8402944]
+    mov [rsi], rax
+    mov rax, [rdi + 8402952]
+    mov [rsi + 8], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rdi + 16], rax
+    mov [rsi + 16], rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rdi + 24], rax
+    mov [rsi + 24], rax
     xor rax, rax
-    mov rsi, rax
+    mov rbx, rax
     jmp .L_b_4
 .L_b_4:
-    mov rax, [rdx + 8402944]
-    cmp rsi, rax
+    mov rax, [rdi + 8402944]
+    cmp rbx, rax
     setl al
     movzx rax, al
     test rax, rax
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rbx, rdx
-    mov rdx, rsi
+    mov r9, r8
+    mov rdx, rbx
     mov rcx, 32824
     mov rax, rcx
     mov rcx, rdx
     imul rcx, rax
+    mov rax, r9
+    add rax, rcx
+    mov r9, rax
+    mov rdx, [rsi + 16]
+    mov rcx, [r9 + 32792]
+    mov rax, rdx
+    add rax, rcx
+    mov [rsi + 16], rax
+    mov rdx, [rsi + 24]
+    mov rcx, [r9 + 32808]
+    mov rax, rdx
+    add rax, rcx
+    mov [rsi + 24], rax
+    mov rax, 1
+    mov rcx, rax
     mov rax, rbx
     add rax, rcx
     mov rbx, rax
-    mov rdx, [rdi + 16]
-    mov rcx, [rbx + 32792]
-    mov rax, rdx
-    add rax, rcx
-    mov [rdi + 16], rax
-    mov rdx, [rdi + 24]
-    mov rcx, [rbx + 32808]
-    mov rax, rdx
-    add rax, rcx
-    mov [rdi + 24], rax
-    mov rax, 1
-    mov rcx, rax
-    mov rax, rsi
-    add rax, rcx
-    mov rsi, rax
     jmp .L_b_4
 .L_b_6:
     add rsp, 40
@@ -5069,19 +5285,25 @@ stats:
 syscall:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40
 .L_b_0:
-    mov rax, rcx
-    mov rax, rdx
-    mov rax, r8
-    mov rax, r9
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rbx, r8
+    mov rdx, r9
     mov rax, rax
     mov rax, rax
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
@@ -5094,10 +5316,10 @@ ax_panic:
     push r12
     push r13
     push r14
-    sub rsp, 32
+    sub rsp, 112
 .L_b_0:
-    mov rbx, rcx
-    mov rax, 316
+    mov r12, rcx
+    mov rax, 520
     sub rsp, 32
     push rax
     pop rcx
@@ -5108,7 +5330,7 @@ ax_panic:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rcx, 317
+    mov rcx, 524
     mov rax, rcx
     sub rsp, 32
     push rax
@@ -5116,7 +5338,7 @@ ax_panic:
     call puts
     add rsp, 32
     mov rax, rax
-    mov rax, rbx
+    mov rax, r12
     sub rsp, 32
     push rax
     pop rcx
@@ -5141,53 +5363,17 @@ ax_panic:
     mov rax, rax
     jmp .L_b_3
 .L_b_2:
-    mov rdx, 317
+    mov rdx, 524
     mov rax, 1
     mov r14, rax
     mov rax, 2
     mov r13, rax
     mov rax, rdx
-    mov r12, rax
+    mov rdi, rax
     mov rcx, [rax]
     mov rax, [rcx]
     sub rsp, 32
     push rdx
-    pop rcx
-    call ax_panic
-    add rsp, 32
-    mov rax, rax
-    mov rdi, rax
-    xor rax, rax
-    mov rsi, rax
-    xor rax, rax
-    mov rdx, rax
-    xor rcx, rcx
-    mov rax, rcx
-    sub rsp, 64
-    push rdi
-    push r12
-    push r13
-    push r14
-    pop rcx
-    pop rdx
-    pop r8
-    pop r9
-    mov [rsp + 32], rsi
-    mov [rsp + 40], rdx
-    mov [rsp + 48], rax
-    call syscall
-    add rsp, 64
-    mov rax, rax
-    mov rax, 1
-    mov r13, rax
-    mov rax, 2
-    mov r12, rax
-    mov rax, rbx
-    mov rdi, rax
-    mov rcx, [rax]
-    mov rax, [rcx]
-    sub rsp, 32
-    push rbx
     pop rcx
     call ax_panic
     add rsp, 32
@@ -5202,8 +5388,8 @@ ax_panic:
     sub rsp, 64
     push rsi
     push rdi
-    push r12
     push r13
+    push r14
     pop rcx
     pop rdx
     pop r8
@@ -5214,11 +5400,47 @@ ax_panic:
     call syscall
     add rsp, 64
     mov rax, rax
-    mov rdx, 318
     mov rax, 1
-    mov r13, rax
+    mov r14, rax
     mov rax, 2
-    mov r12, rax
+    mov r13, rax
+    mov rax, r12
+    mov rdi, rax
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push r12
+    pop rcx
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push rdi
+    push r13
+    push r14
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    mov rdx, 525
+    mov rax, 1
+    mov r14, rax
+    mov rax, 2
+    mov r13, rax
     mov rax, rdx
     mov rdi, rax
     mov rcx, [rax]
@@ -5239,8 +5461,8 @@ ax_panic:
     sub rsp, 64
     push rsi
     push rdi
-    push r12
     push r13
+    push r14
     pop rcx
     pop rdx
     pop r8
@@ -5282,7 +5504,7 @@ ax_panic:
     mov rax, rax
     jmp .L_b_3
 .L_b_3:
-    add rsp, 32
+    add rsp, 112
     pop r14
     pop r13
     pop r12
@@ -5296,15 +5518,16 @@ ax_bounds_check:
     push rbp
     mov rbp, rsp
     push rbx
-    sub rsp, 40
+    push rsi
+    sub rsp, 64
 .L_b_0:
-    mov rbx, rcx
-    mov rcx, rdx
+    mov rsi, rcx
+    mov rbx, rdx
     xor rax, rax
-    cmp rbx, rax
+    cmp rsi, rax
     setl dl
     movzx rdx, dl
-    cmp rbx, rcx
+    cmp rsi, rbx
     setge cl
     movzx rcx, cl
     mov rax, rdx
@@ -5313,7 +5536,7 @@ ax_bounds_check:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, 319
+    mov rax, 526
     sub rsp, 32
     push rax
     pop rcx
@@ -5324,7 +5547,8 @@ ax_bounds_check:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    add rsp, 40
+    add rsp, 64
+    pop rsi
     pop rbx
     pop rbp
     ret
@@ -5332,11 +5556,13 @@ ax_bounds_check:
 ax_assert:
     push rbp
     mov rbp, rsp
+    push rbx
+    push rsi
     sub rsp, 32
 .L_b_0:
-    mov rax, rcx
-    mov rcx, rdx
-    cmp rax, 0
+    mov rsi, rcx
+    mov rbx, rdx
+    cmp rsi, 0
     sete al
     movzx rax, al
     test rax, rax
@@ -5344,7 +5570,7 @@ ax_assert:
     jmp .L_b_2
 .L_b_1:
     sub rsp, 32
-    push rcx
+    push rbx
     pop rcx
     call ax_panic
     add rsp, 32
@@ -5354,6 +5580,8 @@ ax_assert:
     jmp .L_b_3
 .L_b_3:
     add rsp, 32
+    pop rsi
+    pop rbx
     pop rbp
     ret
 
@@ -5505,7 +5733,7 @@ malloc:
     mov rbp, rsp
     push rbx
     push rsi
-    sub rsp, 32
+    sub rsp, 64
 .L_b_0:
     mov rsi, rcx
     sub rsp, 32
@@ -5547,7 +5775,7 @@ malloc:
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rax, 320
+    mov rax, 527
     sub rsp, 32
     push rax
     pop rcx
@@ -5560,7 +5788,7 @@ malloc:
 .L_b_6:
     mov rax, rbx
     mov rax, rax
-    add rsp, 32
+    add rsp, 64
     pop rsi
     pop rbx
     pop rbp
@@ -5649,13 +5877,15 @@ streq:
     push rdi
     push r12
     push r13
+    push r14
+    push r15
     sub rsp, 40
 .L_b_0:
-    mov rdx, rcx
-    mov r13, rdx
-    mov rcx, [rdx]
-    mov rax, [r13]
-    cmp rcx, rax
+    mov r12, rcx
+    mov rdi, rdx
+    mov rsi, [r12 + 8]
+    mov rax, [rdi + 8]
+    cmp rsi, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -5665,6 +5895,8 @@ streq:
     xor rax, rax
     mov rax, rax
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -5676,71 +5908,73 @@ streq:
     jmp .L_b_3
 .L_b_3:
     xor rax, rax
-    mov rdi, rax
+    mov rbx, rax
     jmp .L_b_4
 .L_b_4:
-    cmp rdi, rcx
+    cmp rbx, rsi
     setl al
     movzx rax, al
     test rax, rax
     jne .L_b_5
     jmp .L_b_6
 .L_b_5:
-    mov rax, [rdx]
+    mov rax, [r12]
     mov rcx, rax
     mov rax, rcx
-    add rax, rdi
-    mov rsi, rax
-    mov rbx, rsi
-    and rbx, rbx
-    test rbx, rbx
-    jne .L_b_1000001
+    add rax, rbx
+    mov r14, rax
+    mov r13, r14
+    and r13, r13
+    test r13, r13
+    jne .L_b_1000001
     sub rsp, 32
-    call abort
+    call streq
     add rsp, 32
 .L_b_1000001:
-    mov rcx, rsi
+    mov rcx, r14
     sar rcx, 48
     and rcx, rcx
     test rcx, rcx
     je .L_b_1000002
-    mov rax, [rbx - 8]
+    mov rax, [r13 - 8]
     and rax, rax
     cmp rcx, rax
     je .L_b_1000002
     sub rsp, 32
-    call abort
+    call streq
     add rsp, 32
 .L_b_1000002:
-    mov r12, rbx
-    mov rax, [r13]
+    mov r15, [r13]
+    and r15, r15
+    mov rax, [rdi]
     mov rcx, rax
     mov rax, rcx
-    add rax, rdi
-    mov rsi, rax
-    mov rbx, rsi
-    and rbx, rbx
-    test rbx, rbx
+    add rax, rbx
+    mov r14, rax
+    mov r13, r14
+    and r13, r13
+    test r13, r13
     jne .L_b_1000003
     sub rsp, 32
-    call abort
+    call streq
     add rsp, 32
 .L_b_1000003:
-    mov rcx, rsi
+    mov rcx, r14
     sar rcx, 48
     and rcx, rcx
     test rcx, rcx
     je .L_b_1000004
-    mov rax, [rbx - 8]
+    mov rax, [r13 - 8]
     and rax, rax
     cmp rcx, rax
     je .L_b_1000004
     sub rsp, 32
-    call abort
+    call streq
     add rsp, 32
 .L_b_1000004:
-    mov rax, rbx
-    cmp r12, rax
+    mov rax, [r13]
+    and rax, rax
+    cmp r15, rax
     setne al
     movzx rax, al
     test rax, rax
@@ -5750,6 +5984,8 @@ streq:
     mov rax, 1
     mov rax, rax
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -5761,6 +5997,8 @@ streq:
     xor rax, rax
     mov rax, rax
     add rsp, 40
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rdi
@@ -5773,21 +6011,22 @@ streq:
 .L_b_9:
     mov rax, 1
     mov rcx, rax
-    mov rax, rdi
+    mov rax, rbx
     add rax, rcx
-    mov rdi, rax
+    mov rbx, rax
     jmp .L_b_4
 
 compiler_intrinsic:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    sub rsp, 72
 .L_b_0:
-    mov rcx, rcx
-    mov rax, 316
+    mov rbx, rcx
+    mov rax, 520
     sub rsp, 32
     push rax
-    push rcx
+    push rbx
     pop rcx
     pop rdx
     call streq
@@ -5800,7 +6039,8 @@ compiler_intrinsic:
     mov rcx, 1
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 72
+    pop rbx
     pop rbp
     ret
 .L_b_2:
@@ -5809,19 +6049,22 @@ compiler_intrinsic:
     xor rcx, rcx
     mov rax, rcx
     mov rax, rax
-    add rsp, 32
+    add rsp, 72
+    pop rbx
     pop rbp
     ret
 
 handler_fn:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    sub rsp, 40
 .L_b_0:
-    mov rax, rcx
-    mov rax, rdx
+    mov rbx, rcx
+    mov rcx, rdx
     mov rax, r8
-    add rsp, 32
+    add rsp, 40
+    pop rbx
     pop rbp
     ret
 
@@ -5831,7 +6074,7 @@ ax_str_len:
     sub rsp, 32
 .L_b_0:
     mov rcx, rcx
-    mov rax, [rcx]
+    mov rax, [rcx + 8]
     mov rax, rax
     add rsp, 32
     pop rbp
@@ -5843,12 +6086,13 @@ ax_str_concat:
     push rbx
     push rsi
     push rdi
-    sub rsp, 40
+    push r12
+    sub rsp, 64
 .L_b_0:
     mov rdi, rcx
     mov rsi, rdx
-    mov rcx, [rdi]
-    mov rax, [rsi]
+    mov rcx, [rdi + 8]
+    mov rax, [rsi + 8]
     mov rdx, rcx
     add rdx, rax
     mov rax, 1
@@ -5861,17 +6105,17 @@ ax_str_concat:
     call malloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov r12, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp r12, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, 321
+    mov rax, 528
     sub rsp, 32
     push rax
     pop rcx
@@ -5883,24 +6127,24 @@ ax_str_concat:
     jmp .L_b_3
 .L_b_3:
     mov rcx, [rdi]
-    mov rax, [rdi]
+    mov rax, [rdi + 8]
     sub rsp, 32
     push rax
     push rcx
-    push rbx
+    push r12
     pop rcx
     pop rdx
     pop r8
     call memcpy
     add rsp, 32
     mov rax, rax
-    mov rdx, rbx
-    mov rcx, [rdi]
+    mov rdx, r12
+    mov rcx, [rdi + 8]
     mov rax, rdx
     add rax, rcx
     mov rdx, rax
     mov rcx, [rsi]
-    mov rax, [rsi]
+    mov rax, [rsi + 8]
     sub rsp, 32
     push rax
     push rcx
@@ -5913,10 +6157,23 @@ ax_str_concat:
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rbx], rax
-    mov rax, rbx
+    mov [r12], rax
+    sub rsp, 32
+    mov rcx, r12
+    call strlen
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rcx, rax
+    mov [rcx], r12
+    mov [rcx + 8], rbx
+    mov rax, rcx
     mov rax, rax
-    add rsp, 40
+    add rsp, 64
+    pop r12
     pop rdi
     pop rsi
     pop rbx
@@ -5930,11 +6187,12 @@ ax_str_slice:
     push rsi
     push rdi
     push r12
-    sub rsp, 32
+    push r13
+    sub rsp, 88
 .L_b_0:
     mov r12, rcx
     mov rdi, rdx
-    mov rdx, r8
+    mov rsi, r8
     xor rcx, rcx
     mov rax, rcx
     cmp rdi, rax
@@ -5951,30 +6209,31 @@ ax_str_slice:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rax, [r12]
-    cmp rdx, rax
+    mov rax, [r12 + 8]
+    cmp rsi, rax
     setg al
     movzx rax, al
     test rax, rax
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rax, [r12]
-    mov rdx, rax
+    mov rax, [r12 + 8]
+    mov rsi, rax
     jmp .L_b_6
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    cmp rdi, rdx
+    cmp rdi, rsi
     setge al
     movzx rax, al
     test rax, rax
     jne .L_b_7
     jmp .L_b_8
 .L_b_7:
-    mov rax, 322
+    mov rax, 529
     mov rax, rax
-    add rsp, 32
+    add rsp, 88
+    pop r13
     pop r12
     pop rdi
     pop rsi
@@ -5984,10 +6243,10 @@ ax_str_slice:
 .L_b_8:
     jmp .L_b_9
 .L_b_9:
-    mov rsi, rdx
-    sub rsi, rdi
+    mov rbx, rsi
+    sub rbx, rdi
     mov rax, 1
-    mov rcx, rsi
+    mov rcx, rbx
     add rcx, rax
     mov rax, rcx
     sub rsp, 32
@@ -5996,17 +6255,17 @@ ax_str_slice:
     call malloc
     add rsp, 32
     mov rax, rax
-    mov rbx, rax
+    mov r13, rax
     xor rcx, rcx
     mov rax, rcx
-    cmp rbx, rax
+    cmp r13, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_10
     jmp .L_b_11
 .L_b_10:
-    mov rax, 323
+    mov rax, 530
     sub rsp, 32
     push rax
     pop rcx
@@ -6023,9 +6282,9 @@ ax_str_slice:
     add rcx, rdi
     mov rax, rcx
     sub rsp, 32
-    push rsi
-    push rax
     push rbx
+    push rax
+    push r13
     pop rcx
     pop rdx
     pop r8
@@ -6034,10 +6293,23 @@ ax_str_slice:
     mov rax, rax
     xor rcx, rcx
     mov rax, rcx
-    mov [rbx], rax
-    mov rax, rbx
-    mov rax, rax
+    mov [r13], rax
+    sub rsp, 32
+    mov rcx, r13
+    call strlen
     add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rcx, rax
+    mov [rcx], r13
+    mov [rcx + 8], rbx
+    mov rax, rcx
+    mov rax, rax
+    add rsp, 88
+    pop r13
     pop r12
     pop rdi
     pop rsi
@@ -6055,12 +6327,15 @@ ax_str_replace:
     push r13
     push r14
     push r15
-    sub rsp, 72
+    sub rsp, 120
 .L_b_0:
-    mov r15, rcx
-    mov r14, rdx
-    mov r13, r8
-    mov rdx, [r14]
+    mov r11, rcx
+    mov [rbp - 72], r11
+    mov r11, rdx
+    mov [rbp - 64], r11
+    mov r15, r8
+    mov r10, [rbp - 64]
+    mov rdx, [r10 + 8]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -6070,8 +6345,9 @@ ax_str_replace:
     jne .L_b_1
     jmp .L_b_2
 .L_b_1:
-    mov rax, r15
-    add rsp, 72
+    mov r10, [rbp - 72]
+    mov rax, r10
+    add rsp, 120
     pop r15
     pop r14
     pop r13
@@ -6084,8 +6360,10 @@ ax_str_replace:
 .L_b_2:
     jmp .L_b_3
 .L_b_3:
-    mov rcx, [r15]
-    mov rax, [r14]
+    mov r10, [rbp - 72]
+    mov rcx, [r10 + 8]
+    mov r10, [rbp - 64]
+    mov rax, [r10 + 8]
     cmp rcx, rax
     setl al
     movzx rax, al
@@ -6093,8 +6371,9 @@ ax_str_replace:
     jne .L_b_4
     jmp .L_b_5
 .L_b_4:
-    mov rax, r15
-    add rsp, 72
+    mov r10, [rbp - 72]
+    mov rax, r10
+    add rsp, 120
     pop r15
     pop r14
     pop r13
@@ -6107,20 +6386,24 @@ ax_str_replace:
 .L_b_5:
     jmp .L_b_6
 .L_b_6:
-    mov rax, r15
-    mov rax, r14
-    mov r12, r13
+    mov r10, [rbp - 72]
+    mov rax, r10
+    mov r10, [rbp - 64]
+    mov rax, r10
+    mov r14, r15
     xor rax, rax
-    mov r8, rax
+    mov rsi, rax
     xor rax, rax
-    mov rdi, rax
-    mov rcx, [r15]
-    mov rax, [r14]
-    mov rsi, rcx
-    sub rsi, rax
+    mov r13, rax
+    mov r10, [rbp - 72]
+    mov rcx, [r10 + 8]
+    mov r10, [rbp - 64]
+    mov rax, [r10 + 8]
+    mov r12, rcx
+    sub r12, rax
     jmp .L_b_7
 .L_b_7:
-    cmp rdi, rsi
+    cmp r13, r12
     setle al
     movzx rax, al
     test rax, rax
@@ -6134,14 +6417,15 @@ ax_str_replace:
 .L_b_9:
     xor rcx, rcx
     mov rax, rcx
-    cmp r8, rax
+    cmp rsi, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_19
     jmp .L_b_20
 .L_b_10:
-    mov rax, [r14]
+    mov r10, [rbp - 64]
+    mov rax, [r10 + 8]
     cmp rdx, rax
     setl al
     movzx rax, al
@@ -6149,11 +6433,11 @@ ax_str_replace:
     jne .L_b_11
     jmp .L_b_12
 .L_b_11:
-    mov rax, rdi
+    mov rax, r13
     add rax, rdx
     nop
     nop
-    cmp rax, r9
+    cmp rax, rdi
     setne al
     movzx rax, al
     test rax, rax
@@ -6179,26 +6463,28 @@ ax_str_replace:
 .L_b_16:
     mov rax, 1
     mov rcx, rax
-    mov rax, r8
+    mov rax, rsi
     add rax, rcx
-    mov r8, rax
-    mov rcx, [r14]
-    mov rax, rdi
+    mov rsi, rax
+    mov r10, [rbp - 64]
+    mov rcx, [r10 + 8]
+    mov rax, r13
     add rax, rcx
-    mov rdi, rax
+    mov r13, rax
     jmp .L_b_18
 .L_b_17:
     mov rax, 1
     mov rcx, rax
-    mov rax, rdi
+    mov rax, r13
     add rax, rcx
-    mov rdi, rax
+    mov r13, rax
     jmp .L_b_18
 .L_b_18:
     jmp .L_b_7
 .L_b_19:
-    mov rax, r15
-    add rsp, 72
+    mov r10, [rbp - 72]
+    mov rax, r10
+    add rsp, 120
     pop r15
     pop r14
     pop r13
@@ -6211,29 +6497,27 @@ ax_str_replace:
 .L_b_20:
     jmp .L_b_21
 .L_b_21:
-    mov rbx, [r15]
-    mov rdx, [r13]
-    mov rcx, [r14]
+    mov r10, [rbp - 72]
+    mov rbx, [r10 + 8]
+    mov rdx, [r15 + 8]
+    mov r10, [rbp - 64]
+    mov rcx, [r10 + 8]
     mov rax, rdx
     sub rax, rcx
-    mov rcx, r8
+    mov rcx, rsi
     imul rcx, rax
-    mov r11, rbx
-    mov [rbp - 32], r11
-    mov r11, [rbp - 32]
-    add r11, rcx
-    mov [rbp - 32], r11
+    mov rsi, rbx
+    add rsi, rcx
     xor rcx, rcx
     mov rax, rcx
-    mov r11, [rbp - 32]
-    cmp r11, rax
+    cmp rsi, rax
     setl al
     movzx rax, al
     test rax, rax
     jne .L_b_22
     jmp .L_b_23
 .L_b_22:
-    mov rax, 324
+    mov rax, 531
     sub rsp, 32
     push rax
     pop rcx
@@ -6246,8 +6530,7 @@ ax_str_replace:
 .L_b_24:
     mov rcx, 1
     mov rax, rcx
-    mov r10, [rbp - 32]
-    mov rcx, r10
+    mov rcx, rsi
     add rcx, rax
     mov rax, rcx
     sub rsp, 32
@@ -6256,19 +6539,17 @@ ax_str_replace:
     call malloc
     add rsp, 32
     mov rax, rax
-    mov r11, rax
-    mov [rbp - 24], r11
+    mov rdi, rax
     xor rcx, rcx
     mov rax, rcx
-    mov r11, [rbp - 24]
-    cmp r11, rax
+    cmp rdi, rax
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_25
     jmp .L_b_26
 .L_b_25:
-    mov rax, 325
+    mov rax, 532
     sub rsp, 32
     push rax
     pop rcx
@@ -6280,36 +6561,49 @@ ax_str_replace:
     jmp .L_b_27
 .L_b_27:
     xor rax, rax
-    mov rbx, rax
+    mov rsi, rax
     xor rcx, rcx
     mov rax, rcx
-    mov rdi, rax
+    mov r13, rax
     jmp .L_b_28
 .L_b_28:
-    mov rax, [r15]
-    cmp rdi, rax
+    mov r10, [rbp - 72]
+    mov rax, [r10 + 8]
+    cmp r13, rax
     setl al
     movzx rax, al
     test rax, rax
     jne .L_b_29
     jmp .L_b_30
 .L_b_29:
-    xor rcx, rcx
-    cmp rdi, rsi
+    xor rbx, rbx
+    cmp r13, r12
     setle al
     movzx rax, al
     test rax, rax
     jne .L_b_31
     jmp .L_b_32
 .L_b_30:
-    xor rdx, rdx
-    mov rax, rdx
-    mov r11, [rbp - 24]
-    mov [r11], rax
-    mov r10, [rbp - 24]
-    mov rax, r10
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdi], rax
+    sub rsp, 32
+    mov rcx, rdi
+    call strlen
+    add rsp, 32
+    mov r11, rax
+    mov [rbp - 88], r11
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rcx, rax
+    mov [rcx], rdi
+    mov r10, [rbp - 88]
+    mov [rcx + 8], r10
+    mov rax, rcx
     mov rax, rax
-    add rsp, 72
+    add rsp, 120
     pop r15
     pop r14
     pop r13
@@ -6321,18 +6615,19 @@ ax_str_replace:
     ret
 .L_b_31:
     mov rax, 1
-    mov rcx, rax
+    mov rbx, rax
     xor rax, rax
     mov rdx, rax
     jmp .L_b_34
 .L_b_32:
     jmp .L_b_33
 .L_b_33:
-    test rcx, rcx
+    test rbx, rbx
     jne .L_b_40
     jmp .L_b_41
 .L_b_34:
-    mov rax, [r14]
+    mov r10, [rbp - 64]
+    mov rax, [r10 + 8]
     cmp rdx, rax
     setl al
     movzx rax, al
@@ -6340,11 +6635,11 @@ ax_str_replace:
     jne .L_b_35
     jmp .L_b_36
 .L_b_35:
-    mov rax, rdi
+    mov rax, r13
     add rax, rdx
     nop
     nop
-    mov r10, [rbp - 16]
+    mov r10, [rbp - 96]
     cmp rax, r10
     setne al
     movzx rax, al
@@ -6355,7 +6650,7 @@ ax_str_replace:
     jmp .L_b_33
 .L_b_37:
     xor rax, rax
-    mov rcx, rax
+    mov rbx, rax
     jmp .L_b_39
 .L_b_38:
     jmp .L_b_39
@@ -6367,7 +6662,7 @@ ax_str_replace:
     mov rdx, rax
     jmp .L_b_34
 .L_b_40:
-    mov rdx, [r13]
+    mov rdx, [r15 + 8]
     xor rcx, rcx
     mov rax, rcx
     cmp rdx, rax
@@ -6378,32 +6673,30 @@ ax_str_replace:
     jmp .L_b_44
 .L_b_41:
     nop
-    mov r10, [rbp - 8]
-    mov r11, [rbp - 24]
-    mov [r11], r10
+    mov r10, [rbp - 80]
+    mov [rdi], r10
     mov rax, 1
     mov rcx, rax
-    mov rax, rbx
+    mov rax, rsi
     add rax, rcx
-    mov rbx, rax
+    mov rsi, rax
     mov rax, 1
     mov rcx, rax
-    mov rax, rdi
+    mov rax, r13
     add rax, rcx
-    mov rdi, rax
+    mov r13, rax
     jmp .L_b_42
 .L_b_42:
     jmp .L_b_28
 .L_b_43:
-    mov r10, [rbp - 24]
-    mov rcx, r10
+    mov rcx, rdi
     mov rax, rcx
-    add rax, rbx
+    add rax, rsi
     mov rcx, rax
-    mov rax, [r13]
+    mov rax, [r15 + 8]
     sub rsp, 32
     push rax
-    push r12
+    push r14
     push rcx
     pop rcx
     pop rdx
@@ -6411,222 +6704,213 @@ ax_str_replace:
     call memcpy
     add rsp, 32
     mov rax, rax
-    mov rcx, [r13]
-    mov rax, rbx
+    mov rcx, [r15 + 8]
+    mov rax, rsi
     add rax, rcx
-    mov rbx, rax
+    mov rsi, rax
     jmp .L_b_45
 .L_b_44:
     jmp .L_b_45
 .L_b_45:
-    mov rcx, [r14]
-    mov rax, rdi
+    mov r10, [rbp - 64]
+    mov rcx, [r10 + 8]
+    mov rax, r13
     add rax, rcx
-    mov rdi, rax
+    mov r13, rax
     jmp .L_b_42
 
-main:
+pathbuf_new:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov rbx, rcx
+    sub rsp, 32
+    mov rcx, 8
+    call malloc
+    add rsp, 32
+    mov rax, rax
+    mov [rax], rbx
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+pathbuf_join:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 32
+.L_b_0:
+    mov rsi, rcx
+    mov rbx, rdx
+    sub rsp, 32
+    mov rcx, 8
+    call malloc
+    add rsp, 32
+    mov rdx, rax
+    mov rax, [rsi]
+    mov rcx, rax
+    add rcx, rax
+    mov rax, rcx
+    add rax, rbx
+    mov [rdx], rax
+    mov rax, rdx
+    add rsp, 32
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+pathbuf_parent:
     push rbp
     mov rbp, rsp
     push rbx
     push rsi
     push rdi
     push r12
-    sub rsp, 32
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
 .L_b_0:
-    sub rsp, 32
-    call __ax_runtime_init
-    add rsp, 32
-    mov rcx, 16
+    mov rbx, rcx
+    mov rdi, [rbx]
+    mov rcx, 1
     mov rax, rcx
-    sub rsp, 32
-    push rax
-    pop rcx
-    call malloc
-    add rsp, 32
-    mov rax, rax
-    mov rbx, rax
-    xor rcx, rcx
-    mov rax, rcx
-    cmp rbx, rax
-    sete al
+    mov rsi, rax
+    neg rsi
+    xor rax, rax
+    mov r12, rax
+    jmp .L_b_1
+.L_b_1:
+    mov rax, [rdi + 8]
+    cmp r12, rax
+    setl al
     movzx rax, al
     test rax, rax
-    jne .L_b_1
-    jmp .L_b_2
-.L_b_1:
-    mov rax, 1
-    mov rax, rax
-    push rax
-    sub rsp, 32
-    call __ax_runtime_shutdown
-    add rsp, 32
-    pop rax
-    add rsp, 32
-    pop r12
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-.L_b_2:
+    jne .L_b_2
     jmp .L_b_3
-.L_b_3:
-    mov rax, 42
-    mov [rbx], rax
-    mov rdx, rbx
-    mov rax, 8
+.L_b_2:
+    mov rax, [rdi]
     mov rcx, rax
-    mov rax, rdx
-    sub rax, rcx
-    mov rsi, rax
-    mov r12, rsi
-    and r12, r12
-    test r12, r12
+    mov rax, rcx
+    add rax, r12
+    mov r15, rax
+    mov r13, r15
+    and r13, r13
+    test r13, r13
     jne .L_b_1000001
     sub rsp, 32
-    call abort
+    call pathbuf_parent
     add rsp, 32
 .L_b_1000001:
-    mov rcx, rsi
+    mov rcx, r15
     sar rcx, 48
     and rcx, rcx
     test rcx, rcx
-    je .L_b_1000002
-    mov rax, [r12 - 8]
+    je .L_b_1000002
+    mov rax, [r13 - 8]
     and rax, rax
     cmp rcx, rax
     je .L_b_1000002
     sub rsp, 32
-    call abort
+    call pathbuf_parent
     add rsp, 32
 .L_b_1000002:
-    mov rsi, r12
-    mov rax, rbx
-    mov rcx, 4294967295
+    mov rdx, [r13]
+    and rdx, rdx
+    mov rcx, 47
     mov rax, rcx
-    mov rdx, rsi
-    mov rax, 48
-    mov rcx, rax
-    mov rax, rdx
-    mov rcx, rcx
-    shl rax, cl
-    mov rsi, rdi
-    mov rdi, rsi
-    and rdi, rdi
-    test rdi, rdi
+    cmp rdx, rax
+    sete bpl
+    movzx r13, bpl
+    mov r14, r15
+    and r14, r14
+    test r14, r14
     jne .L_b_1000003
     sub rsp, 32
-    call abort
+    call pathbuf_parent
     add rsp, 32
 .L_b_1000003:
-    mov rcx, rsi
+    mov rcx, r15
     sar rcx, 48
     and rcx, rcx
     test rcx, rcx
-    je .L_b_1000004
-    mov rax, [rdi - 8]
+    je .L_b_1000004
+    mov rax, [r14 - 8]
     and rax, rax
     cmp rcx, rax
     je .L_b_1000004
     sub rsp, 32
-    call abort
+    call pathbuf_parent
     add rsp, 32
 .L_b_1000004:
-    mov rax, rdi
-    mov rcx, [rax]
-    mov rax, 42
-    cmp rcx, rax
-    setne al
-    movzx rax, al
+    mov rdx, [r14]
+    and rdx, rdx
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, r13
+    or rax, rcx
     test rax, rax
     jne .L_b_4
     jmp .L_b_5
-.L_b_4:
-    mov rax, 2
-    mov rax, rax
-    push rax
-    sub rsp, 32
-    call __ax_runtime_shutdown
-    add rsp, 32
-    pop rax
-    add rsp, 32
-    pop r12
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
-.L_b_5:
-    jmp .L_b_6
-.L_b_6:
-    mov rax, 79
-    sub rsp, 32
-    push rax
-    pop rcx
-    call putchar
-    add rsp, 32
-    mov rax, rax
-    mov rax, 75
-    sub rsp, 32
-    push rax
-    pop rcx
-    call putchar
-    add rsp, 32
-    mov rax, rax
-    mov rax, 10
-    sub rsp, 32
-    push rax
-    pop rcx
-    call putchar
-    add rsp, 32
-    mov rax, rax
-    mov rax, rbx
-    sub rsp, 32
-    push rax
-    pop rcx
-    call free
-    add rsp, 32
-    mov rax, rax
-    mov rbx, rsi
-    and rbx, rbx
-    test rbx, rbx
-    jne .L_b_1000005
-    sub rsp, 32
-    call abort
-    add rsp, 32
-.L_b_1000005:
-    mov rcx, rsi
-    sar rcx, 48
-    and rcx, rcx
-    test rcx, rcx
-    je .L_b_1000006
-    mov rax, [rbx - 8]
-    and rax, rax
-    cmp rcx, rax
-    je .L_b_1000006
-    sub rsp, 32
-    call abort
-    add rsp, 32
-.L_b_1000006:
-    mov rax, rbx
-    mov rcx, [rax]
-    mov rax, 42
-    cmp rcx, rax
-    setne al
+.L_b_3:
+    xor rax, rax
+    cmp rsi, rax
+    setge al
     movzx rax, al
     test rax, rax
     jne .L_b_7
     jmp .L_b_8
+.L_b_4:
+    mov rsi, r12
+    jmp .L_b_6
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    mov rcx, 1
+    mov rax, r12
+    add rax, rcx
+    mov r12, rax
+    jmp .L_b_1
 .L_b_7:
-    mov rax, 3
-    mov rax, rax
-    push rax
+    xor rdx, rdx
+    mov rcx, [rax]
+    mov rax, [rcx]
     sub rsp, 32
-    call __ax_runtime_shutdown
+    push rsi
+    push rdx
+    push rdi
+    pop rcx
+    pop rdx
+    pop r8
+    call pathbuf_parent
     add rsp, 32
-    pop rax
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
     add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
     pop r12
     pop rdi
     pop rsi
@@ -6636,18 +6920,3719 @@ main:
 .L_b_8:
     jmp .L_b_9
 .L_b_9:
-    xor rax, rax
-    mov rax, rax
-    push rax
-    sub rsp, 32
-    call __ax_runtime_shutdown
-    add rsp, 32
-    pop rax
-    add rsp, 32
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
     pop r12
     pop rdi
     pop rsi
     pop rbx
     pop rbp
     ret
+
+pathbuf_file_name:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+.L_b_0:
+    mov rsi, rcx
+    mov rdi, [rsi]
+    mov rcx, 1
+    mov rax, rcx
+    mov r12, rax
+    neg r12
+    xor rax, rax
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_1:
+    mov rax, [rdi + 8]
+    cmp rbx, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    mov rax, [rdi]
+    mov rcx, rax
+    mov rax, rcx
+    add rax, rbx
+    mov r15, rax
+    mov r13, r15
+    and r13, r13
+    test r13, r13
+    jne .L_b_1000001
+    sub rsp, 32
+    call pathbuf_file_name
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, r15
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [r13 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call pathbuf_file_name
+    add rsp, 32
+.L_b_1000002:
+    mov rdx, [r13]
+    and rdx, rdx
+    mov rcx, 47
+    mov rax, rcx
+    cmp rdx, rax
+    sete bpl
+    movzx r13, bpl
+    mov r14, r15
+    and r14, r14
+    test r14, r14
+    jne .L_b_1000003
+    sub rsp, 32
+    call pathbuf_file_name
+    add rsp, 32
+.L_b_1000003:
+    mov rcx, r15
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov rax, [r14 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call pathbuf_file_name
+    add rsp, 32
+.L_b_1000004:
+    mov rdx, [r14]
+    and rdx, rdx
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, r13
+    or rax, rcx
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_3:
+    xor rax, rax
+    cmp r12, rax
+    setge al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_4:
+    mov r12, rbx
+    jmp .L_b_6
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    mov rcx, 1
+    mov rax, rbx
+    add rax, rcx
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_7:
+    mov rax, 1
+    mov rbx, r12
+    add rbx, rax
+    mov rdx, [rdi + 8]
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push rdx
+    push rbx
+    push rdi
+    pop rcx
+    pop rdx
+    pop r8
+    call pathbuf_file_name
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+pathbuf_extension:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+.L_b_0:
+    mov rsi, rcx
+    mov rdi, [rsi]
+    mov rcx, 1
+    mov rax, rcx
+    mov r13, rax
+    neg r13
+    mov rcx, 1
+    mov rax, rcx
+    mov r12, rax
+    neg r12
+    xor rax, rax
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_1:
+    mov rax, [rdi + 8]
+    cmp rbx, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    mov rax, [rdi]
+    mov rcx, rax
+    mov rax, rcx
+    add rax, rbx
+    mov r15, rax
+    mov r14, r15
+    and r14, r14
+    test r14, r14
+    jne .L_b_1000001
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, r15
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [r14 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000002:
+    mov rdx, [r14]
+    and rdx, rdx
+    mov rcx, 47
+    mov rax, rcx
+    cmp rdx, rax
+    sete sil
+    movzx r14, sil
+    mov r11, r15
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    mov r11, [rbp - 64]
+    and r11, r10
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    mov r11, [rbp - 64]
+    test r11, r10
+    jne .L_b_1000003
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000003:
+    mov rcx, r15
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov r10, [rbp - 64]
+    mov rax, [r10 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000004:
+    mov r10, [rbp - 64]
+    mov rdx, [r10]
+    and rdx, rdx
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, r14
+    or rax, rcx
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_3:
+    cmp r12, r13
+    setg al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
+.L_b_4:
+    mov r13, rbx
+    jmp .L_b_6
+.L_b_5:
+    mov r14, r15
+    and r14, r14
+    test r14, r14
+    jne .L_b_1000005
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000005:
+    mov rcx, r15
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000006
+    mov rax, [r14 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000006
+    sub rsp, 32
+    call pathbuf_extension
+    add rsp, 32
+.L_b_1000006:
+    mov rdx, [r14]
+    and rdx, rdx
+    mov rcx, 46
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_6:
+    mov rcx, 1
+    mov rax, rbx
+    add rax, rcx
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_7:
+    mov r12, rbx
+    jmp .L_b_9
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    jmp .L_b_6
+.L_b_10:
+    mov rax, 1
+    mov rbx, r12
+    add rbx, rax
+    mov rdx, [rdi + 8]
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push rdx
+    push rbx
+    push rdi
+    pop rcx
+    pop rdx
+    pop r8
+    call pathbuf_extension
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+pathbuf_with_extension:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 104
+.L_b_0:
+    mov rsi, rcx
+    mov rbx, rdx
+    mov rdi, [rsi]
+    mov rcx, 1
+    mov rax, rcx
+    mov r14, rax
+    neg r14
+    mov rcx, 1
+    mov rax, rcx
+    mov r12, rax
+    neg r12
+    xor rax, rax
+    mov r13, rax
+    jmp .L_b_1
+.L_b_1:
+    mov rax, [rdi + 8]
+    cmp r13, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    mov rax, [rdi]
+    mov rcx, rax
+    mov rax, rcx
+    add rax, r13
+    mov r11, rax
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    mov r15, r10
+    and r15, r15
+    test r15, r15
+    jne .L_b_1000001
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000001:
+    mov r10, [rbp - 64]
+    mov rcx, r10
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [r15 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000002:
+    mov rdx, [r15]
+    and rdx, rdx
+    mov rcx, 47
+    mov rax, rcx
+    cmp rdx, rax
+    sete dil
+    movzx r15, dil
+    mov r10, [rbp - 64]
+    mov r11, r10
+    mov [rbp - 72], r11
+    mov r10, [rbp - 72]
+    mov r11, [rbp - 72]
+    and r11, r10
+    mov [rbp - 72], r11
+    mov r10, [rbp - 72]
+    mov r11, [rbp - 72]
+    test r11, r10
+    jne .L_b_1000003
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000003:
+    mov r10, [rbp - 64]
+    mov rcx, r10
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov r10, [rbp - 72]
+    mov rax, [r10 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000004:
+    mov r10, [rbp - 72]
+    mov rdx, [r10]
+    and rdx, rdx
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, r15
+    or rax, rcx
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_3:
+    cmp r12, r14
+    setg al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
+.L_b_4:
+    mov r14, r13
+    jmp .L_b_6
+.L_b_5:
+    mov r10, [rbp - 64]
+    mov r15, r10
+    and r15, r15
+    test r15, r15
+    jne .L_b_1000005
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000005:
+    mov r10, [rbp - 64]
+    mov rcx, r10
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000006
+    mov rax, [r15 - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000006
+    sub rsp, 32
+    call pathbuf_with_extension
+    add rsp, 32
+.L_b_1000006:
+    mov rdx, [r15]
+    and rdx, rdx
+    mov rcx, 46
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_6:
+    mov rcx, 1
+    mov rax, r13
+    add rax, rcx
+    mov r13, rax
+    jmp .L_b_1
+.L_b_7:
+    mov r12, r13
+    jmp .L_b_9
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    jmp .L_b_6
+.L_b_10:
+    xor rdx, rdx
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push r12
+    push rdx
+    push rdi
+    pop rcx
+    pop rdx
+    pop r8
+    call pathbuf_with_extension
+    add rsp, 32
+    mov rdx, rax
+    mov rax, 533
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    add rax, rbx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 104
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    mov rax, 533
+    mov rcx, rdi
+    add rcx, rax
+    mov rax, rcx
+    add rax, rbx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 104
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+pathbuf_is_absolute:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 32
+.L_b_0:
+    mov rdi, rcx
+    mov rbx, [rdi]
+    mov rcx, [rbx + 8]
+    xor rax, rax
+    cmp rcx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    xor rax, rax
+    mov rax, rax
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_4:
+    mov rcx, [rbx + 8]
+    mov rax, 2
+    cmp rcx, rax
+    setge al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_5:
+    mov r12, [rbx]
+    mov rsi, r12
+    and rsi, rsi
+    test rsi, rsi
+    jne .L_b_1000001
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, r12
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [rsi - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000002:
+    mov rdx, [rsi]
+    and rdx, rdx
+    mov rcx, 47
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, [rbx]
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rdx
+    add rax, rcx
+    mov r14, rax
+    mov rax, [rbx]
+    mov rdx, rax
+    mov rcx, 1
+    mov rax, rdx
+    add rax, rcx
+    mov r12, rax
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000003
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000003:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000004:
+    mov rdx, [rbx]
+    and rdx, rdx
+    mov rcx, 97
+    mov rax, rcx
+    cmp rdx, rax
+    setge sil
+    movzx rsi, sil
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000005
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000005:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000006
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000006
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000006:
+    mov rdx, [rbx]
+    and rdx, rdx
+    mov rcx, 122
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    mov r13, rsi
+    and r13, rax
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000007
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000007:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000008
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000008
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000008:
+    mov rdx, [rbx]
+    and rdx, rdx
+    mov rcx, 65
+    mov rax, rcx
+    cmp rdx, rax
+    setge sil
+    movzx rsi, sil
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000009
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000009:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000010
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000010
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000010:
+    mov rdx, [rbx]
+    and rdx, rdx
+    mov rcx, 90
+    mov rax, rcx
+    cmp rdx, rax
+    setle cl
+    movzx rcx, cl
+    mov rax, rsi
+    and rax, rcx
+    mov rsi, r13
+    or rsi, rax
+    mov rbx, r12
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000011
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000011:
+    mov rcx, r12
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000012
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000012
+    sub rsp, 32
+    call pathbuf_is_absolute
+    add rsp, 32
+.L_b_1000012:
+    mov rdx, [rbx]
+    and rdx, rdx
+    mov rcx, 58
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, rsi
+    and rax, rcx
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    xor rax, rax
+    mov rax, rax
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_10:
+    mov rax, 1
+    mov rax, rax
+    add rsp, 32
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    jmp .L_b_9
+
+pathbuf_to_str:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+.L_b_0:
+    mov rcx, rcx
+    mov rax, [rcx]
+    mov rax, rax
+    add rsp, 32
+    pop rbp
+    ret
+
+str_to_c_str:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+.L_b_0:
+    mov rsi, rcx
+    mov r12, [rsi + 8]
+    mov rcx, 1
+    mov rax, r12
+    add rax, rcx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov r14, rax
+    jmp .L_b_1
+.L_b_1:
+    cmp r14, r12
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    mov rax, rbx
+    mov r15, rax
+    add r15, r14
+    mov rcx, [rsi]
+    mov rax, rcx
+    mov r13, rax
+    add r13, r14
+    mov rdi, r13
+    and rdi, rdi
+    test rdi, rdi
+    jne .L_b_1000001
+    sub rsp, 32
+    call str_to_c_str
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, r13
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [rdi - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call str_to_c_str
+    add rsp, 32
+.L_b_1000002:
+    mov rcx, [rdi]
+    mov rax, rcx
+    mov [r15], rax
+    mov rcx, 1
+    mov rax, r14
+    add rax, rcx
+    mov r14, rax
+    jmp .L_b_1
+.L_b_3:
+    mov rax, rbx
+    mov rdx, rax
+    add rdx, r12
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdx], rax
+    mov rax, rbx
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+metadata:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 88
+.L_b_0:
+    mov r12, rcx
+    sub rsp, 32
+    push r12
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r14, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    push r14
+    pop rcx
+    call GetFileAttributesA
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    push r14
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    mov rcx, 4294967295
+    mov rax, rcx
+    cmp rbx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    mov rax, 144
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov rbx, rax
+    xor r13, r13
+    mov rax, 4
+    mov r15, rax
+    mov r9, r14
+    mov r8, rbx
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rdi
+    push r8
+    push r9
+    push r15
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rsi
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r14
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r13, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 534
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    mov rcx, 16
+    mov rax, rcx
+    xor rax, rax
+    mov rcx, rax
+    cmp rax, rcx
+    setne dil
+    movzx rdi, dil
+    mov rcx, 1024
+    mov rax, rcx
+    xor rax, rax
+    mov rcx, rax
+    cmp rax, rcx
+    setne sil
+    movzx rsi, sil
+    sub rsp, 32
+    mov rcx, 32
+    call malloc
+    add rsp, 32
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdx], rax
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdx + 8], rax
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdx + 16], rax
+    cmp rdi, 0
+    sete al
+    movzx rax, al
+    mov [rdx + 24], rax
+    mov [rdx + 25], rdi
+    mov [rdx + 26], rsi
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rdx + 28], rax
+    sub rsp, 32
+    push rdx
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    mov rax, 534
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    mov rdx, rbx
+    mov rcx, 24
+    mov rax, rdx
+    add rax, rcx
+    mov rdi, rax
+    mov rsi, rdi
+    and rsi, rsi
+    test rsi, rsi
+    jne .L_b_1000001
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, rdi
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [rsi - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000002:
+    mov r13, [rsi]
+    and r13, r13
+    mov rdx, rbx
+    mov rcx, 48
+    mov rax, rdx
+    add rax, rcx
+    mov rdi, rax
+    mov rsi, rdi
+    and rsi, rsi
+    test rsi, rsi
+    jne .L_b_1000003
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000003:
+    mov rcx, rdi
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov rax, [rsi - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000004:
+    mov r15, [rsi]
+    mov rdx, rbx
+    mov rcx, 88
+    mov rax, rdx
+    add rax, rcx
+    mov rdi, rax
+    mov rsi, rdi
+    and rsi, rsi
+    test rsi, rsi
+    jne .L_b_1000005
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000005:
+    mov rcx, rdi
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000006
+    mov rax, [rsi - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000006
+    sub rsp, 32
+    call metadata
+    add rsp, 32
+.L_b_1000006:
+    mov r14, [rsi]
+    mov rcx, 61440
+    mov rax, rcx
+    mov rax, 16384
+    mov rcx, rax
+    cmp rax, rcx
+    sete dil
+    movzx rdi, dil
+    mov rcx, 61440
+    mov rax, rcx
+    mov rax, 40960
+    mov rcx, rax
+    cmp rax, rcx
+    sete sil
+    movzx rsi, sil
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    mov rcx, 32
+    call malloc
+    add rsp, 32
+    mov rbx, rax
+    mov [rbx], r15
+    mov rax, 1000000000
+    mov rcx, rax
+    mov rax, r14
+    imul rax, rcx
+    mov [rbx + 8], rax
+    xor rcx, rcx
+    mov rax, rcx
+    mov [rbx + 16], rax
+    cmp rdi, 0
+    sete dl
+    movzx rdx, dl
+    cmp rsi, 0
+    sete cl
+    movzx rcx, cl
+    mov rax, rdx
+    and rax, rcx
+    mov [rbx + 24], rax
+    mov [rbx + 25], rdi
+    mov [rbx + 26], rsi
+    mov [rbx + 28], r13
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+exists:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov rbx, rcx
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call metadata
+    add rsp, 32
+    mov rcx, rax
+    mov rax, [rcx]
+    sub rsp, 32
+    call exists
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+
+create_dir:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 80
+.L_b_0:
+    mov rbx, rcx
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r13, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 32
+    push rax
+    push r13
+    pop rcx
+    pop rdx
+    call CreateDirectoryA
+    add rsp, 32
+    mov rsi, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp rsi, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    xor r12, r12
+    mov rax, 83
+    mov r14, rax
+    mov r9, r13
+    mov rax, 511
+    mov r8, rax
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rdi
+    push r8
+    push r9
+    push r14
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rsi
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r12, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 535
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, 535
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+create_dir_all:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 40
+.L_b_0:
+    mov rdi, rcx
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call exists
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_parent
+    add rsp, 32
+    mov rbx, rax
+    mov rax, [rbx]
+    sub rsp, 32
+    call create_dir_all
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_4:
+    mov rax, [rbx]
+    sub rsp, 32
+    call create_dir_all
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_to_str
+    add rsp, 32
+    mov rsi, rax
+    mov rcx, [rsi + 8]
+    xor rax, rax
+    cmp rcx, rax
+    setg al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call create_dir
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    sub rsp, 32
+    push rsi
+    pop rcx
+    call create_dir_all
+    add rsp, 32
+    mov rbx, rax
+    mov rax, [rbx]
+    sub rsp, 32
+    call create_dir_all
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    jmp .L_b_6
+.L_b_10:
+    mov rax, rbx
+    add rsp, 40
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    jmp .L_b_9
+
+remove_file:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 80
+.L_b_0:
+    mov rbx, rcx
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r13, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    push r13
+    pop rcx
+    call DeleteFileA
+    add rsp, 32
+    mov rsi, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp rsi, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    xor r12, r12
+    mov rax, 87
+    mov r14, rax
+    mov r9, r13
+    xor rax, rax
+    mov r8, rax
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rdi
+    push r8
+    push r9
+    push r14
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rsi
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r12, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 536
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, 536
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+remove_dir:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    sub rsp, 80
+.L_b_0:
+    mov rbx, rcx
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r13, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    push r13
+    pop rcx
+    call RemoveDirectoryA
+    add rsp, 32
+    mov rsi, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp rsi, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    xor r12, r12
+    mov rax, 84
+    mov r14, rax
+    mov r9, r13
+    xor rax, rax
+    mov r8, rax
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rdi
+    push r8
+    push r9
+    push r14
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rsi
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r12, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 537
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, 537
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 80
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+rename:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 88
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 64], r11
+    mov r15, rdx
+    sub rsp, 32
+    mov r10, [rbp - 64]
+    push r10
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r14, rax
+    sub rsp, 32
+    push r15
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r13, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    push r13
+    push r14
+    pop rcx
+    pop rdx
+    call MoveFileA
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    push r14
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp rbx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    xor r12, r12
+    mov rax, 82
+    mov r9, rax
+    mov r8, r14
+    mov rdi, r13
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push rdi
+    push r8
+    push r9
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r14
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r12, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 538
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, 538
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+copy:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 88
+.L_b_0:
+    mov rsi, rcx
+    mov rbx, rdx
+    sub rsp, 32
+    push rsi
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r13, rax
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r12, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 32
+    push rax
+    push r12
+    push r13
+    pop rcx
+    pop rdx
+    pop r8
+    call CopyFileA
+    add rsp, 32
+    mov rdi, rax
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push r12
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp rdi, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    sub rsp, 32
+    push r13
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push r12
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    mov rax, 540
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    add rsp, 88
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    mov rax, 539
+    sub rsp, 32
+    push rax
+    pop rcx
+    call q
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call msg
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+temp_dir:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 120
+.L_b_0:
+    mov rax, 541
+    sub rsp, 32
+    push rax
+    pop rcx
+    call actor
+    add rsp, 32
+    mov rbx, rax
+    mov rax, [rbx]
+    sub rsp, 32
+    call temp_dir
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    mov rax, [rbx]
+    sub rsp, 32
+    call temp_dir
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 120
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    mov rax, 542
+    sub rsp, 32
+    push rax
+    pop rcx
+    call actor
+    add rsp, 32
+    mov rbx, rax
+    mov rax, [rbx]
+    sub rsp, 32
+    call temp_dir
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_4:
+    mov rax, [rbx]
+    sub rsp, 32
+    call temp_dir
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 120
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_7:
+    mov rax, 543
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 120
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    mov rax, 544
+    sub rsp, 32
+    push rax
+    pop rcx
+    call pathbuf_new
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 120
+    pop rbx
+    pop rbp
+    ret
+
+trap_signal:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 32
+.L_b_0:
+    mov rcx, rcx
+    mov rax, rdx
+    add rsp, 32
+    pop rbp
+    ret
+
+parse_cmdline:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 56
+.L_b_0:
+    mov r12, rcx
+    mov rax, [rax]
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+    mov rdi, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp r12, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    mov rax, rdi
+    add rsp, 56
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    xor rax, rax
+    mov rsi, rax
+    jmp .L_b_4
+.L_b_4:
+    mov rax, r12
+    mov r13, rax
+    add r13, rsi
+    mov rbx, r13
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000001
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000001:
+    mov rcx, r13
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000002
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000002
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000002:
+    mov rdx, [rbx]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_5:
+    jmp .L_b_7
+.L_b_6:
+    mov rax, rdi
+    add rsp, 56
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    mov rax, r12
+    mov r13, rax
+    add r13, rsi
+    mov rbx, r13
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000003
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000003:
+    mov rcx, r13
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000004
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000004
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000004:
+    mov rdx, [rbx]
+    mov rcx, 32
+    mov rax, rcx
+    cmp rdx, rax
+    sete bpl
+    movzx r13, bpl
+    mov rax, r12
+    mov r14, rax
+    add r14, rsi
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000005
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000005:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000006
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000006
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000006:
+    mov rdx, [rbx]
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov r14, r13
+    or r14, rax
+    mov rax, r12
+    mov r13, rax
+    add r13, rsi
+    mov rbx, r13
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000007
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000007:
+    mov rcx, r13
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000008
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000008
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000008:
+    mov rdx, [rbx]
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov r13, r14
+    or r13, rax
+    mov rax, r12
+    mov r14, rax
+    add r14, rsi
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000009
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000009:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000010
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000010
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000010:
+    mov rdx, [rbx]
+    mov rcx, 92
+    mov rax, rcx
+    cmp rdx, rax
+    sete cl
+    movzx rcx, cl
+    mov rax, r13
+    or rax, rcx
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_8:
+    mov rcx, 1
+    mov rax, rsi
+    add rax, rcx
+    mov rsi, rax
+    jmp .L_b_7
+.L_b_9:
+    mov rax, r12
+    mov r13, rax
+    add r13, rsi
+    mov rbx, r13
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000011
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000011:
+    mov rcx, r13
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000012
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000012
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000012:
+    mov rdx, [rbx]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_10
+    jmp .L_b_11
+.L_b_10:
+    jmp .L_b_12
+.L_b_11:
+    jmp .L_b_12
+.L_b_12:
+    mov rax, [rax]
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+    mov r13, rax
+    xor r11, r11
+    mov [rbp - 72], r11
+    jmp .L_b_13
+.L_b_13:
+    mov rax, r12
+    mov r14, rax
+    add r14, rsi
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000013
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000013:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000014
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000014
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000014:
+    mov rdx, [rbx]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_14
+    jmp .L_b_15
+.L_b_14:
+    mov rax, r12
+    mov r14, rax
+    add r14, rsi
+    mov rbx, r14
+    and rbx, rbx
+    test rbx, rbx
+    jne .L_b_1000015
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000015:
+    mov rcx, r14
+    sar rcx, 48
+    and rcx, rcx
+    test rcx, rcx
+    je .L_b_1000016
+    mov rax, [rbx - 8]
+    and rax, rax
+    cmp rcx, rax
+    je .L_b_1000016
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+.L_b_1000016:
+    mov r11, [rbx]
+    mov [rbp - 64], r11
+    mov rcx, 34
+    mov rax, rcx
+    mov r11, [rbp - 64]
+    cmp r11, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_16
+    jmp .L_b_17
+.L_b_15:
+    mov rax, [r13]
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+    mov r15, rax
+    mov rcx, 1
+    mov rax, r15
+    add rax, rcx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov r14, rax
+    xor rax, rax
+    mov rbx, rax
+    jmp .L_b_22
+.L_b_16:
+    mov r11, [rbp - 72]
+    cmp r11, 0
+    sete al
+    movzx rax, al
+    mov r11, rax
+    mov [rbp - 72], r11
+    jmp .L_b_18
+.L_b_17:
+    mov rcx, 32
+    mov rax, rcx
+    mov r11, [rbp - 64]
+    cmp r11, rax
+    sete cl
+    movzx rcx, cl
+    mov rdx, 92
+    mov rax, rdx
+    mov r11, [rbp - 64]
+    cmp r11, rax
+    sete al
+    movzx rax, al
+    mov rdx, rcx
+    or rdx, rax
+    mov r11, [rbp - 72]
+    cmp r11, 0
+    sete cl
+    movzx rcx, cl
+    mov rax, rdx
+    and rax, rcx
+    test rax, rax
+    jne .L_b_19
+    jmp .L_b_20
+.L_b_18:
+    mov rcx, 1
+    mov rax, rsi
+    add rax, rcx
+    mov rsi, rax
+    jmp .L_b_13
+.L_b_19:
+    jmp .L_b_21
+.L_b_20:
+    jmp .L_b_21
+.L_b_21:
+    mov rax, [r13]
+    sub rsp, 32
+    mov r10, [rbp - 64]
+    push r10
+    pop rcx
+    call parse_cmdline
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_18
+.L_b_22:
+    cmp rbx, r15
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_23
+    jmp .L_b_24
+.L_b_23:
+    mov rax, [r13]
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call parse_cmdline
+    add rsp, 32
+    mov rax, rax
+    mov [r14], rax
+    mov rcx, 1
+    mov rax, rbx
+    add rax, rcx
+    mov rbx, rax
+    jmp .L_b_22
+.L_b_24:
+    xor rcx, rcx
+    mov rax, rcx
+    mov [r14], rax
+    sub rsp, 32
+    mov rcx, r14
+    call strlen
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rax, rax
+    mov [rax], r14
+    mov [rax + 8], rbx
+    mov rcx, rax
+    mov rax, [rdi]
+    sub rsp, 32
+    push rcx
+    pop rcx
+    call parse_cmdline
+    add rsp, 32
+    mov rax, rax
+    mov rax, [r13]
+    sub rsp, 32
+    call parse_cmdline
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_4
+
+parse_proc_cmdline:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+.L_b_0:
+    mov r14, rcx
+    mov r13, rdx
+    mov rax, [rax]
+    sub rsp, 32
+    call parse_proc_cmdline
+    add rsp, 32
+    mov r12, rax
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    jmp .L_b_1
+.L_b_1:
+    cmp rsi, r13
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    nop
+    xor rax, rax
+    mov rcx, rax
+    cmp rax, rcx
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_3:
+    mov rax, r12
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    cmp rsi, rdi
+    setg al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    mov rcx, 1
+    mov rax, rsi
+    add rax, rcx
+    mov rsi, rax
+    jmp .L_b_1
+.L_b_7:
+    mov rbx, rsi
+    sub rbx, rdi
+    mov rcx, 1
+    mov rax, rbx
+    add rax, rcx
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov r15, rax
+    mov rax, r14
+    add rax, rdi
+    sub rsp, 32
+    push rbx
+    push rax
+    push r15
+    pop rcx
+    pop rdx
+    pop r8
+    call memcpy
+    add rsp, 32
+    mov rax, rax
+    xor rcx, rcx
+    mov rax, rcx
+    mov [r15], rax
+    sub rsp, 32
+    mov rcx, r15
+    call strlen
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rax, rax
+    mov [rax], r15
+    mov [rax + 8], rbx
+    mov rcx, rax
+    mov rax, [r12]
+    sub rsp, 32
+    push rcx
+    pop rcx
+    call parse_proc_cmdline
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_9
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    mov rcx, 1
+    mov rax, rsi
+    add rax, rcx
+    mov rdi, rax
+    jmp .L_b_6
+
+linux_read_file:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 40
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 64], r11
+    mov r15, rdx
+    mov r14, r8
+    sub rsp, 32
+    mov r10, [rbp - 64]
+    push r10
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov r12, rax
+    xor r13, r13
+    mov rax, 2
+    mov r9, rax
+    mov r8, r12
+    xor rax, rax
+    mov rdi, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push rdi
+    push r8
+    push r9
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    sub rsp, 32
+    push r12
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rax, rax
+    cmp r13, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    mov rcx, 1
+    mov rax, rcx
+    neg rax
+    mov rax, rax
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    jmp .L_b_3
+.L_b_3:
+    xor r12, r12
+    xor rax, rax
+    mov r9, rax
+    mov r8, r13
+    mov rdi, r15
+    mov rsi, r14
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push rdi
+    push r8
+    push r9
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    mov rax, 3
+    mov r8, rax
+    mov rdi, r13
+    xor rax, rax
+    mov r9, rax
+    xor rax, rax
+    mov rsi, rax
+    xor rax, rax
+    mov rbx, rax
+    xor rax, rax
+    mov rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    sub rsp, 64
+    push rsi
+    push r9
+    push rdi
+    push r8
+    pop rcx
+    pop rdx
+    pop r8
+    pop r9
+    mov [rsp + 32], rbx
+    mov [rsp + 40], rdx
+    mov [rsp + 48], rax
+    call syscall
+    add rsp, 64
+    mov rax, rax
+    mov rax, r12
+    add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+args:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 64
+.L_b_0:
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    call GetCommandLineA
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rax
+    pop rcx
+    call parse_cmdline
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 64
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_2:
+    mov rax, 8192
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov rsi, rax
+    mov rcx, 545
+    mov rax, 8192
+    sub rsp, 32
+    push rax
+    push rsi
+    push rcx
+    pop rcx
+    pop rdx
+    pop r8
+    call linux_read_file
+    add rsp, 32
+    mov rbx, rax
+    xor rax, rax
+    cmp rbx, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_3:
+    add rsp, 64
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    sub rsp, 32
+    push rsi
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    mov rax, [rax]
+    sub rsp, 32
+    call args
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 64
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    push rbx
+    push rsi
+    pop rcx
+    pop rdx
+    call parse_proc_cmdline
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    push rsi
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    mov rax, rbx
+    add rsp, 64
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+
+env:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 88
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 64], r11
+    test rax, rax
+    jne .L_b_1
+    jmp .L_b_2
+.L_b_1:
+    sub rsp, 32
+    mov r10, [rbp - 64]
+    push r10
+    pop rcx
+    call str_to_c_str
+    add rsp, 32
+    mov rbx, rax
+    mov rax, 4096
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov rdi, rax
+    mov rcx, 4096
+    mov rax, rcx
+    sub rsp, 32
+    push rax
+    push rdi
+    push rbx
+    pop rcx
+    pop rdx
+    pop r8
+    call GetEnvironmentVariableA
+    add rsp, 32
+    mov r12, rax
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp r12, rax
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_4
+    jmp .L_b_5
+.L_b_2:
+    mov rax, 16384
+    sub rsp, 32
+    push rax
+    pop rcx
+    call alloc
+    add rsp, 32
+    mov rax, rax
+    mov r15, rax
+    mov rcx, 546
+    mov rax, 16384
+    sub rsp, 32
+    push rax
+    push r15
+    push rcx
+    pop rcx
+    pop rdx
+    pop r8
+    call linux_read_file
+    add rsp, 32
+    mov r14, rax
+    xor rax, rax
+    cmp r14, rax
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_7
+    jmp .L_b_8
+.L_b_3:
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_4:
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    jmp .L_b_6
+.L_b_6:
+    sub rsp, 32
+    mov rcx, rdi
+    call strlen
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rax, rax
+    mov [rax], rdi
+    mov [rax + 8], rbx
+    mov rsi, rax
+    xor rbx, rbx
+    mov rdx, r12
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push rdx
+    push rbx
+    push rsi
+    pop rcx
+    pop rdx
+    pop r8
+    call env
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    push rdi
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_7:
+    sub rsp, 32
+    push r15
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_8:
+    jmp .L_b_9
+.L_b_9:
+    mov rax, 547
+    mov r10, [rbp - 64]
+    mov r13, r10
+    add r13, rax
+    xor rax, rax
+    mov r12, rax
+    xor rax, rax
+    mov rdi, rax
+    jmp .L_b_10
+.L_b_10:
+    cmp rdi, r14
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_11
+    jmp .L_b_12
+.L_b_11:
+    nop
+    xor rax, rax
+    mov rcx, rax
+    cmp rax, rcx
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_13
+    jmp .L_b_14
+.L_b_12:
+    sub rsp, 32
+    push r15
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_13:
+    cmp rdi, r12
+    setg al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_16
+    jmp .L_b_17
+.L_b_14:
+    jmp .L_b_15
+.L_b_15:
+    mov rcx, 1
+    mov rax, rdi
+    add rax, rcx
+    mov rdi, rax
+    jmp .L_b_10
+.L_b_16:
+    sub rsp, 32
+    mov rcx, r15
+    call strlen
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    mov rcx, 16
+    call malloc
+    add rsp, 32
+    mov rax, rax
+    mov [rax], r15
+    mov [rax + 8], rbx
+    mov rdx, rax
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push rdi
+    push r12
+    push rdx
+    pop rcx
+    pop rdx
+    pop r8
+    call env
+    add rsp, 32
+    mov rsi, rax
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push r13
+    push rsi
+    pop rcx
+    pop rdx
+    call env
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_19
+    jmp .L_b_20
+.L_b_17:
+    jmp .L_b_18
+.L_b_18:
+    mov rcx, 1
+    mov rax, rdi
+    add rax, rcx
+    mov r12, rax
+    jmp .L_b_15
+.L_b_19:
+    mov rbx, [r13 + 8]
+    mov rdx, [rsi]
+    mov rcx, [rax]
+    mov rax, [rcx]
+    sub rsp, 32
+    push rdx
+    push rbx
+    push rsi
+    pop rcx
+    pop rdx
+    pop r8
+    call env
+    add rsp, 32
+    mov rbx, rax
+    sub rsp, 32
+    push r15
+    pop rcx
+    call free
+    add rsp, 32
+    mov rax, rax
+    sub rsp, 32
+    push rbx
+    pop rcx
+    call total_executed
+    add rsp, 32
+    mov rax, rax
+    mov rax, rax
+    add rsp, 88
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
+    ret
+.L_b_20:
+    jmp .L_b_21
+.L_b_21:
+    jmp .L_b_18
+
+main:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push rsi
+    sub rsp, 64
+.L_b_0:
+    sub rsp, 32
+    call __ax_runtime_init
+    add rsp, 32
+    xor rax, rax
+    mov rsi, 30
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_1:
+    cmp rbx, rsi
+    setl al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_2:
+    mov rax, 548
+    sub rsp, 32
+    push rax
+    pop rcx
+    call ax_println_str
+    add rsp, 32
+    mov rax, rax
+    mov rcx, 1
+    mov rax, rbx
+    add rax, rcx
+    mov rbx, rax
+    jmp .L_b_1
+.L_b_3:
+    xor rax, rax
+    mov rax, rax
+    sub rsp, 48
+    mov [rsp + 32], rax
+    call __ax_runtime_shutdown
+    mov rax, [rsp + 32]
+    add rsp, 48
+    add rsp, 64
+    pop rsi
+    pop rbx
+    pop rbp
+    mov ecx, eax
+    sub rsp, 40
+    call ExitProcess
 

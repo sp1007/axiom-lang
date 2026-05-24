@@ -19,9 +19,21 @@ pub fn strip_quotes(s: str) -> str:
 
 pub fn format_int(val: i64) -> str:
     if val == 0 as i64:
-        return "0"
+        let buf = @alloc(2) as ptr[u8]
+        buf[0] = '0' as u8
+        buf[1] = 0 as u8
+        let result = alloc_str_from_raw(buf, 1)
+        @free(buf)
+        return result
     if val == -9223372036854775808 as i64:
-        return "-9223372036854775808"
+        let s = "-9223372036854775808"
+        let len = std.string.len(s)
+        let buf = @alloc(len + 1) as ptr[u8]
+        @memcpy(buf, s as ptr[u8], len)
+        buf[len] = 0 as u8
+        let result = alloc_str_from_raw(buf, len)
+        @free(buf)
+        return result
     mut temp := val
     mut is_neg := false
     if val < 0 as i64:
@@ -897,12 +909,20 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     name_id = self.symtable.symbols.data[sym_idx as i64].name_id
             // Check if name is ptr
             let text = self.intern.get(name_id)
-            if text == "ptr":
+            let ptr_text = text as ptr[u8]
+            mut is_ptr := false
+            mut is_slice := false
+            if std.string.len(text) == 3 as i64 and ptr_text[0] == 'p' as u8 and ptr_text[1] == 't' as u8 and ptr_text[2] == 'r' as u8:
+                is_ptr = true
+            elif std.string.len(text) == 5 as i64 and ptr_text[0] == 's' as u8 and ptr_text[1] == 'l' as u8 and ptr_text[2] == 'i' as u8 and ptr_text[3] == 'c' as u8 and ptr_text[4] == 'e' as u8:
+                is_slice = true
+
+            if is_ptr:
                 let arg_idx = base_node.next_sibling
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
                     result_type = self.types.register_pointer(inner)
-            elif text == "slice":
+            elif is_slice:
                 let arg_idx = base_node.next_sibling
                 if arg_idx != 0 as u32:
                     let inner = self.infer_node(arg_idx, TYPE_UNKNOWN)
@@ -1027,7 +1047,25 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if entry.kind == TYPE_KIND_POINTER:
                     obj_type = entry.extra
                     entry = self.types.entries.data[obj_type]
-                if entry.kind == TYPE_KIND_STRUCT:
+                if obj_type == TYPE_STRING:
+                    let field_name_id = self.tree.nodes.data[node_idx].payload
+                    let field_name = self.intern.get(field_name_id)
+                    let ptr_field := field_name as ptr[u8]
+                    mut is_ptr_field := false
+                    mut is_len_field := false
+                    if std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'p' as u8 and ptr_field[1] == 't' as u8 and ptr_field[2] == 'r' as u8:
+                        is_ptr_field = true
+                    elif std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'l' as u8 and ptr_field[1] == 'e' as u8 and ptr_field[2] == 'n' as u8:
+                        is_len_field = true
+
+                    if is_ptr_field:
+                        result_type = self.types.register_pointer(5 as u32)
+                        self.tree.nodes.data[node_idx].extra_idx = 0 as u32
+                    elif is_len_field:
+                        result_type = 4 as u32
+                        self.tree.nodes.data[node_idx].extra_idx = 1 as u32
+                    @free(field_name as ptr[u8])
+                elif entry.kind == TYPE_KIND_STRUCT:
                     let struct_info = self.types.structs.data[entry.extra]
                     let field_name_id = self.tree.nodes.data[node_idx].payload
                     mut found := false

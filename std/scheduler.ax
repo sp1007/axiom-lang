@@ -41,8 +41,6 @@ pub struct runq:
     pub bottom: u64
 
 pub fn init(mut self: runq):
-    let p = (&self) as ptr[void]
-    memset(p, 0 as i32, 4096 as u64 * 8 as u64)
     self.top = 0 as u64
     self.bottom = 0 as u64
 
@@ -128,10 +126,6 @@ pub struct scheduler:
 pub fn init(mut self: scheduler, worker_count: u32) -> i32:
     if worker_count == 0 as u32 or worker_count > 256 as u32:
         return -1 as i32
-
-    let p = (&self) as ptr[void]
-    let sz = @compiler_intrinsic("size_of")[scheduler]()
-    memset(p, 0 as i32, sz as u64)
     
     self.worker_count = worker_count
     self.running = 0 as i32
@@ -285,9 +279,9 @@ pub fn ax_actor_spawn(handler: ptr[void], init_data: ptr[void], data_size: u64) 
         sched.submit(id)
     return id
 
-extern "C" fn ax_actor_step_impl(actor_ptr: ptr[void]) -> i32
-extern "C" fn ax_actor_is_running_impl(actor_ptr: ptr[void]) -> i32
-extern "C" fn ax_actor_has_messages_impl(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_step(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_is_running(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_has_messages(actor_ptr: ptr[void]) -> i32
 
 fn has_active_actors() -> bool:
     let state = get_state()
@@ -321,9 +315,9 @@ pub fn run(mut self: scheduler) -> i32:
             if id != 0 as u64:
                 let actor_ptr = ax_actor_lookup(id)
                 if actor_ptr != null as ptr[void]:
-                    while ax_actor_step_impl(actor_ptr) != 0 as i32:
+                    while ax_actor_step(actor_ptr) != 0 as i32:
                         w.tasks_executed = w.tasks_executed + 1 as u64
-                    if ax_actor_is_running_impl(actor_ptr) != 0 as i32 and ax_actor_has_messages_impl(actor_ptr) != 0 as i32:
+                    if ax_actor_is_running(actor_ptr) != 0 as i32 and ax_actor_has_messages(actor_ptr) != 0 as i32:
                         q.push(id)
             j = j + 1 as u32
 
@@ -354,10 +348,10 @@ fn worker_loop(mut self: scheduler, w: ptr[worker]):
 
         let actor_ptr = ax_actor_lookup(id)
         if actor_ptr != null as ptr[void]:
-            while ax_actor_step_impl(actor_ptr) != 0 as i32:
+            while ax_actor_step(actor_ptr) != 0 as i32:
                 w.tasks_executed = w.tasks_executed + 1 as u64
 
-            if ax_actor_is_running_impl(actor_ptr) != 0 as i32 and ax_actor_has_messages_impl(actor_ptr) != 0 as i32:
+            if ax_actor_is_running(actor_ptr) != 0 as i32 and ax_actor_has_messages(actor_ptr) != 0 as i32:
                 q.push(id)
 
 pub fn shutdown(mut self: scheduler):

@@ -76,14 +76,15 @@ pub struct ActorHeap:
 extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
 extern "C" fn VirtualFree(lpAddress: ptr[void], dwSize: u64, dwFreeType: u32) -> i32
 extern "C" fn ExitProcess(uExitCode: u32)
-
-extern "C" fn GetLastError() -> u32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
 pub fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]:
-    return null as ptr[void]
+    let res = syscall(9 as u64, addr as u64, length, prot as u64, flags as u64, fd as i64 as u64, offset as u64)
+    return res as ptr[void]
 
 pub fn munmap(addr: ptr[void], length: u64) -> i32:
-    return 0 as i32
+    let res = syscall(11 as u64, addr as u64, length, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    return res as i32
 
 pub struct AxGlobalState:
     pub is_rt_initialized: bool
@@ -98,7 +99,12 @@ pub struct AxGlobalState:
 
 pub fn get_global_state() -> ptr[AxGlobalState]:
     let addr = 0x50000000 as ptr[void]
-    let state = VirtualAlloc(addr, 4096 as u64, 0x3000 as u32, 0x04 as u32) as ptr[AxGlobalState]
+    mut state := null as ptr[AxGlobalState]
+    if @compiler_intrinsic("is_windows"):
+        state = VirtualAlloc(addr, 4096 as u64, 0x3000 as u32, 0x04 as u32) as ptr[AxGlobalState]
+    else:
+        state = mmap(addr, 4096 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[AxGlobalState]
+
     if state == null as ptr[AxGlobalState]:
         return 0x50000000 as ptr[AxGlobalState]
     return state
@@ -115,7 +121,10 @@ pub fn std_mem_alloc_get_free_pool() -> ptr[ptr[Segment]]:
 pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
     let state = get_global_state()
     if state.g_slab == null as ptr[Segment]:
-        state.g_slab = VirtualAlloc(null as ptr[void], 4096 as u64 * 48 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+        if @compiler_intrinsic("is_windows"):
+            state.g_slab = VirtualAlloc(null as ptr[void], 196608 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+        else:
+            state.g_slab = mmap(null as ptr[void], 196608 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[Segment]
     return state.g_slab
 
 // --------------------------------------------------------------------------
@@ -269,7 +278,7 @@ pub fn ax_segment_manager_init():
     let free_pool_ptr = std_mem_alloc_get_free_pool()
     free_pool_ptr.* = null as ptr[Segment]
     let slab_ptr = std_mem_alloc_get_slab()
-    @memset(slab_ptr as ptr[u8], 0 as u8, 4096 as i64 * @compiler_intrinsic("size_of")[Segment]() as i64)
+    @memset(slab_ptr as ptr[u8], 0 as u8, 196608 as i64)
 
 pub fn ax_segment_manager_shutdown():
     let slab_used_ptr = std_mem_alloc_get_slab_used()
@@ -505,18 +514,16 @@ pub struct runq:
     pub bottom: u64
 
 pub fn init(mut self: runq):
-    let p = self as ptr[void]
-    memset(p, 0 as i32, 4096 as u64 * 8 as u64)
     self.top = 0 as u64
     self.bottom = 0 as u64
 
 pub fn push(mut self: runq, id: u64) -> i32:
     let b = self.bottom
-    let t = self.top
+    let t = @compiler_intrinsic("atomic_load", &self.top)
     if b - t >= 4096 as u64:
         return -1 as i32
     self.buffer[(b % 4096 as u64) as i64] = id
-    self.bottom = b + 1 as u64
+    @compiler_intrinsic("atomic_store", &self.bottom, b + 1 as u64)
     return 0 as i32
 
 pub fn pop(mut self: runq) -> u64:
@@ -525,32 +532,35 @@ pub fn pop(mut self: runq) -> u64:
         return 0 as u64
     
     b = b - 1 as u64
-    self.bottom = b
-    let t = self.top
+    @compiler_intrinsic("atomic_store", &self.bottom, b)
+    let t = @compiler_intrinsic("atomic_load", &self.top)
     
-    if t <= b:
-        return self.buffer[(b % 4096 as u64) as i64]
+    if t > b:
+        @compiler_intrinsic("atomic_store", &self.bottom, t)
+        return 0 as u64
         
+    mut id := self.buffer[(b % 4096 as u64) as i64]
     if t == b:
-        self.bottom = t + 1 as u64
-        self.top = t + 1 as u64
-        return self.buffer[(b % 4096 as u64) as i64]
-        
-    self.bottom = t
-    return 0 as u64
+        if not @compiler_intrinsic("atomic_cas", &self.top, t, t + 1 as u64):
+            id = 0 as u64
+        @compiler_intrinsic("atomic_store", &self.bottom, t + 1 as u64)
+    return id
 
 pub fn steal(mut self: runq) -> u64:
-    let t = self.top
-    let b = self.bottom
+    let t = @compiler_intrinsic("atomic_load", &self.top)
+    let b = @compiler_intrinsic("atomic_load", &self.bottom)
     if t >= b:
         return 0 as u64
         
     let id = self.buffer[(t % 4096 as u64) as i64]
-    self.top = t + 1 as u64
-    return id
+    if @compiler_intrinsic("atomic_cas", &self.top, t, t + 1 as u64):
+        return id
+    return 0 as u64
 
 pub fn empty(lent self: runq) -> i32:
-    if self.top >= self.bottom:
+    let t = @compiler_intrinsic("atomic_load", &self.top)
+    let b = @compiler_intrinsic("atomic_load", &self.bottom)
+    if t >= b:
         return 1 as i32
     return 0 as i32
 
@@ -589,17 +599,13 @@ pub struct scheduler:
 pub fn init(mut self: scheduler, worker_count: u32) -> i32:
     if worker_count == 0 as u32 or worker_count > 256 as u32:
         return -1 as i32
-
-    let p = self as ptr[void]
-    let sz = @compiler_intrinsic("size_of")[scheduler]()
-    memset(p, 0 as i32, sz as u64)
     
     self.worker_count = worker_count
     self.running = 0 as i32
 
     mut i := 0 as u32
     while i < worker_count:
-        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        let w = ((&self) as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
         w.id = i
         let q = (w as i64 + 8 as i64) as ptr[runq]
         q.init()
@@ -613,7 +619,7 @@ pub fn submit(mut self: scheduler, actor_id: u64) -> i32:
         return -1 as i32
 
     let target = (self.total_submitted % (self.worker_count as u64)) as u32
-    let w = (self as i64 + target as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+    let w = ((&self) as i64 + target as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
     let q = (w as i64 + 8 as i64) as ptr[runq]
     let res = q.push(actor_id)
     if res == 0 as i32:
@@ -746,30 +752,9 @@ pub fn ax_actor_spawn(handler: ptr[void], init_data: ptr[void], data_size: u64) 
         sched.submit(id)
     return id
 
-pub fn ax_actor_step(actor_ptr: ptr[void]) -> i32:
-    let actor = actor_ptr as ptr[AxActor]
-    if actor == null as ptr[AxActor] or actor.state != 1:
-        return 0 as i32
-    let msg = ax_msgq_pop((actor as i64 + 16 as i64) as ptr[AxMsgQueue])
-    if msg == null as ptr[AxMessage]:
-        return 0 as i32
-    let handler_fn = actor.handler as fn(ptr[void], ptr[void], u32)
-    let payload = (msg as i64 + @compiler_intrinsic("size_of")[AxMessage]() as i64) as ptr[void]
-    handler_fn(actor as ptr[void], payload, msg.msg_type)
-    ax_actor_free(actor.heap, msg as ptr[u8])
-    return 1 as i32
-
-pub fn ax_actor_is_running(actor_ptr: ptr[void]) -> i32:
-    let actor = actor_ptr as ptr[AxActor]
-    if actor != null as ptr[AxActor] and actor.state == 1:
-        return 1 as i32
-    return 0 as i32
-
-pub fn ax_actor_has_messages(actor_ptr: ptr[void]) -> i32:
-    let actor = actor_ptr as ptr[AxActor]
-    if actor != null as ptr[AxActor] and actor.mailbox.head != null as ptr[AxMessage]:
-        return 1 as i32
-    return 0 as i32
+extern "C" fn ax_actor_step(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_is_running(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_has_messages(actor_ptr: ptr[void]) -> i32
 
 fn has_active_actors() -> bool:
     let state = get_state()
@@ -790,14 +775,14 @@ pub fn run(mut self: scheduler) -> i32:
     
     mut i := 0 as u32
     while i < self.worker_count:
-        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        let w = ((&self) as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
         w.running = 1 as i32
         i = i + 1 as u32
 
     while has_active_actors():
         mut j := 0 as u32
         while j < self.worker_count:
-            let w = (self as i64 + j as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+            let w = ((&self) as i64 + j as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
             let q = (w as i64 + 8 as i64) as ptr[runq]
             mut id := q.pop()
             if id != 0 as u64:
@@ -822,7 +807,7 @@ fn worker_loop(mut self: scheduler, w: ptr[worker]):
             while i < self.worker_count and stop_loop == 0 as i32:
                 if i != w.id:
                     w.steals_attempted = w.steals_attempted + 1 as u64
-                    let w_other = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+                    let w_other = ((&self) as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
                     let q_other = (w_other as i64 + 8 as i64) as ptr[runq]
                     let stolen_id = q_other.steal()
                     if stolen_id != 0 as u64:
@@ -846,7 +831,7 @@ pub fn shutdown(mut self: scheduler):
     self.running = 0 as i32
     mut i := 0 as u32
     while i < self.worker_count:
-        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        let w = ((&self) as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
         w.running = 0 as i32
         i = i + 1 as u32
 
@@ -861,7 +846,7 @@ pub fn stats(lent self: scheduler, stats: ptr[SchedulerStats]):
 
     mut i := 0 as u32
     while i < self.worker_count:
-        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        let w = ((&self) as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
         stats.total_executed = stats.total_executed + w.tasks_executed
         stats.total_steals = stats.total_steals + w.steals_succeeded
         i = i + 1 as u32
@@ -1064,45 +1049,454 @@ pub fn ax_str_replace(s: str, old: str, new_val: str) -> str:
     return buf as str
 
 
-extern "C" fn malloc(size: u64) -> ptr[void]
-extern "C" fn free(p: ptr[void])
-extern "C" fn putchar(c: i32) -> i32
+// AXIOM Standard Library — std::os
+//
+// OS abstraction: paths, filesystem, signals, platform detection.
 
-struct MyData:
-    pub value: i32
+import std::os::win32
+import std::os::linux_sys
+
+// --------------------------------------------------------------------------
+// Platform Constants (set at compile time)
+// --------------------------------------------------------------------------
+
+pub const IS_LINUX:   bool = @compiler_intrinsic("is_linux")
+pub const IS_MACOS:   bool = @compiler_intrinsic("is_macos")
+pub const IS_WINDOWS: bool = @compiler_intrinsic("is_windows")
+pub const OS_NAME:    str  = @compiler_intrinsic("os_name")
+pub const ARCH_NAME:  str  = @compiler_intrinsic("arch_name")
+pub const PATH_SEP:   str  = @compiler_intrinsic("path_separator")
+
+// --------------------------------------------------------------------------
+// PathBuf — Platform-aware path manipulation (Freestanding, no impl)
+// --------------------------------------------------------------------------
+
+pub struct PathBuf:
+    inner: str
+
+pub fn pathbuf_new(s: str) -> PathBuf:
+    return PathBuf(inner: s)
+
+pub fn pathbuf_join(self: PathBuf, component: str) -> PathBuf:
+    return PathBuf(inner: self.inner + PATH_SEP + component)
+
+pub fn pathbuf_parent(self: PathBuf) -> Option[PathBuf]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        i = i + 1
+    if last_sep >= 0:
+        return Some(pathbuf_new(std.string.slice(s, 0, last_sep)))
+    return None
+
+pub fn pathbuf_file_name(self: PathBuf) -> Option[str]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        i = i + 1
+    if last_sep >= 0:
+        return Some(std.string.slice(s, last_sep + 1, s.len))
+    return Some(s)
+
+pub fn pathbuf_extension(self: PathBuf) -> Option[str]:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut last_dot := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        elif ch.* == '.' as u8:
+            last_dot = i
+        i = i + 1
+    if last_dot > last_sep:
+        return Some(std.string.slice(s, last_dot + 1, s.len))
+    return None
+
+pub fn pathbuf_with_extension(self: PathBuf, ext: str) -> PathBuf:
+    let s = self.inner
+    mut last_sep := -1 as i64
+    mut last_dot := -1 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        let ch = ((s.ptr as i64) + i) as ptr[u8]
+        if ch.* == '/' as u8 or ch.* == '\\' as u8:
+            last_sep = i
+        elif ch.* == '.' as u8:
+            last_dot = i
+        i = i + 1
+    if last_dot > last_sep:
+        return pathbuf_new(std.string.slice(s, 0, last_dot) + "." + ext)
+    return pathbuf_new(s + "." + ext)
+
+pub fn pathbuf_is_absolute(self: PathBuf) -> bool:
+    let s = self.inner
+    if s.len == 0:
+        return false
+    if IS_WINDOWS:
+        if s.len >= 2:
+            let c1 = ((s.ptr as i64) + 0) as ptr[u8]
+            let c2 = ((s.ptr as i64) + 1) as ptr[u8]
+            let is_letter = (c1.* >= 'a' as u8 and c1.* <= 'z' as u8) or (c1.* >= 'A' as u8 and c1.* <= 'Z' as u8)
+            if is_letter and c2.* == ':' as u8:
+                return true
+        return false
+    else:
+        let c1 = s.ptr
+        return c1.* == '/' as u8
+
+pub fn pathbuf_to_str(self: PathBuf) -> str:
+    return self.inner
+
+// --------------------------------------------------------------------------
+// Filesystem Operations
+// --------------------------------------------------------------------------
+
+pub struct FileMetadata:
+    pub size: u64
+    pub modified: u64     // nanoseconds since epoch
+    pub created: u64
+    pub is_file: bool
+    pub is_dir: bool
+    pub is_symlink: bool
+    pub mode: u32         // Unix permissions
+
+extern "C" fn GetFileAttributesA(lpFileName: ptr[u8]) -> u32
+extern "C" fn CreateDirectoryA(lpPathName: ptr[u8], lpSecurityAttributes: ptr[void]) -> i32
+extern "C" fn RemoveDirectoryA(lpPathName: ptr[u8]) -> i32
+extern "C" fn DeleteFileA(lpFileName: ptr[u8]) -> i32
+extern "C" fn MoveFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8]) -> i32
+extern "C" fn CopyFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8], bFailIfExists: i32) -> i32
+
+fn str_to_c_str(s: str) -> ptr[u8]:
+    let len = s.len
+    let buf = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len:
+        (buf as i64 + i).* = (s.ptr as i64 + i).* as u8
+        i = i + 1
+    (buf as i64 + len).* = 0 as u8
+    return buf
+
+pub fn metadata(path: str) -> Result[FileMetadata, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let attrs = GetFileAttributesA(cpath)
+        @free(cpath)
+        if attrs == 0xFFFFFFFF as u32:
+            return Err("file not found")
+        let is_dir = (attrs & 0x10 as u32) != 0 as u32
+        let is_symlink = (attrs & 0x400 as u32) != 0 as u32
+        return Ok(FileMetadata(
+            size: 0 as u64,
+            modified: 0 as u64,
+            created: 0 as u64,
+            is_file: not is_dir,
+            is_dir: is_dir,
+            is_symlink: is_symlink,
+            mode: 0 as u32
+        ))
+    else:
+        // struct stat is 144 bytes on Linux x86_64
+        let stat_buf = @alloc(144) as ptr[u8]
+        let res = std::os::linux_sys::syscall(
+            4 as u64, // SYS_STAT
+            cpath as u64,
+            stat_buf as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            @free(stat_buf)
+            return Err("file not found")
+        let st_mode = ((stat_buf as i64 + 24) as ptr[u32]).*
+        let st_size = ((stat_buf as i64 + 48) as ptr[u64]).*
+        let st_mtime = ((stat_buf as i64 + 88) as ptr[u64]).*
+        
+        let is_dir = (st_mode & 0xF000 as u32) == 0x4000 as u32
+        let is_lnk = (st_mode & 0xF000 as u32) == 0xA000 as u32
+        
+        @free(stat_buf)
+        return Ok(FileMetadata(
+            size: st_size,
+            modified: st_mtime * 1000000000 as u64,
+            created: 0 as u64,
+            is_file: not is_dir and not is_lnk,
+            is_dir: is_dir,
+            is_symlink: is_lnk,
+            mode: st_mode
+        ))
+
+pub fn exists(path: str) -> bool:
+    return metadata(path).is_ok()
+
+pub fn create_dir(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = CreateDirectoryA(cpath, null as ptr[void])
+        @free(cpath)
+        if res == 0:
+            return Err("could not create directory")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            83 as u64, // SYS_MKDIR
+            cpath as u64,
+            0o777 as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not create directory")
+        return Ok(void)
+
+pub fn create_dir_all(path: str) -> Result[void, str]:
+    if exists(path):
+        return Ok(void)
+    let p = pathbuf_new(path)
+    let parent_opt = pathbuf_parent(p)
+    if parent_opt.is_some():
+        let parent = parent_opt.unwrap()
+        let parent_str = pathbuf_to_str(parent)
+        if parent_str.len > 0:
+            let res = create_dir_all(parent_str)
+            if res.is_err():
+                return res
+    return create_dir(path)
+
+pub fn remove_file(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = DeleteFileA(cpath)
+        @free(cpath)
+        if res == 0:
+            return Err("could not remove file")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            87 as u64, // SYS_UNLINK
+            cpath as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not remove file")
+        return Ok(void)
+
+pub fn remove_dir(path: str) -> Result[void, str]:
+    let cpath = str_to_c_str(path)
+    if IS_WINDOWS:
+        let res = RemoveDirectoryA(cpath)
+        @free(cpath)
+        if res == 0:
+            return Err("could not remove directory")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            84 as u64, // SYS_RMDIR
+            cpath as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cpath)
+        if res < 0:
+            return Err("could not remove directory")
+        return Ok(void)
+
+pub fn rename(from: str, to: str) -> Result[void, str]:
+    let cfrom = str_to_c_str(from)
+    let cto = str_to_c_str(to)
+    if IS_WINDOWS:
+        let res = MoveFileA(cfrom, cto)
+        @free(cfrom)
+        @free(cto)
+        if res == 0:
+            return Err("could not rename")
+        return Ok(void)
+    else:
+        let res = std::os::linux_sys::syscall(
+            82 as u64, // SYS_RENAME
+            cfrom as u64,
+            cto as u64,
+            0 as u64, 0 as u64, 0 as u64, 0 as u64
+        )
+        @free(cfrom)
+        @free(cto)
+        if res < 0:
+            return Err("could not rename")
+        return Ok(void)
+
+pub fn copy(from: str, to: str) -> Result[u64, str]:
+    let cfrom = str_to_c_str(from)
+    let cto = str_to_c_str(to)
+    if IS_WINDOWS:
+        let res = CopyFileA(cfrom, cto, 0 as i32)
+        @free(cfrom)
+        @free(cto)
+        if res == 0:
+            return Err("could not copy file")
+        return Ok(0 as u64)
+    else:
+        @free(cfrom)
+        @free(cto)
+        return Err("copy not implemented on Linux in freestanding mode")
+
+pub fn temp_dir() -> PathBuf:
+    let t = env("TMPDIR")
+    if t.is_some():
+        return pathbuf_new(t.unwrap())
+    let t2 = env("TEMP")
+    if t2.is_some():
+        return pathbuf_new(t2.unwrap())
+    if IS_WINDOWS:
+        return pathbuf_new("C:\\Windows\\Temp")
+    return pathbuf_new("/tmp")
+
+// --------------------------------------------------------------------------
+// Signals
+// --------------------------------------------------------------------------
+
+pub enum Signal:
+    SIGINT
+    SIGTERM
+    SIGHUP
+    SIGUSR1
+    SIGUSR2
+
+pub fn trap_signal(sig: Signal, handler: fn()):
+    // Freestanding stub
+    return
+
+// --------------------------------------------------------------------------
+// Command Line Arguments & Environment Variables (C-Independent PEB/procfs)
+// --------------------------------------------------------------------------
+
+extern "C" fn GetCommandLineA() -> ptr[u8]
+extern "C" fn GetEnvironmentVariableA(lpName: ptr[u8], lpBuffer: ptr[u8], nSize: u32) -> u32
+
+pub fn parse_cmdline(cmdline: ptr[u8]) -> Vec[str]:
+    mut res := Vec.new()
+    if cmdline == null as ptr[u8]:
+        return res
+    mut i := 0 as i64
+    while (cmdline as i64 + i).* != 0 as u8:
+        while (cmdline as i64 + i).* == ' ' as u8 or (cmdline as i64 + i).* == '\t' as u8 or (cmdline as i64 + i).* == '\r' as u8 or (cmdline as i64 + i).* == '\n' as u8:
+            i = i + 1
+        if (cmdline as i64 + i).* == 0 as u8:
+            break
+        mut arg_buf := Vec.new()
+        mut in_quotes := false
+        while (cmdline as i64 + i).* != 0 as u8:
+            let ch = (cmdline as i64 + i).*
+            if ch == '"' as u8:
+                in_quotes = not in_quotes
+            elif (ch == ' ' as u8 or ch == '\t' as u8) and not in_quotes:
+                break
+            else:
+                arg_buf.push(ch)
+            i = i + 1
+        let arg_len = arg_buf.len()
+        let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+        mut j := 0 as i64
+        while j < arg_len:
+            s_ptr[j] = arg_buf.get(j)
+            j = j + 1
+        s_ptr[arg_len] = 0 as u8
+        res.push(s_ptr as str)
+        arg_buf.destroy()
+    return res
+
+pub fn parse_proc_cmdline(buf: ptr[u8], len: i64) -> Vec[str]:
+    mut res := Vec.new()
+    mut start := 0 as i64
+    mut i := 0 as i64
+    while i < len:
+        if buf[i] == 0 as u8:
+            if i > start:
+                let arg_len = i - start
+                let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+                @memcpy(s_ptr, buf + start, arg_len)
+                s_ptr[arg_len] = 0 as u8
+                res.push(s_ptr as str)
+            start = i + 1
+        i = i + 1
+    return res
+
+fn linux_read_file(path: str, buf: ptr[u8], max_len: i64) -> i64:
+    let cpath = str_to_c_str(path)
+    // SYS_OPEN = 2, O_RDONLY = 0
+    let fd = std::os::linux_sys::syscall(2 as u64, cpath as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    @free(cpath)
+    if fd < 0:
+        return -1
+    // SYS_READ = 0
+    let n = std::os::linux_sys::syscall(0 as u64, fd as u64, buf as u64, max_len as u64, 0 as u64, 0 as u64, 0 as u64)
+    // SYS_CLOSE = 3
+    std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    return n
+
+pub fn args() -> Vec[str]:
+    if IS_WINDOWS:
+        let cmdline = GetCommandLineA()
+        return parse_cmdline(cmdline)
+    else:
+        // Direct read of /proc/self/cmdline on Linux using syscalls
+        let buf = @alloc(8192) as ptr[u8]
+        let n = linux_read_file("/proc/self/cmdline", buf, 8192)
+        if n < 0:
+            @free(buf)
+            return Vec.new()
+        let res = parse_proc_cmdline(buf, n)
+        @free(buf)
+        return res
+
+pub fn env(key: str) -> Option[str]:
+    if IS_WINDOWS:
+        let ckey = str_to_c_str(key)
+        let buf = @alloc(4096) as ptr[u8]
+        let n = GetEnvironmentVariableA(ckey, buf, 4096 as u32)
+        @free(ckey)
+        if n == 0 as u32:
+            @free(buf)
+            return None
+        let res_str = std.string.slice(buf as str, 0, n as i64)
+        @free(buf)
+        return Some(res_str)
+    else:
+        // Direct read of /proc/self/environ on Linux using syscalls
+        let buf = @alloc(16384) as ptr[u8]
+        let n = linux_read_file("/proc/self/environ", buf, 16384)
+        if n < 0:
+            @free(buf)
+            return None
+        
+        // Search for KEY=
+        let prefix = key + "="
+        mut start := 0 as i64
+        mut i := 0 as i64
+        while i < n:
+            if buf[i] == 0 as u8:
+                if i > start:
+                    let entry = std.string.slice(buf as str, start, i)
+                    if std.string.starts_with(entry, prefix):
+                        let val = std.string.slice(entry, prefix.len, entry.len)
+                        @free(buf)
+                        return Some(val)
+                start = i + 1
+            i = i + 1
+        @free(buf)
+        return None
 
 fn main() -> i32:
-    // 1. Allocate a struct block
-    let p = malloc(16 as u64) as ptr[MyData]
-    if p == null as ptr[MyData]:
-        return 1
-
-    p.value = 42
-
-    // 2. Read gen_id from header (displacement -8 from user pointer)
-    let gen_id = ((p as i64) - 8 as i64) as ptr[u32].*
-
-    // 3. Construct the fat generational reference in a u64
-    let ref_val = (p as u64 & 0x0000FFFFFFFFFFFF as u64) | ((gen_id as u64) << 48 as u64)
-
-    // 4. Cast it to ptr[MyData] so we can dereference it via NodeDerefExpr
-    let ref_ptr = ref_val as ptr[MyData]
-
-    // 5. Dereference it safely (this should succeed because p is still live)
-    let live_ptr = ref_ptr.*
-    if live_ptr.value != 42:
-        return 2
-
-    putchar(79) // 'O'
-    putchar(75) // 'K'
-    putchar(10) // '\n'
-
-    // 6. Free the block (this invalidates gen_id in the header to 0)
-    free(p as ptr[void])
-
-    // 7. Dereference again (this MUST trigger a generational ID mismatch abort!)
-    let dead_ptr = ref_ptr.*
-    if dead_ptr.value != 42:
-        return 3
-
+    for i in 0..30:
+        let message = "Hello, world! $i"
+        println(message)
     return 0

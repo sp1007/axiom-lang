@@ -431,9 +431,18 @@ pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
         push_byte(vec, 0 as u8)
 
 pub fn get_dll_for_symbol(name: str) -> str:
-    if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or 
+    if (name == "steals_attempted" or name == "steals_succeeded" or name == "tasks_executed" or
+        name == "running" or name == "head" or name == "total_executed" or
+        name == "worker_count" or name == "total_submitted" or name == "total_steals" or
+        name == "alloc" or name == "q" or name == "msg" or name == "actor" or name == "SEGMENT_MAGIC"):
+        return "none"
+
+    if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or name == "TerminateProcess" or 
         name == "GetLastError" or name == "GetStdHandle" or name == "WriteFile" or
-        name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle"):
+        name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle" or
+        name == "CreateDirectoryA" or name == "RemoveDirectoryA" or name == "DeleteFileA" or
+        name == "MoveFileA" or name == "CopyFileA" or name == "GetFileAttributesA" or
+        name == "GetCommandLineA" or name == "GetEnvironmentVariableA" or name == "SetEnvironmentVariableA"):
         return "kernel32.dll"
         
     let ptr = name as ptr[u8]
@@ -796,6 +805,9 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                             add_unique_import(&kernel32_imports, target_name)
                         elif dll == "ax_runtime.dll":
                             add_unique_import(&ax_runtime_imports, target_name)
+                        elif dll == "none" or dll == "":
+                            // Skip dynamic import for dummy/clashed field symbols
+                            is_defined = true
                         else:
                             add_unique_import(&ucrtbase_imports, target_name)
             r_i = r_i + 1

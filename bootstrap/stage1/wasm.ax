@@ -7,7 +7,7 @@ extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
 extern "C" fn fclose(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
 extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 
 fn is_type_unsigned(type_id: u32) -> bool:
     if type_id == 5 as u32 or type_id == 6 as u32 or type_id == 7 as u32 or type_id == 8 as u32 or type_id == 16 as u32:
@@ -90,7 +90,7 @@ pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
         return buf as str
     
     let buf = @alloc(32) as ptr[u8]
-    snprintf(buf as ptr[void], 32, "_AX_f%d", sym_id as ptr[void], null as ptr[void])
+    snprintf(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as ptr[void], null as ptr[void])
     return buf as str
 
 fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:

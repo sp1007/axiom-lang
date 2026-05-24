@@ -12,7 +12,7 @@ extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void])
 extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn puts(s: str) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
-extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
+extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
@@ -179,12 +179,84 @@ fn strip_imports(s: str) -> str:
 fn strip_package_prefixes(s: str) -> str:
     let r1 = std.string.replace(s, "std.mem.alloc.", "")
     let r2 = std.string.replace(r1, "std.scheduler.", "")
+    let r3 = std.string.replace(r2, "std.os.", "")
     if r1 as ptr[u8] != s as ptr[u8] and r1 as ptr[u8] != r2 as ptr[u8]:
         @free(r1 as ptr[u8])
-    return r2
+    if r2 as ptr[u8] != r1 as ptr[u8] and r2 as ptr[u8] != r3 as ptr[u8]:
+        @free(r2 as ptr[u8])
+    return r3
 
 
-pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
+extern "C" fn GetCommandLineW() -> ptr[u16]
+
+fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
+    let res = @alloc(len + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < len:
+        let val = data[i]
+        res[i] = val as u8
+        i = i + 1
+    res[len] = 0 as u8
+    return res as str
+
+fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
+    let args = @alloc(64 * 16) as ptr[str]
+    mut count := 0 as i64
+    if @compiler_intrinsic("is_windows"):
+        let cmdline = GetCommandLineW()
+        if cmdline != null as ptr[u16]:
+            mut i := 0 as i64
+            while cmdline[i] != 0 as u16 and count < 64:
+                while cmdline[i] == ' ' as u16 or cmdline[i] == '\t' as u16 or cmdline[i] == '\r' as u16 or cmdline[i] == '\n' as u16:
+                    i = i + 1
+                if cmdline[i] == 0 as u16:
+                    break
+                let start = i
+                mut in_quotes := false
+                while cmdline[i] != 0 as u16:
+                    let ch = cmdline[i]
+                    if ch == '"' as u16:
+                        in_quotes = not in_quotes
+                    elif (ch == ' ' as u16 or ch == '\t' as u16) and not in_quotes:
+                        break
+                    i = i + 1
+                let arg_len = i - start
+                mut final_ptr := ((cmdline as i64) + start * 2) as ptr[u16]
+                mut final_len := arg_len
+                if arg_len >= 2 and cmdline[start] == '"' as u16 and cmdline[i - 1] == '"' as u16:
+                    final_ptr = ((cmdline as i64) + (start + 1) * 2) as ptr[u16]
+                    final_len = arg_len - 2
+                args[count] = local_wslice_to_str(final_ptr, final_len)
+                count = count + 1
+    else:
+        let file = fopen("/proc/self/cmdline" as ptr[void], "rb")
+        if file != null as ptr[void]:
+            let buf = @alloc(8192) as ptr[u8]
+            let n = fread(buf as ptr[void], 1, 8192, file)
+            fclose(file)
+            mut start := 0 as i64
+            mut i := 0 as i64
+            while i < n and count < 64:
+                if buf[i] == 0 as u8:
+                    if i > start:
+                        let arg_len = i - start
+                        let s_ptr = @alloc(arg_len + 1) as ptr[u8]
+                        @memcpy(s_ptr, ((buf as i64) + start) as ptr[u8], arg_len)
+                        s_ptr[arg_len] = 0 as u8
+                        args[count] = s_ptr as str
+                        count = count + 1
+                    start = i + 1
+                i = i + 1
+            @free(buf)
+    out_argc[0] = count as i32
+    return args
+
+
+
+
+pub fn main() -> i32:
+    mut argc := 0 as i32
+    let args = get_freestanding_args(&argc)
     if argc < 2:
         puts("Usage: axc <command> [args]")
         puts("Commands:")
@@ -205,7 +277,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut optimize := false
 
     // Parse commands
-    let cmd = argv[1] as str
+    let cmd = args[1]
     if cmd == "dump-air":
         is_dump_air = true
         file_arg_idx = 2
@@ -214,6 +286,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         file_arg_idx = 2
     elif cmd == "build":
         is_build = true
+        self_link = true
         file_arg_idx = 2
     elif cmd == "fmt":
         is_fmt = true
@@ -225,17 +298,17 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     // Parse options starting after the file argument
     mut opt_idx := file_arg_idx + 1
     while opt_idx < argc:
-        let opt = argv[opt_idx] as str
+        let opt = args[opt_idx as i64]
         if opt == "-o" or opt == "--output":
             if opt_idx + 1 < argc:
-                output_file = argv[opt_idx + 1] as str
+                output_file = args[opt_idx as i64 + 1 as i64]
                 opt_idx = opt_idx + 1
             else:
                 puts("Error: missing value for -o option")
                 return 1
         elif opt == "--target" or opt == "-target":
             if opt_idx + 1 < argc:
-                let target_triple = argv[opt_idx + 1] as str
+                let target_triple = args[opt_idx as i64 + 1 as i64]
                 if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
                     target_wasm32 = true
                 opt_idx = opt_idx + 1
@@ -244,11 +317,14 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
                 return 1
         elif opt == "-self-link" or opt == "--self-link":
             self_link = true
+        elif opt == "-use-gcc" or opt == "--use-gcc":
+            self_link = false
         elif opt == "-O1" or opt == "--opt":
             optimize = true
         opt_idx = opt_idx + 1
 
-    let filename_ptr = argv[file_arg_idx]
+    let filename = args[file_arg_idx as i64]
+    let filename_ptr = filename as ptr[u8]
     let file = fopen(filename_ptr as ptr[void], "rb")
     if file == null as ptr[void]:
         puts("Error: could not open file")
@@ -303,6 +379,9 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         puts("[Debug] Reading runtime.ax...")
         fflush(null as ptr[void])
         let raw_rt = read_file_content("std/runtime.ax")
+        puts("[Debug] Reading os.ax...")
+        fflush(null as ptr[void])
+        let raw_os = read_file_content("std/os.ax")
         
         puts("[Debug] Stripping imports from alloc.ax...")
         fflush(null as ptr[void])
@@ -319,6 +398,11 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         let rt_src_raw = strip_imports(raw_rt)
         let rt_src = strip_package_prefixes(rt_src_raw)
 
+        puts("[Debug] Stripping imports from os.ax...")
+        fflush(null as ptr[void])
+        let os_src_raw = strip_imports(raw_os)
+        let os_src = strip_package_prefixes(os_src_raw)
+
         puts("[Debug] Stripping imports from src...")
         fflush(null as ptr[void])
         let clean_src_raw = strip_imports(src)
@@ -330,9 +414,10 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         let len_alloc = std.string.len(alloc_src)
         let len_sched = std.string.len(sched_src)
         let len_rt = std.string.len(rt_src)
+        let len_os = std.string.len(os_src)
         
-        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_src
-        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_src, total_len, 0 as i64, 0 as i64, 0 as i64)
+        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_src
+        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_os, len_src, total_len, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
         let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
         
@@ -347,7 +432,11 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
         new_buf[off_rt + len_rt] = 10 as u8
         
-        let off_src = off_rt + len_rt + 1 as i64
+        let off_os = off_rt + len_rt + 1 as i64
+        @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
+        new_buf[off_os + len_os] = 10 as u8
+        
+        let off_src = off_os + len_os + 1 as i64
         @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
         new_buf[total_len] = 0 as u8
         
@@ -359,6 +448,8 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             @free(raw_sched as ptr[u8])
         if std.string.len(raw_rt) > 0 as i64:
             @free(raw_rt as ptr[u8])
+        if std.string.len(raw_os) > 0 as i64:
+            @free(raw_os as ptr[u8])
             
         if alloc_src as ptr[u8] != alloc_src_raw as ptr[u8]:
             @free(alloc_src as ptr[u8])
@@ -371,6 +462,10 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         if rt_src as ptr[u8] != rt_src_raw as ptr[u8]:
             @free(rt_src as ptr[u8])
         @free(rt_src_raw as ptr[u8])
+
+        if os_src as ptr[u8] != os_src_raw as ptr[u8]:
+            @free(os_src as ptr[u8])
+        @free(os_src_raw as ptr[u8])
         
         if clean_src as ptr[u8] != clean_src_raw as ptr[u8]:
             @free(clean_src as ptr[u8])
@@ -407,6 +502,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut symtable := new_symbol_table(parser.pool)
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
     resolver.resolve()
+    parser.pool = resolver.intern
     if not is_dump_air:
         puts("[Debug] Finished Resolving.")
         fflush(null as ptr[void])
@@ -448,6 +544,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     mut air_builder := &air_builder_val
     air_builder.build_module()
+    parser.pool = air_builder.pool
     if not is_dump_air:
         puts("[Debug] Stage 2: Finished building AIR module.")
 
@@ -500,7 +597,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
 
         let temp_obj = "axiom_temp.obj"
         puts("[Debug] Stage 3: Starting native code generation...")
-        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff")
+        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff", self_link)
         if not success:
             puts("Error: could not generate native binary code")
             return 1
@@ -533,7 +630,7 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             let temp_obj_nt = str_to_null_terminated(temp_obj)
 
             // Run gcc: gcc -O2 -o output.exe axiom_temp.obj -Iruntime runtime/axalloc/axalloc.c ...
-            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c", output_file_nt as ptr[void], temp_obj_nt as ptr[void])
+            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], output_file_nt as ptr[void], temp_obj_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up
