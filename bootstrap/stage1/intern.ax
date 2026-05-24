@@ -104,7 +104,7 @@ fn insert_at(mut self: InternPool, slot: i64, s: str, h: u32) -> u32:
     if self.count > 0 and self.count % 256 == 0:
         let new_ids = @alloc((self.count + 256) * 24) as ptr[InternEntry]
         @memcpy(new_ids as ptr[u8], self.ids as ptr[u8], self.count * 24)
-        @free(self.ids as ptr[u8])
+        // @free(self.ids as ptr[u8]) // Prevent UAF in stale value copies
         self.ids = new_ids
 
     // Resize arena if needed
@@ -117,7 +117,7 @@ fn insert_at(mut self: InternPool, slot: i64, s: str, h: u32) -> u32:
         let new_arena = @alloc(new_cap) as ptr[u8]
         if self.arena != null as ptr[u8]:
             @memcpy(new_arena, self.arena, self.arena_len)
-            @free(self.arena)
+            // @free(self.arena) // Prevent UAF in stale value copies
         self.arena = new_arena
         self.arena_cap = new_cap
 
@@ -168,7 +168,7 @@ fn grow_table(mut self: InternPool):
             new_table[idx] = entry
         i = i + 1
 
-    @free(self.table as ptr[u8])
+    // @free(self.table as ptr[u8]) // Prevent UAF in stale value copies
     self.table = new_table
     self.table_size = new_size
 

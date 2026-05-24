@@ -60,6 +60,7 @@ var builtinTable = map[string]BuiltinInfo{
 	"std.string.slice": {Kind: BuiltinDirect, CName: "ax_str_slice"},
 	"std.string.len":   {Kind: BuiltinDirect, CName: "ax_str_len"},
 	"std.string.concat": {Kind: BuiltinDirect, CName: "ax_str_concat"},
+	"std.string.replace": {Kind: BuiltinDirect, CName: "ax_str_replace"},
 
 	// ---------- Conversions ----------
 	"to_str": {Kind: BuiltinTyped, CName: "ax_"},  // ax_{i64,f64,bool}_to_str

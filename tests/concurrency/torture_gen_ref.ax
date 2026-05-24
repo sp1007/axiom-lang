@@ -1,0 +1,42 @@
+extern "C" fn malloc(size: u64) -> ptr[void]
+extern "C" fn free(p: ptr[void])
+extern "C" fn putchar(c: i32) -> i32
+
+struct MyData:
+    pub value: i32
+
+fn main() -> i32:
+    // 1. Allocate a struct block
+    let p = malloc(16 as u64) as ptr[MyData]
+    if p == null as ptr[MyData]:
+        return 1
+
+    p.value = 42
+
+    // 2. Read gen_id from header (displacement -8 from user pointer)
+    let gen_id = ((p as i64) - 8 as i64) as ptr[u32].*
+
+    // 3. Construct the fat generational reference in a u64
+    let ref_val = (p as u64 & 0x0000FFFFFFFFFFFF as u64) | ((gen_id as u64) << 48 as u64)
+
+    // 4. Cast it to ptr[MyData] so we can dereference it via NodeDerefExpr
+    let ref_ptr = ref_val as ptr[MyData]
+
+    // 5. Dereference it safely (this should succeed because p is still live)
+    let live_ptr = ref_ptr.*
+    if live_ptr.value != 42:
+        return 2
+
+    putchar(79) // 'O'
+    putchar(75) // 'K'
+    putchar(10) // '\n'
+
+    // 6. Free the block (this invalidates gen_id in the header to 0)
+    free(p as ptr[void])
+
+    // 7. Dereference again (this MUST trigger a generational ID mismatch abort!)
+    let dead_ptr = ref_ptr.*
+    if dead_ptr.value != 42:
+        return 3
+
+    return 0

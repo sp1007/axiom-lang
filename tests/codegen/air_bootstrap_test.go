@@ -26,21 +26,39 @@ func TestStage1AirCorpus(t *testing.T) {
 	internPath := filepath.Join(workspaceDir, "bootstrap/stage1/intern.ax")
 	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
 	resolverPath := filepath.Join(workspaceDir, "bootstrap/stage1/resolver.ax")
+	typetablePath := filepath.Join(workspaceDir, "bootstrap/stage1/typetable.ax")
+	monoPath := filepath.Join(workspaceDir, "bootstrap/stage1/mono.ax")
 	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
 	connectionGraphPath := filepath.Join(workspaceDir, "bootstrap/stage1/connection_graph.ax")
 	ownershipPath := filepath.Join(workspaceDir, "bootstrap/stage1/ownership.ax")
 	escapePath := filepath.Join(workspaceDir, "bootstrap/stage1/escape.ax")
 	ctgcPath := filepath.Join(workspaceDir, "bootstrap/stage1/ctgc.ax")
 	aliasReusePath := filepath.Join(workspaceDir, "bootstrap/stage1/alias_reuse.ax")
+	ssaOptPath := filepath.Join(workspaceDir, "bootstrap/stage1/ssa_opt.ax")
 	airPath := filepath.Join(workspaceDir, "bootstrap/stage1/air.ax")
 	airBuilderPath := filepath.Join(workspaceDir, "bootstrap/stage1/air_builder.ax")
 	cgenPath := filepath.Join(workspaceDir, "bootstrap/stage1/cgen.ax")
+	wasmPath := filepath.Join(workspaceDir, "bootstrap/stage1/wasm.ax")
+	x86RegsPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_regs.ax")
+	x86SelectorPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_selector.ax")
+	x86RegallocPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_regalloc.ax")
+	x86AsmEmitterPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_asm_emitter.ax")
+	x86ModrmPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_modrm.ax")
+	x86EncodingPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_encoding.ax")
+	x86EmitterPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_emitter.ax")
+	x86CoffPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_coff.ax")
+	x86Elf64Path := filepath.Join(workspaceDir, "bootstrap/stage1/x86_elf64.ax")
+	linkerPath := filepath.Join(workspaceDir, "bootstrap/stage1/linker.ax")
+	fmtPath := filepath.Join(workspaceDir, "bootstrap/stage1/fmt.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
 
 	sourceBytes, err := concatenateAxiomFiles(
-		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath,
+		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath,
 		connectionGraphPath, ownershipPath, escapePath, ctgcPath, aliasReusePath,
-		airPath, airBuilderPath, cgenPath, mainPath,
+		airPath, airBuilderPath, ssaOptPath, cgenPath, wasmPath,
+		x86RegsPath, x86SelectorPath, x86RegallocPath, x86AsmEmitterPath,
+		x86ModrmPath, x86EncodingPath, x86EmitterPath, x86Elf64Path, x86CoffPath,
+		linkerPath, fmtPath, mainPath,
 	)
 	if err != nil {
 		t.Fatalf("failed to concatenate air files: %v", err)

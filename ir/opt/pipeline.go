@@ -178,6 +178,8 @@ func DefaultPipeline(level OptLevel, verify bool) *OptPipeline {
 		p.AddPass(&ConstantFoldingPass{})
 		p.AddPass(&DCEPass{})
 		p.AddPass(&LoopRegionPass{})
+		p.AddPass(&LoopUnrollPass{})
+		p.AddPass(&GVNPass{})
 		p.AddPass(&CopyPropagationPass{})
 		p.AddPass(&DCEPass{})
 		// Future: p.AddPass(&EscapeAnalysisPass{})
@@ -190,6 +192,8 @@ func DefaultPipeline(level OptLevel, verify bool) *OptPipeline {
 		p.AddPass(&ConstantFoldingPass{})
 		p.AddPass(&DCEPass{})
 		p.AddPass(&LoopRegionPass{})
+		p.AddPass(&LoopUnrollPass{})
+		p.AddPass(&GVNPass{})
 		p.AddPass(&CopyPropagationPass{})
 		p.AddPass(&DCEPass{})
 		// Future: all O2 passes + vectorization + SoA

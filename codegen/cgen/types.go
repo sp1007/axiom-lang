@@ -57,6 +57,9 @@ func (q *TypeDeclQueue) Len() int {
 // Determinism guarantee: given the same TypeTable and TypeID,
 // CTypeName always returns the identical string.
 func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue) string {
+	if id == types.TypeActorRef {
+		return "AxActorID"
+	}
 	entry := table.Entry(id)
 
 	switch entry.Kind {
@@ -132,6 +135,9 @@ func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 // Returns "" for primitive types that need no declaration.
 // This is used during the declaration emission phase to output struct definitions.
 func CTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue) string {
+	if id == types.TypeActorRef {
+		return ""
+	}
 	entry := table.Entry(id)
 
 	switch entry.Kind {
@@ -236,15 +242,26 @@ func sumTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool
 	cname := "ax_" + baseName
 	fmt.Fprintf(&b, "struct %s {\n", cname)
 	fmt.Fprintf(&b, "    enum ax_%s_tag tag;\n", baseName)
-	b.WriteString("    union {\n")
+
+	hasPayload := false
 	for _, v := range info.Variants {
-		vname := resolveName(v.NameID, intern)
 		if v.PayloadType != types.TypeUnknown {
-			payloadC := CTypeName(v.PayloadType, table, intern, queue)
-			fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
+			hasPayload = true
+			break
 		}
 	}
-	b.WriteString("    } data;\n")
+
+	if hasPayload {
+		b.WriteString("    union {\n")
+		for _, v := range info.Variants {
+			vname := resolveName(v.NameID, intern)
+			if v.PayloadType != types.TypeUnknown {
+				payloadC := CTypeName(v.PayloadType, table, intern, queue)
+				fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
+			}
+		}
+		b.WriteString("    } data;\n")
+	}
 	b.WriteString("};\n")
 
 	// Emit constructor functions for each variant (non-generic)

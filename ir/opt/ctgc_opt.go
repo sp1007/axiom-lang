@@ -29,6 +29,9 @@ func (p *CTGCOptPass) Run(mod *air.AirModule) bool {
 		if eliminateRedundantDeref(fn) {
 			changed = true
 		}
+		if promoteStackAllocationAndInsertFrees(fn) {
+			changed = true
+		}
 	}
 	return changed
 }
@@ -150,4 +153,181 @@ func usesReg(inst *air.AirInst, reg uint32) bool {
 		return true
 	}
 	return false
+}
+
+// promoteStackAllocationAndInsertFrees determines which allocations do not escape,
+// and inserts explicit OpFree instructions right before function returns to avoid leaks.
+func promoteStackAllocationAndInsertFrees(fn *air.AirFunc) bool {
+	if len(fn.Insts) == 0 {
+		return false
+	}
+
+	// 1. Gather all OpAlloc registers
+	allocRegs := make(map[uint32]uint16) // map of reg -> typeID
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpAlloc && inst.Dest != 0 {
+			allocRegs[inst.Dest] = inst.TypeID
+		}
+	}
+
+	if len(allocRegs) == 0 {
+		return false
+	}
+
+	// 2. Build Disjoint Set Union (DSU) to group alias and copy relationships.
+	dsuParent := make(map[uint32]uint32)
+	var find func(uint32) uint32
+	find = func(x uint32) uint32 {
+		if _, exists := dsuParent[x]; !exists {
+			dsuParent[x] = x
+			return x
+		}
+		if dsuParent[x] == x {
+			return x
+		}
+		dsuParent[x] = find(dsuParent[x])
+		return dsuParent[x]
+	}
+	union := func(x, y uint32) {
+		rx := find(x)
+		ry := find(y)
+		if rx != ry {
+			dsuParent[rx] = ry
+		}
+	}
+
+	// Connect alias/copy instructions
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpNop {
+			continue
+		}
+		switch inst.Opcode {
+		case air.OpCopy, air.OpMove, air.OpMakeRef, air.OpGEP, air.OpGetField:
+			if inst.Dest != 0 && inst.Src1 != 0 {
+				union(inst.Dest, inst.Src1)
+			}
+		}
+	}
+
+	// 3. Identify all escaping registers.
+	escapedReps := make(map[uint32]bool)
+
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpNop {
+			continue
+		}
+
+		switch inst.Opcode {
+		case air.OpReturn:
+			if inst.Src1 != 0 {
+				escapedReps[find(inst.Src1)] = true
+			}
+		case air.OpCall:
+			// The target callee register/pointer (Src1) escapes if it's a register
+			if inst.Src1 != 0 {
+				escapedReps[find(inst.Src1)] = true
+			}
+			// All function arguments in Extras escape
+			argStart := inst.Src2
+			argCount := uint32(0)
+			if argStart < uint32(len(fn.Extras)) {
+				argCount = fn.Extras[argStart]
+			}
+			for idx := uint32(0); idx < argCount; idx++ {
+				argRegIdx := argStart + 1 + idx
+				if argRegIdx < uint32(len(fn.Extras)) {
+					argReg := fn.Extras[argRegIdx]
+					if argReg != 0 {
+						escapedReps[find(argReg)] = true
+					}
+				}
+			}
+		case air.OpStore:
+			// If we store the pointer Src1 into another memory location, it escapes
+			if inst.Src1 != 0 {
+				escapedReps[find(inst.Src1)] = true
+			}
+		case air.OpSetField:
+			// Src1.field[Src2] = Dest
+			// The value being stored (Dest) escapes
+			if inst.Dest != 0 {
+				escapedReps[find(inst.Dest)] = true
+			}
+		case air.OpSend, air.OpSpawn:
+			if inst.Src1 != 0 {
+				escapedReps[find(inst.Src1)] = true
+			}
+			if inst.Src2 != 0 {
+				escapedReps[find(inst.Src2)] = true
+			}
+		}
+	}
+
+	// 4. Determine which OpAlloc registers do not escape and are not already freed
+	nonEscapingAllocRegs := make(map[uint32]uint16)
+	for reg, typeID := range allocRegs {
+		if !escapedReps[find(reg)] {
+			nonEscapingAllocRegs[reg] = typeID
+		}
+	}
+
+	if len(nonEscapingAllocRegs) == 0 {
+		return false
+	}
+
+	// Remove registers that are already explicitly freed
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpFree && inst.Src1 != 0 {
+			freedRep := find(inst.Src1)
+			for reg := range nonEscapingAllocRegs {
+				if find(reg) == freedRep {
+					delete(nonEscapingAllocRegs, reg)
+				}
+			}
+		}
+	}
+
+	if len(nonEscapingAllocRegs) == 0 {
+		return false
+	}
+
+	// 5. Insert explicit OpFree for each non-escaping allocation right before each OpReturn instruction.
+	changed := false
+
+	// We iterate backwards to insert correctly without shifting unvisited indices.
+	for i := len(fn.Insts) - 1; i >= 0; i-- {
+		inst := &fn.Insts[i]
+		if inst.Opcode == air.OpReturn {
+			// Insert OpFree for all remaining non-escaping allocs
+			var frees []air.AirInst
+			for reg, typeID := range nonEscapingAllocRegs {
+				frees = append(frees, air.AirInst{
+					Opcode: air.OpFree,
+					TypeID: typeID,
+					Src1:   reg,
+				})
+			}
+
+			if len(frees) == 0 {
+				continue
+			}
+
+			// Slice and insert
+			newInsts := make([]air.AirInst, 0, len(fn.Insts)+len(frees))
+			newInsts = append(newInsts, fn.Insts[:i]...)
+			newInsts = append(newInsts, frees...)
+			newInsts = append(newInsts, fn.Insts[i:]...)
+			fn.Insts = newInsts
+
+			// Update all block instruction indices that point past this insertion point.
+			updateBlockInstrs(fn, uint32(i-1), uint32(len(frees)))
+			changed = true
+		}
+	}
+
+	return changed
 }

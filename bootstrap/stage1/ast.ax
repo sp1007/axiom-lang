@@ -78,6 +78,8 @@ pub const NODE_ERROR: u8 = 63
 pub const NODE_DESTROY_STMT: u8 = 64
 pub const NODE_ALIAS_STMT: u8 = 65
 pub const NODE_COMPTIME: u8 = 66
+pub const NODE_BREAK_STMT: u8 = 67
+pub const NODE_CONTINUE_STMT: u8 = 68
 
 
 // Flags constants (matching compiler/ast/node.go exactly)
@@ -174,3 +176,27 @@ pub fn add_extra(mut self: AstTree, val: i32) -> u32:
     let idx = self.extras.len as u32
     self.extras.push(val)
     return idx
+
+pub fn clone_subtree(mut self: AstTree, node_idx: u32) -> u32:
+    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
+        return 0 as u32
+
+    let orig_node = self.nodes.data[node_idx]
+    let new_idx = self.add_node(orig_node.kind, orig_node.token_idx)
+    self.nodes.data[new_idx].flags = orig_node.flags
+    self.nodes.data[new_idx].payload = orig_node.payload
+    self.nodes.data[new_idx].extra_idx = orig_node.extra_idx
+
+    // Recursively clone children
+    mut child_idx := orig_node.first_child
+    mut prev_cloned_child := 0 as u32
+    while child_idx != 0 as u32:
+        let cloned_child = self.clone_subtree(child_idx)
+        if prev_cloned_child == 0 as u32:
+            self.nodes.data[new_idx].first_child = cloned_child
+        else:
+            self.nodes.data[prev_cloned_child].next_sibling = cloned_child
+        prev_cloned_child = cloned_child
+        child_idx = self.nodes.data[child_idx].next_sibling
+
+    return new_idx

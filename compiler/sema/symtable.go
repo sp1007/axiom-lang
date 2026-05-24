@@ -40,6 +40,13 @@ var builtins = []builtinType{
 	{"compiler_intrinsic", 0},
 	{"assert", 0},
 	{"panic", 0},
+	{"syscall0", 0},
+	{"syscall1", 0},
+	{"syscall2", 0},
+	{"syscall3", 0},
+	{"syscall4", 0},
+	{"syscall5", 0},
+	{"syscall6", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated

@@ -426,3 +426,68 @@ func TestELF64_EmptyText(t *testing.T) {
 		t.Error("missing ELF magic")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Graph Coloring Register Allocation Tests
+// --------------------------------------------------------------------------
+
+func TestGraphColoring_SimpleNoSpill(t *testing.T) {
+	intervals := []x86.LiveInterval{
+		{VReg: 1, Start: 0, End: 2},
+		{VReg: 2, Start: 1, End: 3},
+	}
+
+	result := x86.GraphColoringAlloc(intervals, []x86.PhysReg{x86.RAX, x86.RCX})
+	if result.SpillCount != 0 {
+		t.Errorf("expected no spills, got %d", result.SpillCount)
+	}
+	if len(result.Allocs) != 2 {
+		t.Errorf("expected 2 allocations, got %d", len(result.Allocs))
+	}
+	for _, alloc := range result.Allocs {
+		if alloc.Spilled {
+			t.Errorf("VReg %d should not be spilled", alloc.VReg)
+		}
+	}
+}
+
+func TestGraphColoring_ForcedSpill(t *testing.T) {
+	intervals := []x86.LiveInterval{
+		{VReg: 1, Start: 0, End: 10},
+		{VReg: 2, Start: 1, End: 10},
+		{VReg: 3, Start: 2, End: 10},
+	}
+
+	// Only 2 registers available → one must spill
+	result := x86.GraphColoringAlloc(intervals, []x86.PhysReg{x86.RAX, x86.RCX})
+	if result.SpillCount != 1 {
+		t.Errorf("expected 1 spill, got %d", result.SpillCount)
+	}
+}
+
+func TestGraphColoring_Empty(t *testing.T) {
+	result := x86.GraphColoringAlloc(nil, x86.AllocatableGPRs())
+	if result.SpillCount != 0 {
+		t.Error("expected 0 spills for empty input")
+	}
+}
+
+func TestGraphColoring_ExpireReuse(t *testing.T) {
+	intervals := []x86.LiveInterval{
+		{VReg: 1, Start: 0, End: 1},  // dies early
+		{VReg: 2, Start: 2, End: 3},  // does not overlap, should reuse the register
+	}
+
+	result := x86.GraphColoringAlloc(intervals, []x86.PhysReg{x86.RAX})
+	if result.SpillCount != 0 {
+		t.Error("register should be reused after expiry")
+	}
+	if len(result.Allocs) != 2 {
+		t.Errorf("expected 2 allocations, got %d", len(result.Allocs))
+	}
+	if result.Allocs[1].Phys != result.Allocs[2].Phys {
+		t.Errorf("expected both VRegs to be allocated the same physical register (reuse), got %v and %v",
+			result.Allocs[1].Phys, result.Allocs[2].Phys)
+	}
+}
+

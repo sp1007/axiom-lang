@@ -113,6 +113,10 @@ func (g *StmtGen) EmitStmtWithReturning(nodeIdx uint32, returning bool) {
 		g.emitAssign(nodeIdx, node)
 	case ast.NodeReturnStmt:
 		g.emitReturn(nodeIdx, node)
+	case ast.NodeBreakStmt:
+		g.emitBreak(nodeIdx, node)
+	case ast.NodeContinueStmt:
+		g.emitContinue(nodeIdx, node)
 	case ast.NodeIfStmt:
 		g.emitIfWithReturning(nodeIdx, node, returning)
 	case ast.NodeWhileStmt:
@@ -347,6 +351,24 @@ func (g *StmtGen) emitReturn(idx uint32, node *ast.AstNode) {
 	} else {
 		g.W.Line("return;")
 	}
+}
+
+func (g *StmtGen) emitBreak(idx uint32, node *ast.AstNode) {
+	deferred := g.Defers.CurrentDefers()
+	for _, d := range deferred {
+		expr := g.ExprGen.Emit(d)
+		g.W.Linef("%s;", expr)
+	}
+	g.W.Line("break;")
+}
+
+func (g *StmtGen) emitContinue(idx uint32, node *ast.AstNode) {
+	deferred := g.Defers.CurrentDefers()
+	for _, d := range deferred {
+		expr := g.ExprGen.Emit(d)
+		g.W.Linef("%s;", expr)
+	}
+	g.W.Line("continue;")
 }
 
 // emitIf generates if/elif/else chains.

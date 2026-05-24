@@ -89,6 +89,18 @@ void ax_println_str(ax_string s) {
     win32_write_raw(h, "\n", 1);
 }
 
+void ax_print_str_native(const char* ptr) {
+    if (!ptr) return;
+    ax_string s = { (const ax_u8*)ptr, strlen(ptr) };
+    ax_print_str(s);
+}
+
+void ax_println_str_native(const char* ptr) {
+    if (!ptr) return;
+    ax_string s = { (const ax_u8*)ptr, strlen(ptr) };
+    ax_println_str(s);
+}
+
 void ax_print_i64(ax_i64 value) {
     win32_print_i64(GetStdHandle(STD_OUTPUT_HANDLE), value);
 }

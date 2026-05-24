@@ -1,0 +1,1134 @@
+// bootstrap/stage1/ssa_opt.ax
+// SSA linear Intermediate Representation (AIR) O1 optimization passes:
+// Constant Folding, Copy Propagation, and Dead Code Elimination.
+
+import std.string
+
+extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn puts(s: str) -> i32
+
+pub struct ConstVal:
+    pub known: bool
+    pub val: u32
+
+pub struct SsaOptimizer:
+    pub level: u8
+
+pub fn new_ssa_optimizer() -> SsaOptimizer:
+    return SsaOptimizer(level: 1 as u8)
+
+pub fn max_reg_id(f: ptr[AirFunc]) -> u32:
+    mut max_id := 0 as u32
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.dest > max_id:
+            max_id = inst.dest
+        // src1 is a register only if it is a register operand (not block target or immediate constant)
+        // src2 is a register only if it is a register operand
+        if inst.opcode != OP_ICONST and inst.opcode != OP_FCONST and inst.opcode != OP_JUMP:
+            if inst.src1 > max_id:
+                max_id = inst.src1
+            if inst.src2 > max_id and inst.opcode != OP_BRANCH:
+                max_id = inst.src2
+        i = i + 1 as i64
+    return max_id
+
+pub fn is_unary_foldable(op: u16) -> bool:
+    return op == OP_NEG or op == OP_NOT
+
+pub fn has_side_effect(op: u16) -> bool:
+    if op == OP_STORE or op == OP_FREE or op == OP_DESTROY or op == OP_ALIAS_REUSE:
+        return true
+    if op == OP_CALL or op == OP_SPAWN or op == OP_SEND:
+        return true
+    if op == OP_RETURN or op == OP_JUMP or op == OP_BRANCH:
+        return true
+    if op == OP_SET_FIELD:
+        return true
+    return false
+
+pub fn opcode_is_control(op: u16) -> bool:
+    if op == OP_JUMP or op == OP_BRANCH or op == OP_CALL or op == OP_RETURN:
+        return true
+    if op == OP_LOOP_BEGIN or op == OP_LOOP_END:
+        return true
+    return false
+
+pub fn eval_binary(op: u16, a: u32, b: u32, out_val: ptr[u32]) -> bool:
+    let ai = a as i32
+    let bi = b as i32
+
+    if op == OP_IADD:
+        out_val[0] = (ai + bi) as u32
+        return true
+    elif op == OP_ISUB:
+        out_val[0] = (ai - bi) as u32
+        return true
+    elif op == OP_IMUL:
+        out_val[0] = (ai * bi) as u32
+        return true
+    elif op == OP_IDIV:
+        if bi == 0:
+            return false
+        out_val[0] = (ai / bi) as u32
+        return true
+    elif op == OP_IMOD:
+        if bi == 0:
+            return false
+        out_val[0] = (ai % bi) as u32
+        return true
+    elif op == OP_EQ:
+        mut res := 0 as u32
+        if ai == bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_NE:
+        mut res := 0 as u32
+        if ai != bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_LT:
+        mut res := 0 as u32
+        if ai < bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_LE:
+        mut res := 0 as u32
+        if ai <= bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_GT:
+        mut res := 0 as u32
+        if ai > bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_GE:
+        mut res := 0 as u32
+        if ai >= bi:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    elif op == OP_AND:
+        out_val[0] = a & b
+        return true
+    elif op == OP_OR:
+        out_val[0] = a | b
+        return true
+    elif op == OP_XOR:
+        out_val[0] = a ^ b
+        return true
+    elif op == OP_SHL:
+        if b >= 32 as u32:
+            out_val[0] = 0 as u32
+            return true
+        out_val[0] = a << b
+        return true
+    elif op == OP_SHR:
+        if b >= 32 as u32:
+            out_val[0] = 0 as u32
+            return true
+        out_val[0] = (ai >> (b as i32)) as u32
+        return true
+
+    return false
+
+pub fn eval_unary(op: u16, a: u32, out_val: ptr[u32]) -> bool:
+    if op == OP_NEG:
+        out_val[0] = (-(a as i32)) as u32
+        return true
+    elif op == OP_NOT:
+        mut res := 0 as u32
+        if a == 0 as u32:
+            res = 1 as u32
+        out_val[0] = res
+        return true
+    return false
+
+pub fn fold_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let def_counts = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_counts as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode != OP_NOP and inst.dest != 0 as u32 and inst.opcode != OP_BRANCH:
+            def_counts[inst.dest] = def_counts[inst.dest] + 1 as u32
+        i = i + 1 as i64
+
+    let vals = @alloc((max_reg as i64 + 1 as i64) * 8 as i64) as ptr[ConstVal]
+    mut reg_idx := 0 as u32
+    while reg_idx <= max_reg:
+        vals[reg_idx] = ConstVal(known: false, val: 0 as u32)
+        reg_idx = reg_idx + 1 as u32
+
+    mut changed := false
+    let out_val = @alloc(4 as i64) as ptr[u32]
+
+    i = 0 as i64
+    while i < f.insts.len:
+        mut inst := &f.insts.data[i]
+        
+        if inst.opcode == OP_ICONST or inst.opcode == OP_FCONST:
+            if inst.dest != 0 as u32:
+                if def_counts[inst.dest] <= 1 as u32:
+                    vals[inst.dest] = ConstVal(known: true, val: inst.src1)
+                else:
+                    vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+            i = i + 1 as i64
+            continue
+
+        if not opcode_is_binary_alu(inst.opcode) and not is_unary_foldable(inst.opcode):
+            if inst.dest != 0 as u32:
+                vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+            i = i + 1 as i64
+            continue
+
+        if opcode_is_binary_alu(inst.opcode):
+            let src1_val = vals[inst.src1]
+            let src2_val = vals[inst.src2]
+            if src1_val.known and src2_val.known:
+                let ok = eval_binary(inst.opcode, src1_val.val, src2_val.val, out_val)
+                if ok:
+                    inst.opcode = OP_ICONST
+                    inst.src1 = out_val[0]
+                    inst.src2 = 0 as u32
+                    if def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: out_val[0])
+                    else:
+                        vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                    changed = true
+                    i = i + 1 as i64
+                    continue
+
+        if is_unary_foldable(inst.opcode):
+            let src1_val = vals[inst.src1]
+            if src1_val.known:
+                let ok = eval_unary(inst.opcode, src1_val.val, out_val)
+                if ok:
+                    inst.opcode = OP_ICONST
+                    inst.src1 = out_val[0]
+                    inst.src2 = 0 as u32
+                    if def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: out_val[0])
+                    else:
+                        vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                    changed = true
+                    i = i + 1 as i64
+                    continue
+
+        if inst.dest != 0 as u32:
+            vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+        i = i + 1 as i64
+
+    @free(def_counts as ptr[u8])
+    @free(vals as ptr[u8])
+    @free(out_val as ptr[u8])
+    return changed
+
+pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let copy_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(copy_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode != OP_NOP:
+            if (inst.opcode == OP_COPY or inst.opcode == OP_MOVE) and inst.dest != 0 as u32 and inst.src1 != 0 as u32:
+                copy_map[inst.dest] = inst.src1
+        i = i + 1 as i64
+
+    mut changed := false
+    i = 0 as i64
+    while i < f.insts.len:
+        mut inst := &f.insts.data[i]
+        if inst.opcode == OP_NOP or inst.opcode == OP_ICONST or inst.opcode == OP_FCONST:
+            i = i + 1 as i64
+            continue
+
+        if inst.src1 != 0 as u32 and inst.opcode != OP_JUMP:
+            mut curr := inst.src1
+            mut depth := 0
+            while curr != 0 as u32 and depth < 100:
+                let parent = copy_map[curr]
+                if parent == 0 as u32:
+                    break
+                curr = parent
+                depth = depth + 1
+            
+            if curr != inst.src1:
+                inst.src1 = curr
+                changed = true
+
+        if inst.src2 != 0 as u32 and not opcode_is_control(inst.opcode):
+            mut curr := inst.src2
+            mut depth := 0
+            while curr != 0 as u32 and depth < 100:
+                let parent = copy_map[curr]
+                if parent == 0 as u32:
+                    break
+                curr = parent
+                depth = depth + 1
+            
+            if curr != inst.src2:
+                inst.src2 = curr
+                changed = true
+
+        if inst.dest != 0 as u32 and (inst.opcode == OP_STORE or inst.opcode == OP_SET_FIELD):
+            mut curr := inst.dest
+            mut depth := 0
+            while curr != 0 as u32 and depth < 100:
+                let parent = copy_map[curr]
+                if parent == 0 as u32:
+                    break
+                curr = parent
+                depth = depth + 1
+            
+            if curr != inst.dest:
+                inst.dest = curr
+                changed = true
+
+        if inst.opcode == OP_BRANCH and inst.src1 != 0 as u32:
+            mut curr := inst.src1
+            mut depth := 0
+            while curr != 0 as u32 and depth < 100:
+                let parent = copy_map[curr]
+                if parent == 0 as u32:
+                    break
+                curr = parent
+                depth = depth + 1
+            
+            if curr != inst.src1:
+                inst.src1 = curr
+                changed = true
+
+        if inst.opcode == OP_RETURN and inst.src1 != 0 as u32:
+            mut curr := inst.src1
+            mut depth := 0
+            while curr != 0 as u32 and depth < 100:
+                let parent = copy_map[curr]
+                if parent == 0 as u32:
+                    break
+                curr = parent
+                depth = depth + 1
+            
+            if curr != inst.src1:
+                inst.src1 = curr
+                changed = true
+
+        if inst.opcode == OP_CALL:
+            let arg_start = inst.src2
+            mut arg_count := 0 as u32
+            if arg_start < f.extras.len as u32:
+                arg_count = f.extras.data[arg_start]
+            
+            mut idx := 0 as u32
+            while idx < arg_count:
+                let arg_reg_idx = arg_start + 1 as u32 + idx
+                let arg_reg = f.extras.data[arg_reg_idx]
+                if arg_reg != 0 as u32:
+                    mut curr := arg_reg
+                    mut depth := 0
+                    while curr != 0 as u32 and depth < 100:
+                        let parent = copy_map[curr]
+                        if parent == 0 as u32:
+                            break
+                        curr = parent
+                        depth = depth + 1
+                    
+                    if curr != arg_reg:
+                        f.extras.data[arg_reg_idx] = curr
+                        changed = true
+                idx = idx + 1 as u32
+
+        i = i + 1 as i64
+
+    @free(copy_map as ptr[u8])
+    return changed
+
+pub fn remove_unreachable_blocks(f: ptr[AirFunc]) -> bool:
+    if f.blocks.len <= 1 as i64:
+        return false
+
+    let reachable = @alloc(f.blocks.len) as ptr[bool]
+    @memset(reachable as ptr[void], 0 as u8, f.blocks.len)
+    reachable[0] = true
+
+    let queue = @alloc(f.blocks.len * 4 as i64) as ptr[u32]
+    mut head := 0 as i64
+    mut tail := 0 as i64
+
+    queue[tail] = 0 as u32
+    tail = tail + 1 as i64
+
+    while head < tail:
+        let cur = queue[head]
+        head = head + 1 as i64
+
+        if (cur as i64) < f.blocks.len:
+            let blk = f.blocks.data[cur]
+            mut i := 0 as u32
+            while i < blk.succs_len:
+                let succ = f.block_succs.data[blk.succs_start + i]
+                if (succ as i64) < f.blocks.len:
+                    if not reachable[succ]:
+                        reachable[succ] = true
+                        queue[tail] = succ
+                        tail = tail + 1 as i64
+                i = i + 1 as u32
+
+    if tail == f.blocks.len:
+        @free(reachable as ptr[u8])
+        @free(queue as ptr[u8])
+        return false
+
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        if not reachable[bi]:
+            mut blk := &f.blocks.data[bi]
+            mut i := 0 as u32
+            while i < blk.instrs_len:
+                let inst_idx = f.block_instrs.data[blk.instrs_start + i]
+                if (inst_idx as i64) < f.insts.len:
+                    f.insts.data[inst_idx].opcode = OP_NOP
+                    f.insts.data[inst_idx].type_id = 0 as u16
+                    f.insts.data[inst_idx].dest = 0 as u32
+                    f.insts.data[inst_idx].src1 = 0 as u32
+                    f.insts.data[inst_idx].src2 = 0 as u32
+                i = i + 1 as u32
+            blk.instrs_len = 0 as u32
+            blk.succs_len = 0 as u32
+            blk.preds_len = 0 as u32
+        bi = bi + 1 as i64
+
+    @free(reachable as ptr[u8])
+    @free(queue as ptr[u8])
+    return true
+
+pub fn dce_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let use_count = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(use_count as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode == OP_NOP:
+            i = i + 1 as i64
+            continue
+
+        if inst.opcode == OP_CALL:
+            let arg_start = inst.src2
+            mut arg_count := 0 as u32
+            if arg_start < f.extras.len as u32:
+                arg_count = f.extras.data[arg_start]
+            
+            mut idx := 0 as u32
+            while idx < arg_count:
+                let arg_reg = f.extras.data[arg_start + 1 as u32 + idx]
+                if arg_reg != 0 as u32:
+                    use_count[arg_reg] = use_count[arg_reg] + 1 as u32
+                idx = idx + 1 as u32
+            i = i + 1 as i64
+            continue
+
+        if inst.opcode == OP_ICONST or inst.opcode == OP_FCONST or inst.opcode == OP_JUMP:
+            i = i + 1 as i64
+            continue
+
+        if inst.opcode == OP_BRANCH:
+            if inst.src1 != 0 as u32:
+                use_count[inst.src1] = use_count[inst.src1] + 1 as u32
+            i = i + 1 as i64
+            continue
+
+        if inst.dest != 0 as u32 and (inst.opcode == OP_STORE or inst.opcode == OP_SET_FIELD):
+            use_count[inst.dest] = use_count[inst.dest] + 1 as u32
+
+        if inst.src1 != 0 as u32:
+            use_count[inst.src1] = use_count[inst.src1] + 1 as u32
+
+        if inst.src2 != 0 as u32:
+            use_count[inst.src2] = use_count[inst.src2] + 1 as u32
+
+        i = i + 1 as i64
+
+    mut changed := false
+    i = 0 as i64
+    while i < f.insts.len:
+        mut inst := &f.insts.data[i]
+        if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+            if not has_side_effect(inst.opcode):
+                if use_count[inst.dest] == 0 as u32:
+                    inst.opcode = OP_NOP
+                    inst.type_id = 0 as u16
+                    inst.dest = 0 as u32
+                    inst.src1 = 0 as u32
+                    inst.src2 = 0 as u32
+                    changed = true
+        i = i + 1 as i64
+
+    @free(use_count as ptr[u8])
+
+    if remove_unreachable_blocks(f):
+        changed = true
+
+    return changed
+
+pub fn licm_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let def_block = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_block as ptr[void], 0xff as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        mut inst_i := 0 as u32
+        while inst_i < blk.instrs_len:
+            let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+            let inst = f.insts.data[inst_idx]
+            if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+                def_block[inst.dest] = bi as u32
+            inst_i = inst_i + 1 as u32
+        bi = bi + 1 as i64
+
+    mut changed := false
+
+    bi = 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        if blk.loop_depth > 0 as u8:
+            mut pre_header_id := 0xffffffff as u32
+            mut pred_i := 0 as u32
+            while pred_i < blk.preds_len:
+                let pred = f.block_preds.data[blk.preds_start + pred_i]
+                if pred < f.blocks.len as u32:
+                    if f.blocks.data[pred].loop_depth < blk.loop_depth:
+                        pre_header_id = pred
+                        break
+                pred_i = pred_i + 1 as u32
+
+            if pre_header_id != 0xffffffff as u32:
+                mut inst_i := 0 as u32
+                while inst_i < blk.instrs_len:
+                    let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+                    mut inst := &f.insts.data[inst_idx]
+                    
+                    if inst.opcode != OP_NOP and not has_side_effect(inst.opcode) and inst.dest != 0 as u32:
+                        mut inv_src1 := true
+                        if inst.src1 != 0 as u32 and inst.opcode != OP_ICONST and inst.opcode != OP_FCONST and inst.opcode != OP_JUMP:
+                            let def_b = def_block[inst.src1]
+                            if def_b != 0xffffffff as u32:
+                                if f.blocks.data[def_b].loop_depth >= blk.loop_depth:
+                                    inv_src1 = false
+                        
+                        mut inv_src2 := true
+                        if inst.src2 != 0 as u32 and inst.opcode != OP_BRANCH:
+                            let def_b = def_block[inst.src2]
+                            if def_b != 0xffffffff as u32:
+                                if f.blocks.data[def_b].loop_depth >= blk.loop_depth:
+                                    inv_src2 = false
+                                    
+                        if inv_src1 and inv_src2:
+                            let new_inst_idx = f.insts.push(AirInst(
+                                opcode: inst.opcode,
+                                type_id: inst.type_id,
+                                dest: inst.dest,
+                                src1: inst.src1,
+                                src2: inst.src2
+                            ))
+                            
+                            def_block[inst.dest] = pre_header_id
+                            
+                            let ph = &f.blocks.data[pre_header_id]
+                            let insert_pos = ph.instrs_start + ph.instrs_len
+                            
+                            f.block_instrs.push(0 as u32)
+                            mut shift_i := f.block_instrs.len - 1 as i64
+                            while shift_i > insert_pos as i64:
+                                f.block_instrs.data[shift_i] = f.block_instrs.data[shift_i - 1 as i64]
+                                shift_i = shift_i - 1 as i64
+                            f.block_instrs.data[insert_pos] = new_inst_idx
+                            ph.instrs_len = ph.instrs_len + 1 as u32
+                            
+                            mut adjust_bi := pre_header_id as i64 + 1 as i64
+                            while adjust_bi < f.blocks.len:
+                                f.blocks.data[adjust_bi].instrs_start = f.blocks.data[adjust_bi].instrs_start + 1 as u32
+                                adjust_bi = adjust_bi + 1 as i64
+                                
+                            inst.opcode = OP_NOP
+                            inst.type_id = 0 as u16
+                            inst.dest = 0 as u32
+                            inst.src1 = 0 as u32
+                            inst.src2 = 0 as u32
+                            
+                            changed = true
+                    inst_i = inst_i + 1 as u32
+        bi = bi + 1 as i64
+
+    @free(def_block as ptr[u8])
+    return changed
+
+pub fn insert_inst_at(f: ptr[AirFunc], block_id: u32, pos_in_block: u32, inst: AirInst) -> u32:
+    let new_inst_idx = f.insts.push(inst)
+    let blk = &f.blocks.data[block_id]
+    let insert_pos = blk.instrs_start + pos_in_block
+    
+    f.block_instrs.push(0 as u32)
+    mut shift_i := f.block_instrs.len - 1 as i64
+    while shift_i > insert_pos as i64:
+        f.block_instrs.data[shift_i] = f.block_instrs.data[shift_i - 1 as i64]
+        shift_i = shift_i - 1 as i64
+    f.block_instrs.data[insert_pos] = new_inst_idx
+    blk.instrs_len = blk.instrs_len + 1 as u32
+    
+    mut adjust_bi := block_id as i64 + 1 as i64
+    while adjust_bi < f.blocks.len:
+        f.blocks.data[adjust_bi].instrs_start = f.blocks.data[adjust_bi].instrs_start + 1 as u32
+        adjust_bi = adjust_bi + 1 as i64
+    return new_inst_idx
+
+pub fn compute_loop_depths(f: ptr[AirFunc]) -> bool:
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        f.blocks.data[bi].loop_depth = 0 as u8
+        bi = bi + 1 as i64
+
+    mut changed := false
+    let in_loop = @alloc(f.blocks.len) as ptr[bool]
+    let queue = @alloc(f.blocks.len * 4 as i64) as ptr[u32]
+
+    mut b := 0 as u32
+    while b < f.blocks.len as u32:
+        let blk = f.blocks.data[b]
+        mut succ_i := 0 as u32
+        while succ_i < blk.succs_len:
+            let h = f.block_succs.data[blk.succs_start + succ_i]
+            if h <= b and h < f.blocks.len as u32:
+                @memset(in_loop as ptr[void], 0 as u8, f.blocks.len)
+                in_loop[h] = true
+                in_loop[b] = true
+
+                mut head := 0 as i64
+                mut tail := 0 as i64
+                
+                if h != b:
+                    queue[tail] = b
+                    tail = tail + 1 as i64
+
+                while head < tail:
+                    let curr = queue[head]
+                    head = head + 1 as i64
+
+                    let curr_blk = f.blocks.data[curr]
+                    mut pred_i := 0 as u32
+                    while pred_i < curr_blk.preds_len:
+                        let pred = f.block_preds.data[curr_blk.preds_start + pred_i]
+                        if pred < f.blocks.len as u32:
+                            if not in_loop[pred]:
+                                in_loop[pred] = true
+                                queue[tail] = pred
+                                tail = tail + 1 as i64
+                        pred_i = pred_i + 1 as u32
+
+                mut i := 0 as i64
+                while i < f.blocks.len:
+                    if in_loop[i]:
+                        let old_depth = f.blocks.data[i].loop_depth
+                        if old_depth < 255 as u8:
+                            f.blocks.data[i].loop_depth = old_depth + 1 as u8
+                            changed = true
+                    i = i + 1 as i64
+            succ_i = succ_i + 1 as u32
+        b = b + 1 as u32
+
+    @free(in_loop as ptr[u8])
+    @free(queue as ptr[u8])
+    return changed
+
+pub fn strength_reduction_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let def_block = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_block as ptr[void], 0xff as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        mut inst_i := 0 as u32
+        while inst_i < blk.instrs_len:
+            let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+            let inst = f.insts.data[inst_idx]
+            if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+                def_block[inst.dest] = bi as u32
+            inst_i = inst_i + 1 as u32
+        bi = bi + 1 as i64
+
+    mut changed := false
+    mut next_reg := max_reg + 1 as u32
+
+    bi = 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        if blk.loop_depth > 0 as u8:
+            mut pre_header_id := 0xffffffff as u32
+            mut pred_i := 0 as u32
+            while pred_i < blk.preds_len:
+                let pred = f.block_preds.data[blk.preds_start + pred_i]
+                if pred < f.blocks.len as u32:
+                    if f.blocks.data[pred].loop_depth < blk.loop_depth:
+                        pre_header_id = pred
+                        break
+                pred_i = pred_i + 1 as u32
+
+            if pre_header_id != 0xffffffff as u32:
+                mut iv_reg := 0 as u32
+                mut step_val := 0 as u32
+                mut step_reg := 0 as u32
+                mut is_add := true
+
+                mut inst_i := 0 as u32
+                while inst_i < blk.instrs_len:
+                    let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+                    let inst = f.insts.data[inst_idx]
+                    if inst.opcode == OP_COPY and inst.dest != 0 as u32:
+                        let src = inst.src1
+                        let src_def_idx = f.block_instrs.data[blk.instrs_start + inst_i - 1 as u32]
+                        let src_def = f.insts.data[src_def_idx]
+                        if src_def.dest == src and (src_def.opcode == OP_IADD or src_def.opcode == OP_ISUB):
+                            if src_def.src1 == inst.dest:
+                                iv_reg = inst.dest
+                                step_reg = src_def.src2
+                                is_add = (src_def.opcode == OP_IADD)
+                                break
+                            elif src_def.src2 == inst.dest and src_def.opcode == OP_IADD:
+                                iv_reg = inst.dest
+                                step_reg = src_def.src1
+                                is_add = true
+                                break
+                    inst_i = inst_i + 1 as u32
+
+                if iv_reg != 0 as u32:
+                    inst_i = 0 as u32
+                    while inst_i < blk.instrs_len:
+                        let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+                        mut inst := &f.insts.data[inst_idx]
+                        if inst.opcode == OP_IMUL and inst.dest != 0 as u32:
+                            mut c_reg := 0 as u32
+                            if inst.src1 == iv_reg:
+                                c_reg = inst.src2
+                            elif inst.src2 == iv_reg:
+                                c_reg = inst.src1
+                            
+                            if c_reg != 0 as u32:
+                                mut is_invariant := false
+                                let c_def_b = def_block[c_reg]
+                                if c_def_b == 0xffffffff as u32:
+                                    is_invariant = true
+                                else:
+                                    if f.blocks.data[c_def_b].loop_depth < blk.loop_depth:
+                                        is_invariant = true
+                                        
+                                if is_invariant:
+                                    mut start_reg := 0 as u32
+                                    let ph_blk = f.blocks.data[pre_header_id]
+                                    mut ph_inst_i := 0 as u32
+                                    while ph_inst_i < ph_blk.instrs_len:
+                                        let ph_inst_idx = f.block_instrs.data[ph_blk.instrs_start + ph_inst_i]
+                                        let ph_inst = f.insts.data[ph_inst_idx]
+                                        if (ph_inst.opcode == OP_COPY or ph_inst.opcode == OP_MOVE) and ph_inst.dest == iv_reg:
+                                            start_reg = ph_inst.src1
+                                            break
+                                        elif ph_inst.opcode == OP_ICONST and ph_inst.dest == iv_reg:
+                                            start_reg = iv_reg
+                                            break
+                                        ph_inst_i = ph_inst_i + 1 as u32
+                                        
+                                    if start_reg != 0 as u32:
+                                        let acc_reg = next_reg
+                                        next_reg = next_reg + 1 as u32
+                                        
+                                        mut init_inst := AirInst(
+                                            opcode: OP_IMUL,
+                                            type_id: inst.type_id,
+                                            dest: acc_reg,
+                                            src1: start_reg,
+                                            src2: c_reg
+                                        )
+                                        if start_reg == iv_reg:
+                                            mut iv_const_val := 0 as u32
+                                            let ph_blk2 = f.blocks.data[pre_header_id]
+                                            mut ph_inst_i2 := 0 as u32
+                                            while ph_inst_i2 < ph_blk2.instrs_len:
+                                                let ph_inst_idx = f.block_instrs.data[ph_blk2.instrs_start + ph_inst_i2]
+                                                let ph_inst = f.insts.data[ph_inst_idx]
+                                                if ph_inst.opcode == OP_ICONST and ph_inst.dest == iv_reg:
+                                                    iv_const_val = ph_inst.src1
+                                                    break
+                                                ph_inst_i2 = ph_inst_i2 + 1 as u32
+                                            let temp_start_reg = next_reg
+                                            next_reg = next_reg + 1 as u32
+                                            insert_inst_at(f, pre_header_id, ph_blk2.instrs_len - 1 as u32, AirInst(
+                                                opcode: OP_ICONST,
+                                                type_id: inst.type_id,
+                                                dest: temp_start_reg,
+                                                src1: iv_const_val,
+                                                src2: 0 as u32
+                                            ))
+                                            init_inst.src1 = temp_start_reg
+                                        
+                                        insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, init_inst)
+                                        
+                                        inst.opcode = OP_COPY
+                                        inst.src1 = acc_reg
+                                        inst.src2 = 0 as u32
+                                        
+                                        let step_mul_reg = next_reg
+                                        next_reg = next_reg + 1 as u32
+                                        
+                                        let new_acc_reg = next_reg
+                                        next_reg = next_reg + 1 as u32
+                                        
+                                        mut copy_pos := 0 as u32
+                                        mut loop_inst_i := 0 as u32
+                                        while loop_inst_i < blk.instrs_len:
+                                            let loop_inst_idx = f.block_instrs.data[blk.instrs_start + loop_inst_i]
+                                            let loop_inst = f.insts.data[loop_inst_idx]
+                                            if loop_inst.opcode == OP_COPY and loop_inst.dest == iv_reg:
+                                                copy_pos = loop_inst_i + 1 as u32
+                                                break
+                                            loop_inst_i = loop_inst_i + 1 as u32
+                                            
+                                        if copy_pos != 0 as u32:
+                                            insert_inst_at(f, bi as u32, copy_pos, AirInst(
+                                                opcode: OP_IMUL,
+                                                type_id: inst.type_id,
+                                                dest: step_mul_reg,
+                                                src1: step_reg,
+                                                src2: c_reg
+                                            ))
+                                            
+                                            mut add_op := OP_IADD as u16
+                                            if not is_add:
+                                                add_op = OP_ISUB
+                                                
+                                            insert_inst_at(f, bi as u32, copy_pos + 1 as u32, AirInst(
+                                                opcode: add_op,
+                                                type_id: inst.type_id,
+                                                dest: new_acc_reg,
+                                                src1: acc_reg,
+                                                src2: step_mul_reg
+                                            ))
+                                            
+                                            insert_inst_at(f, bi as u32, copy_pos + 2 as u32, AirInst(
+                                                opcode: OP_COPY,
+                                                type_id: inst.type_id,
+                                                dest: acc_reg,
+                                                src1: new_acc_reg,
+                                                src2: 0 as u32
+                                            ))
+                                            
+                                            changed = true
+                        inst_i = inst_i + 1 as u32
+        bi = bi + 1 as i64
+
+    @free(def_block as ptr[u8])
+    return changed
+
+pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let def_block = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_block as ptr[void], 0xff as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        mut inst_i := 0 as u32
+        while inst_i < blk.instrs_len:
+            let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
+            let inst = f.insts.data[inst_idx]
+            if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+                def_block[inst.dest] = bi as u32
+            inst_i = inst_i + 1 as u32
+        bi = bi + 1 as i64
+
+    let vals = @alloc((max_reg as i64 + 1 as i64) * 8 as i64) as ptr[ConstVal]
+    mut reg_idx := 0 as u32
+    while reg_idx <= max_reg:
+        vals[reg_idx] = ConstVal(known: false, val: 0 as u32)
+        reg_idx = reg_idx + 1 as u32
+
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode == OP_ICONST and inst.dest != 0 as u32:
+            vals[inst.dest] = ConstVal(known: true, val: inst.src1)
+        i = i + 1 as i64
+
+    mut changed := false
+    mut next_reg := max_reg + 1 as u32
+
+    bi = 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+        if blk.loop_depth > 0 as u8:
+            mut pre_header_id := 0xffffffff as u32
+            mut pred_i := 0 as u32
+            while pred_i < blk.preds_len:
+                let pred = f.block_preds.data[blk.preds_start + pred_i]
+                if pred < f.blocks.len as u32:
+                    if f.blocks.data[pred].loop_depth < blk.loop_depth:
+                        pre_header_id = pred
+                        break
+                pred_i = pred_i + 1 as u32
+
+            if pre_header_id != 0xffffffff as u32:
+                mut cond_inst_idx := 0xffffffff as u32
+                mut loop_body_block_id := 0xffffffff as u32
+                mut exit_block_id := 0xffffffff as u32
+
+                if blk.instrs_len > 0 as u32:
+                    let final_inst_idx = f.block_instrs.data[blk.instrs_start + blk.instrs_len - 1 as u32]
+                    let final_inst = f.insts.data[final_inst_idx]
+                    if final_inst.opcode == OP_BRANCH:
+                        cond_inst_idx = final_inst_idx
+                        exit_block_id = final_inst.dest
+                        loop_body_block_id = final_inst.src2
+
+                if cond_inst_idx != 0xffffffff as u32 and loop_body_block_id < f.blocks.len as u32 and loop_body_block_id != bi as u32:
+                    let cond_inst = f.insts.data[cond_inst_idx]
+                    mut cmp_inst_idx := 0xffffffff as u32
+                    mut inst_idx_i := blk.instrs_start
+                    while inst_idx_i < blk.instrs_start + blk.instrs_len:
+                        let idx = f.block_instrs.data[inst_idx_i]
+                        let inst = f.insts.data[idx]
+                        if inst.dest == cond_inst.src1 and (inst.opcode == OP_LT or inst.opcode == OP_LE):
+                            cmp_inst_idx = idx
+                            break
+                        inst_idx_i = inst_idx_i + 1 as u32
+
+                    if cmp_inst_idx != 0xffffffff as u32:
+                        let cmp_inst = f.insts.data[cmp_inst_idx]
+                        let iv_reg = cmp_inst.src1
+                        let limit_reg = cmp_inst.src2
+
+                        let limit_val_const = vals[limit_reg]
+                        if limit_val_const.known:
+                            let limit_val = limit_val_const.val
+                            mut start_reg := 0 as u32
+                            let ph_blk = f.blocks.data[pre_header_id]
+                            mut ph_inst_i := 0 as u32
+                            while ph_inst_i < ph_blk.instrs_len:
+                                let ph_inst_idx = f.block_instrs.data[ph_blk.instrs_start + ph_inst_i]
+                                let ph_inst = f.insts.data[ph_inst_idx]
+                                if (ph_inst.opcode == OP_COPY or ph_inst.opcode == OP_MOVE) and ph_inst.dest == iv_reg:
+                                    start_reg = ph_inst.src1
+                                    break
+                                elif ph_inst.opcode == OP_ICONST and ph_inst.dest == iv_reg:
+                                    start_reg = iv_reg
+                                    break
+                                ph_inst_i = ph_inst_i + 1 as u32
+
+                            if start_reg != 0 as u32:
+                                mut start_val := 0 as u32
+                                mut start_known := false
+                                if start_reg == iv_reg:
+                                    let ph_blk2 = f.blocks.data[pre_header_id]
+                                    mut ph_inst_i2 := 0 as u32
+                                    while ph_inst_i2 < ph_blk2.instrs_len:
+                                        let ph_inst_idx = f.block_instrs.data[ph_blk2.instrs_start + ph_inst_i2]
+                                        let ph_inst = f.insts.data[ph_inst_idx]
+                                        if ph_inst.opcode == OP_ICONST and ph_inst.dest == iv_reg:
+                                            start_val = ph_inst.src1
+                                            start_known = true
+                                            break
+                                        ph_inst_i2 = ph_inst_i2 + 1 as u32
+                                else:
+                                    let start_val_const = vals[start_reg]
+                                    if start_val_const.known:
+                                        start_val = start_val_const.val
+                                        start_known = true
+
+                                if start_known:
+                                    mut step_val := 1 as u32
+                                    let body_blk = f.blocks.data[loop_body_block_id]
+                                    mut body_inst_i := 0 as u32
+                                    while body_inst_i < body_blk.instrs_len:
+                                        let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i]
+                                        let b_inst = f.insts.data[b_inst_idx]
+                                        if b_inst.opcode == OP_IADD and (b_inst.src1 == iv_reg or b_inst.src2 == iv_reg):
+                                            mut step_reg := b_inst.src2
+                                            if b_inst.src2 == iv_reg:
+                                                step_reg = b_inst.src1
+                                            let step_val_const = vals[step_reg]
+                                            if step_val_const.known:
+                                                step_val = step_val_const.val
+                                                break
+                                        body_inst_i = body_inst_i + 1 as u32
+
+                                    let cmp_op = cmp_inst.opcode
+                                    mut trip_count := 0 as u32
+                                    if cmp_op == OP_LT:
+                                        if limit_val > start_val and step_val > 0 as u32:
+                                            trip_count = (limit_val - start_val) / step_val
+                                    elif cmp_op == OP_LE:
+                                        if limit_val >= start_val and step_val > 0 as u32:
+                                            trip_count = (limit_val - start_val) / step_val + 1 as u32
+
+                                    if trip_count > 0 as u32 and trip_count <= 4 as u32:
+                                        let renamed_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+
+                                        mut iter := 0 as u32
+                                        while iter < trip_count:
+                                            let curr_iv_val = start_val + iter * step_val
+                                            @memset(renamed_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
+                                            mut body_inst_i2 := 0 as u32
+                                            while body_inst_i2 < body_blk.instrs_len:
+                                                let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
+                                                let b_inst = f.insts.data[b_inst_idx]
+                                                if b_inst.opcode != OP_NOP and b_inst.dest != 0 as u32 and b_inst.dest != iv_reg:
+                                                    let new_reg = next_reg
+                                                    next_reg = next_reg + 1 as u32
+                                                    renamed_map[b_inst.dest] = new_reg
+                                                body_inst_i2 = body_inst_i2 + 1 as u32
+
+                                            let temp_iv_reg = next_reg
+                                            next_reg = next_reg + 1 as u32
+                                            insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
+                                                opcode: OP_ICONST,
+                                                type_id: 3 as u16,
+                                                dest: temp_iv_reg,
+                                                src1: curr_iv_val,
+                                                src2: 0 as u32
+                                            ))
+
+                                            body_inst_i2 = 0 as u32
+                                            while body_inst_i2 < body_blk.instrs_len:
+                                                let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
+                                                let b_inst = f.insts.data[b_inst_idx]
+                                                if b_inst.opcode == OP_JUMP or b_inst.opcode == OP_BRANCH or b_inst.opcode == OP_NOP:
+                                                    body_inst_i2 = body_inst_i2 + 1 as u32
+                                                    continue
+
+                                                mut src1 := b_inst.src1
+                                                if src1 == iv_reg and b_inst.opcode != OP_ICONST and b_inst.opcode != OP_FCONST:
+                                                    src1 = temp_iv_reg
+                                                elif src1 != 0 as u32 and src1 <= max_reg:
+                                                    if renamed_map[src1] != 0 as u32:
+                                                        src1 = renamed_map[src1]
+
+                                                mut src2 := b_inst.src2
+                                                if src2 == iv_reg and b_inst.opcode != OP_BRANCH:
+                                                    src2 = temp_iv_reg
+                                                elif src2 != 0 as u32 and src2 <= max_reg:
+                                                    if renamed_map[src2] != 0 as u32:
+                                                        src2 = renamed_map[src2]
+
+                                                mut dest := b_inst.dest
+                                                if dest == iv_reg:
+                                                    dest = temp_iv_reg
+                                                elif dest != 0 as u32 and dest <= max_reg:
+                                                    if renamed_map[dest] != 0 as u32:
+                                                        dest = renamed_map[dest]
+
+                                                insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
+                                                    opcode: b_inst.opcode,
+                                                    type_id: b_inst.type_id,
+                                                    dest: dest,
+                                                    src1: src1,
+                                                    src2: src2
+                                                ))
+                                                body_inst_i2 = body_inst_i2 + 1 as u32
+
+                                            if iter == trip_count - 1 as u32:
+                                                body_inst_i2 = 0 as u32
+                                                while body_inst_i2 < body_blk.instrs_len:
+                                                    let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
+                                                    let b_inst = f.insts.data[b_inst_idx]
+                                                    if b_inst.opcode != OP_NOP and b_inst.dest != 0 as u32 and b_inst.dest != iv_reg:
+                                                        let original_dest = b_inst.dest
+                                                        let original_def_b = def_block[original_dest]
+                                                        if original_def_b != loop_body_block_id and original_def_b != 0xffffffff as u32:
+                                                            insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
+                                                                opcode: OP_COPY,
+                                                                type_id: b_inst.type_id,
+                                                                dest: original_dest,
+                                                                src1: renamed_map[original_dest],
+                                                                src2: 0 as u32
+                                                            ))
+                                                    body_inst_i2 = body_inst_i2 + 1 as u32
+
+                                            iter = iter + 1 as u32
+
+                                        @free(renamed_map as ptr[u8])
+
+                                        let ph_blk3 = &f.blocks.data[pre_header_id]
+                                        let ph_final_idx = f.block_instrs.data[ph_blk3.instrs_start + ph_blk3.instrs_len - 1 as u32]
+                                        mut ph_final := &f.insts.data[ph_final_idx]
+                                        ph_final.opcode = OP_JUMP
+                                        ph_final.src1 = exit_block_id
+                                        ph_final.src2 = 0 as u32
+
+                                        f.block_succs.data[ph_blk3.succs_start] = exit_block_id
+                                        ph_blk3.succs_len = 1 as u32
+
+                                        changed = true
+                                        break
+        bi = bi + 1 as i64
+
+    @free(def_block as ptr[u8])
+    @free(vals as ptr[u8])
+    return changed
+
+pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
+    mut fi := 0 as i64
+    while fi < m.funcs.len:
+        mut f := &m.funcs.data[fi]
+        if not f.is_extern:
+            compute_loop_depths(f)
+            mut iter := 0
+            while iter < 10:
+                mut changed := false
+                
+                if fold_func(f):
+                    changed = true
+                if copy_prop_func(f):
+                    changed = true
+                if licm_func(f):
+                    changed = true
+                if strength_reduction_func(f):
+                    changed = true
+                if loop_unroll_func(f):
+                    changed = true
+                if dce_func(f):
+                    changed = true
+
+                if not changed:
+                    break
+                iter = iter + 1
+        fi = fi + 1 as i64

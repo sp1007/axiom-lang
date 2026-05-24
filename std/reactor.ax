@@ -3,7 +3,14 @@
 // Platform Event Loop Reactor implementation in AXIOM.
 // Stub select-based and async I/O simulation matching ioloop.c.
 
-extern "C" fn memset(s: ptr[void], c: i32, n: u64) -> ptr[void]
+fn ax_memset(s: ptr[void], c: i32, n: u64) -> ptr[void]:
+    mut p := s as ptr[u8]
+    mut i := 0 as u64
+    while i < n:
+        p.* = c as u8
+        p = (p as i64 + 1 as i64) as ptr[u8]
+        i = i + 1 as u64
+    return s
 
 // Async runtime external functions
 extern "C" fn ax_future_new(type_tag: u32) -> ptr[void]
@@ -56,7 +63,7 @@ pub struct FutureLayout:
 pub fn init(mut self: ioloop) -> i32:
     let p = (&self) as ptr[void]
     let sz = @compiler_intrinsic("size_of")[ioloop]()
-    memset(p, 0 as i32, sz as u64)
+    ax_memset(p, 0 as i32, sz as u64)
     self.backend_fd = -1 as i32
     self.running = 0 as i32
     return 0 as i32

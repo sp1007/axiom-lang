@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/axiom-lang/axiom/tools/lsp"
 )
 
 func main() {
@@ -57,6 +59,9 @@ func main() {
 	case "fmt":
 		os.Exit(runFmt(os.Args[2:]))
 
+	case "lsp":
+		os.Exit(lsp.StartServer())
+
 	case "version":
 		fmt.Println("axc 0.0.1-dev (AXIOM compiler)")
 
@@ -77,6 +82,7 @@ commands:
   build         Compile an AXIOM source file
   emit-c        Emit C11 code from an AXIOM source file
   fmt           Format AXIOM source files canonically
+  lsp           Start AXIOM Language Server Protocol (LSP) server
   dump-tokens   Tokenize a file and print JSON token stream
   dump-ast      Parse a file and print the AST
   dump-air      Lower to AIR and print text representation

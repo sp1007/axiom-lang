@@ -104,6 +104,8 @@ pub const TK_EOF: u8 = 80
 pub const TK_ERROR: u8 = 81
 pub const TK_DOT_DOT: u8 = 82
 pub const TK_HASH: u8 = 83
+pub const TK_BREAK: u8 = 84
+pub const TK_CONTINUE: u8 = 85
 
 
 pub struct Token:
@@ -217,8 +219,12 @@ fn lookup_keyword(s: str) -> u8:
         return TK_ASYNC
     if s == "await":
         return TK_AWAIT
+    if s == "break":
+        return TK_BREAK
     if s == "const":
         return TK_CONST
+    if s == "continue":
+        return TK_CONTINUE
     if s == "defer":
         return TK_DEFER
     if s == "elif":
@@ -420,7 +426,16 @@ pub fn scan_char(mut self: Lexer):
             if self.pos < self.len:
                 self.pos = self.pos + 1 // skip escaped char
         elif b != 39: // '\''
-            self.pos = self.pos + 1
+            mut size := 1
+            if b >= 192 as u8 and b < 224 as u8:
+                size = 2
+            elif b >= 224 as u8 and b < 240 as u8:
+                size = 3
+            elif b >= 240 as u8 and b < 248 as u8:
+                size = 4
+            self.pos = self.pos + size
+            if self.pos > self.len:
+                self.pos = self.len
 
     if self.pos < self.len and self.src[self.pos] as u8 == 39:
         self.pos = self.pos + 1

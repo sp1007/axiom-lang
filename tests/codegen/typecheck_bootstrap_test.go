@@ -26,10 +26,12 @@ func TestStage1TypecheckCorpus(t *testing.T) {
 	internPath := filepath.Join(workspaceDir, "bootstrap/stage1/intern.ax")
 	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
 	resolverPath := filepath.Join(workspaceDir, "bootstrap/stage1/resolver.ax")
+	typetablePath := filepath.Join(workspaceDir, "bootstrap/stage1/typetable.ax")
+	monoPath := filepath.Join(workspaceDir, "bootstrap/stage1/mono.ax")
 	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_typecheck.ax")
 
-	sourceBytes, err := concatenateAxiomFiles(tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath, mainPath)
+	sourceBytes, err := concatenateAxiomFiles(tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath, mainPath)
 	if err != nil {
 		t.Fatalf("failed to concatenate typechecker files: %v", err)
 	}

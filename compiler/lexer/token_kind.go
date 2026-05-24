@@ -112,6 +112,9 @@ const (
 
 	TokenHash // #
 
+	TokenBreak    // break
+	TokenContinue // continue
+
 	TokenKindCount // sentinel — total count; must remain last
 )
 
@@ -231,6 +234,8 @@ var tokenKindNames = [TokenKindCount]string{
 	TokenError: "ERROR",
 	TokenDotDot:    "'..'",
 	TokenHash:      "'#'",
+	TokenBreak:     "'break'",
+	TokenContinue:  "'continue'",
 }
 
 // Keywords maps identifier text to the corresponding keyword TokenKind.
@@ -271,11 +276,13 @@ var Keywords = map[string]TokenKind{
 	"type":      TokenType,
 	"unsafe":    TokenUnsafe,
 	"while":     TokenWhile,
+	"break":     TokenBreak,
+	"continue":  TokenContinue,
 }
 
 // IsKeyword reports whether kind is a keyword token.
 func (k TokenKind) IsKeyword() bool {
-	return k >= TokenAnd && k <= TokenWhile
+	return (k >= TokenAnd && k <= TokenWhile) || k == TokenBreak || k == TokenContinue
 }
 
 // IsLiteral reports whether kind is a literal token (int, float, string, char).

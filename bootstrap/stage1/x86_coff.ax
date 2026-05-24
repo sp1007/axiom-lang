@@ -1,0 +1,614 @@
+// bootstrap/stage1/x86_coff.ax
+// PE/COFF Object File Writer for x86-64 Windows targets in self-hosted AXIOM.
+
+import std.string
+
+pub const IMAGE_REL_AMD64_ADDR64: u16 = 1
+pub const IMAGE_REL_AMD64_REL32:  u16 = 4
+
+pub const IMAGE_SYM_CLASS_EXTERNAL: u8 = 2
+pub const IMAGE_SYM_CLASS_STATIC:   u8 = 3
+
+pub struct COFFReloc:
+    pub virt_addr: u32
+    pub sym_table_idx: u32
+    pub reloc_type: u16
+
+pub struct COFFRelocVec:
+    pub data: ptr[COFFReloc]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_coff_reloc_vec() -> COFFRelocVec:
+    return COFFRelocVec(data: null as ptr[COFFReloc], len: 0, cap: 0)
+
+pub fn push_coff_reloc(mut self: ptr[COFFRelocVec], r: COFFReloc):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 12) as ptr[COFFReloc]
+        if self.data != null as ptr[COFFReloc]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 12)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = r
+    self.len = self.len + 1
+
+pub struct COFFSymbol:
+    pub name_str: str
+    pub value: u32
+    pub section_num: i16
+    pub sym_type: u16
+    pub storage_class: u8
+    pub num_aux: u8
+
+pub struct COFFSymbolVec:
+    pub data: ptr[COFFSymbol]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_coff_symbol_vec() -> COFFSymbolVec:
+    return COFFSymbolVec(data: null as ptr[COFFSymbol], len: 0, cap: 0)
+
+pub fn push_coff_symbol(mut self: ptr[COFFSymbolVec], s: COFFSymbol) -> i32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 32) as ptr[COFFSymbol]
+        if self.data != null as ptr[COFFSymbol]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as i32
+    self.data[self.len] = s
+    self.len = self.len + 1
+    return idx
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fclose(stream: ptr[void]) -> i32
+
+pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
+    // 1. Build string table
+    mut strtab := new_byte_vec()
+    push_u32_le(&strtab, 4 as u32) // length placeholder
+    
+    let string_offsets = @alloc(symbols.len * 4) as ptr[u32]
+    mut si := 0 as i64
+    while si < symbols.len:
+        let name = symbols.data[si].name_str
+        let name_len = std.string.len(name)
+        if name_len > 8:
+            string_offsets[si] = strtab.len as u32
+            let name_ptr = name as ptr[u8]
+            mut char_i := 0 as i64
+            while char_i < name_len:
+                push_byte(&strtab, name_ptr[char_i])
+                char_i = char_i + 1
+            push_byte(&strtab, 0 as u8)
+        else:
+            string_offsets[si] = 0 as u32
+        si = si + 1
+        
+    // Patch string table length
+    if strtab.len > 4 as i64:
+        let total_len = strtab.len as u32
+        strtab.data[0] = (total_len & 0xFF as u32) as u8
+        strtab.data[1] = ((total_len >> 8 as u32) & 0xFF as u32) as u8
+        strtab.data[2] = ((total_len >> 16 as u32) & 0xFF as u32) as u8
+        strtab.data[3] = ((total_len >> 24 as u32) & 0xFF as u32) as u8
+        
+    // 2. Lay out COFF components
+    let text_size = code.len
+    let rdata_size = rdata.len
+    
+    let text_raw_ptr = 100 as i64 // FileHeader (20) + 2 * SectionHeader (80) = 100
+    let rdata_raw_ptr = text_raw_ptr + text_size
+    let relocs_offset = rdata_raw_ptr + rdata_size
+    let symbol_table_offset = relocs_offset + relocs.len * 10 as i64
+    
+    // 3. Write COFF File Header (20 bytes)
+    push_u16_le(out_bytes, 0x8664 as u16) // AMD64
+    push_u16_le(out_bytes, 2 as u16)      // 2 sections (.text and .rdata)
+    push_u32_le(out_bytes, 0 as u32)      // TimeDateStamp
+    push_u32_le(out_bytes, symbol_table_offset as u32)
+    push_u32_le(out_bytes, symbols.len as u32)
+    push_u16_le(out_bytes, 0 as u16)      // SizeOfOptionalHeader = 0
+    push_u16_le(out_bytes, 0 as u16)      // Characteristics = 0
+    
+    // 4. Write Section Header 1 (.text) (40 bytes)
+    push_byte(out_bytes, '.' as u8)
+    push_byte(out_bytes, 't' as u8)
+    push_byte(out_bytes, 'e' as u8)
+    push_byte(out_bytes, 'x' as u8)
+    push_byte(out_bytes, 't' as u8)
+    push_byte(out_bytes, 0 as u8)
+    push_byte(out_bytes, 0 as u8)
+    push_byte(out_bytes, 0 as u8)
+    push_u32_le(out_bytes, 0 as u32) // VirtualSize
+    push_u32_le(out_bytes, 0 as u32) // VirtualAddress
+    push_u32_le(out_bytes, text_size as u32)
+    push_u32_le(out_bytes, text_raw_ptr as u32)
+    push_u32_le(out_bytes, relocs_offset as u32)
+    push_u32_le(out_bytes, 0 as u32) // LineNumsPtr
+    push_u16_le(out_bytes, relocs.len as u16)
+    push_u16_le(out_bytes, 0 as u16) // NumLineNums
+    // CODE | EXECUTE | READ (0x60000020)
+    push_u32_le(out_bytes, 0x00000020 as u32 | 0x20000000 as u32 | 0x40000000 as u32)
+    
+    // 4. Write Section Header 2 (.rdata) (40 bytes)
+    push_byte(out_bytes, '.' as u8)
+    push_byte(out_bytes, 'r' as u8)
+    push_byte(out_bytes, 'd' as u8)
+    push_byte(out_bytes, 'a' as u8)
+    push_byte(out_bytes, 't' as u8)
+    push_byte(out_bytes, 'a' as u8)
+    push_byte(out_bytes, 0 as u8)
+    push_byte(out_bytes, 0 as u8)
+    push_u32_le(out_bytes, 0 as u32) // VirtualSize
+    push_u32_le(out_bytes, 0 as u32) // VirtualAddress
+    push_u32_le(out_bytes, rdata_size as u32)
+    push_u32_le(out_bytes, rdata_raw_ptr as u32)
+    push_u32_le(out_bytes, 0 as u32) // RelocsPtr
+    push_u32_le(out_bytes, 0 as u32) // LineNumsPtr
+    push_u16_le(out_bytes, 0 as u16) // NumRelocs
+    push_u16_le(out_bytes, 0 as u16) // NumLineNums
+    // INITIALIZED_DATA | READ (0x40000040)
+    push_u32_le(out_bytes, 0x00000040 as u32 | 0x40000000 as u32)
+    
+    // 5. Write raw section data
+    push_bytes(out_bytes, code.data, text_size)
+    push_bytes(out_bytes, rdata.data, rdata_size)
+
+    
+    // 6. Write Relocation Table
+    mut ri := 0 as i64
+    while ri < relocs.len:
+        let r = relocs.data[ri]
+        push_u32_le(out_bytes, r.virt_addr)
+        push_u32_le(out_bytes, r.sym_table_idx)
+        push_u16_le(out_bytes, r.reloc_type)
+        ri = ri + 1
+        
+    // 7. Write Symbol Table
+    si = 0
+    while si < symbols.len:
+        let sym = &symbols.data[si]
+        let name_len = std.string.len(sym.name_str)
+        if name_len <= 8:
+            let name_ptr = sym.name_str as ptr[u8]
+            mut char_i := 0 as i64
+            while char_i < 8:
+                if char_i < name_len:
+                    push_byte(out_bytes, name_ptr[char_i])
+                else:
+                    push_byte(out_bytes, 0 as u8)
+                char_i = char_i + 1
+        else:
+            let offset = string_offsets[si]
+            push_u32_le(out_bytes, 0 as u32)
+            push_u32_le(out_bytes, offset)
+            
+        push_u32_le(out_bytes, sym.value)
+        push_u16_le(out_bytes, sym.section_num as u16)
+        push_u16_le(out_bytes, sym.sym_type)
+        push_byte(out_bytes, sym.storage_class)
+        push_byte(out_bytes, sym.num_aux)
+        si = si + 1
+        
+    // 8. Write String Table
+    push_bytes(out_bytes, strtab.data, strtab.len)
+    
+    // Free resources
+    @free(string_offsets as ptr[u8])
+    if strtab.data != null as ptr[u8]:
+        @free(strtab.data)
+
+pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec]) -> bool:
+    mut out_bytes := new_byte_vec()
+    coff_serialize(code, rdata, relocs, symbols, &out_bytes)
+    
+    let filename_nt = x86_str_to_null_terminated(filename)
+    let file = fopen(filename_nt as ptr[void], "wb")
+    @free(filename_nt)
+    if file == null as ptr[void]:
+        if out_bytes.data != null as ptr[u8]:
+            @free(out_bytes.data)
+        return false
+        
+    fwrite(out_bytes.data as ptr[void], 1, out_bytes.len, file)
+    fclose(file)
+    
+    if out_bytes.data != null as ptr[u8]:
+        @free(out_bytes.data)
+    return true
+
+pub struct CompiledFuncInfo:
+    pub name: str
+    pub offset: u32
+    pub size: u32
+    pub is_global: bool
+    pub relocs: RelocationVec
+
+pub struct CompiledFuncInfoVec:
+    pub data: ptr[CompiledFuncInfo]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_compiled_func_info_vec() -> CompiledFuncInfoVec:
+    return CompiledFuncInfoVec(data: null as ptr[CompiledFuncInfo], len: 0, cap: 0)
+
+pub fn push_compiled_func_info(mut self: ptr[CompiledFuncInfoVec], info: CompiledFuncInfo):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 56) as ptr[CompiledFuncInfo]
+        if self.data != null as ptr[CompiledFuncInfo]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 56)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = info
+    self.len = self.len + 1
+
+pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: SymbolTable, pool: InternPool) -> str:
+    if sym_idx >= 0xE0000000 as i64:
+        let str_id = sym_idx - 0xE0000000 as i64
+        let sym_name_buf = @alloc(64) as ptr[u8]
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as ptr[void], null as ptr[void])
+        let name_id = pool.intern(sym_name_buf as str)
+        @free(sym_name_buf)
+        return pool.get(name_id)
+    if sym_idx == -1 as i64:
+        return "malloc"
+
+    if sym_idx == -2 as i64:
+        return "free"
+    if sym_idx == -3 as i64:
+        return "ax_actor_spawn"
+    if sym_idx == -4 as i64:
+        return "__ax_runtime_init"
+    if sym_idx == -5 as i64:
+        return "__ax_runtime_shutdown"
+    if sym_idx == -8 as i64:
+        return "abort"
+    if sym_idx == -10 as i64:
+        return "ax_println_str_native"
+    if sym_idx == -11 as i64:
+        return "ax_println_i64"
+    if sym_idx == -12 as i64:
+        return "ax_println_f64"
+    if sym_idx == -13 as i64:
+        return "ax_println_bool"
+    if sym_idx == -14 as i64:
+        return "ax_print_str_native"
+    if sym_idx == -15 as i64:
+        return "ax_print_i64"
+    if sym_idx == -16 as i64:
+        return "ax_print_f64"
+    if sym_idx == -17 as i64:
+        return "ax_print_bool"
+    if sym_idx <= 0 as i64:
+        return current_fn_name
+    let name = x86_resolve_sym_name(sym_idx as u32, symbols, pool)
+    if name == "std.string.len":
+        return "ax_str_len"
+    if name == "std.string.concat":
+        return "ax_str_concat"
+    if name == "std.string.replace":
+        return "ax_str_replace"
+    if name == "std.string.slice":
+        return "ax_str_slice"
+    return name
+
+
+
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str) -> bool:
+    mut abi := "win64"
+    if format == "elf64":
+        abi = "sysv"
+        
+    mut all_code := new_byte_vec()
+    mut func_infos := new_compiled_func_info_vec()
+    
+    mut coff_syms := new_coff_symbol_vec()
+    mut elf_syms := new_elf64_sym_vec()
+
+    mut rdata_buf := new_byte_vec()
+    mut str_keys := new_u32_vec()
+    mut str_offsets := new_u32_vec()
+    
+    // Scan for all string literals across all functions
+    mut scan_fi := 0 as i64
+    while scan_fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[scan_fi]
+        if not fn_ptr.is_extern:
+            mut inst_i := 0 as i64
+            while inst_i < fn_ptr.insts.len:
+                let inst = &fn_ptr.insts.data[inst_i]
+                if inst.opcode == OP_ICONST and inst.type_id == 12 as u16:
+                    let str_id = inst.src1
+                    mut found := false
+                    mut j := 0 as i64
+                    while j < str_keys.len:
+                        if str_keys.data[j] == str_id:
+                            found = true
+                            break
+                        j = j + 1
+                    if not found:
+                        let offset = rdata_buf.len as u32
+                        str_keys.push(str_id)
+                        str_offsets.push(offset)
+                        let text = pool.get(str_id)
+                        let len = std.string.len(text)
+                        let text_ptr = text as ptr[u8]
+                        mut k := 0 as i64
+                        while k < len:
+                            push_byte(&rdata_buf, text_ptr[k])
+                            k = k + 1
+                        push_byte(&rdata_buf, 0 as u8) // null-terminate
+                inst_i = inst_i + 1
+        scan_fi = scan_fi + 1
+
+    // Register all unique string symbols in COFF / ELF symbol table
+    mut str_i := 0 as i64
+    while str_i < str_keys.len:
+        let str_id = str_keys.data[str_i]
+        let offset = str_offsets.data[str_i]
+        let sym_name_buf = @alloc(64) as ptr[u8]
+        snprintf(sym_name_buf as ptr[void], 64, "Linfo.string.%d", str_id as i64 as ptr[void], null as ptr[void])
+        let sym_name = pool.intern(sym_name_buf as str)
+        let sym_name_str = pool.get(sym_name)
+        if format == "elf64":
+            push_elf64_sym(&elf_syms, ELF64Sym(name_str: sym_name_str, value: offset as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 2 as u16))
+        else:
+            push_coff_symbol(&coff_syms, COFFSymbol(name_str: sym_name_str, value: offset, section_num: 2 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
+        @free(sym_name_buf)
+        str_i = str_i + 1
+
+    
+    mut fi := 0 as i64
+    while fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[fi]
+        if fn_ptr.is_extern:
+            let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            if format == "elf64":
+                push_elf64_sym(&elf_syms, ELF64Sym(name_str: name, value: 0 as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: 0 as u16))
+            else:
+                push_coff_symbol(&coff_syms, COFFSymbol(name_str: name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
+        fi = fi + 1
+        
+    fi = 0
+    while fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[fi]
+        if not fn_ptr.is_extern:
+            let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            let name_ptr = str_to_null_terminated(fn_name)
+            printf("[Debug] compile_native_binary: compiling function %s\n", name_ptr as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(name_ptr)
+            
+            printf("[Debug]   running select_all\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
+
+            printf("[Debug]   running compute_liveness\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            let intervals = compute_liveness(mach_insts.data, mach_insts.len)
+            
+            mut gpr_len := 0 as i64
+            let avail_gprs = get_allocatable_gprs(&gpr_len)
+
+            printf("[Debug]   running graph_coloring_alloc\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
+            
+            mut cs_len := 0 as i64
+            let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            
+            printf("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame)
+            
+            mut emitter := new_mach_emitter()
+
+            printf("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame)
+            
+            printf("[Debug]   emit_function_binary done, pushing compiled info\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            let current_offset = all_code.len as u32
+            push_bytes(&all_code, emitter.code.data, emitter.code.len)
+            
+            push_compiled_func_info(&func_infos, CompiledFuncInfo(
+                name: fn_name,
+                offset: current_offset,
+                size: emitter.code.len as u32,
+                is_global: true,
+                relocs: emitter.relocs
+            ))
+            
+            printf("[Debug]   freeing local resources\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            printf("[Debug]     freeing cs_regs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(cs_regs)
+            printf("[Debug]     freeing avail_gprs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(avail_gprs)
+            printf("[Debug]     freeing alloc_res.allocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(alloc_res.allocs)
+            if intervals.data != null as ptr[LiveInterval]:
+                printf("[Debug]     freeing intervals.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(intervals.data as ptr[u8])
+            if mach_insts.data != null as ptr[MachInst]:
+                printf("[Debug]     freeing mach_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(mach_insts.data as ptr[u8])
+            if final_insts.data != null as ptr[MachInst]:
+                printf("[Debug]     freeing final_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(final_insts.data as ptr[u8])
+                
+            if emitter.code.data != null as ptr[u8]:
+                printf("[Debug]     freeing emitter.code.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(emitter.code.data)
+            if emitter.labels.keys != null as ptr[u32]:
+                printf("[Debug]     freeing emitter.labels.keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(emitter.labels.keys as ptr[u8])
+            if emitter.labels.values != null as ptr[i64]:
+                printf("[Debug]     freeing emitter.labels.values\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(emitter.labels.values as ptr[u8])
+            if emitter.fixups.data != null as ptr[Fixup]:
+                printf("[Debug]     freeing emitter.fixups.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+                @free(emitter.fixups.data as ptr[u8])
+            printf("[Debug]   freeing local resources done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+                
+        fi = fi + 1
+        
+    printf("[Debug] compile_native_binary: compiling loop finished, populating symbols starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    let text_sec_idx = 1 as i32
+    mut i := 0 as i64
+    while i < func_infos.len:
+        let info = &func_infos.data[i]
+        if format == "elf64":
+            push_elf64_sym(&elf_syms, ELF64Sym(name_str: info.name, value: info.offset as u64, size: info.size as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: text_sec_idx as u16))
+        else:
+            push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
+        i = i + 1
+    printf("[Debug] compile_native_binary: populating symbols done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+        
+    mut coff_relocs := new_coff_reloc_vec()
+    mut elf_relocs := new_relocation_vec()
+    
+    i = 0
+    while i < func_infos.len:
+        let info = &func_infos.data[i]
+        let func_offset = info.offset
+        
+        mut r_i := 0 as i64
+        while r_i < info.relocs.len:
+            let r = info.relocs.data[r_i]
+            mut sym_idx := r.sym_name as i64
+            if r.sym_name > 0xF0000000 as u32:
+                sym_idx = sym_idx - 4294967296 as i64
+            let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool)
+            
+            mut target_sym_idx := -1 as i32
+            if format == "elf64":
+                mut sym_search := 0 as i64
+                while sym_search < elf_syms.len:
+                    if elf_syms.data[sym_search].name_str == target_name:
+                        target_sym_idx = (sym_search + 1 as i64) as i32
+                        break
+                    sym_search = sym_search + 1
+                    
+                if target_sym_idx == -1 as i32:
+                    let new_idx = elf_syms.len as i32 + 1 as i32
+                    push_elf64_sym(&elf_syms, ELF64Sym(name_str: target_name, value: 0 as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: 0 as u16))
+                    target_sym_idx = new_idx
+            else:
+                mut sym_search := 0 as i64
+                while sym_search < coff_syms.len:
+                    if coff_syms.data[sym_search].name_str == target_name:
+                        target_sym_idx = sym_search as i32
+                        break
+                    sym_search = sym_search + 1
+                    
+                if target_sym_idx == -1 as i32:
+                    let new_idx = coff_syms.len as i32
+                    push_coff_symbol(&coff_syms, COFFSymbol(name_str: target_name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
+                    target_sym_idx = new_idx
+                    
+            let reloc_offset = func_offset + r.offset as u32
+            if format == "elf64":
+                push_reloc(&elf_relocs, Relocation(offset: reloc_offset as i64, kind: r.kind, padding1: 0 as u8, padding2: 0 as u16, sym_name: target_sym_idx as u32, addend: r.addend))
+            else:
+                mut reloc_type := IMAGE_REL_AMD64_REL32
+                if r.kind == RELOC_ABS64:
+                    reloc_type = IMAGE_REL_AMD64_ADDR64
+                push_coff_reloc(&coff_relocs, COFFReloc(virt_addr: reloc_offset, sym_table_idx: target_sym_idx as u32, reloc_type: reloc_type))
+                
+            r_i = r_i + 1
+        i = i + 1
+        
+    printf("[Debug] compile_native_binary: populating relocs done, writing object file starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    mut success := false
+    if format == "elf64":
+        success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
+    else:
+        success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &coff_relocs, &coff_syms)
+    printf("[Debug] compile_native_binary: writing object file done, success=%d\n", success as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+        
+    printf("[Debug] compile_native_binary: starting cleanup\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    if all_code.data != null as ptr[u8]:
+        printf("[Debug] compile_native_binary: freeing all_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(all_code.data)
+    if rdata_buf.data != null as ptr[u8]:
+        printf("[Debug] compile_native_binary: freeing rdata_buf\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(rdata_buf.data)
+    if str_keys.data != null as ptr[u32]:
+        printf("[Debug] compile_native_binary: freeing str_keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(str_keys.data as ptr[u8])
+    if str_offsets.data != null as ptr[u32]:
+        printf("[Debug] compile_native_binary: freeing str_offsets\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(str_offsets.data as ptr[u8])
+        
+    i = 0
+    while i < func_infos.len:
+        let info = &func_infos.data[i]
+        if info.relocs.data != null as ptr[Relocation]:
+            printf("[Debug] compile_native_binary: freeing info.relocs for func %d\n", i as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(info.relocs.data as ptr[u8])
+        i = i + 1
+    if func_infos.data != null as ptr[CompiledFuncInfo]:
+        printf("[Debug] compile_native_binary: freeing func_infos\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(func_infos.data as ptr[u8])
+        
+    if coff_syms.data != null as ptr[COFFSymbol]:
+        printf("[Debug] compile_native_binary: freeing coff_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(coff_syms.data as ptr[u8])
+    if coff_relocs.data != null as ptr[COFFReloc]:
+        printf("[Debug] compile_native_binary: freeing coff_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(coff_relocs.data as ptr[u8])
+        
+    if elf_syms.data != null as ptr[ELF64Sym]:
+        printf("[Debug] compile_native_binary: freeing elf_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(elf_syms.data as ptr[u8])
+    if elf_relocs.data != null as ptr[Relocation]:
+        printf("[Debug] compile_native_binary: freeing elf_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        @free(elf_relocs.data as ptr[u8])
+    printf("[Debug] compile_native_binary: cleanup done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+        
+    return success
+

@@ -75,15 +75,57 @@ pub struct ActorHeap:
 
 extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
 extern "C" fn VirtualFree(lpAddress: ptr[void], dwSize: u64, dwFreeType: u32) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
-extern "C" fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]
-extern "C" fn munmap(addr: ptr[void], length: u64) -> i32
+pub fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]:
+    let res = syscall(9 as u64, addr as u64, length, prot as u64, flags as u64, fd as i64 as u64, offset as u64)
+    return res as ptr[void]
+
+pub fn munmap(addr: ptr[void], length: u64) -> i32:
+    let res = syscall(11 as u64, addr as u64, length, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    return res as i32
+
+pub struct AxGlobalState:
+    pub is_rt_initialized: bool
+    pub g_sched_initialized: bool
+    pub padding: i64
+    pub g_slab_used: i64
+    pub g_free_pool: ptr[Segment]
+    pub g_slab: ptr[Segment]
+    pub global_heap: ptr[ActorHeap]
+    pub g_actor_table: ptr[void]
+    pub g_sched: ptr[void]
+
+pub fn get_global_state() -> ptr[AxGlobalState]:
+    let addr = 0x50000000 as ptr[void]
+    mut state := null as ptr[AxGlobalState]
+    if @compiler_intrinsic("is_windows"):
+        state = VirtualAlloc(addr, 4096 as u64, 0x3000 as u32, 0x04 as u32) as ptr[AxGlobalState]
+    else:
+        state = mmap(addr, 4096 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[AxGlobalState]
+
+    if state == null as ptr[AxGlobalState]:
+        return 0x50000000 as ptr[AxGlobalState]
+    return state
 
 
+pub fn std_mem_alloc_get_slab_used() -> ptr[i64]:
+    let state = get_global_state()
+    return (state as i64 + 16 as i64) as ptr[i64]
 
-extern "C" fn std_mem_alloc_get_slab_used() -> ptr[i64]
-extern "C" fn std_mem_alloc_get_slab() -> ptr[Segment]
-extern "C" fn std_mem_alloc_get_free_pool() -> ptr[ptr[Segment]]
+pub fn std_mem_alloc_get_free_pool() -> ptr[ptr[Segment]]:
+    let state = get_global_state()
+    return (state as i64 + 24 as i64) as ptr[ptr[Segment]]
+
+pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
+    let state = get_global_state()
+    if state.g_slab == null as ptr[Segment]:
+        if @compiler_intrinsic("is_windows"):
+            state.g_slab = VirtualAlloc(null as ptr[void], 4096 as u64 * 48 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+        else:
+            state.g_slab = mmap(null as ptr[void], 4096 as u64 * 48 as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64) as ptr[Segment]
+    return state.g_slab
 
 // --------------------------------------------------------------------------
 // Size Classes
@@ -334,7 +376,7 @@ pub fn ax_segment_bump_alloc(seg: ptr[Segment], sc: i32) -> ptr[u8]:
 
 pub fn ax_large_alloc(user_size: i64) -> ptr[u8]:
     let total = 8 + user_size
-    let page_aligned = (total + 4095) & ~4095
+    let page_aligned = ((total + 4095) / 4096) * 4096
     let block = ax_os_alloc(page_aligned) as ptr[u8]
     if block == null as ptr[u8]:
         return null as ptr[u8]
@@ -348,7 +390,7 @@ pub fn ax_large_free(user_ptr: ptr[u8], user_size: i64):
         return
     let block = (user_ptr as i64 - 8) as ptr[u8]
     let total = 8 + user_size
-    let page_aligned = (total + 4095) & ~4095
+    let page_aligned = ((total + 4095) / 4096) * 4096
     ax_os_free(block as ptr[void], page_aligned)
 
 // --------------------------------------------------------------------------
@@ -357,7 +399,7 @@ pub fn ax_large_free(user_ptr: ptr[u8], user_size: i64):
 
 pub fn ax_actor_heap_create(actor_id: u64) -> ptr[ActorHeap]:
     let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
-    let page_aligned = (size + 4095) & ~4095
+    let page_aligned = ((size + 4095) / 4096) * 4096
     let heap = ax_os_alloc(page_aligned) as ptr[ActorHeap]
     if heap == null as ptr[ActorHeap]:
         return null as ptr[ActorHeap]
@@ -376,7 +418,7 @@ pub fn ax_actor_heap_destroy(heap: ptr[ActorHeap]):
         sc = sc + 1
     heap.magic = 0 as u32
     let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
-    let page_aligned = (size + 4095) & ~4095
+    let page_aligned = ((size + 4095) / 4096) * 4096
     ax_os_free(heap as ptr[void], page_aligned)
 
 pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:

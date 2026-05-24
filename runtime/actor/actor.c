@@ -147,6 +147,19 @@ AxActorID ax_actor_spawn(AxHandlerFn handler, void* init_data,
     }
 
     g_actor_count++;
+
+    /* Send initial startup message to trigger handler execution */
+    ax_actor_send(id, AX_ACTOR_ID_NONE, AX_MSG_USER, init_data, data_size);
+
+    /* Submit to the global work-stealing scheduler */
+    struct AxScheduler;
+    extern struct AxScheduler* ax_get_global_scheduler(void);
+    struct AxScheduler* sched = ax_get_global_scheduler();
+    if (sched) {
+        extern int ax_scheduler_submit(struct AxScheduler* sched, AxActorID actor_id);
+        ax_scheduler_submit(sched, id);
+    }
+
     return id;
 }
 

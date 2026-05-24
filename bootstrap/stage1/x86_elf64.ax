@@ -1,0 +1,299 @@
+// bootstrap/stage1/x86_elf64.ax
+// ELF64 Object File Writer for x86-64 Linux targets in self-hosted AXIOM.
+
+import std.string
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fclose(stream: ptr[void]) -> i32
+
+pub const ELF_CLASS64:    u8 = 2
+pub const ELF_DATA2LSB:   u8 = 1
+pub const EV_CURRENT:     u8 = 1
+pub const ET_REL:        u16 = 1
+pub const EM_X86_64:     u16 = 62
+
+pub const SHT_NULL:      u32 = 0
+pub const SHT_PROGBITS:  u32 = 1
+pub const SHT_SYMTAB:    u32 = 2
+pub const SHT_STRTAB:    u32 = 3
+pub const SHT_RELA:      u32 = 4
+
+pub const SHF_ALLOC:     u64 = 0x02
+pub const SHF_EXECINSTR: u64 = 0x04
+
+pub const STB_LOCAL:      u8 = 0
+pub const STB_GLOBAL:     u8 = 1
+pub const STT_OBJECT:     u8 = 1
+pub const STT_FUNC:       u8 = 2
+pub const STT_SECTION:    u8 = 3
+
+pub struct ELF64Sym:
+    pub name_str: str
+    pub value: u64
+    pub size: u64
+    pub binding: u8
+    pub sym_type: u8
+    pub section: u16
+
+pub struct ELF64SymVec:
+    pub data: ptr[ELF64Sym]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_elf64_sym_vec() -> ELF64SymVec:
+    return ELF64SymVec(data: null as ptr[ELF64Sym], len: 0, cap: 0)
+
+pub fn push_elf64_sym(mut self: ptr[ELF64SymVec], s: ELF64Sym):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 40) as ptr[ELF64Sym]
+        if self.data != null as ptr[ELF64Sym]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 40)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = s
+    self.len = self.len + 1
+
+pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
+    // 1. Build string table
+    mut strtab := new_byte_vec()
+    push_byte(&strtab, 0 as u8) // first byte is NULL
+    
+    // Add standard section names
+    let sec_names = @alloc(4 * 8) as ptr[str]
+    sec_names[0] = ".text"
+    sec_names[1] = ".symtab"
+    sec_names[2] = ".strtab"
+    sec_names[3] = ".rela.text"
+    
+    let sec_offsets = @alloc(4 * 4) as ptr[u32]
+    mut i := 0 as i64
+    while i < 4:
+        sec_offsets[i] = strtab.len as u32
+        let s = sec_names[i]
+        let s_len = std.string.len(s)
+        let s_ptr = s as ptr[u8]
+        mut char_i := 0 as i64
+        while char_i < s_len:
+            push_byte(&strtab, s_ptr[char_i])
+            char_i = char_i + 1
+        push_byte(&strtab, 0 as u8)
+        i = i + 1
+        
+    // Add symbol names
+    let sym_offsets = @alloc(symbols.len * 4) as ptr[u32]
+    mut si := 0 as i64
+    while si < symbols.len:
+        sym_offsets[si] = strtab.len as u32
+        let s = symbols.data[si].name_str
+        let s_len = std.string.len(s)
+        let s_ptr = s as ptr[u8]
+        mut char_i := 0 as i64
+        while char_i < s_len:
+            push_byte(&strtab, s_ptr[char_i])
+            char_i = char_i + 1
+        push_byte(&strtab, 0 as u8)
+        si = si + 1
+        
+    // 2. Lay out ELF64 sections
+    mut num_sections := 4 as u16
+    if relocs.len > 0 as i64:
+        num_sections = 5 as u16
+        
+    let ehdr_size = 64 as i64
+    let shdr_size = 64 as i64
+    let shdr_table_size = num_sections as i64 * shdr_size
+    
+    let text_off = ehdr_size
+    let text_size = code.len
+    
+    mut symtab_off = text_off + text_size
+    if (symtab_off % 8 as i64) != 0 as i64:
+        symtab_off = symtab_off + (8 as i64 - (symtab_off % 8 as i64))
+        
+    let sym_ent_size = 24 as i64
+    let sym_count = 1 as i64 + symbols.len // first NULL entry
+    let symtab_size = sym_count * sym_ent_size
+    
+    let strtab_off = symtab_off + symtab_size
+    let strtab_size = strtab.len
+    
+    mut rela_off = strtab_off + strtab_size
+    let rela_ent_size = 24 as i64
+    mut rela_size := 0 as i64
+    if relocs.len > 0 as i64:
+        rela_size = relocs.len * rela_ent_size
+        
+    mut shdr_off = rela_off + rela_size
+    if relocs.len == 0 as i64:
+        shdr_off = strtab_off + strtab_size
+    if (shdr_off % 8 as i64) != 0 as i64:
+        shdr_off = shdr_off + (8 as i64 - (shdr_off % 8 as i64))
+        
+    // 3. Write ELF64 Header
+    push_byte(out_bytes, 0x7F as u8)
+    push_byte(out_bytes, 'E' as u8)
+    push_byte(out_bytes, 'L' as u8)
+    push_byte(out_bytes, 'F' as u8)
+    push_byte(out_bytes, ELF_CLASS64)
+    push_byte(out_bytes, ELF_DATA2LSB)
+    push_byte(out_bytes, EV_CURRENT)
+    
+    // pad out to 16 bytes
+    mut pad_i := 0 as i64
+    while pad_i < 9:
+        push_byte(out_bytes, 0 as u8)
+        pad_i = pad_i + 1
+        
+    push_u16_le(out_bytes, ET_REL)
+    push_u16_le(out_bytes, EM_X86_64)
+    push_u32_le(out_bytes, EV_CURRENT as u32)
+    push_u64_le(out_bytes, 0 as u64) // e_entry = 0
+    push_u64_le(out_bytes, 0 as u64) // e_phoff = 0
+    push_u64_le(out_bytes, shdr_off as u64)
+    push_u32_le(out_bytes, 0 as u32) // e_flags = 0
+    push_u16_le(out_bytes, ehdr_size as u16)
+    push_u16_le(out_bytes, 0 as u16) // e_phentsize
+    push_u16_le(out_bytes, 0 as u16) // e_phnum
+    push_u16_le(out_bytes, shdr_size as u16)
+    push_u16_le(out_bytes, num_sections)
+    push_u16_le(out_bytes, 3 as u16) // e_shstrndx = 3 (.strtab)
+    
+    // 4. Write .text section data
+    push_bytes(out_bytes, code.data, text_size)
+    
+    // Padding to symtab
+    while out_bytes.len < symtab_off:
+        push_byte(out_bytes, 0 as u8)
+        
+    // 5. Write Symbol Table
+    // NULL symbol (24 bytes)
+    mut sym_pad := 0 as i64
+    while sym_pad < 24:
+        push_byte(out_bytes, 0 as u8)
+        sym_pad = sym_pad + 1
+        
+    si = 0
+    while si < symbols.len:
+        let sym = &symbols.data[si]
+        let name_idx = sym_offsets[si]
+        push_u32_le(out_bytes, name_idx)
+        push_byte(out_bytes, (sym.binding << 4 as u8) | sym.sym_type)
+        push_byte(out_bytes, 0 as u8) // st_other
+        push_u16_le(out_bytes, sym.section)
+        push_u64_le(out_bytes, sym.value)
+        push_u64_le(out_bytes, sym.size)
+        si = si + 1
+        
+    // 6. Write String Table
+    push_bytes(out_bytes, strtab.data, strtab_size)
+    
+    // 7. Write Relocations
+    if relocs.len > 0 as i64:
+        mut ri := 0 as i64
+        while ri < relocs.len:
+            let r = relocs.data[ri]
+            push_u64_le(out_bytes, r.offset as u64)
+            
+            mut r_type := 1 as u32 // R_X86_64_64
+            if r.kind == RELOC_PC32:
+                r_type = 2 as u32 // R_X86_64_PC32
+            elif r.kind == RELOC_PLT32:
+                r_type = 4 as u32 // R_X86_64_PLT32
+            elif r.kind == RELOC_ABS64:
+                r_type = 1 as u32 // R_X86_64_64
+                
+            let r_info = (r_type as u64) | ((r.sym_name as u64) << 32 as u64)
+            push_u64_le(out_bytes, r_info)
+            push_u64_le(out_bytes, r.addend as u64)
+            ri = ri + 1
+            
+    // Padding to section headers
+    while out_bytes.len < shdr_off:
+        push_byte(out_bytes, 0 as u8)
+        
+    // 8. Write Section Headers
+    // Section 0: SHT_NULL
+    mut sh_pad := 0 as i64
+    while sh_pad < 64:
+        push_byte(out_bytes, 0 as u8)
+        sh_pad = sh_pad + 1
+        
+    // Section 1: .text
+    push_u32_le(out_bytes, sec_offsets[0])
+    push_u32_le(out_bytes, SHT_PROGBITS)
+    push_u64_le(out_bytes, SHF_ALLOC | SHF_EXECINSTR)
+    push_u64_le(out_bytes, 0 as u64) // sh_addr = 0
+    push_u64_le(out_bytes, text_off as u64)
+    push_u64_le(out_bytes, text_size as u64)
+    push_u32_le(out_bytes, 0 as u32) // sh_link = 0
+    push_u32_le(out_bytes, 0 as u32) // sh_info = 0
+    push_u64_le(out_bytes, 16 as u64) // sh_addralign = 16
+    push_u64_le(out_bytes, 0 as u64) // sh_entsize = 0
+    
+    // Section 2: .symtab
+    push_u32_le(out_bytes, sec_offsets[1])
+    push_u32_le(out_bytes, SHT_SYMTAB)
+    push_u64_le(out_bytes, 0 as u64) // sh_flags = 0
+    push_u64_le(out_bytes, 0 as u64) // sh_addr = 0
+    push_u64_le(out_bytes, symtab_off as u64)
+    push_u64_le(out_bytes, symtab_size as u64)
+    push_u32_le(out_bytes, 3 as u32) // sh_link -> .strtab (section 3)
+    push_u32_le(out_bytes, 1 as u32) // sh_info -> first global symbol
+    push_u64_le(out_bytes, 8 as u64) // sh_addralign = 8
+    push_u64_le(out_bytes, sym_ent_size as u64)
+    
+    // Section 3: .strtab
+    push_u32_le(out_bytes, sec_offsets[2])
+    push_u32_le(out_bytes, SHT_STRTAB)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, strtab_off as u64)
+    push_u64_le(out_bytes, strtab_size as u64)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u64_le(out_bytes, 1 as u64)
+    push_u64_le(out_bytes, 0 as u64)
+    
+    // Section 4: .rela.text (optional)
+    if relocs.len > 0 as i64:
+        push_u32_le(out_bytes, sec_offsets[3])
+        push_u32_le(out_bytes, SHT_RELA)
+        push_u64_le(out_bytes, 0 as u64)
+        push_u64_le(out_bytes, 0 as u64)
+        push_u64_le(out_bytes, rela_off as u64)
+        push_u64_le(out_bytes, rela_size as u64)
+        push_u32_le(out_bytes, 2 as u32) // sh_link -> .symtab (section 2)
+        push_u32_le(out_bytes, 1 as u32) // sh_info -> .text (section 1)
+        push_u64_le(out_bytes, 8 as u64)
+        push_u64_le(out_bytes, rela_ent_size as u64)
+        
+    // Free resources
+    @free(sec_names as ptr[u8])
+    @free(sec_offsets as ptr[u8])
+    @free(sym_offsets as ptr[u8])
+    if strtab.data != null as ptr[u8]:
+        @free(strtab.data)
+
+pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
+    mut out_bytes := new_byte_vec()
+    elf64_serialize(code, relocs, symbols, &out_bytes)
+    
+    let filename_nt = x86_str_to_null_terminated(filename)
+    let file = fopen(filename_nt as ptr[void], "wb")
+    @free(filename_nt)
+    if file == null as ptr[void]:
+        if out_bytes.data != null as ptr[u8]:
+            @free(out_bytes.data)
+        return false
+        
+    fwrite(out_bytes.data as ptr[void], 1, out_bytes.len, file)
+    fclose(file)
+    
+    if out_bytes.data != null as ptr[u8]:
+        @free(out_bytes.data)
+    return true

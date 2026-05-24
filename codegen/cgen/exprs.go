@@ -996,10 +996,26 @@ func (g *ExprGen) emitArrayLit(idx uint32, node *ast.AstNode) string {
 		sliceName, elemType, strings.Join(elems, ", "), count, count)
 }
 
-// emitSpawn: MVP — just emit a synchronous call.
+// emitSpawn: Lower to native actor spawn.
 func (g *ExprGen) emitSpawn(idx uint32, node *ast.AstNode) string {
 	if node.FirstChild != ast.NullIdx {
-		return g.Emit(node.FirstChild) + " /* spawn: MVP sync call */"
+		callIdx := node.FirstChild
+		callNode := g.Tree.Node(callIdx)
+		if callNode.Kind == ast.NodeCallExpr {
+			callChildren := g.Tree.Children(callIdx)
+			if len(callChildren) >= 1 {
+				calleeIdx := callChildren[0]
+				calleeNode := g.Tree.Node(calleeIdx)
+				if calleeNode.Kind == ast.NodeIdent {
+					funcName := string(g.Tree.TokenText(calleeNode.TokenIdx))
+					symIdx := calleeNode.Payload
+					funcCName := GetFuncMangledName(symIdx, funcName, g.Table, g.Symbols, g.Intern)
+					return fmt.Sprintf("ax_actor_spawn((AxHandlerFn)%s, NULL, 0)", funcCName)
+				}
+			}
+		}
+		// Fallback
+		return fmt.Sprintf("ax_actor_spawn((AxHandlerFn)%s, NULL, 0)", g.Emit(node.FirstChild))
 	}
 	return "/* spawn: no expr */"
 }

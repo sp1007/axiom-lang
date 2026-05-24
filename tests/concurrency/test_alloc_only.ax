@@ -1,0 +1,19 @@
+extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn GetLastError() -> u32
+
+fn main() -> i32:
+    // Try 0x50000000
+    let state_50m = VirtualAlloc(0x50000000 as ptr[void], 4096 as u64, 0x3000 as u32, 0x04 as u32)
+    if state_50m != null as ptr[void]:
+        ExitProcess(50 as u32)
+        
+    // Try 0x20000000000 (2 TB)
+    let state_2tb = VirtualAlloc(0x20000000000 as ptr[void], 4096 as u64, 0x3000 as u32, 0x04 as u32)
+    if state_2tb != null as ptr[void]:
+        ExitProcess(200 as u32)
+        
+    // If both failed, exit with the last error code of the 2TB one
+    let err = GetLastError()
+    ExitProcess(err)
+    return 0

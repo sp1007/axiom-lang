@@ -27,40 +27,82 @@ impl Duration {
     pub fn is_zero(self) -> bool { self.nanos == 0 }
 }
 
+pub struct Timespec:
+    pub tv_sec: i64
+    pub tv_nsec: i64
+
 /// Monotonic instant (for measuring elapsed time).
-pub struct Instant {
-    nanos: u64,
-}
+pub struct Instant:
+    pub nanos: u64
 
 impl Instant {
     pub fn now() -> Instant {
-        Instant { nanos: @compiler_intrinsic("monotonic_now_ns") }
+        if @compiler_intrinsic("is_windows"):
+            extern "C" fn QueryPerformanceCounter(lpPerformanceCount: ptr[i64]) -> i32
+            extern "C" fn QueryPerformanceFrequency(lpFrequency: ptr[i64]) -> i32
+            mut counter := 0 as i64
+            mut freq := 0 as i64
+            QueryPerformanceCounter(&counter)
+            QueryPerformanceFrequency(&freq)
+            if freq == 0 as i64 {
+                return Instant(nanos: 0 as u64)
+            }
+            let nanos = (counter as u64) * 1_000_000_000 as u64 / (freq as u64)
+            return Instant(nanos: nanos)
+        else:
+            extern "C" fn clock_gettime(clk_id: i32, tp: ptr[Timespec]) -> i32
+            mut ts := Timespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+            clock_gettime(1 as i32, &ts) // CLOCK_MONOTONIC = 1
+            let nanos = (ts.tv_sec as u64) * 1_000_000_000 as u64 + (ts.tv_nsec as u64)
+            return Instant(nanos: nanos)
     }
+
     pub fn elapsed(self) -> Duration {
         let now = Instant.now()
-        Duration { nanos: now.nanos - self.nanos }
+        return Duration(nanos: now.nanos - self.nanos)
     }
+
     pub fn duration_since(self, earlier: Instant) -> Duration {
-        Duration { nanos: self.nanos - earlier.nanos }
+        return Duration(nanos: self.nanos - earlier.nanos)
     }
 }
 
 /// Wall clock time (since Unix epoch).
-pub struct SystemTime {
-    secs: i64,
-    nanos: u32,
-}
+pub struct SystemTime:
+    pub secs: i64
+    pub nanos: u32
 
 impl SystemTime {
     pub fn now() -> SystemTime {
-        @compiler_intrinsic("system_time_now")
+        if @compiler_intrinsic("is_windows"):
+            extern "C" fn GetSystemTimeAsFileTime(lpSystemTimeAsFileTime: ptr[u64])
+            mut ft := 0 as u64
+            GetSystemTimeAsFileTime(&ft)
+            // 100-nanosecond intervals since Jan 1, 1601
+            // Convert to Unix Epoch (Jan 1, 1970) which is 11,644,473,600 seconds
+            let unix_intervals = ft - (11644473600 as u64 * 10000000 as u64)
+            let secs = unix_intervals / 10000000 as u64
+            let nanos = (unix_intervals % 10000000 as u64) * 100 as u64
+            return SystemTime(secs: secs as i64, nanos: nanos as u32)
+        else:
+            extern "C" fn clock_gettime(clk_id: i32, tp: ptr[Timespec]) -> i32
+            mut ts := Timespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+            clock_gettime(0 as i32, &ts) // CLOCK_REALTIME = 0
+            return SystemTime(secs: ts.tv_sec, nanos: ts.tv_nsec as u32)
     }
-    pub fn unix_timestamp(self) -> i64 { self.secs }
+
+    pub fn unix_timestamp(self) -> i64 { return self.secs }
 }
 
 /// Sleep the current thread/actor for the given duration.
 pub fn sleep(d: Duration) {
-    @compiler_intrinsic("sleep")
+    if @compiler_intrinsic("is_windows"):
+        extern "C" fn Sleep(dwMilliseconds: u32)
+        Sleep(d.as_millis() as u32)
+    else:
+        extern "C" fn nanosleep(req: ptr[Timespec], rem: ptr[Timespec]) -> i32
+        mut req := Timespec(tv_sec: d.as_secs() as i64, tv_nsec: (d.as_nanos() % 1000000000 as u64) as i64)
+        nanosleep(&req, null as ptr[Timespec])
 }
 
 /// Async sleep (returns a future).

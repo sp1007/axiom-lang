@@ -15,6 +15,13 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 
 	node := &tc.ast.Nodes[nodeIdx]
 
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC-DEBUG] nodeIdx=%d kind=%v payload=%d\n", nodeIdx, node.Kind, node.Payload)
+			panic(r)
+		}
+	}()
+
 	switch node.Kind {
 	case ast.NodeUnaryExpr:
 		op := node.Flags
@@ -120,11 +127,29 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 		if obj != 0 {
 			tc.checkStmt(obj)
 			objType := tc.infer.TypeOf(obj)
+			fmt.Printf("[DEBUG-FIELD] nodeIdx=%d LHS=%d LHS-Type=%d\n", nodeIdx, obj, objType)
 			
+			lhsIsModule := false
+			curr := obj
+			for tc.ast.Nodes[curr].Kind == ast.NodeFieldExpr {
+				curr = tc.ast.Nodes[curr].FirstChild
+			}
+			if tc.ast.Nodes[curr].Kind == ast.NodeIdent {
+				name := string(tc.ast.NodeText(curr))
+				nameID := tc.intern.InternString(name)
+				symIdx, found := tc.symtable.Resolve(nameID)
+				if found && int(symIdx) < len(tc.symtable.Symbols) {
+					sym := tc.symtable.SymbolAt(symIdx)
+					if sym.Kind == SymModule {
+						lhsIsModule = true
+					}
+				}
+			}
+
 			isStructAccess := false
 			var structType types.TypeID = objType
 			var entry *types.TypeEntry
-			if objType != types.TypeUnknown {
+			if !lhsIsModule && objType != types.TypeUnknown {
 				entry = tc.types.Entry(objType)
 				if entry.Kind == types.KindPointer {
 					objType = tc.types.PointerElem(objType)
@@ -149,17 +174,6 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 			if !isStructAccess {
 				isResolvedSym := false
 				symIdx := node.Payload
-				lhsIsModule := false
-				lhsNode := &tc.ast.Nodes[obj]
-				if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
-					lhsSymIdx := lhsNode.Payload
-					if lhsSymIdx != 0 && int(lhsSymIdx) < len(tc.symtable.Symbols) {
-						lhsSym := tc.symtable.SymbolAt(lhsSymIdx)
-						if lhsSym.Kind == SymModule {
-							lhsIsModule = true
-						}
-					}
-				}
 				nodeIsModule := false
 				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 					sym := tc.symtable.SymbolAt(symIdx)
@@ -239,11 +253,11 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				// Legal casts: numeric<->numeric, bool<->int
 				valid := false
 				
-				if (exprType.IsInteger() || exprType.IsFloat()) && (targetType.IsInteger() || targetType.IsFloat()) {
+				if (exprType.IsInteger() || exprType.IsFloat() || exprType == types.TypeChar8) && (targetType.IsInteger() || targetType.IsFloat() || targetType == types.TypeChar8) {
 					valid = true
-				} else if exprType.IsInteger() && targetType == types.TypeBool {
+				} else if (exprType.IsInteger() || exprType == types.TypeChar8) && targetType == types.TypeBool {
 					valid = true
-				} else if exprType == types.TypeBool && targetType.IsInteger() {
+				} else if exprType == types.TypeBool && (targetType.IsInteger() || targetType == types.TypeChar8) {
 					valid = true
 				}
 				exprEntry := tc.types.Entry(exprType)

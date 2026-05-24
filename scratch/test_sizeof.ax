@@ -1,0 +1,25 @@
+extern "C" fn putchar(c: i32) -> i32
+
+fn print_u64(mut n: u64):
+    if n == 0 as u64:
+        putchar(48 as i32)
+        return
+    mut buf: [u8; 32]
+    mut i := 0 as i64
+    while n > 0 as u64:
+        buf[i] = ((n % 10 as u64) + 48 as u64) as u8
+        n = n / 10 as u64
+        i = i + 1 as i64
+    while i > 0 as i64:
+        i = i - 1 as i64
+        putchar(buf[i] as i32)
+    putchar(10 as i32)
+
+struct runq:
+    pub buffer: [u64; 4096]
+    pub top: u64
+    pub bottom: u64
+
+fn main() -> i32:
+    print_u64(@compiler_intrinsic("size_of")[runq]())
+    return 0

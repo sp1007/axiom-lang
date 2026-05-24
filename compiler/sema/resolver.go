@@ -15,6 +15,7 @@ type NameResolver struct {
 	types    *types.TypeTable
 	lazy     *LazyResolver
 	errors   []diagnostics.Diagnostic
+	resolved map[uint32]bool
 }
 
 // NewNameResolver creates a new NameResolver.
@@ -26,6 +27,7 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 				lenID := intern.Intern([]byte("len"))
 				sliceID := intern.Intern([]byte("slice"))
 				concatID := intern.Intern([]byte("concat"))
+				replaceID := intern.Intern([]byte("replace"))
 
 				// Define std.string.len
 				// fn len(s: str) -> i64
@@ -47,6 +49,13 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 				concatTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString}, types.TypeString, nil)
 				st.SymbolAt(concatSymIdx).TypeID = uint32(concatTypeID)
 				m.Exports[concatID] = concatSymIdx
+
+				// Define std.string.replace
+				// fn replace(s: str, old: str, new: str) -> str
+				replaceSymIdx, _ := st.Define(replaceID, SymFunc, 0, 0)
+				replaceTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString, types.TypeString}, types.TypeString, nil)
+				st.SymbolAt(replaceSymIdx).TypeID = uint32(replaceTypeID)
+				m.Exports[replaceID] = replaceSymIdx
 			}
 			return nil
 		})
@@ -57,6 +66,7 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 		symtable: st,
 		types:    tt,
 		lazy:     lr,
+		resolved: make(map[uint32]bool),
 	}
 }
 
@@ -283,6 +293,7 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		} else {
 			node.Payload = symIdx // Modify AST in-place
 			nr.symtable.MarkUsed(symIdx)
+			nr.resolved[nodeIdx] = true
 		}
 		// Ident has no children, but call resolveChildren anyway (it's safe)
 		nr.resolveChildren(nodeIdx)
@@ -307,6 +318,7 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 					if sym.Kind == SymModule {
 						node.Payload = symIdx
 						isModuleImport = true
+						nr.resolved[nodeIdx] = true
 					}
 				}
 			}
@@ -317,19 +329,22 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 				// After resolving LHS, if it's an Ident or FieldExpr that resolved to a SymModule:
 				lhsNode = &nr.ast.Nodes[lhsIdx]
 				if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
-					symIdx := lhsNode.Payload
-					if symIdx != 0 && int(symIdx) < len(nr.symtable.Symbols) {
-						sym := nr.symtable.SymbolAt(symIdx)
-						if sym.Kind == SymModule && nr.lazy != nil {
-							// RHS is the field name. In AST it's usually stored in Payload of NodeFieldExpr,
-							// or as a child NodeIdent. Let's assume Payload has the string ID.
-							fieldNameID := node.Payload
-							
-							resolvedIdx, diag := nr.lazy.ResolveField(sym.NameID, fieldNameID, diagnostics.Pos{})
-							if diag != nil {
-								nr.errors = append(nr.errors, *diag)
-							} else {
-								node.Payload = resolvedIdx
+					if nr.resolved[lhsIdx] {
+						symIdx := lhsNode.Payload
+						if symIdx != 0 && int(symIdx) < len(nr.symtable.Symbols) {
+							sym := nr.symtable.SymbolAt(symIdx)
+							if sym.Kind == SymModule && nr.lazy != nil {
+								// RHS is the field name. In AST it's usually stored in Payload of NodeFieldExpr,
+								// or as a child NodeIdent. Let's assume Payload has the string ID.
+								fieldNameID := node.Payload
+								
+								resolvedIdx, diag := nr.lazy.ResolveField(sym.NameID, fieldNameID, diagnostics.Pos{})
+								if diag != nil {
+									nr.errors = append(nr.errors, *diag)
+								} else {
+									node.Payload = resolvedIdx
+									nr.resolved[nodeIdx] = true
+								}
 							}
 						}
 					}

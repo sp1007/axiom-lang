@@ -2,8 +2,19 @@
 //
 // Standalone unit tests for AXIOM-native allocator.
 
-extern "C" fn printf(fmt: str, a1: i64, a2: i64) -> i32
-extern "C" fn puts(s: str) -> i32
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+fn test_print_str(s: str):
+    if @compiler_intrinsic("is_windows"):
+        let h = GetStdHandle(0xFFFFFFF5 as u32)
+        mut written := 0 as u32
+        WriteFile(h, s as ptr[u8], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
+    else:
+        syscall(1 as u64, 1 as u64, s as ptr[u8] as u64, std.string.len(s) as u64, 0 as u64, 0 as u64, 0 as u64)
 
 fn test_size_class_for():
     assert(ax_size_class_for(0) == 0)
@@ -14,7 +25,7 @@ fn test_size_class_for():
     assert(ax_size_class_for(57) == 4) // 57 + 8 = 65 (<= 128) -> sc 4
     assert(ax_size_class_for(4088) == 9) // 4088 + 8 = 4096 (<= 4096) -> sc 9
     assert(ax_size_class_for(4089) == 10) // 4089 + 8 = 4097 (> 4096) -> sc 10
-    puts("  PASS: test_size_class_for")
+    test_print_str("  PASS: test_size_class_for\n")
 
 fn test_free_list_push_pop():
     // Allocate a buffer on the OS stack/heap for raw blocks
@@ -45,7 +56,7 @@ fn test_free_list_push_pop():
     assert(b_null == null as ptr[u8])
     
     ax_os_free(raw as ptr[void], 256)
-    puts("  PASS: test_free_list_push_pop")
+    test_print_str("  PASS: test_free_list_push_pop\n")
 
 fn test_segment_bump_alloc():
     ax_segment_manager_init()
@@ -62,7 +73,7 @@ fn test_segment_bump_alloc():
     
     ax_segment_release(seg)
     ax_segment_manager_shutdown()
-    puts("  PASS: test_segment_bump_alloc")
+    test_print_str("  PASS: test_segment_bump_alloc\n")
 
 fn test_actor_heap_lifecycle_and_alloc():
     ax_segment_manager_init()
@@ -101,12 +112,12 @@ fn test_actor_heap_lifecycle_and_alloc():
     
     ax_actor_heap_destroy(heap)
     ax_segment_manager_shutdown()
-    puts("  PASS: test_actor_heap_lifecycle_and_alloc")
+    test_print_str("  PASS: test_actor_heap_lifecycle_and_alloc\n")
 
 pub fn main():
-    puts("Running AXIOM-native Allocator unit tests...")
+    test_print_str("Running AXIOM-native Allocator unit tests...\n")
     test_size_class_for()
     test_free_list_push_pop()
     test_segment_bump_alloc()
     test_actor_heap_lifecycle_and_alloc()
-    puts("All AXIOM-native Allocator tests passed!")
+    test_print_str("All AXIOM-native Allocator tests passed!\n")

@@ -1,0 +1,120 @@
+// bootstrap/stage1/x86_regs.ax
+// Physical register file and classifications for x86-64 in self-hosted AXIOM.
+
+pub const REG_RAX: u8 = 0
+pub const REG_RCX: u8 = 1
+pub const REG_RDX: u8 = 2
+pub const REG_RBX: u8 = 3
+pub const REG_RSP: u8 = 4
+pub const REG_RBP: u8 = 5
+pub const REG_RSI: u8 = 6
+pub const REG_RDI: u8 = 7
+pub const REG_R8:  u8 = 8
+pub const REG_R9:  u8 = 9
+pub const REG_R10: u8 = 10
+pub const REG_R11: u8 = 11
+pub const REG_R12: u8 = 12
+pub const REG_R13: u8 = 13
+pub const REG_R14: u8 = 14
+pub const REG_R15: u8 = 15
+pub const REG_NONE: u8 = 255
+
+pub fn reg_is_gpr(r: u8) -> bool:
+    return r < 16 as u8
+
+pub fn reg_hw_reg(r: u8) -> u8:
+    return r & 7 as u8
+
+pub fn reg_needs_rex(r: u8) -> bool:
+    return r >= 8 as u8
+
+pub fn reg_to_str(r: u8) -> str:
+    if r == REG_RAX:
+        return "rax"
+    if r == REG_RCX:
+        return "rcx"
+    if r == REG_RDX:
+        return "rdx"
+    if r == REG_RBX:
+        return "rbx"
+    if r == REG_RSP:
+        return "rsp"
+    if r == REG_RBP:
+        return "rbp"
+    if r == REG_RSI:
+        return "rsi"
+    if r == REG_RDI:
+        return "rdi"
+    if r == REG_R8:
+        return "r8"
+    if r == REG_R9:
+        return "r9"
+    if r == REG_R10:
+        return "r10"
+    if r == REG_R11:
+        return "r11"
+    if r == REG_R12:
+        return "r12"
+    if r == REG_R13:
+        return "r13"
+    if r == REG_R14:
+        return "r14"
+    if r == REG_R15:
+        return "r15"
+    return "none"
+
+// System V AMD64 ABI Integer Argument Registers
+pub fn get_sysv_arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_RDI
+    if idx == 1:
+        return REG_RSI
+    if idx == 2:
+        return REG_RDX
+    if idx == 3:
+        return REG_RCX
+    if idx == 4:
+        return REG_R8
+    if idx == 5:
+        return REG_R9
+    return REG_NONE
+
+// Windows x64 ABI Integer Argument Registers
+pub fn get_win64_arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_RCX
+    if idx == 1:
+        return REG_RDX
+    if idx == 2:
+        return REG_R8
+    if idx == 3:
+        return REG_R9
+    return REG_NONE
+
+// Caller-saved GPRs (System V)
+pub fn reg_is_sysv_caller_saved(r: u8) -> bool:
+    if r == REG_RAX or r == REG_RCX or r == REG_RDX or r == REG_RSI or r == REG_RDI or r == REG_R8 or r == REG_R9 or r == REG_R10 or r == REG_R11:
+        return true
+    return false
+
+// Callee-saved GPRs (System V)
+pub fn reg_is_sysv_callee_saved(r: u8) -> bool:
+    if r == REG_RBX or r == REG_R12 or r == REG_R13 or r == REG_R14 or r == REG_R15:
+        return true
+    return false
+
+// Callee-saved GPRs (Windows x64)
+pub fn reg_is_win64_callee_saved(r: u8) -> bool:
+    if r == REG_RBX or r == REG_RBP or r == REG_RDI or r == REG_RSI or r == REG_R12 or r == REG_R13 or r == REG_R14 or r == REG_R15:
+        return true
+    return false
+
+pub fn x86_resolve_sym_name(sym_idx: u32, symbols: SymbolTable, pool: InternPool) -> str:
+    if sym_idx == 0 as u32:
+        return ""
+    if sym_idx as i64 >= symbols.symbols.len:
+        return ""
+    let name_id = symbols.symbols.data[sym_idx].name_id
+    let name = pool.get(name_id)
+    return name
+

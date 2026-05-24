@@ -87,6 +87,8 @@ var nodeKindNames = [NodeKindCount]string{
 	NodeDestroyStmt:   "DestroyStmt",
 	NodeAliasStmt:     "AliasStmt",
 	NodeComptime:      "Comptime",
+	NodeBreakStmt:     "BreakStmt",
+	NodeContinueStmt:  "ContinueStmt",
 }
 
 // AstNode is a node in the flat-array AST.
@@ -217,6 +219,9 @@ const (
 	NodeAliasStmt   // CTGC: alias reuse (destroy + alloc same type → reuse memory)
 
 	NodeComptime // #run <expr> or #run { ... }
+
+	NodeBreakStmt
+	NodeContinueStmt
 
 	NodeKindCount // sentinel — total count
 )

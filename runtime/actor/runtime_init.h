@@ -61,6 +61,9 @@ void ax_runtime_shutdown(void);
  */
 int ax_runtime_is_init(void);
 
+struct AxScheduler;
+struct AxScheduler* ax_get_global_scheduler(void);
+
 /**
  * Default-config init/shutdown wrappers.
  * These are emitted by codegen into the generated main() wrapper.

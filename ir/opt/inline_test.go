@@ -234,3 +234,91 @@ func TestInline_AsyncNotInlined(t *testing.T) {
 		t.Error("async function should not be inlined")
 	}
 }
+
+func TestInline_CallGraphAndCodeBloat(t *testing.T) {
+	// Case 1: Bottom-up nested inlining (C -> B -> A)
+	// Func C (100):
+	//   %1 = iconst 42
+	//   ret %1
+	// Func B (200):
+	//   %1 = call C (100)
+	//   ret %1
+	// Func A (300):
+	//   %1 = call B (200)
+	//   ret %1
+	buildModule := func() *air.AirModule {
+		c := air.NewAirFuncBuilder(100, 0)
+		c.Emit(air.AirInst{Opcode: air.OpIConst, TypeID: 3, Dest: 1, Src1: 42})
+		c.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 1})
+
+		b := air.NewAirFuncBuilder(200, 0)
+		b.Emit(air.AirInst{Opcode: air.OpCall, TypeID: 3, Dest: 1, Src1: 100})
+		b.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 1})
+
+		a := air.NewAirFuncBuilder(300, 0)
+		a.Emit(air.AirInst{Opcode: air.OpCall, TypeID: 3, Dest: 1, Src1: 200})
+		a.Emit(air.AirInst{Opcode: air.OpReturn, Src1: 1})
+
+		return &air.AirModule{
+			Funcs: []air.AirFunc{*c.Build(), *b.Build(), *a.Build()},
+		}
+	}
+
+	mod1 := buildModule()
+	pass1 := &opt.InliningPass{
+		Threshold:      30,
+		MaxModuleBloat: 3.0,
+		MaxCallerLimit: 100,
+	}
+	changed1 := pass1.Run(mod1)
+	if !changed1 {
+		t.Fatal("expected bottom-up inlining to occur")
+	}
+
+	// Verify bottom-up inlining worked: C inlined into B, then B (with C) inlined into A
+	// B (index 1) should have no call to C (100)
+	for _, inst := range mod1.Funcs[1].Insts {
+		if inst.Opcode == air.OpCall && inst.Src1 == 100 {
+			t.Error("expected C to be inlined into B")
+		}
+	}
+
+	// A (index 2) should have no call to B (200) or C (100)
+	for _, inst := range mod1.Funcs[2].Insts {
+		if inst.Opcode == air.OpCall {
+			t.Errorf("expected no call in inlined A, got call to %d", inst.Src1)
+		}
+	}
+
+	// Case 2: MaxCallerLimit constraint blocks inlining.
+	mod2 := buildModule()
+	pass2 := &opt.InliningPass{
+		Threshold:      30,
+		MaxModuleBloat: 3.0,
+		MaxCallerLimit: 2, // very restrictive caller limit
+	}
+	pass2.Run(mod2)
+
+	// Since B inlining C would result in 3 instructions, it exceeds the caller limit (2), so B should not be inlined.
+	hasBInlined := true
+	for _, inst := range mod2.Funcs[2].Insts {
+		if inst.Opcode == air.OpCall && inst.Src1 == 200 {
+			hasBInlined = false
+		}
+	}
+	if hasBInlined {
+		t.Error("inlining of B should be blocked by MaxCallerLimit")
+	}
+
+	// Case 3: MaxModuleBloat constraint blocks inlining.
+	mod3 := buildModule()
+	pass3 := &opt.InliningPass{
+		Threshold:      30,
+		MaxModuleBloat: 1.01, // extremely restrictive module bloat limit
+		MaxCallerLimit: 100,
+	}
+	changed3 := pass3.Run(mod3)
+	if changed3 {
+		t.Error("inlining should be blocked by MaxModuleBloat")
+	}
+}

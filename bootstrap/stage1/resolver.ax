@@ -279,6 +279,13 @@ pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
     st.define_builtin("compiler_intrinsic", 0, intern)
     st.define_builtin("assert", 0, intern)
     st.define_builtin("panic", 0, intern)
+    st.define_builtin("syscall0", 0, intern)
+    st.define_builtin("syscall1", 0, intern)
+    st.define_builtin("syscall2", 0, intern)
+    st.define_builtin("syscall3", 0, intern)
+    st.define_builtin("syscall4", 0, intern)
+    st.define_builtin("syscall5", 0, intern)
+    st.define_builtin("syscall6", 0, intern)
 
     return st
 
@@ -364,6 +371,19 @@ pub fn resolve(self: SymbolTable, name_id: u32) -> u32:
         i = i - 1
     return 0 as u32
 
+pub fn resolve_type(self: SymbolTable, name_id: u32) -> u32:
+    mut i := self.stack.len - 1
+    while i >= 0:
+        let scope_idx = self.stack.data[i]
+        let entry = self.scopes.data[scope_idx].scope_get(name_id)
+        if entry.name_id != 0 as u32:
+            let sym_idx = entry.symbol_idx
+            let sym = self.symbols.data[sym_idx]
+            if sym.kind == SYM_STRUCT or sym.kind == SYM_INTERFACE or sym.kind == SYM_TYPE_ALIAS or sym.kind == SYM_VARIANT or sym.kind == SYM_GENERIC_PARAM or sym.kind == SYM_BUILTIN_TYPE:
+                return sym_idx
+        i = i - 1
+    return 0 as u32
+
 pub struct NameResolver:
     tree: AstTree
     intern: InternPool
@@ -404,6 +424,8 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
             self.symtable.define(slice_name, SYM_FUNC, 0 as u16, node_idx)
             let concat_name = self.intern.intern_string("std.string.concat")
             self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
+            let replace_name = self.intern.intern_string("std.string.replace")
+            self.symtable.define(replace_name, SYM_FUNC, 0 as u16, node_idx)
 
     elif kind == NODE_FIELD_EXPR:
         let lhs_idx = self.tree.nodes.data[node_idx].first_child
@@ -561,7 +583,7 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
     elif kind == NODE_TYPE_EXPR:
         if self.tree.nodes.data[node_idx].payload != 0 as u32:
             let name_id = self.tree.nodes.data[node_idx].payload
-            let sym_idx = self.symtable.resolve(name_id)
+            let sym_idx = self.symtable.resolve_type(name_id)
             if sym_idx != 0 as u32:
                 self.tree.nodes.data[node_idx].payload = sym_idx
                 self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
@@ -578,6 +600,12 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
         if sym_idx != 0 as u32:
             self.tree.nodes.data[node_idx].payload = sym_idx
             self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        self.resolve_children(node_idx)
+
+    elif kind == NODE_GENERIC_PARAM:
+        let name_id = self.tree.nodes.data[node_idx].payload
+        let sym_idx = self.symtable.define(name_id, SYM_GENERIC_PARAM, 0 as u16, node_idx)
+        self.tree.nodes.data[node_idx].payload = sym_idx
         self.resolve_children(node_idx)
 
     else:

@@ -1,0 +1,510 @@
+// bootstrap/stage1/x86_regalloc.ax
+// Liveness Analysis and Graph-Coloring Register Allocation for x86-64 in self-hosted AXIOM.
+
+import std.string
+
+pub struct LiveInterval:
+    pub vreg: u32
+    pub start: i32
+    pub end: i32
+
+pub struct LiveIntervalVec:
+    pub data: ptr[LiveInterval]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_live_interval_vec() -> LiveIntervalVec:
+    return LiveIntervalVec(data: null as ptr[LiveInterval], len: 0, cap: 0)
+
+pub fn push(mut self: LiveIntervalVec, iv: LiveInterval) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 12) as ptr[LiveInterval]
+        if self.data != null as ptr[LiveInterval]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 12)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = iv
+    self.len = self.len + 1
+    return idx
+
+pub fn is_two_operand_read(op: u16) -> bool:
+    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_NEG or op == MACH_NOT:
+        return true
+    if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
+        return true
+    return false
+
+pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec:
+    mut max_vreg := 0 as u32
+    mut i := 0 as i64
+    while i < insts_len:
+        let inst = &insts[i]
+        if inst.dst.kind == OPND_VREG and inst.dst.vreg > max_vreg:
+            max_vreg = inst.dst.vreg
+        if inst.src1.kind == OPND_VREG and inst.src1.vreg > max_vreg:
+            max_vreg = inst.src1.vreg
+        if inst.src2.kind == OPND_VREG and inst.src2.vreg > max_vreg:
+            max_vreg = inst.src2.vreg
+        i = i + 1
+
+    let map_size = (max_vreg + 1 as u32) as i64
+    let interval_map = @alloc(map_size * 8) as ptr[ptr[LiveInterval]]
+    @memset(interval_map as ptr[u8], 0 as u8, map_size * 8)
+
+    i = 0 as i64
+    while i < insts_len:
+        let inst = &insts[i]
+
+        if inst.dst.kind == OPND_VREG and inst.dst.vreg != 0 as u32:
+            let v = inst.dst.vreg
+            if interval_map[v] == null as ptr[LiveInterval]:
+                let iv = @alloc(12) as ptr[LiveInterval]
+                iv.vreg = v
+                iv.start = i as i32
+                iv.end = i as i32
+                interval_map[v] = iv
+
+        if inst.src1.kind == OPND_VREG and inst.src1.vreg != 0 as u32:
+            let v = inst.src1.vreg
+            mut iv = interval_map[v]
+            if iv == null as ptr[LiveInterval]:
+                iv = @alloc(12) as ptr[LiveInterval]
+                iv.vreg = v
+                iv.start = 0 as i32
+                iv.end = i as i32
+                interval_map[v] = iv
+            elif (i as i32) > iv.end:
+                iv.end = i as i32
+
+        if inst.src2.kind == OPND_VREG and inst.src2.vreg != 0 as u32:
+            let v = inst.src2.vreg
+            mut iv = interval_map[v]
+            if iv == null as ptr[LiveInterval]:
+                iv = @alloc(12) as ptr[LiveInterval]
+                iv.vreg = v
+                iv.start = 0 as i32
+                iv.end = i as i32
+                interval_map[v] = iv
+            elif (i as i32) > iv.end:
+                iv.end = i as i32
+
+        if is_two_operand_read(inst.op):
+            if inst.dst.kind == OPND_VREG and inst.dst.vreg != 0 as u32:
+                let v = inst.dst.vreg
+                mut iv = interval_map[v]
+                if iv == null as ptr[LiveInterval]:
+                    iv = @alloc(12) as ptr[LiveInterval]
+                    iv.vreg = v
+                    iv.start = 0 as i32
+                    iv.end = i as i32
+                    interval_map[v] = iv
+                elif (i as i32) > iv.end:
+                    iv.end = i as i32
+        i = i + 1
+
+    mut result := new_live_interval_vec()
+    mut v := 0 as i64
+    while v < map_size:
+        let iv = interval_map[v]
+        if iv != null as ptr[LiveInterval]:
+            result.push(iv[0])
+            @free(iv as ptr[u8])
+        v = v + 1
+    @free(interval_map as ptr[u8])
+
+    mut idx := 1 as i64
+    while idx < result.len:
+        let key = result.data[idx]
+        mut j := idx - 1
+        while j >= 0 and result.data[j].start > key.start:
+            result.data[j + 1] = result.data[j]
+            j = j - 1
+        result.data[j + 1] = key
+        idx = idx + 1
+
+    return result
+
+pub struct RegAllocation:
+    pub vreg: u32
+    pub phys: u8
+    pub spilled: bool
+    pub spill_idx: i32
+
+pub struct RegAllocResult:
+    pub allocs: ptr[RegAllocation]
+    pub max_vreg: u32
+    pub spill_count: i32
+
+pub fn get_allocatable_gprs(out_len: ptr[i64]) -> ptr[u8]:
+    let arr = @alloc(12) as ptr[u8]
+    arr[0] = REG_RAX
+    arr[1] = REG_RCX
+    arr[2] = REG_RDX
+    arr[3] = REG_RBX
+    arr[4] = REG_RSI
+    arr[5] = REG_RDI
+    arr[6] = REG_R8
+    arr[7] = REG_R9
+    arr[8] = REG_R12
+    arr[9] = REG_R13
+    arr[10] = REG_R14
+    arr[11] = REG_R15
+    out_len[0] = 12
+    return arr
+
+pub fn reg_is_caller_saved(abi: str, r: u8) -> bool:
+    if abi == "win64":
+        if r == REG_RAX or r == REG_RCX or r == REG_RDX or r == REG_R8 or r == REG_R9 or r == REG_R10 or r == REG_R11:
+            return true
+    else:
+        if r == REG_RAX or r == REG_RCX or r == REG_RDX or r == REG_RSI or r == REG_RDI or r == REG_R8 or r == REG_R9 or r == REG_R10 or r == REG_R11:
+            return true
+    return false
+
+pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], avail_regs_len: i64, insts: ptr[MachInst], insts_len: i64, abi: str) -> RegAllocResult:
+    if intervals.len == 0 or avail_regs_len == 0:
+        return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32)
+
+    mut max_vreg := 0 as u32
+    mut i := 0 as i64
+    while i < intervals.len:
+        if intervals.data[i].vreg > max_vreg:
+            max_vreg = intervals.data[i].vreg
+        i = i + 1
+
+    let graph_size = (max_vreg + 1 as u32) as i64
+
+    // Determine for each virtual register if its live interval spans any call instruction
+    let spans_call = @alloc(graph_size) as ptr[bool]
+    @memset(spans_call as ptr[u8], 0 as u8, graph_size)
+
+    mut iv_idx := 0 as i64
+    while iv_idx < intervals.len:
+        let vreg = intervals.data[iv_idx].vreg
+        let start = intervals.data[iv_idx].start
+        let end = intervals.data[iv_idx].end
+        
+        mut k := start as i64
+        while k <= end as i64:
+            if k >= 0 and k < insts_len:
+                let op = insts[k].op
+                if op == MACH_CALL or op == MACH_CALL_INDIRECT:
+                    if start < k as i32 and end > k as i32:
+                        spans_call[vreg] = true
+                        break
+            k = k + 1
+        iv_idx = iv_idx + 1
+
+    let adj = @alloc(graph_size * 24) as ptr[U32Vec]
+    mut vi := 0 as i64
+    while vi < graph_size:
+        adj[vi] = new_u32_vec()
+        vi = vi + 1
+
+    i = 0 as i64
+    while i < intervals.len:
+        let iv1 = &intervals.data[i]
+        mut j := i + 1
+        while j < intervals.len:
+            let iv2 = &intervals.data[j]
+            if iv1.start <= iv2.end and iv2.start <= iv1.end:
+                adj[iv1.vreg].append_unique(iv2.vreg)
+                adj[iv2.vreg].append_unique(iv1.vreg)
+            j = j + 1
+        i = i + 1
+
+    let degrees = @alloc(graph_size * 4) as ptr[i32]
+    mut di := 0 as i64
+    while di < graph_size:
+        degrees[di] = adj[di].len as i32
+        di = di + 1
+
+    let removed = @alloc(graph_size) as ptr[bool]
+    @memset(removed as ptr[u8], 0 as u8, graph_size)
+
+    mut stack := new_u32_vec()
+    let K = avail_regs_len as i32
+    mut simplified_count := 0 as i64
+    let target_count = intervals.len
+
+    while simplified_count < target_count:
+        mut found := false
+        mut best_node := 0 as u32
+
+        mut iv_idx := 0 as i64
+        while iv_idx < intervals.len:
+            let vreg = intervals.data[iv_idx].vreg
+            if not removed[vreg]:
+                if degrees[vreg] < K:
+                    best_node = vreg
+                    found = true
+                    break
+            iv_idx = iv_idx + 1
+
+        if found:
+            stack.push(best_node)
+            removed[best_node] = true
+            simplified_count = simplified_count + 1
+            mut n_idx := 0 as i64
+            while n_idx < adj[best_node].len:
+                let neighbor = adj[best_node].data[n_idx]
+                if not removed[neighbor]:
+                    degrees[neighbor] = degrees[neighbor] - 1
+                n_idx = n_idx + 1
+        else:
+            mut spill_candidate := 0 as u32
+            mut max_degree := -1 as i32
+            mut has_candidate := false
+
+            iv_idx = 0
+            while iv_idx < intervals.len:
+                let vreg = intervals.data[iv_idx].vreg
+                if not removed[vreg]:
+                    if degrees[vreg] > max_degree:
+                        max_degree = degrees[vreg]
+                        spill_candidate = vreg
+                        has_candidate = true
+                iv_idx = iv_idx + 1
+
+            if not has_candidate:
+                break
+
+            stack.push(spill_candidate)
+            removed[spill_candidate] = true
+            simplified_count = simplified_count + 1
+
+            mut n_idx := 0 as i64
+            while n_idx < adj[spill_candidate].len:
+                let neighbor = adj[spill_candidate].data[n_idx]
+                if not removed[neighbor]:
+                    degrees[neighbor] = degrees[neighbor] - 1
+                n_idx = n_idx + 1
+
+    let assigned_colors = @alloc(graph_size) as ptr[u8]
+    @memset(assigned_colors, REG_NONE, graph_size)
+
+    let allocs = @alloc(graph_size * 12) as ptr[RegAllocation]
+    @memset(allocs as ptr[u8], 0 as u8, graph_size * 12)
+    mut spill_count := 0 as i32
+
+    mut st_idx := stack.len - 1
+    while st_idx >= 0:
+        let vreg = stack.data[st_idx]
+        let forbidden = @alloc(256) as ptr[bool]
+        @memset(forbidden as ptr[u8], 0 as u8, 256)
+
+        mut n_idx := 0 as i64
+        while n_idx < adj[vreg].len:
+            let neighbor = adj[vreg].data[n_idx]
+            let color = assigned_colors[neighbor]
+            if color != REG_NONE:
+                forbidden[color] = true
+            n_idx = n_idx + 1
+
+        if spans_call[vreg]:
+            mut r := 0 as i64
+            while r < 256:
+                if reg_is_caller_saved(abi, r as u8):
+                    forbidden[r] = true
+                r = r + 1
+
+        mut colored := false
+        mut c_idx := 0 as i64
+        while c_idx < avail_regs_len:
+            let color = avail_regs[c_idx]
+            if not forbidden[color]:
+                assigned_colors[vreg] = color
+                allocs[vreg] = RegAllocation(vreg: vreg, phys: color, spilled: false, spill_idx: 0 as i32)
+                colored = true
+                break
+            c_idx = c_idx + 1
+
+        @free(forbidden as ptr[u8])
+
+        if not colored:
+            allocs[vreg] = RegAllocation(vreg: vreg, phys: REG_NONE, spilled: true, spill_idx: spill_count)
+            spill_count = spill_count + 1
+
+        st_idx = st_idx - 1
+
+    @free(removed as ptr[u8])
+    @free(degrees as ptr[u8])
+    @free(assigned_colors)
+    @free(spans_call as ptr[u8])
+    if stack.data != null as ptr[u32]:
+        @free(stack.data as ptr[u8])
+
+    mut f_idx := 0 as i64
+    while f_idx < graph_size:
+        if adj[f_idx].data != null as ptr[u32]:
+            @free(adj[f_idx].data as ptr[u8])
+        f_idx = f_idx + 1
+    @free(adj as ptr[u8])
+
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count)
+
+pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32, out_len: ptr[i64]) -> ptr[u8]:
+    let used = @alloc(16) as ptr[bool]
+    @memset(used as ptr[u8], 0 as u8, 16)
+
+    mut i := 0 as i64
+    while i <= max_vreg as i64:
+        let phys = allocs[i].phys
+        if phys != REG_NONE:
+            if abi == "win64":
+                if reg_is_win64_callee_saved(phys):
+                    used[phys] = true
+            else:
+                if reg_is_sysv_callee_saved(phys):
+                    used[phys] = true
+        i = i + 1
+
+    mut count := 0 as i64
+    mut r := 0 as i64
+    while r < 16:
+        if used[r]:
+            count = count + 1
+        r = r + 1
+
+    let result = @alloc(count) as ptr[u8]
+    mut idx := 0 as i64
+    r = 0
+    while r < 16:
+        if used[r]:
+            result[idx] = r as u8
+            idx = idx + 1
+        r = r + 1
+
+    @free(used as ptr[u8])
+    out_len[0] = count
+    return result
+
+pub struct StackFrame:
+    pub callee_saved: ptr[u8]
+    pub callee_saved_len: i64
+    pub spill_slots: i32
+    pub local_bytes: i32
+    pub align_padding: i32
+    pub total_size: i32
+
+pub fn compute_frame(callee_saved: ptr[u8], callee_saved_len: i64, spill_count: i32, local_bytes: i32, abi: str) -> StackFrame:
+    mut needed := spill_count * 8 + local_bytes
+    if abi == "win64":
+        needed = needed + 32
+    let pushed_bytes = (callee_saved_len + 2) * 8
+
+    mut total := needed
+    mut padding := 0 as i32
+    if (pushed_bytes + total as i64) % 16 != 0:
+        padding = (16 as i64 - (pushed_bytes + total as i64) % 16) as i32
+        total = total + padding
+
+    return StackFrame(
+        callee_saved: callee_saved,
+        callee_saved_len: callee_saved_len,
+        spill_slots: spill_count,
+        local_bytes: local_bytes,
+        align_padding: padding,
+        total_size: total
+    )
+
+pub fn emit_prologue(frame: ptr[StackFrame], out_insts: ptr[MachInstVec]):
+    out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    mut i := 0 as i64
+    while i < frame.callee_saved_len:
+        let reg = frame.callee_saved[i]
+        out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        i = i + 1
+
+    if frame.total_size > 0:
+        out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: frame.total_size as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+pub fn emit_epilogue(frame: ptr[StackFrame], out_insts: ptr[MachInstVec]):
+    if frame.total_size > 0:
+        out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: frame.total_size as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    mut i := frame.callee_saved_len - 1
+    while i >= 0:
+        let reg = frame.callee_saved[i]
+        out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        i = i - 1
+
+    out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+pub const DST_UNUSED: u8 = 0
+pub const DST_WRITE_ONLY: u8 = 1
+pub const DST_READ_WRITE: u8 = 2
+pub const DST_READ_ONLY: u8 = 3
+
+pub fn get_dst_behavior(op: u16) -> u8:
+    if op == MACH_MOV or op == MACH_MOV_IMM or op == MACH_XOR_ZERO or op == MACH_SETCC or op == MACH_MOVZX_B or op == MACH_POP or op == MACH_LOAD:
+        return DST_WRITE_ONLY
+    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_NEG or op == MACH_NOT or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR:
+        return DST_READ_WRITE
+    if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
+        return DST_READ_ONLY
+    return DST_UNUSED
+
+pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame]) -> MachInstVec:
+    mut result := new_mach_inst_vec()
+
+    mut i := 0 as i64
+    while i < insts_len:
+        mut inst := insts[i]
+
+        if inst.src1.kind == OPND_VREG:
+            let v = inst.src1.vreg
+            let alloc = allocs[v]
+            if alloc.spilled:
+                let offset = -((alloc.spill_idx + 1) * 8)
+                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+
+        if inst.src2.kind == OPND_VREG:
+            let v = inst.src2.vreg
+            let alloc = allocs[v]
+            if alloc.spilled:
+                let offset = -((alloc.spill_idx + 1) * 8)
+                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+
+        mut dst_spilled := false
+        mut dst_alloc = RegAllocation(vreg: 0 as u32, phys: 0 as u8, spilled: false, spill_idx: 0 as i32)
+        if inst.dst.kind == OPND_VREG:
+            let v = inst.dst.vreg
+            let alloc = allocs[v]
+            if alloc.spilled:
+                dst_spilled = true
+                dst_alloc = alloc
+
+        if dst_spilled:
+            let behavior = get_dst_behavior(inst.op)
+            let offset = -((dst_alloc.spill_idx + 1) * 8)
+
+            if behavior == DST_READ_ONLY:
+                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                result.push(inst)
+            elif behavior == DST_READ_WRITE:
+                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                result.push(inst)
+                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+            elif behavior == DST_WRITE_ONLY:
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                result.push(inst)
+                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+            else:
+                result.push(inst)
+        else:
+            result.push(inst)
+
+        i = i + 1
+    return result

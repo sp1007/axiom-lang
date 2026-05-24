@@ -1,0 +1,1650 @@
+// bootstrap/stage1/linker.ax
+// Custom self-hosted ELF64 & PE/COFF relocations resolver and segment merger.
+
+import std.string
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
+extern "C" fn ftell(stream: ptr[void]) -> i64
+extern "C" fn rewind(stream: ptr[void])
+
+pub fn x86_slice_to_str(data: ptr[u8], len: i64) -> str:
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, data, len)
+    buf[len] = 0 as u8
+    return buf as str
+
+// --------------------------------------------------------------------------
+// Basic Binary Decoding & Encoding Helpers
+// --------------------------------------------------------------------------
+
+pub fn read_u16_le(data: ptr[u8], off: i64) -> u16:
+    let b0 = data[off] as u16
+    let b1 = data[off + 1] as u16
+    return b0 | (b1 << 8 as u16)
+
+pub fn read_u32_le(data: ptr[u8], off: i64) -> u32:
+    let b0 = data[off] as u32
+    let b1 = data[off + 1] as u32
+    let b2 = data[off + 2] as u32
+    let b3 = data[off + 3] as u32
+    return b0 | (b1 << 8 as u32) | (b2 << 16 as u32) | (b3 << 24 as u32)
+
+pub fn read_u64_le(data: ptr[u8], off: i64) -> u64:
+    let b0 = data[off] as u64
+    let b1 = data[off + 1] as u64
+    let b2 = data[off + 2] as u64
+    let b3 = data[off + 3] as u64
+    let b4 = data[off + 4] as u64
+    let b5 = data[off + 5] as u64
+    let b6 = data[off + 6] as u64
+    let b7 = data[off + 7] as u64
+    return b0 | (b1 << 8 as u64) | (b2 << 16 as u64) | (b3 << 24 as u64) | (b4 << 32 as u64) | (b5 << 40 as u64) | (b6 << 48 as u64) | (b7 << 56 as u64)
+
+pub fn write_u32_le(data: ptr[u8], off: i64, val: u32):
+    data[off] = (val & 0xFF as u32) as u8
+    data[off + 1] = ((val >> 8 as u32) & 0xFF as u32) as u8
+    data[off + 2] = ((val >> 16 as u32) & 0xFF as u32) as u8
+    data[off + 3] = ((val >> 24 as u32) & 0xFF as u32) as u8
+
+pub fn write_u64_le(data: ptr[u8], off: i64, val: u64):
+    data[off] = (val & 0xFF as u64) as u8
+    data[off + 1] = ((val >> 8 as u64) & 0xFF as u64) as u8
+    data[off + 2] = ((val >> 16 as u64) & 0xFF as u64) as u8
+    data[off + 3] = ((val >> 24 as u64) & 0xFF as u64) as u8
+    data[off + 4] = ((val >> 32 as u64) & 0xFF as u64) as u8
+    data[off + 5] = ((val >> 40 as u64) & 0xFF as u64) as u8
+    data[off + 6] = ((val >> 48 as u64) & 0xFF as u64) as u8
+    data[off + 7] = ((val >> 56 as u64) & 0xFF as u64) as u8
+// --------------------------------------------------------------------------
+// Linker Structures and Dynamic Vectors
+// --------------------------------------------------------------------------
+
+pub struct LinkerSymbol:
+    pub name: str
+    pub section: i64
+    pub offset: u64
+    pub size: u64
+    pub defined: bool
+
+pub struct LinkerSymbolVec:
+    pub data: ptr[LinkerSymbol]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_linker_symbol_vec() -> LinkerSymbolVec:
+    return LinkerSymbolVec(data: null as ptr[LinkerSymbol], len: 0, cap: 0)
+
+pub fn push_linker_symbol(mut self: ptr[LinkerSymbolVec], s: LinkerSymbol):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 48) as ptr[LinkerSymbol]
+        if self.data != null as ptr[LinkerSymbol]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 48)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = s
+    self.len = self.len + 1
+
+pub struct ParsedReloc:
+    pub offset: i64
+    pub sym_idx: u32
+    pub is_pc: bool
+    pub addend: i64
+
+pub struct ParsedRelocVec:
+    pub data: ptr[ParsedReloc]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_parsed_reloc_vec() -> ParsedRelocVec:
+    return ParsedRelocVec(data: null as ptr[ParsedReloc], len: 0, cap: 0)
+
+pub fn push_parsed_reloc(mut self: ptr[ParsedRelocVec], r: ParsedReloc):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[ParsedReloc]
+        if self.data != null as ptr[ParsedReloc]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = r
+    self.len = self.len + 1
+
+pub struct LinkerStrVec:
+    pub data: ptr[str]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_linker_str_vec() -> LinkerStrVec:
+    return LinkerStrVec(data: null as ptr[str], len: 0, cap: 0)
+
+pub fn push_linker_str(mut self: ptr[LinkerStrVec], s: str):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 16) as ptr[str]
+        if self.data != null as ptr[str]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = s
+    self.len = self.len + 1
+
+pub struct ParsedObject:
+    pub text: ByteVec
+    pub rdata: ByteVec
+    pub symbols: LinkerSymbolVec
+    pub sym_names: LinkerStrVec
+    pub relocs: ParsedRelocVec
+    pub va: u64
+
+pub struct ParsedObjectPtrVec:
+    pub data: ptr[ptr[ParsedObject]]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_parsed_object_ptr_vec() -> ParsedObjectPtrVec:
+    return ParsedObjectPtrVec(data: null as ptr[ptr[ParsedObject]], len: 0, cap: 0)
+
+pub fn push_parsed_object_ptr(mut self: ptr[ParsedObjectPtrVec], p: ptr[ParsedObject]):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 8) as ptr[ptr[ParsedObject]]
+        if self.data != null as ptr[ptr[ParsedObject]]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = p
+    self.len = self.len + 1
+
+// --------------------------------------------------------------------------
+// ELF64 parser
+// --------------------------------------------------------------------------
+
+pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
+    let shoff = read_u64_le(data, 40) as i64
+    let shnum = read_u16_le(data, 60) as i64
+    
+    mut text_off := 0 as i64
+    mut text_size := 0 as i64
+    
+    mut symtab_off := 0 as i64
+    mut symtab_size := 0 as i64
+    
+    mut strtab_off := 0 as i64
+    mut strtab_size := 0 as i64
+    
+    mut rela_off := 0 as i64
+    mut rela_size := 0 as i64
+    
+    mut i := 0 as i64
+    while i < shnum:
+        let off = shoff + i * 64
+        let sh_type = read_u32_le(data, off + 4)
+        let sh_offset = read_u64_le(data, off + 24) as i64
+        let sh_size = read_u64_le(data, off + 32) as i64
+        
+        if sh_type == 1 as u32: // SHT_PROGBITS
+            text_off = sh_offset
+            text_size = sh_size
+        elif sh_type == 2 as u32: // SHT_SYMTAB
+            symtab_off = sh_offset
+            symtab_size = sh_size
+        elif sh_type == 3 as u32: // SHT_STRTAB
+            strtab_off = sh_offset
+            strtab_size = sh_size
+        elif sh_type == 4 as u32: // SHT_RELA
+            rela_off = sh_offset
+            rela_size = sh_size
+        i = i + 1
+        
+    mut sym_names := new_linker_str_vec()
+    if symtab_size > 0:
+        let num_syms = symtab_size / 24
+        mut sym_i := 0 as i64
+        while sym_i < num_syms:
+            let off = symtab_off + sym_i * 24
+            let name_offset = read_u32_le(data, off) as i64
+            
+            mut name_str := ""
+            if name_offset < strtab_size:
+                let str_ptr = (data as i64 + strtab_off + name_offset) as ptr[u8]
+                mut char_len := 0 as i64
+                while str_ptr[char_len] != 0 as u8:
+                    char_len = char_len + 1
+                name_str = x86_slice_to_str(str_ptr, char_len)
+            push_linker_str(&sym_names, name_str)
+            sym_i = sym_i + 1
+            
+    mut symbols := new_linker_symbol_vec()
+    if symtab_size > 0:
+        let num_syms = symtab_size / 24
+        mut sym_i := 1 as i64 // skip first NULL symbol
+        while sym_i < num_syms:
+            let off = symtab_off + sym_i * 24
+            let sec_idx = read_u16_le(data, off + 6)
+            let val64 = read_u64_le(data, off + 8)
+            let size = read_u64_le(data, off + 16)
+            
+            let name = sym_names.data[sym_i]
+            let is_defined = sec_idx != 0 as u16
+            
+            push_linker_symbol(&symbols, LinkerSymbol(
+                name: name,
+                section: sec_idx as i64,
+                offset: val64,
+                size: size,
+                defined: is_defined
+            ))
+            sym_i = sym_i + 1
+            
+    mut relocs := new_parsed_reloc_vec()
+    if rela_size > 0:
+        let num_relocs = rela_size / 24
+        mut rel_i := 0 as i64
+        while rel_i < num_relocs:
+            let off = rela_off + rel_i * 24
+            let r_offset = read_u64_le(data, off) as i64
+            let r_info = read_u64_le(data, off + 8)
+            let r_addend = read_u64_le(data, off + 16) as i64
+            
+            let sym_idx = (r_info >> 32 as u64) as u32
+            let r_type = (r_info & 0xFFFFFFFF as u64) as u32
+            let is_pc = r_type == 2 as u32 or r_type == 4 as u32 // PC32 or PLT32
+            
+            push_parsed_reloc(&relocs, ParsedReloc(
+                offset: r_offset,
+                sym_idx: sym_idx,
+                is_pc: is_pc,
+                addend: r_addend
+            ))
+            rel_i = rel_i + 1
+            
+    mut text_vec := new_byte_vec()
+    if text_size > 0:
+        push_bytes(&text_vec, (data as i64 + text_off) as ptr[u8], text_size)
+        
+    let obj = @alloc(@compiler_intrinsic("size_of")[ParsedObject]()) as ptr[ParsedObject]
+    obj.text = text_vec
+    obj.rdata = new_byte_vec()
+    obj.symbols = symbols
+    obj.sym_names = sym_names
+    obj.relocs = relocs
+    obj.va = 0 as u64
+    return obj
+
+// --------------------------------------------------------------------------
+// PE/COFF parser
+// --------------------------------------------------------------------------
+
+pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
+    let num_sections = read_u16_le(data, 2) as i64
+    let symtab_off = read_u32_le(data, 8) as i64
+    let sym_count = read_u32_le(data, 12) as i64
+    
+    mut text_off := 0 as i64
+    mut text_size := 0 as i64
+    mut relocs_off := 0 as i64
+    mut num_relocs := 0 as i64
+    
+    mut rdata_off := 0 as i64
+    mut rdata_size := 0 as i64
+    
+    mut i := 0 as i64
+    while i < num_sections:
+        let off = 20 + i * 40
+        
+        // Read section name (first 8 bytes)
+        mut is_text := false
+        if data[off] == '.' as u8 and data[off + 1] == 't' as u8 and data[off + 2] == 'e' as u8 and data[off + 3] == 'x' as u8 and data[off + 4] == 't' as u8:
+            is_text = true
+            
+        mut is_rdata := false
+        if data[off] == '.' as u8 and data[off + 1] == 'r' as u8 and data[off + 2] == 'd' as u8 and data[off + 3] == 'a' as u8 and data[off + 4] == 't' as u8 and data[off + 5] == 'a' as u8:
+            is_rdata = true
+            
+        if is_text:
+            text_size = read_u32_le(data, off + 16) as i64
+            text_off = read_u32_le(data, off + 20) as i64
+            relocs_off = read_u32_le(data, off + 24) as i64
+            num_relocs = read_u16_le(data, off + 32) as i64
+        elif is_rdata:
+            rdata_size = read_u32_le(data, off + 16) as i64
+            rdata_off = read_u32_le(data, off + 20) as i64
+            
+        i = i + 1
+        
+    let strtab_off = symtab_off + sym_count * 18
+    let strtab_size = data_len - strtab_off
+    
+    mut sym_names := new_linker_str_vec()
+    mut symbols := new_linker_symbol_vec()
+    
+    mut sym_i := 0 as i64
+    while sym_i < sym_count:
+        let off = symtab_off + sym_i * 18
+        mut name_str := ""
+        
+        let first4 = read_u32_le(data, off)
+        if first4 == 0 as u32:
+            let str_off = read_u32_le(data, off + 4) as i64
+            if str_off < strtab_size:
+                let str_ptr = (data as i64 + strtab_off + str_off) as ptr[u8]
+                mut char_len := 0 as i64
+                while str_ptr[char_len] != 0 as u8:
+                    char_len = char_len + 1
+                name_str = x86_slice_to_str(str_ptr, char_len)
+        else:
+            let name_ptr = (data as i64 + off) as ptr[u8]
+            mut char_len := 0 as i64
+            while char_len < 8 and name_ptr[char_len] != 0 as u8:
+                char_len = char_len + 1
+            name_str = x86_slice_to_str(name_ptr, char_len)
+            
+        let val = read_u32_le(data, off + 8)
+        let sec_num = read_u16_le(data, off + 12) as i16
+        let aux_count = data[off + 17]
+        
+        push_linker_str(&sym_names, name_str)
+        push_linker_symbol(&symbols, LinkerSymbol(
+            name: name_str,
+            section: sec_num as i64,
+            offset: val as u64,
+            defined: sec_num > 0 as i16
+        ))
+        
+        sym_i = sym_i + 1
+        
+        mut k := 0 as u8
+        while k < aux_count:
+            push_linker_str(&sym_names, "")
+            push_linker_symbol(&symbols, LinkerSymbol(name: "", section: 0, offset: 0 as u64, defined: false))
+            sym_i = sym_i + 1
+            k = k + 1 as u8
+            
+    mut relocs := new_parsed_reloc_vec()
+    mut rel_idx := 0 as i64
+    while rel_idx < num_relocs:
+        let off = relocs_off + rel_idx * 10
+        let virt_addr = read_u32_le(data, off) as i64
+        let sym_idx = read_u32_le(data, off + 4)
+        let rel_type = read_u16_le(data, off + 8)
+        
+        let is_pc = rel_type == 4 as u16 // IMAGE_REL_AMD64_REL32
+        mut addend := 0 as i64
+        if is_pc:
+            addend = -4 as i64
+            
+        push_parsed_reloc(&relocs, ParsedReloc(
+            offset: virt_addr,
+            sym_idx: sym_idx,
+            is_pc: is_pc,
+            addend: addend
+        ))
+        rel_idx = rel_idx + 1
+        
+    mut text_vec := new_byte_vec()
+    if text_size > 0:
+        push_bytes(&text_vec, (data as i64 + text_off) as ptr[u8], text_size)
+        
+    mut rdata_vec := new_byte_vec()
+    if rdata_size > 0:
+        push_bytes(&rdata_vec, (data as i64 + rdata_off) as ptr[u8], rdata_size)
+        
+    let obj = @alloc(@compiler_intrinsic("size_of")[ParsedObject]()) as ptr[ParsedObject]
+    obj.text = text_vec
+    obj.rdata = rdata_vec
+    obj.symbols = symbols
+    obj.sym_names = sym_names
+    obj.relocs = relocs
+    obj.va = 0 as u64
+    return obj
+
+// --------------------------------------------------------------------------
+// Unified Linker Implementation
+// --------------------------------------------------------------------------
+
+pub struct AxiomLinker:
+    pub input_files: LinkerStrVec
+    pub output_path: str
+
+pub fn new_axiom_linker() -> AxiomLinker:
+    return AxiomLinker(input_files: new_linker_str_vec(), output_path: "")
+
+
+pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
+    while vec.len % alignment != 0:
+        push_byte(vec, 0 as u8)
+
+pub fn get_dll_for_symbol(name: str) -> str:
+    if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or 
+        name == "GetLastError" or name == "GetStdHandle" or name == "WriteFile" or
+        name == "CreateFileA" or name == "ReadFile" or name == "CloseHandle"):
+        return "kernel32.dll"
+        
+    let ptr = name as ptr[u8]
+    let len = std.string.len(name)
+    if len >= 3 and ptr[0] == 'a' as u8 and ptr[1] == 'x' as u8 and ptr[2] == '_' as u8:
+        return "ax_runtime.dll"
+    if len >= 5 and ptr[0] == '_' as u8 and ptr[1] == '_' as u8 and ptr[2] == 'a' as u8 and ptr[3] == 'x' as u8 and ptr[4] == '_' as u8:
+        return "ax_runtime.dll"
+        
+    return "ucrtbase.dll"
+
+pub fn add_unique_import(imports: ptr[LinkerStrVec], name: str):
+    mut found := false
+    mut i := 0 as i64
+    while i < imports.len:
+        if imports.data[i] == name:
+            found = true
+            break
+        i = i + 1
+    if not found:
+        push_linker_str(imports, name)
+
+pub fn write_buf_u32_le(data: ptr[u8], off: i64, val: u32):
+    data[off] = (val & 0xFF as u32) as u8
+    data[off + 1] = ((val >> 8 as u32) & 0xFF as u32) as u8
+    data[off + 2] = ((val >> 16 as u32) & 0xFF as u32) as u8
+    data[off + 3] = ((val >> 24 as u32) & 0xFF as u32) as u8
+
+pub fn write_buf_u64_le(data: ptr[u8], off: i64, val: u64):
+    write_buf_u32_le(data, off, (val & 0xFFFFFFFF as u64) as u32)
+    write_buf_u32_le(data, off + 4, ((val >> 32 as u64) & 0xFFFFFFFF as u64) as u32)
+
+pub fn linker_build_pe_headers(
+    out: ptr[ByteVec],
+    code_raw_size: u32,
+    idata_raw_size: u32,
+    entry_rva: u32,
+    idata_rva: u32,
+    idata_size: u32,
+    iat_rva: u32,
+    iat_size: u32
+):
+    // 1. DOS Header
+    push_byte(out, 0x4D as u8) // 'M'
+    push_byte(out, 0x5A as u8) // 'Z'
+    mut i := 2 as i64
+    while i < 0x3C:
+        push_byte(out, 0 as u8)
+        i = i + 1
+    push_u32_le(out, 0x80 as u32) // e_lfanew
+    i = 0x40
+    while i < 0x80:
+        push_byte(out, 0 as u8)
+        i = i + 1
+        
+    // 2. PE Signature
+    push_byte(out, 0x50 as u8) // 'P'
+    push_byte(out, 0x45 as u8) // 'E'
+    push_byte(out, 0 as u8)
+    push_byte(out, 0 as u8)
+    
+    // 3. COFF File Header
+    push_u16_le(out, 0x8664 as u16) // Machine (AMD64)
+    push_u16_le(out, 2 as u16) // NumberOfSections
+    push_u32_le(out, 0 as u32) // TimeDateStamp
+    push_u32_le(out, 0 as u32) // PointerToSymbolTable
+    push_u32_le(out, 0 as u32) // NumberOfSymbols
+    push_u16_le(out, 240 as u16) // SizeOfOptionalHeader
+    push_u16_le(out, 0x0026 as u16) // Characteristics
+    
+    // 4. Optional Header (PE32+)
+    push_u16_le(out, 0x020B as u16) // Magic
+    push_byte(out, 1 as u8) // MajorLinkerVersion
+    push_byte(out, 0 as u8) // MinorLinkerVersion
+    push_u32_le(out, code_raw_size) // SizeOfCode
+    push_u32_le(out, idata_raw_size) // SizeOfInitializedData
+    push_u32_le(out, 0 as u32) // SizeOfUninitializedData
+    push_u32_le(out, entry_rva) // AddressOfEntryPoint
+    push_u32_le(out, 0x1000 as u32) // BaseOfCode
+    push_u64_le(out, 0x140000000 as u64) // ImageBase
+    push_u32_le(out, 0x1000 as u32) // SectionAlignment
+    push_u32_le(out, 0x200 as u32) // FileAlignment
+    push_u16_le(out, 6 as u16) // MajorOperatingSystemVersion
+    push_u16_le(out, 0 as u16) // MinorOperatingSystemVersion
+    push_u16_le(out, 0 as u16) // MajorImageVersion
+    push_u16_le(out, 0 as u16) // MinorImageVersion
+    push_u16_le(out, 6 as u16) // MajorSubsystemVersion
+    push_u16_le(out, 0 as u16) // MinorSubsystemVersion
+    push_u32_le(out, 0 as u32) // Win32VersionValue
+    
+    let size_of_image = (idata_rva + idata_raw_size + 0xFFF as u32) & (0xFFFFF000 as u32)
+    push_u32_le(out, size_of_image) // SizeOfImage
+    push_u32_le(out, 0x400 as u32) // SizeOfHeaders
+    push_u32_le(out, 0 as u32) // CheckSum
+    push_u16_le(out, 3 as u16) // Subsystem (Console)
+    push_u16_le(out, 0x0160 as u16) // DllCharacteristics
+    push_u64_le(out, 0x100000 as u64) // SizeOfStackReserve
+    push_u64_le(out, 0x1000 as u64) // SizeOfStackCommit
+    push_u64_le(out, 0x100000 as u64) // SizeOfHeapReserve
+    push_u64_le(out, 0x1000 as u64) // SizeOfHeapCommit
+    push_u32_le(out, 0 as u32) // LoaderFlags
+    push_u32_le(out, 16 as u32) // NumberOfRvaAndSizes
+    
+    // Data Directories
+    // Dir 0: Export
+    push_u32_le(out, 0 as u32)
+    push_u32_le(out, 0 as u32)
+    // Dir 1: Import
+    push_u32_le(out, idata_rva)
+    push_u32_le(out, idata_size)
+    // Dir 2 to 11 (10 entries = 80 bytes)
+    mut dir_i := 2 as i64
+    while dir_i < 12:
+        push_u32_le(out, 0 as u32)
+        push_u32_le(out, 0 as u32)
+        dir_i = dir_i + 1
+    // Dir 12: IAT
+    push_u32_le(out, iat_rva)
+    push_u32_le(out, iat_size)
+    // Dir 13 to 15 (3 entries = 24 bytes)
+    dir_i = 13
+    while dir_i < 16:
+        push_u32_le(out, 0 as u32)
+        push_u32_le(out, 0 as u32)
+        dir_i = dir_i + 1
+        
+    // 5. Section Headers
+    // Section 1: .text
+    push_byte(out, '.' as u8)
+    push_byte(out, 't' as u8)
+    push_byte(out, 'e' as u8)
+    push_byte(out, 'x' as u8)
+    push_byte(out, 't' as u8)
+    push_byte(out, 0 as u8)
+    push_byte(out, 0 as u8)
+    push_byte(out, 0 as u8)
+    push_u32_le(out, code_raw_size) // VirtualSize
+    push_u32_le(out, 0x1000 as u32) // VirtualAddress
+    push_u32_le(out, code_raw_size) // SizeOfRawData
+    push_u32_le(out, 0x400 as u32) // PointerToRawData
+    push_u32_le(out, 0 as u32) // PointerToRelocations
+    push_u32_le(out, 0 as u32) // PointerToLinenumbers
+    push_u16_le(out, 0 as u16) // NumberOfRelocations
+    push_u16_le(out, 0 as u16) // NumberOfLinenumbers
+    push_u32_le(out, 0x60000020 as u32) // Characteristics
+    
+    // Section 2: .idata
+    push_byte(out, '.' as u8)
+    push_byte(out, 'i' as u8)
+    push_byte(out, 'd' as u8)
+    push_byte(out, 'a' as u8)
+    push_byte(out, 't' as u8)
+    push_byte(out, 'a' as u8)
+    push_byte(out, 0 as u8)
+    push_byte(out, 0 as u8)
+    push_u32_le(out, idata_raw_size) // VirtualSize
+    push_u32_le(out, idata_rva) // VirtualAddress
+    push_u32_le(out, idata_raw_size) // SizeOfRawData
+    push_u32_le(out, 0x400 as u32 + code_raw_size) // PointerToRawData
+    push_u32_le(out, 0 as u32)
+    push_u32_le(out, 0 as u32)
+    push_u16_le(out, 0 as u16)
+    push_u16_le(out, 0 as u16)
+    push_u32_le(out, 0xC0000040 as u32) // Characteristics
+    
+    align_byte_vec(out, 0x400 as i64)
+
+pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va: u64, dynamic_offset: u32, dynamic_size: u32):
+    // 1. e_ident
+    push_byte(out, 0x7F as u8)
+    push_byte(out, 'E' as u8)
+    push_byte(out, 'L' as u8)
+    push_byte(out, 'F' as u8)
+    push_byte(out, 2 as u8) // ELFCLASS64
+    push_byte(out, 1 as u8) // ELFDATA2LSB
+    push_byte(out, 1 as u8) // EV_CURRENT
+    push_byte(out, 0 as u8) // ELFOSABI_NONE
+    mut i := 8 as i64
+    while i < 16:
+        push_byte(out, 0 as u8)
+        i = i + 1
+        
+    // 2. Type, Machine, Version
+    push_u16_le(out, 2 as u16) // ET_EXEC
+    push_u16_le(out, 62 as u16) // EM_X86_64
+    push_u32_le(out, 1 as u32) // EV_CURRENT
+    
+    // 3. Entry point virtual address
+    push_u64_le(out, entry_va)
+    
+    // 4. Program header offset
+    push_u64_le(out, 64 as u64) // immediately follows ELF header
+    
+    // 5. Section header offset
+    push_u64_le(out, 0 as u64) // no section headers
+    
+    if dynamic_size > 0:
+        // 6. Flags, Header Sizes
+        push_u32_le(out, 0 as u32) // e_flags
+        push_u16_le(out, 64 as u16) // e_ehsize
+        push_u16_le(out, 56 as u16) // e_phentsize
+        push_u16_le(out, 3 as u16) // e_phnum (3 program headers)
+        push_u16_le(out, 0 as u16) // e_shentsize
+        push_u16_le(out, 0 as u16) // e_shnum
+        push_u16_le(out, 0 as u16) // e_shstrndx
+        
+        // 7. Program Header Table
+        // PHDR 1: PT_INTERP
+        push_u32_le(out, 3 as u32) // p_type: PT_INTERP
+        push_u32_le(out, 4 as u32) // p_flags: PF_R
+        push_u64_le(out, 232 as u64) // p_offset: starts immediately after PHDRs (64 + 3*56 = 232)
+        push_u64_le(out, 0x400000 as u64 + 232 as u64) // p_vaddr
+        push_u64_le(out, 0x400000 as u64 + 232 as u64) // p_paddr
+        push_u64_le(out, 28 as u64) // p_filesz: "/lib64/ld-linux-x86-64.so.2\0" is 28 bytes
+        push_u64_le(out, 28 as u64) // p_memsz
+        push_u64_le(out, 1 as u64) // p_align
+        
+        // PHDR 2: PT_LOAD
+        push_u32_le(out, 1 as u32) // p_type: PT_LOAD
+        push_u32_le(out, 7 as u32) // p_flags: PF_R | PF_W | PF_X
+        push_u64_le(out, 0 as u64) // p_offset: starts at beginning of file
+        push_u64_le(out, 0x400000 as u64) // p_vaddr
+        push_u64_le(out, 0x400000 as u64) // p_paddr
+        push_u64_le(out, 512 as u64 + code_raw_size as u64) // p_filesz
+        push_u64_le(out, 512 as u64 + code_raw_size as u64) // p_memsz
+        push_u64_le(out, 4096 as u64) // p_align
+        
+        // PHDR 3: PT_DYNAMIC
+        push_u32_le(out, 2 as u32) // p_type: PT_DYNAMIC
+        push_u32_le(out, 6 as u32) // p_flags: PF_R | PF_W
+        push_u64_le(out, dynamic_offset as u64) // p_offset
+        push_u64_le(out, 0x400000 as u64 + dynamic_offset as u64) // p_vaddr
+        push_u64_le(out, 0x400000 as u64 + dynamic_offset as u64) // p_paddr
+        push_u64_le(out, dynamic_size as u64) // p_filesz
+        push_u64_le(out, dynamic_size as u64) // p_memsz
+        push_u64_le(out, 8 as u64) // p_align
+        
+        // Write the interpreter path at offset 232
+        let interp_str = "/lib64/ld-linux-x86-64.so.2" as ptr[u8]
+        mut c_i := 0 as i64
+        while c_i < 27:
+            push_byte(out, interp_str[c_i])
+            c_i = c_i + 1
+        push_byte(out, 0 as u8) // null-terminate
+        
+        align_byte_vec(out, 512 as i64)
+    else:
+        // 6. Flags, Header Sizes
+        push_u32_le(out, 0 as u32) // e_flags
+        push_u16_le(out, 64 as u16) // e_ehsize
+        push_u16_le(out, 56 as u16) // e_phentsize
+        push_u16_le(out, 1 as u16) // e_phnum (1 PT_LOAD segment)
+        push_u16_le(out, 0 as u16) // e_shentsize
+        push_u16_le(out, 0 as u16) // e_shnum
+        push_u16_le(out, 0 as u16) // e_shstrndx
+        
+        // 7. Program Header Table (1 entry: PT_LOAD segment)
+        push_u32_le(out, 1 as u32) // p_type: PT_LOAD
+        push_u32_le(out, 5 as u32) // p_flags: PF_R | PF_X
+        push_u64_le(out, 0 as u64) // p_offset: starts at beginning of file
+        push_u64_le(out, 0x400000 as u64) // p_vaddr
+        push_u64_le(out, 0x400000 as u64) // p_paddr
+        push_u64_le(out, 128 as u64 + code_raw_size as u64) // p_filesz: maps entire executable file!
+        push_u64_le(out, 128 as u64 + code_raw_size as u64) // p_memsz
+        push_u64_le(out, 0x1000 as u64) // p_align
+        
+        align_byte_vec(out, 128 as i64)
+
+pub fn axiom_linker_add_input(mut self: ptr[AxiomLinker], file: str):
+    push_linker_str(&self.input_files, file)
+
+pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
+    mut objects := new_parsed_object_ptr_vec()
+    mut format := "coff"
+    mut kernel32_iat_offset := 0 as i64
+    mut iat_offset := 0 as i64
+    mut total_iat_size := 0 as i64
+    
+    // 1. Load and parse all object files
+    mut i := 0 as i64
+    while i < self.input_files.len:
+        let path = self.input_files.data[i]
+        let path_nt = x86_str_to_null_terminated(path)
+        let file = fopen(path_nt as ptr[void], "rb")
+        @free(path_nt)
+        if file == null as ptr[void]:
+            puts("Error: Linker could not open input file: ")
+            puts(path)
+            return false
+            
+        fseek(file, 0, 2)
+        let size = ftell(file)
+        rewind(file)
+        
+        if size <= 4:
+            puts("Error: Input file too small: ")
+            puts(path)
+            fclose(file)
+            return false
+            
+        let buffer = @alloc(size) as ptr[u8]
+        fread(buffer as ptr[void], 1, size, file)
+        fclose(file)
+        
+        mut obj := null as ptr[ParsedObject]
+        if buffer[0] == 0x7F as u8 and buffer[1] == 'E' as u8 and buffer[2] == 'L' as u8 and buffer[3] == 'F' as u8:
+            obj = linker_parse_elf(buffer, size)
+            format = "elf64"
+        elif read_u16_le(buffer, 0) == 0x8664 as u16:
+            obj = linker_parse_coff(buffer, size)
+            format = "coff"
+        else:
+            puts("Error: Unsupported object format in: ")
+            puts(path)
+            @free(buffer)
+            return false
+            
+        @free(buffer)
+        push_parsed_object_ptr(&objects, obj)
+        i = i + 1
+        
+    // 2. Pre-scan defined functions and dynamic imports (to determine base address & stubs early)
+    mut func_names := new_linker_str_vec()
+    
+    i = 0
+    while i < objects.len:
+        let obj = objects.data[i]
+        mut sym_i := 0 as i64
+        while sym_i < obj.symbols.len:
+            let sym = &obj.symbols.data[sym_i]
+            if sym.defined:
+                push_linker_str(&func_names, sym.name)
+            sym_i = sym_i + 1
+        i = i + 1
+        
+    mut kernel32_imports := new_linker_str_vec()
+    mut ax_runtime_imports := new_linker_str_vec()
+    mut ucrtbase_imports := new_linker_str_vec()
+    
+    i = 0
+    while i < objects.len:
+        let obj = objects.data[i]
+        mut r_i := 0 as i64
+        while r_i < obj.relocs.len:
+            let r = &obj.relocs.data[r_i]
+            if r.sym_idx < obj.sym_names.len as u32:
+                let target_name = obj.sym_names.data[r.sym_idx]
+                if target_name != "" and target_name != "main" and target_name != "_AX_main_main_v_v":
+                    mut is_defined := false
+                    mut search := 0 as i64
+                    while search < func_names.len:
+                        if func_names.data[search] == target_name:
+                            is_defined = true
+                            break
+                        search = search + 1
+                    
+                    if not is_defined:
+                        let dll = get_dll_for_symbol(target_name)
+                        if dll == "kernel32.dll":
+                            add_unique_import(&kernel32_imports, target_name)
+                        elif dll == "ax_runtime.dll":
+                            add_unique_import(&ax_runtime_imports, target_name)
+                        else:
+                            add_unique_import(&ucrtbase_imports, target_name)
+            r_i = r_i + 1
+        i = i + 1
+        
+    mut thunk_count := kernel32_imports.len + ax_runtime_imports.len + ucrtbase_imports.len
+    
+    // 3. Section Layout
+    mut merged_code := new_byte_vec()
+    mut base_addr := 0x140001000 as u64 // code starts at 0x140001000 for PE
+    if format == "elf64":
+        if thunk_count > 0:
+            base_addr = 0x400200 as u64 // ELF code starts at 0x400200 if we have 512 bytes headers
+        else:
+            base_addr = 0x400080 as u64 // ELF code starts at 0x400080 if 128 bytes headers
+            
+    mut func_offsets := new_parsed_reloc_vec() // piggyback on ParsedReloc to store offsets
+    
+    i = 0
+    while i < objects.len:
+        let obj = objects.data[i]
+        obj.va = base_addr + merged_code.len as u64
+        
+        mut sym_i := 0 as i64
+        while sym_i < obj.symbols.len:
+            let sym = &obj.symbols.data[sym_i]
+            if sym.defined:
+                mut offset_va := sym.offset
+                if sym.section == 2: // .rdata
+                    offset_va = obj.text.len as u64 + sym.offset
+                push_parsed_reloc(&func_offsets, ParsedReloc(offset: (merged_code.len as u64 + offset_va) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
+            sym_i = sym_i + 1
+            
+        push_bytes(&merged_code, obj.text.data, obj.text.len)
+        push_bytes(&merged_code, obj.rdata.data, obj.rdata.len)
+        i = i + 1
+        
+    mut thunks_offset := (merged_code.len + 15) & ~15
+    mut thunks_rva := 0x1000 as u32 + thunks_offset as u32
+    mut thunks_size := thunk_count * 6
+    
+    mut idata_rva := (0x1000 as i64 + thunks_offset + thunks_size as i64 + 4095) & ~4095
+    
+    // Construct .idata and thunks for COFF
+    mut idata_buf := new_byte_vec()
+    mut dyn_sym_names := new_linker_str_vec()
+    mut dyn_sym_rvas := null as ptr[u32]
+    
+    mut kernel32_hn_rvas := null as ptr[u32]
+    mut ax_runtime_hn_rvas := null as ptr[u32]
+    mut ucrtbase_hn_rvas := null as ptr[u32]
+    
+    if format == "coff" and thunk_count > 0:
+        dyn_sym_rvas = @alloc(thunk_count * 4) as ptr[u32]
+        
+        let has_kernel32 = kernel32_imports.len > 0
+        let has_ax_runtime = ax_runtime_imports.len > 0
+        let has_ucrtbase = ucrtbase_imports.len > 0
+        mut K := 0 as i64
+        if has_kernel32:
+            K = K + 1
+        if has_ax_runtime:
+            K = K + 1
+        if has_ucrtbase:
+            K = K + 1
+            
+        let idt_size = (K + 1) * 20
+        iat_offset = (idt_size + 7) & ~7
+        
+        mut kernel32_iat_offset := 0 as i64
+        mut kernel32_iat_size := 0 as i64
+        mut ax_runtime_iat_offset := iat_offset
+        mut ax_runtime_iat_size := 0 as i64
+        mut ucrtbase_iat_offset := iat_offset
+        mut ucrtbase_iat_size := 0 as i64
+        
+        mut cur_iat_offset := iat_offset
+        
+        if has_kernel32:
+            kernel32_iat_offset = cur_iat_offset
+            kernel32_iat_size = (kernel32_imports.len + 1) * 8
+            cur_iat_offset = cur_iat_offset + kernel32_iat_size
+            
+        if has_ax_runtime:
+            ax_runtime_iat_offset = cur_iat_offset
+            ax_runtime_iat_size = (ax_runtime_imports.len + 1) * 8
+            cur_iat_offset = cur_iat_offset + ax_runtime_iat_size
+            
+        if has_ucrtbase:
+            ucrtbase_iat_offset = cur_iat_offset
+            ucrtbase_iat_size = (ucrtbase_imports.len + 1) * 8
+            cur_iat_offset = cur_iat_offset + ucrtbase_iat_size
+            
+        total_iat_size = cur_iat_offset - iat_offset
+        let ilt_offset = iat_offset + total_iat_size
+        mut cur_ilt_offset := ilt_offset
+        
+        mut kernel32_ilt_offset := 0 as i64
+        mut kernel32_ilt_size := 0 as i64
+        if has_kernel32:
+            kernel32_ilt_offset = cur_ilt_offset
+            kernel32_ilt_size = (kernel32_imports.len + 1) * 8
+            cur_ilt_offset = cur_ilt_offset + kernel32_ilt_size
+            
+        mut ax_runtime_ilt_offset := 0 as i64
+        mut ax_runtime_ilt_size := 0 as i64
+        if has_ax_runtime:
+            ax_runtime_ilt_offset = cur_ilt_offset
+            ax_runtime_ilt_size = (ax_runtime_imports.len + 1) * 8
+            cur_ilt_offset = cur_ilt_offset + ax_runtime_ilt_size
+            
+        mut ucrtbase_ilt_offset := 0 as i64
+        mut ucrtbase_ilt_size := 0 as i64
+        if has_ucrtbase:
+            ucrtbase_ilt_offset = cur_ilt_offset
+            ucrtbase_ilt_size = (ucrtbase_imports.len + 1) * 8
+            cur_ilt_offset = cur_ilt_offset + ucrtbase_ilt_size
+            
+        let total_ilt_size = cur_ilt_offset - ilt_offset
+        let dll_names_offset = ilt_offset + total_ilt_size
+        mut cur_offset := dll_names_offset
+        
+        mut kernel32_name_offset := 0 as i64
+        if has_kernel32:
+            kernel32_name_offset = cur_offset
+            cur_offset = cur_offset + 13
+            
+        mut ax_runtime_name_offset := 0 as i64
+        if has_ax_runtime:
+            ax_runtime_name_offset = cur_offset
+            cur_offset = cur_offset + 15
+            
+        mut ucrtbase_name_offset := 0 as i64
+        if has_ucrtbase:
+            ucrtbase_name_offset = cur_offset
+            cur_offset = cur_offset + 13
+            
+        let hint_name_start_offset = cur_offset
+        
+        // Pre-fill idata_buf with zeros
+        mut zero_i := 0 as i64
+        while zero_i < hint_name_start_offset as i64:
+            push_byte(&idata_buf, 0 as u8)
+            zero_i = zero_i + 1
+            
+        if has_kernel32:
+            kernel32_hn_rvas = @alloc(kernel32_imports.len * 4) as ptr[u32]
+            mut j := 0 as i64
+            while j < kernel32_imports.len:
+                kernel32_hn_rvas[j] = (idata_rva as i64 + idata_buf.len) as u32
+                push_byte(&idata_buf, 0 as u8)
+                push_byte(&idata_buf, 0 as u8)
+                let name = kernel32_imports.data[j]
+                let len = std.string.len(name)
+                let ptr = name as ptr[u8]
+                mut c_i := 0 as i64
+                while c_i < len:
+                    push_byte(&idata_buf, ptr[c_i])
+                    c_i = c_i + 1
+                push_byte(&idata_buf, 0 as u8)
+                if (len + 3) % 2 != 0:
+                    push_byte(&idata_buf, 0 as u8)
+                j = j + 1
+                
+        if has_ax_runtime:
+            ax_runtime_hn_rvas = @alloc(ax_runtime_imports.len * 4) as ptr[u32]
+            mut j := 0 as i64
+            while j < ax_runtime_imports.len:
+                ax_runtime_hn_rvas[j] = (idata_rva as i64 + idata_buf.len) as u32
+                push_byte(&idata_buf, 0 as u8)
+                push_byte(&idata_buf, 0 as u8)
+                let name = ax_runtime_imports.data[j]
+                let len = std.string.len(name)
+                let ptr = name as ptr[u8]
+                mut c_i := 0 as i64
+                while c_i < len:
+                    push_byte(&idata_buf, ptr[c_i])
+                    c_i = c_i + 1
+                push_byte(&idata_buf, 0 as u8)
+                if (len + 3) % 2 != 0:
+                    push_byte(&idata_buf, 0 as u8)
+                j = j + 1
+                
+        if has_ucrtbase:
+            ucrtbase_hn_rvas = @alloc(ucrtbase_imports.len * 4) as ptr[u32]
+            mut j := 0 as i64
+            while j < ucrtbase_imports.len:
+                ucrtbase_hn_rvas[j] = (idata_rva as i64 + idata_buf.len) as u32
+                push_byte(&idata_buf, 0 as u8)
+                push_byte(&idata_buf, 0 as u8)
+                let name = ucrtbase_imports.data[j]
+                let len = std.string.len(name)
+                let ptr = name as ptr[u8]
+                mut c_i := 0 as i64
+                while c_i < len:
+                    push_byte(&idata_buf, ptr[c_i])
+                    c_i = c_i + 1
+                push_byte(&idata_buf, 0 as u8)
+                if (len + 3) % 2 != 0:
+                    push_byte(&idata_buf, 0 as u8)
+                j = j + 1
+                
+        // Write active DLL names
+        if has_kernel32:
+            let name_ptr = "kernel32.dll" as ptr[u8]
+            mut c_i := 0 as i64
+            while c_i < 12:
+                idata_buf.data[kernel32_name_offset as i64 + c_i] = name_ptr[c_i]
+                c_i = c_i + 1
+            idata_buf.data[kernel32_name_offset as i64 + 12] = 0 as u8
+            
+        if has_ax_runtime:
+            let name_ptr = "ax_runtime.dll" as ptr[u8]
+            mut c_i := 0 as i64
+            while c_i < 14:
+                idata_buf.data[ax_runtime_name_offset as i64 + c_i] = name_ptr[c_i]
+                c_i = c_i + 1
+            idata_buf.data[ax_runtime_name_offset as i64 + 14] = 0 as u8
+            
+        if has_ucrtbase:
+            let name_ptr = "ucrtbase.dll" as ptr[u8]
+            mut c_i := 0 as i64
+            while c_i < 12:
+                idata_buf.data[ucrtbase_name_offset as i64 + c_i] = name_ptr[c_i]
+                c_i = c_i + 1
+            idata_buf.data[ucrtbase_name_offset as i64 + 12] = 0 as u8
+            
+        // Write ILT and IAT entries
+        if has_kernel32:
+            mut j := 0 as i64
+            while j < kernel32_imports.len:
+                let val = kernel32_hn_rvas[j] as u64
+                write_buf_u64_le(idata_buf.data, kernel32_iat_offset as i64 + j * 8, val)
+                write_buf_u64_le(idata_buf.data, kernel32_ilt_offset as i64 + j * 8, val)
+                j = j + 1
+            write_buf_u64_le(idata_buf.data, kernel32_iat_offset as i64 + kernel32_imports.len * 8, 0 as u64)
+            write_buf_u64_le(idata_buf.data, kernel32_ilt_offset as i64 + kernel32_imports.len * 8, 0 as u64)
+            
+        if has_ax_runtime:
+            mut j := 0 as i64
+            while j < ax_runtime_imports.len:
+                let val = ax_runtime_hn_rvas[j] as u64
+                write_buf_u64_le(idata_buf.data, ax_runtime_iat_offset as i64 + j * 8, val)
+                write_buf_u64_le(idata_buf.data, ax_runtime_ilt_offset as i64 + j * 8, val)
+                j = j + 1
+            write_buf_u64_le(idata_buf.data, ax_runtime_iat_offset as i64 + ax_runtime_imports.len * 8, 0 as u64)
+            write_buf_u64_le(idata_buf.data, ax_runtime_ilt_offset as i64 + ax_runtime_imports.len * 8, 0 as u64)
+            
+        if has_ucrtbase:
+            mut j := 0 as i64
+            while j < ucrtbase_imports.len:
+                let val = ucrtbase_hn_rvas[j] as u64
+                write_buf_u64_le(idata_buf.data, ucrtbase_iat_offset as i64 + j * 8, val)
+                write_buf_u64_le(idata_buf.data, ucrtbase_ilt_offset as i64 + j * 8, val)
+                j = j + 1
+            write_buf_u64_le(idata_buf.data, ucrtbase_iat_offset as i64 + ucrtbase_imports.len * 8, 0 as u64)
+            write_buf_u64_le(idata_buf.data, ucrtbase_ilt_offset as i64 + ucrtbase_imports.len * 8, 0 as u64)
+            
+        // Write IDT entries
+        mut entry_idx := 0 as i64
+        if has_kernel32:
+            let ilt_rva = (idata_rva as i64 + kernel32_ilt_offset as i64) as u32
+            let name_rva = (idata_rva as i64 + kernel32_name_offset as i64) as u32
+            let iat_rva = (idata_rva as i64 + kernel32_iat_offset as i64) as u32
+            let off = entry_idx * 20
+            write_buf_u32_le(idata_buf.data, off, ilt_rva)
+            write_buf_u32_le(idata_buf.data, off + 4, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 8, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 12, name_rva)
+            write_buf_u32_le(idata_buf.data, off + 16, iat_rva)
+            entry_idx = entry_idx + 1
+            
+        if has_ax_runtime:
+            let ilt_rva = (idata_rva as i64 + ax_runtime_ilt_offset as i64) as u32
+            let name_rva = (idata_rva as i64 + ax_runtime_name_offset as i64) as u32
+            let iat_rva = (idata_rva as i64 + ax_runtime_iat_offset as i64) as u32
+            let off = entry_idx * 20
+            write_buf_u32_le(idata_buf.data, off, ilt_rva)
+            write_buf_u32_le(idata_buf.data, off + 4, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 8, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 12, name_rva)
+            write_buf_u32_le(idata_buf.data, off + 16, iat_rva)
+            entry_idx = entry_idx + 1
+            
+        if has_ucrtbase:
+            let ilt_rva = (idata_rva as i64 + ucrtbase_ilt_offset as i64) as u32
+            let name_rva = (idata_rva as i64 + ucrtbase_name_offset as i64) as u32
+            let iat_rva = (idata_rva as i64 + ucrtbase_iat_offset as i64) as u32
+            let off = entry_idx * 20
+            write_buf_u32_le(idata_buf.data, off, ilt_rva)
+            write_buf_u32_le(idata_buf.data, off + 4, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 8, 0 as u32)
+            write_buf_u32_le(idata_buf.data, off + 12, name_rva)
+            write_buf_u32_le(idata_buf.data, off + 16, iat_rva)
+            entry_idx = entry_idx + 1
+            
+        let off = entry_idx * 20
+        write_buf_u32_le(idata_buf.data, off, 0 as u32)
+        write_buf_u32_le(idata_buf.data, off + 4, 0 as u32)
+        write_buf_u32_le(idata_buf.data, off + 8, 0 as u32)
+        write_buf_u32_le(idata_buf.data, off + 12, 0 as u32)
+        write_buf_u32_le(idata_buf.data, off + 16, 0 as u32)
+        
+        // Pad merged_code to thunks_offset
+        while merged_code.len < thunks_offset:
+            push_byte(&merged_code, 0 as u8)
+            
+        // Append all thunks
+        mut thunk_i := 0 as i64
+        
+        mut k_j := 0 as i64
+        while k_j < kernel32_imports.len:
+            let sym_name = kernel32_imports.data[k_j]
+            let th_rva = thunks_rva + thunk_i as u32 * 6 as u32
+            let iat_rva_sym = idata_rva as u32 + kernel32_iat_offset as u32 + k_j as u32 * 8 as u32
+            let disp32 = (iat_rva_sym as i32 - (th_rva + 6 as u32) as i32) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = th_rva
+            
+            thunk_i = thunk_i + 1
+            k_j = k_j + 1
+            
+        mut ax_j := 0 as i64
+        while ax_j < ax_runtime_imports.len:
+            let sym_name = ax_runtime_imports.data[ax_j]
+            let th_rva = thunks_rva + thunk_i as u32 * 6 as u32
+            let iat_rva_sym = idata_rva as u32 + ax_runtime_iat_offset as u32 + ax_j as u32 * 8 as u32
+            let disp32 = (iat_rva_sym as i32 - (th_rva + 6 as u32) as i32) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = th_rva
+            
+            thunk_i = thunk_i + 1
+            ax_j = ax_j + 1
+            
+        mut u_j := 0 as i64
+        while u_j < ucrtbase_imports.len:
+            let sym_name = ucrtbase_imports.data[u_j]
+            let th_rva = thunks_rva + thunk_i as u32 * 6 as u32
+            let iat_rva_sym = idata_rva as u32 + ucrtbase_iat_offset as u32 + u_j as u32 * 8 as u32
+            let disp32 = (iat_rva_sym as i32 - (th_rva + 6 as u32) as i32) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = th_rva
+            
+            thunk_i = thunk_i + 1
+            u_j = u_j + 1
+
+    // Construct dyn_buf for ELF64
+    mut dyn_buf := new_byte_vec()
+    mut offset_dynamic := 0 as i64
+    mut size_dynamic := 0 as i64
+    if format == "elf64" and thunk_count > 0:
+        dyn_sym_rvas = @alloc(thunk_count * 4) as ptr[u32]
+        
+        mut dyn_imports := new_linker_str_vec()
+        mut dyn_libs := new_linker_str_vec()
+        
+        mut has_ax_lib := false
+        mut has_c_lib := false
+        
+        mut scan_j := 0 as i64
+        while scan_j < kernel32_imports.len:
+            push_linker_str(&dyn_imports, kernel32_imports.data[scan_j])
+            has_ax_lib = true
+            scan_j = scan_j + 1
+            
+        scan_j = 0
+        while scan_j < ax_runtime_imports.len:
+            push_linker_str(&dyn_imports, ax_runtime_imports.data[scan_j])
+            has_ax_lib = true
+            scan_j = scan_j + 1
+            
+        scan_j = 0
+        while scan_j < ucrtbase_imports.len:
+            push_linker_str(&dyn_imports, ucrtbase_imports.data[scan_j])
+            has_c_lib = true
+            scan_j = scan_j + 1
+            
+        if has_ax_lib:
+            push_linker_str(&dyn_libs, "libax_runtime.so")
+        if has_c_lib:
+            push_linker_str(&dyn_libs, "libc.so.6")
+            
+        // 1. Build .dynstr
+        mut dynstr_buf := new_byte_vec()
+        push_byte(&dynstr_buf, 0 as u8)
+        
+        let lib_str_offsets = @alloc(dyn_libs.len * 8) as ptr[u64]
+        mut lib_i := 0 as i64
+        while lib_i < dyn_libs.len:
+            lib_str_offsets[lib_i] = dynstr_buf.len as u64
+            let name = dyn_libs.data[lib_i]
+            let name_len = std.string.len(name)
+            let name_ptr = name as ptr[u8]
+            mut char_i := 0 as i64
+            while char_i < name_len:
+                push_byte(&dynstr_buf, name_ptr[char_i])
+                char_i = char_i + 1
+            push_byte(&dynstr_buf, 0 as u8)
+            lib_i = lib_i + 1
+            
+        let sym_str_offsets = @alloc(dyn_imports.len * 8) as ptr[u64]
+        mut sym_i := 0 as i64
+        while sym_i < dyn_imports.len:
+            sym_str_offsets[sym_i] = dynstr_buf.len as u64
+            let name = dyn_imports.data[sym_i]
+            let name_len = std.string.len(name)
+            let name_ptr = name as ptr[u8]
+            mut char_i := 0 as i64
+            while char_i < name_len:
+                push_byte(&dynstr_buf, name_ptr[char_i])
+                char_i = char_i + 1
+            push_byte(&dynstr_buf, 0 as u8)
+            sym_i = sym_i + 1
+            
+        // 2. Build .dynsym
+        mut dynsym_buf := new_byte_vec()
+        mut zero_idx := 0 as i64
+        while zero_idx < 24:
+            push_byte(&dynsym_buf, 0 as u8)
+            zero_idx = zero_idx + 1
+            
+        sym_i = 0
+        while sym_i < dyn_imports.len:
+            push_u32_le(&dynsym_buf, sym_str_offsets[sym_i] as u32)
+            push_byte(&dynsym_buf, 0x12 as u8) // STB_GLOBAL << 4 | STT_FUNC = 0x12
+            push_byte(&dynsym_buf, 0 as u8)
+            push_u16_le(&dynsym_buf, 0 as u16) // SHN_UNDEF = 0
+            push_u64_le(&dynsym_buf, 0 as u64)
+            push_u64_le(&dynsym_buf, 0 as u64)
+            sym_i = sym_i + 1
+            
+        // 3. Build .hash
+        mut hash_buf := new_byte_vec()
+        push_u32_le(&hash_buf, 1 as u32) // nbucket = 1
+        push_u32_le(&hash_buf, (1 as i64 + dyn_imports.len) as u32) // nchain
+        push_u32_le(&hash_buf, 1 as u32) // bucket[0] = 1
+        push_u32_le(&hash_buf, 0 as u32) // chain[0] = 0
+        mut chain_idx := 2 as i64
+        while chain_idx <= 1 as i64 + dyn_imports.len:
+            if chain_idx == 1 as i64 + dyn_imports.len:
+                push_u32_le(&hash_buf, 0 as u32)
+            else:
+                push_u32_le(&hash_buf, chain_idx as u32)
+            chain_idx = chain_idx + 1
+            
+        // 4. Build .got.plt
+        mut got_plt_buf := new_byte_vec()
+        push_u64_le(&got_plt_buf, 0 as u64) // link to _DYNAMIC
+        push_u64_le(&got_plt_buf, 0 as u64)
+        push_u64_le(&got_plt_buf, 0 as u64)
+        sym_i = 0
+        while sym_i < dyn_imports.len:
+            push_u64_le(&got_plt_buf, 0 as u64)
+            sym_i = sym_i + 1
+            
+        // 5. Calculate offsets of sections inside dyn_buf
+        let offset_dynstr = 0 as i64
+        let size_dynstr = dynstr_buf.len
+        
+        let offset_dynsym = (size_dynstr + 7) & ~7
+        let size_dynsym = dynsym_buf.len
+        
+        let offset_hash = (offset_dynsym + size_dynsym + 7) & ~7
+        let size_hash = hash_buf.len
+        
+        let offset_got_plt = (offset_hash + size_hash + 7) & ~7
+        let size_got_plt = got_plt_buf.len
+        
+        let offset_rela_plt = (offset_got_plt + size_got_plt + 7) & ~7
+        let size_rela_plt = dyn_imports.len * 24
+        
+        offset_dynamic = (offset_rela_plt + size_rela_plt + 7) & ~7
+        size_dynamic = (dyn_libs.len + 14) * 16
+        
+        // 6. Compute virtual addresses
+        let dyn_offset = (thunks_offset + thunks_size + 15) & ~15
+        let dyn_base_va = base_addr + dyn_offset as u64
+        
+        let dynstr_va = dyn_base_va + offset_dynstr as u64
+        let dynsym_va = dyn_base_va + offset_dynsym as u64
+        let hash_va = dyn_base_va + offset_hash as u64
+        let got_plt_va = dyn_base_va + offset_got_plt as u64
+        let rela_plt_va = dyn_base_va + offset_rela_plt as u64
+        let dynamic_va = dyn_base_va + offset_dynamic as u64
+        
+        // 7. Build .rela.plt
+        mut rela_plt_buf := new_byte_vec()
+        sym_i = 0
+        while sym_i < dyn_imports.len:
+            let r_offset = got_plt_va + 24 as u64 + sym_i as u64 * 8 as u64
+            let r_info = ((1 as u64 + sym_i as u64) << 32 as u64) | 7 as u64 // R_X86_64_JUMP_SLOT = 7
+            push_u64_le(&rela_plt_buf, r_offset)
+            push_u64_le(&rela_plt_buf, r_info)
+            push_u64_le(&rela_plt_buf, 0 as u64)
+            sym_i = sym_i + 1
+            
+        // 8. Build .dynamic
+        mut dynamic_buf := new_byte_vec()
+        mut lib_idx := 0 as i64
+        while lib_idx < dyn_libs.len:
+            push_u64_le(&dynamic_buf, 1 as u64) // DT_NEEDED
+            push_u64_le(&dynamic_buf, lib_str_offsets[lib_idx])
+            lib_idx = lib_idx + 1
+            
+        push_u64_le(&dynamic_buf, 2 as u64) // DT_PLTRELSZ
+        push_u64_le(&dynamic_buf, rela_plt_buf.len as u64)
+        
+        push_u64_le(&dynamic_buf, 20 as u64) // DT_PLTREL
+        push_u64_le(&dynamic_buf, 7 as u64) // DT_RELA
+        
+        push_u64_le(&dynamic_buf, 3 as u64) // DT_PLTGOT
+        push_u64_le(&dynamic_buf, got_plt_va)
+        
+        push_u64_le(&dynamic_buf, 4 as u64) // DT_HASH
+        push_u64_le(&dynamic_buf, hash_va)
+        
+        push_u64_le(&dynamic_buf, 5 as u64) // DT_STRTAB
+        push_u64_le(&dynamic_buf, dynstr_va)
+        
+        push_u64_le(&dynamic_buf, 6 as u64) // DT_SYMTAB
+        push_u64_le(&dynamic_buf, dynsym_va)
+        
+        push_u64_le(&dynamic_buf, 10 as u64) // DT_STRSZ
+        push_u64_le(&dynamic_buf, dynstr_buf.len as u64)
+        
+        push_u64_le(&dynamic_buf, 11 as u64) // DT_SYMENT
+        push_u64_le(&dynamic_buf, 24 as u64)
+        
+        push_u64_le(&dynamic_buf, 7 as u64) // DT_RELA
+        push_u64_le(&dynamic_buf, rela_plt_va)
+        
+        push_u64_le(&dynamic_buf, 8 as u64) // DT_RELASZ
+        push_u64_le(&dynamic_buf, rela_plt_buf.len as u64)
+        
+        push_u64_le(&dynamic_buf, 9 as u64) // DT_RELAENT
+        push_u64_le(&dynamic_buf, 24 as u64)
+        
+        push_u64_le(&dynamic_buf, 24 as u64) // DT_BIND_NOW
+        push_u64_le(&dynamic_buf, 1 as u64)
+        
+        push_u64_le(&dynamic_buf, 30 as u64) // DT_FLAGS
+        push_u64_le(&dynamic_buf, 8 as u64) // DF_BIND_NOW
+        
+        push_u64_le(&dynamic_buf, 0 as u64) // DT_NULL
+        push_u64_le(&dynamic_buf, 0 as u64)
+        
+        // 9. Assemble dyn_buf
+        push_bytes(&dyn_buf, dynstr_buf.data, dynstr_buf.len)
+        
+        while dyn_buf.len < offset_dynsym:
+            push_byte(&dyn_buf, 0 as u8)
+        push_bytes(&dyn_buf, dynsym_buf.data, dynsym_buf.len)
+        
+        while dyn_buf.len < offset_hash:
+            push_byte(&dyn_buf, 0 as u8)
+        push_bytes(&dyn_buf, hash_buf.data, hash_buf.len)
+        
+        while dyn_buf.len < offset_got_plt:
+            push_byte(&dyn_buf, 0 as u8)
+        push_bytes(&dyn_buf, got_plt_buf.data, got_plt_buf.len)
+        
+        while dyn_buf.len < offset_rela_plt:
+            push_byte(&dyn_buf, 0 as u8)
+        push_bytes(&dyn_buf, rela_plt_buf.data, rela_plt_buf.len)
+        
+        while dyn_buf.len < offset_dynamic:
+            push_byte(&dyn_buf, 0 as u8)
+        push_bytes(&dyn_buf, dynamic_buf.data, dynamic_buf.len)
+        
+        // 10. Generate ELF PLT stubs inside merged_code
+        // Pad merged_code to thunks_offset
+        while merged_code.len < thunks_offset:
+            push_byte(&merged_code, 0 as u8)
+            
+        mut thunk_i := 0 as i64
+        
+        // Generate for kernel32
+        mut k_j := 0 as i64
+        while k_j < kernel32_imports.len:
+            let sym_name = kernel32_imports.data[k_j]
+            let th_va = base_addr + thunks_offset as u64 + thunk_i as u64 * 6 as u64
+            let got_slot_va = got_plt_va + 24 as u64 + thunk_i as u64 * 8 as u64
+            let disp32 = (got_slot_va - (th_va + 6 as u64)) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = (thunks_offset as u32 + thunk_i as u32 * 6 as u32) + 0x1000 as u32
+            
+            thunk_i = thunk_i + 1
+            k_j = k_j + 1
+            
+        // Generate for ax_runtime
+        mut ax_j := 0 as i64
+        while ax_j < ax_runtime_imports.len:
+            let sym_name = ax_runtime_imports.data[ax_j]
+            let th_va = base_addr + thunks_offset as u64 + thunk_i as u64 * 6 as u64
+            let got_slot_va = got_plt_va + 24 as u64 + thunk_i as u64 * 8 as u64
+            let disp32 = (got_slot_va - (th_va + 6 as u64)) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = (thunks_offset as u32 + thunk_i as u32 * 6 as u32) + 0x1000 as u32
+            
+            thunk_i = thunk_i + 1
+            ax_j = ax_j + 1
+            
+        // Generate for ucrtbase
+        mut u_j := 0 as i64
+        while u_j < ucrtbase_imports.len:
+            let sym_name = ucrtbase_imports.data[u_j]
+            let th_va = base_addr + thunks_offset as u64 + thunk_i as u64 * 6 as u64
+            let got_slot_va = got_plt_va + 24 as u64 + thunk_i as u64 * 8 as u64
+            let disp32 = (got_slot_va - (th_va + 6 as u64)) as u32
+            
+            push_byte(&merged_code, 0xFF as u8)
+            push_byte(&merged_code, 0x25 as u8)
+            push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+            push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+            
+            push_linker_str(&dyn_sym_names, sym_name)
+            dyn_sym_rvas[thunk_i] = (thunks_offset as u32 + thunk_i as u32 * 6 as u32) + 0x1000 as u32
+            
+            thunk_i = thunk_i + 1
+            u_j = u_j + 1
+            
+        // Clean up temporary buffers
+        if dynstr_buf.data != null as ptr[u8]:
+            @free(dynstr_buf.data)
+        if dynsym_buf.data != null as ptr[u8]:
+            @free(dynsym_buf.data)
+        if hash_buf.data != null as ptr[u8]:
+            @free(hash_buf.data)
+        if got_plt_buf.data != null as ptr[u8]:
+            @free(got_plt_buf.data)
+        if rela_plt_buf.data != null as ptr[u8]:
+            @free(rela_plt_buf.data)
+        if dynamic_buf.data != null as ptr[u8]:
+            @free(dynamic_buf.data)
+        @free(lib_str_offsets as ptr[u8])
+        @free(sym_str_offsets as ptr[u8])
+        @free(dyn_imports.data as ptr[u8])
+        @free(dyn_libs.data as ptr[u8])
+
+    // 3. Resolve & Apply Relocations
+    i = 0
+    while i < objects.len:
+        let obj = objects.data[i]
+        mut r_i := 0 as i64
+        while r_i < obj.relocs.len:
+            let r = &obj.relocs.data[r_i]
+            if r.sym_idx >= obj.sym_names.len as u32:
+                r_i = r_i + 1
+                continue
+                
+            let target_name = obj.sym_names.data[r.sym_idx]
+            mut target_offset := -1 as i64
+            
+            mut search := 0 as i64
+            while search < func_names.len:
+                if func_names.data[search] == target_name:
+                    target_offset = func_offsets.data[search].offset
+                    break
+                search = search + 1
+                
+            mut target_va := 0 as u64
+            if target_offset != -1 as i64:
+                target_va = base_addr + target_offset as u64
+            else:
+                // Check if it is a dynamic import
+                mut dyn_search := 0 as i64
+                mut found_dyn := false
+                while dyn_search < dyn_sym_names.len:
+                    if dyn_sym_names.data[dyn_search] == target_name:
+                        target_va = base_addr + (dyn_sym_rvas[dyn_search] - 0x1000 as u32) as u64
+                        found_dyn = true
+                        break
+                    dyn_search = dyn_search + 1
+                    
+                if not found_dyn:
+                    target_va = 0x500000 as u64
+                
+            let rel_offset = (obj.va - base_addr) as i64 + r.offset
+            if rel_offset + 4 as i64 > merged_code.len:
+                r_i = r_i + 1
+                continue
+                
+            if r.is_pc:
+                let pc = base_addr + rel_offset as u64
+                let val = (target_va as i64 - pc as i64 + r.addend) as u32
+                write_u32_le(merged_code.data, rel_offset, val)
+            else:
+                if rel_offset + 8 as i64 <= merged_code.len:
+                    let val = target_va + r.addend as u64
+                    write_u64_le(merged_code.data, rel_offset, val)
+                    
+            r_i = r_i + 1
+        i = i + 1
+        
+    // Find entry point RVA
+    mut entry_rva := 0x1000 as u32
+    mut entry_search := 0 as i64
+    while entry_search < func_names.len:
+        let fn_name = func_names.data[entry_search]
+        if fn_name == "main" or fn_name == "_AX_main_main_v_v":
+            entry_rva = (0x1000 as i64 + func_offsets.data[entry_search].offset) as u32
+            break
+        entry_search = entry_search + 1
+        
+    // 4. Emit Executable
+    let output_path_nt = x86_str_to_null_terminated(self.output_path)
+    let file = fopen(output_path_nt as ptr[void], "wb")
+    @free(output_path_nt)
+    if file == null as ptr[void]:
+        puts("Error: Linker could not write output file")
+        return false
+        
+    if format == "coff":
+        // Align code to FileAlignment (0x200)
+        let orig_code_len = merged_code.len
+        align_byte_vec(&merged_code, 0x200 as i64)
+        
+        let code_raw_size = merged_code.len as u32
+        let idata_raw_size = (idata_buf.len as i64 + 0x1FF) as u32 & 0xFFFFFE00 as u32
+        align_byte_vec(&idata_buf, 0x200 as i64)
+        
+        let iat_rva = idata_rva as u32 + iat_offset as u32
+        let iat_size = total_iat_size as u32
+        
+        mut K_count := 0 as u32
+        if kernel32_imports.len > 0:
+            K_count = K_count + 1 as u32
+        if ax_runtime_imports.len > 0:
+            K_count = K_count + 1 as u32
+        if ucrtbase_imports.len > 0:
+            K_count = K_count + 1 as u32
+        let idt_size = (K_count + 1 as u32) * 20 as u32
+
+        mut pe_headers := new_byte_vec()
+        linker_build_pe_headers(&pe_headers, code_raw_size, idata_raw_size, entry_rva, idata_rva as u32, idata_raw_size, iat_rva, iat_size)
+        
+        fwrite(pe_headers.data as ptr[void], 1, pe_headers.len, file)
+        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        if idata_buf.len > 0:
+            fwrite(idata_buf.data as ptr[void], 1, idata_buf.len, file)
+            
+        @free(pe_headers.data)
+    else:
+        // elf64
+        let entry_va = base_addr + (entry_rva - 0x1000 as u32) as u64
+        mut elf_headers := new_byte_vec()
+        
+        mut dynamic_offset := 0 as u32
+        mut dynamic_size := 0 as u32
+        if dyn_buf.len > 0:
+            dynamic_offset = 512 as u32 + offset_dynamic as u32
+            dynamic_size = size_dynamic as u32
+            
+        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
+        
+        fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
+        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        if dyn_buf.len > 0:
+            fwrite(dyn_buf.data as ptr[void], 1, dyn_buf.len, file)
+            
+        @free(elf_headers.data)
+        
+    fclose(file)
+    
+    // Free structures
+    if merged_code.data != null as ptr[u8]:
+        @free(merged_code.data)
+    if idata_buf.data != null as ptr[u8]:
+        @free(idata_buf.data)
+    if dyn_buf.data != null as ptr[u8]:
+        @free(dyn_buf.data)
+        
+    if dyn_sym_rvas != null as ptr[u32]:
+        @free(dyn_sym_rvas as ptr[u8])
+    if kernel32_hn_rvas != null as ptr[u32]:
+        @free(kernel32_hn_rvas as ptr[u8])
+    if ax_runtime_hn_rvas != null as ptr[u32]:
+        @free(ax_runtime_hn_rvas as ptr[u8])
+    if ucrtbase_hn_rvas != null as ptr[u32]:
+        @free(ucrtbase_hn_rvas as ptr[u8])
+        
+    if kernel32_imports.data != null as ptr[str]:
+        @free(kernel32_imports.data as ptr[u8])
+    if ax_runtime_imports.data != null as ptr[str]:
+        @free(ax_runtime_imports.data as ptr[u8])
+    if ucrtbase_imports.data != null as ptr[str]:
+        @free(ucrtbase_imports.data as ptr[u8])
+    if dyn_sym_names.data != null as ptr[str]:
+        @free(dyn_sym_names.data as ptr[u8])
+        
+    i = 0
+    while i < objects.len:
+        let obj = objects.data[i]
+        if obj.text.data != null as ptr[u8]:
+            @free(obj.text.data)
+        if obj.rdata.data != null as ptr[u8]:
+            @free(obj.rdata.data)
+        if obj.symbols.data != null as ptr[LinkerSymbol]:
+            @free(obj.symbols.data as ptr[u8])
+        if obj.sym_names.data != null as ptr[str]:
+            @free(obj.sym_names.data as ptr[u8])
+        if obj.relocs.data != null as ptr[ParsedReloc]:
+            @free(obj.relocs.data as ptr[u8])
+        @free(obj as ptr[u8])
+        i = i + 1
+        
+    @free(objects.data as ptr[u8])
+    @free(func_names.data as ptr[u8])
+    @free(func_offsets.data as ptr[u8])
+    return true

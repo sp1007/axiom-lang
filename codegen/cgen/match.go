@@ -228,6 +228,9 @@ func (mg *MatchGen) emitArmBodyWithReturning(armChildren []uint32, returning boo
 // EmitMatchExpr emits a match used as an expression.
 // It creates a temporary variable, assigns the result of each arm to it,
 // and returns the variable name.
+// EmitMatchExpr emits a match used as an expression.
+// It creates a temporary variable, assigns the result of each arm to it,
+// and returns the variable name.
 func (mg *MatchGen) EmitMatchExpr(
 	matchNodeIdx uint32,
 	resultTypeID types.TypeID,
@@ -243,28 +246,185 @@ func (mg *MatchGen) EmitMatchExpr(
 		return tempVarName
 	}
 
+	// First child: the discriminant expression
 	discrimExpr := mg.ExprGen.Emit(children[0])
+
+	// Get the type of the discriminant to resolve variant names
+	discrimTypeID := mg.ExprGen.NodeType(children[0])
+
 	mg.W.Linef("switch ((%s).tag) {", discrimExpr)
 
+	// Process match arms (children 1..n)
 	for i := 1; i < len(children); i++ {
 		armNode := mg.Tree.Node(children[i])
 		if armNode.Kind != ast.NodeMatchArm {
 			continue
 		}
+
 		armChildren := mg.Tree.Children(children[i])
-		if len(armChildren) >= 2 {
-			// Pattern
-			patText := mg.ExprGen.Emit(armChildren[0])
-			mg.W.Linef("    case %s:", patText)
-			// Body — last expression is the result value
-			bodyExpr := mg.ExprGen.Emit(armChildren[1])
-			mg.W.Linef("        %s = %s;", tempVarName, bodyExpr)
-			mg.W.Line("        break;")
+		if len(armChildren) < 2 {
+			continue
 		}
+
+		patternNode := mg.Tree.Node(armChildren[0])
+		mg.emitMatchArmWithAssignment(discrimExpr, discrimTypeID, patternNode, armChildren, tempVarName)
 	}
 
-	mg.W.Line("    default: __builtin_unreachable();")
+	// Add exhaustiveness guard
+	mg.W.Line("    default: {")
+	mg.W.Line("        /* unreachable: exhaustiveness checked by type checker */")
+	mg.W.Line("        __builtin_unreachable();")
+	mg.W.Line("    }")
 	mg.W.Line("}")
 
 	return tempVarName
+}
+
+func (mg *MatchGen) emitMatchArmWithAssignment(
+	discrimExpr string,
+	discrimTypeID types.TypeID,
+	patternNode *ast.AstNode,
+	armChildren []uint32,
+	tempVarName string,
+) {
+	entry := mg.Table.Entry(discrimTypeID)
+	baseName := resolveName(entry.NameID, mg.Intern)
+
+	switch patternNode.Kind {
+	case ast.NodeVariantPat:
+		// Variant pattern: match a specific variant
+		variantName := string(mg.Tree.TokenText(patternNode.TokenIdx))
+		mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+
+		// Emit binding: extract payload into a local variable
+		if patternNode.FirstChild != ast.NullIdx {
+			bindingNode := mg.Tree.Node(patternNode.FirstChild)
+			if bindingNode.Kind == ast.NodeBindingPat {
+				bindName := string(mg.Tree.TokenText(bindingNode.TokenIdx))
+				// Find the variant's payload type
+				info := mg.Table.SumInfo(discrimTypeID)
+				for _, v := range info.Variants {
+					vname := resolveName(v.NameID, mg.Intern)
+					if vname == variantName && v.PayloadType != types.TypeUnknown {
+						payloadC := CTypeName(v.PayloadType, mg.Table, mg.Intern, mg.Queue)
+						mg.W.Linef("        %s %s = (%s).data.%s;",
+							payloadC, bindName, discrimExpr, variantName)
+						mg.W.Linef("        (void)%s;", bindName)
+						break
+					}
+				}
+			}
+		}
+
+		// Emit arm body with assignment
+		mg.emitArmBodyWithAssignment(armChildren, tempVarName)
+
+		mg.W.Line("        break;")
+		mg.W.Line("    }")
+
+	case ast.NodeBindingPat:
+		// Binding pattern can be a variant with no payload (e.g. None)
+		symIdx := patternNode.Payload
+		isVariant := false
+		var variantName string
+		if symIdx != 0 && mg.ExprGen.Symbols != nil && int(symIdx) < len(mg.ExprGen.Symbols.Symbols) {
+			sym := mg.ExprGen.Symbols.SymbolAt(symIdx)
+			if sym.Kind == sema.SymVariant {
+				isVariant = true
+				variantName = resolveName(sym.NameID, mg.Intern)
+			}
+		}
+
+		if isVariant {
+			mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+			mg.emitArmBodyWithAssignment(armChildren, tempVarName)
+			mg.W.Line("        break;")
+			mg.W.Line("    }")
+		} else {
+			// Otherwise it's a wildcard / fallback variable binding
+			mg.W.Line("    default: {")
+			bindName := string(mg.Tree.TokenText(patternNode.TokenIdx))
+			if bindName != "_" && bindName != "" {
+				discrimC := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
+				mg.W.Linef("        %s %s = %s;", discrimC, bindName, discrimExpr)
+				mg.W.Linef("        (void)%s;", bindName)
+			}
+			mg.emitArmBodyWithAssignment(armChildren, tempVarName)
+			mg.W.Line("        break;")
+			mg.W.Line("    }")
+		}
+
+	case ast.NodeWildcardPat:
+		// Wildcard: default case
+		mg.W.Line("    default: {")
+		mg.emitArmBodyWithAssignment(armChildren, tempVarName)
+		mg.W.Line("        break;")
+		mg.W.Line("    }")
+
+	case ast.NodeLiteralPat:
+		// Literal pattern: case <literal>:
+		litValue := mg.ExprGen.Emit(armChildren[0])
+		mg.W.Linef("    case %s: {", litValue)
+		mg.emitArmBodyWithAssignment(armChildren, tempVarName)
+		mg.W.Line("        break;")
+		mg.W.Line("    }")
+	}
+}
+
+func (mg *MatchGen) emitArmBodyWithAssignment(armChildren []uint32, tempVarName string) {
+	if len(armChildren) >= 2 {
+		mg.W.Indent()
+		mg.W.Indent()
+		sg := &StmtGen{
+			W:       mg.W,
+			ExprGen: mg.ExprGen,
+			Defers:  NewDeferStack(),
+			Table:   mg.Table,
+			Intern:  mg.Intern,
+			Symbols: mg.ExprGen.Symbols,
+			Tree:    mg.Tree,
+			Queue:   mg.Queue,
+		}
+
+		bodyNodeIdx := armChildren[1]
+		bodyNode := mg.Tree.Node(bodyNodeIdx)
+		if bodyNode.Kind == ast.NodeBlock {
+			mg.EmitBlockWithAssignment(sg, bodyNodeIdx, tempVarName)
+		} else {
+			// It is a single expression.
+			expr := sg.ExprGen.Emit(bodyNodeIdx)
+			if !sg.IsVoidExpr(bodyNodeIdx) {
+				mg.W.Linef("%s = %s;", tempVarName, expr)
+			} else {
+				mg.W.Linef("%s;", expr)
+			}
+		}
+		mg.W.Dedent()
+		mg.W.Dedent()
+	}
+}
+
+func (mg *MatchGen) EmitBlockWithAssignment(sg *StmtGen, nodeIdx uint32, tempVarName string) {
+	node := sg.Tree.Node(nodeIdx)
+	child := node.FirstChild
+	for child != ast.NullIdx {
+		next := sg.Tree.Node(child).NextSibling
+		isLast := next == ast.NullIdx
+		if isLast {
+			childNode := sg.Tree.Node(child)
+			if childNode.Kind == ast.NodeBlock {
+				mg.EmitBlockWithAssignment(sg, child, tempVarName)
+			} else {
+				expr := sg.ExprGen.Emit(child)
+				if !sg.IsVoidExpr(child) {
+					mg.W.Linef("%s = %s;", tempVarName, expr)
+				} else {
+					mg.W.Linef("%s;", expr)
+				}
+			}
+		} else {
+			sg.EmitStmt(child)
+		}
+		child = next
+	}
 }

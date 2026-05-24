@@ -80,6 +80,8 @@ pub fn get_c_type(self: CGenerator, type_id: u32) -> str:
         return "ax_isize"
     if type_id == 16 as u32:
         return "ax_usize"
+    if type_id == 21 as u32:
+        return "AxActorID"
     
     if (type_id as i64) < self.typetable.entries.len:
         let entry = self.typetable.entries.data[type_id]
@@ -102,7 +104,7 @@ pub fn get_c_type(self: CGenerator, type_id: u32) -> str:
     return "void*"
 
 pub fn is_stdlib_func(self: CGenerator, name: str) -> bool:
-    if name == "system" or name == "remove" or name == "fopen" or name == "fclose" or name == "fseek" or name == "ftell" or name == "rewind" or name == "fread" or name == "fwrite" or name == "printf" or name == "puts" or name == "putchar" or name == "getchar" or name == "fgetc" or name == "fgets" or name == "fputc" or name == "fputs" or name == "sprintf" or name == "snprintf" or name == "fprintf" or name == "scanf" or name == "fscanf" or name == "sscanf" or name == "malloc" or name == "free" or name == "realloc" or name == "calloc" or name == "exit" or name == "abort" or name == "memset" or name == "memcpy" or name == "memmove" or name == "println" or name == "print" or name == "eprint" or name == "eprintln" or name == "assert":
+    if name == "system" or name == "remove" or name == "fopen" or name == "fclose" or name == "fseek" or name == "ftell" or name == "rewind" or name == "fread" or name == "fwrite" or name == "printf" or name == "puts" or name == "putchar" or name == "getchar" or name == "fgetc" or name == "fgets" or name == "fputc" or name == "fputs" or name == "sprintf" or name == "snprintf" or name == "fprintf" or name == "scanf" or name == "fscanf" or name == "sscanf" or name == "malloc" or name == "free" or name == "realloc" or name == "calloc" or name == "exit" or name == "abort" or name == "memset" or name == "memcpy" or name == "memmove" or name == "println" or name == "print" or name == "eprint" or name == "eprintln" or name == "assert" or name == "fflush":
         return true
     
     let name_ptr = name as ptr[u8]
@@ -504,6 +506,9 @@ pub fn translate_inst(mut self: CGenerator, f: AirFunc, inst: AirInst):
     elif op == OP_FREE or op == OP_DESTROY:
         fprintf(self.file, "    ax_free(r_%d);\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
+    elif op == OP_SPAWN:
+        fprintf(self.file, "    r_%d = (void*)ax_actor_spawn((AxHandlerFn)r_%d, NULL, 0);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
     elif op == OP_MAKE_REF:
         fprintf(self.file, "    r_%d = ax_make_ref(r_%d);\n", inst.dest as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
@@ -595,7 +600,7 @@ pub fn translate_inst(mut self: CGenerator, f: AirFunc, inst: AirInst):
             else:
                 fputs("    return;\n", self.file)
 
-    elif op == OP_CALL:
+    elif op == OP_CALL or op == OP_SYSCALL:
         // Handle argument list
         let arg_start = inst.src2
         let arg_count = f.extras.data[arg_start as i64]
@@ -603,12 +608,14 @@ pub fn translate_inst(mut self: CGenerator, f: AirFunc, inst: AirInst):
         mut is_extern := false
         
         // Print callee
-        if inst.src1 == 0 as u32:
+        mut fn_name := "func"
+        mut is_allocated := false
+        if op == OP_SYSCALL:
+            fn_name = "ax_syscall"
+        elif inst.src1 == 0 as u32:
             // Direct function call
             // We find the function name from type_id (which is symbol idx in this case or typetable extra)
-            mut fn_name := "func"
             let sym_idx = inst.type_id as u32
-            mut is_allocated := false
             if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                 fn_name = self.get_mangled_name_by_sym(sym_idx)
                 let original_name = self.pool.get(self.symtable.symbols.data[sym_idx as i64].name_id)

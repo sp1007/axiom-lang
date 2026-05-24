@@ -20,9 +20,24 @@ func main() {
 	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
 	airPath := filepath.Join(workspaceDir, "bootstrap/stage1/air.ax")
 	airBuilderPath := filepath.Join(workspaceDir, "bootstrap/stage1/air_builder.ax")
+	x86RegsPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_regs.ax")
+	x86SelectorPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_selector.ax")
+	x86RegallocPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_regalloc.ax")
+	x86AsmEmitterPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_asm_emitter.ax")
+	x86ModrmPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_modrm.ax")
+	x86EncodingPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_encoding.ax")
+	x86EmitterPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_emitter.ax")
+	x86CoffPath := filepath.Join(workspaceDir, "bootstrap/stage1/x86_coff.ax")
+	x86Elf64Path := filepath.Join(workspaceDir, "bootstrap/stage1/x86_elf64.ax")
+	linkerPath := filepath.Join(workspaceDir, "bootstrap/stage1/linker.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
 
-	paths := []string{tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath, airPath, airBuilderPath, mainPath}
+	paths := []string{
+		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typecheckPath,
+		airPath, airBuilderPath, x86RegsPath, x86SelectorPath, x86RegallocPath, x86AsmEmitterPath,
+		x86ModrmPath, x86EncodingPath, x86EmitterPath, x86Elf64Path, x86CoffPath,
+		linkerPath, mainPath,
+	}
 	
 	var imports []string
 	var body []string

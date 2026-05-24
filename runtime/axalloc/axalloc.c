@@ -85,3 +85,7 @@ void** std_mem_alloc_get_free_pool(void) {
     return &axiom_free_segment_pool;
 }
 
+void ax_segment_manager_init(void) {
+    // Stub for MVP allocator
+}
+

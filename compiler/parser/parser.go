@@ -215,6 +215,8 @@ func (p *Parser) parseTopLevelDecl() uint32 {
 		return p.parseConstDecl(false)
 	case lexer.TokenExtern:
 		return p.parseExternDecl(false)
+	case lexer.TokenLet, lexer.TokenMut:
+		return p.parseVarDecl()
 	default:
 		p.errorf(tok, "expected declaration, got %s", tok.Kind)
 		p.syncToTopLevel()
@@ -242,6 +244,10 @@ func (p *Parser) parsePubDecl() uint32 {
 		return p.parseConstDecl(true)
 	case lexer.TokenExtern:
 		return p.parseExternDecl(true)
+	case lexer.TokenLet, lexer.TokenMut:
+		decl := p.parseVarDecl()
+		p.tree.SetFlags(decl, ast.FlagIsPub)
+		return decl
 	default:
 		p.errorf(tok, "expected declaration after 'pub', got %s", tok.Kind)
 		p.syncToTopLevel()
@@ -918,9 +924,27 @@ func (p *Parser) parseStmt() uint32 {
 		return p.parseUnsafeBlock()
 	case lexer.TokenIn:
 		return p.parseArenaBlock()
+	case lexer.TokenBreak:
+		return p.parseBreakStmt()
+	case lexer.TokenContinue:
+		return p.parseContinueStmt()
 	default:
 		return p.parseAssignOrExprStmt()
 	}
+}
+
+func (p *Parser) parseBreakStmt() uint32 {
+	tok, _ := p.expect(lexer.TokenBreak)
+	node := p.tree.AddNode(ast.NodeBreakStmt, p.tokenIdx(tok))
+	p.expectNewline()
+	return node
+}
+
+func (p *Parser) parseContinueStmt() uint32 {
+	tok, _ := p.expect(lexer.TokenContinue)
+	node := p.tree.AddNode(ast.NodeContinueStmt, p.tokenIdx(tok))
+	p.expectNewline()
+	return node
 }
 
 // parseVarDecl parses `let IDENT [: TypeExpr] = Expr NEWLINE` or `mut ...`.
@@ -1330,7 +1354,7 @@ func (p *Parser) parseTypeExpr() uint32 {
 			}
 		}
 		p.expect(lexer.TokenRParen)
-		if p.check(lexer.TokenArrow) {
+		if p.checkRaw(lexer.TokenArrow) {
 			p.consume()
 			ret := p.parseTypeExpr()
 			if ret != 0 {

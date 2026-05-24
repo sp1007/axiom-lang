@@ -2,8 +2,19 @@
 //
 // Unit tests for AXIOM-native platform Event Loop Reactor.
 
-extern "C" fn puts(s: str) -> i32
-extern "C" fn printf(fmt: str, a1: i64) -> i32
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+fn test_print_str(s: str):
+    if @compiler_intrinsic("is_windows"):
+        let h = GetStdHandle(0xFFFFFFF5 as u32)
+        mut written := 0 as u32
+        WriteFile(h, s as ptr[u8], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
+    else:
+        syscall(1 as u64, 1 as u64, s as ptr[u8] as u64, std.string.len(s) as u64, 0 as u64, 0 as u64, 0 as u64)
 
 // FFI to check future completion from C runtime
 extern "C" fn ax_future_free(f: ptr[void])
@@ -36,7 +47,7 @@ fn test_ioloop_lifecycle():
 
     ax_future_free(mock_fut)
     loop_inst.destroy()
-    puts("  PASS: test_ioloop_lifecycle")
+    test_print_str("  PASS: test_ioloop_lifecycle\n")
 
 fn test_async_io_simulation():
     mut loop_inst := ioloop(backend_fd: 0, running: 0, events_processed: 0, pending_count: 0)
@@ -78,10 +89,10 @@ fn test_async_io_simulation():
     ax_future_free(fut_read)
     ax_future_free(fut_write)
     loop_inst.destroy()
-    puts("  PASS: test_async_io_simulation")
+    test_print_str("  PASS: test_async_io_simulation\n")
 
 pub fn main():
-    puts("Running AXIOM-native Reactor unit tests...")
+    test_print_str("Running AXIOM-native Reactor unit tests...\n")
     test_ioloop_lifecycle()
     test_async_io_simulation()
-    puts("All AXIOM-native Reactor tests passed!")
+    test_print_str("All AXIOM-native Reactor tests passed!\n")

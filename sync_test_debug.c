@@ -71,6 +71,8 @@ struct ax__AX_std_WriteGuard_i32 {
 
 
 /* Function prototypes */
+ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
+static void ax_test_print_str(ax_string s);
 static void ax_test_atomic_operations(void);
 static void ax_test_mutex_operations(void);
 static void ax_test_rwlock_operations(void);
@@ -102,6 +104,18 @@ void ax__AX_std_WriteGuard_i32_set(struct ax__AX_std_WriteGuard_i32 self, ax_i32
 void ax__AX_std_WriteGuard_i32_unlock(struct ax__AX_std_WriteGuard_i32 self);
 
 
+static void ax_test_print_str(ax_string s) {
+    if (1) {
+        void* h = GetStdHandle(((ax_u32)(0xFFFFFFF5)));
+        ax_u32 written = ((ax_u32)(0));
+        WriteFile(h, ((ax_u8*)(s.ptr)), ((ax_u32)(ax_str_len(s))), ((void*)(&(written))), ((void*)(NULL)));
+    } else {
+        {
+            syscall(((ax_u64)(1)), ((ax_u64)(1)), ((ax_u64)(((ax_u8*)(s.ptr)))), ((ax_u64)(ax_str_len(s))), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+        }
+    }
+}
+
 static void ax_test_atomic_operations(void) {
     struct ax__AX_std_Atomic_i32 at = ax_AX_std_atomic_new_i32(((ax_i32)(10)));
     ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 10), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 10)"));
@@ -116,7 +130,7 @@ static void ax_test_atomic_operations(void) {
     ax_bool not_swapped = ax__AX_std_Atomic_i32_compare_and_swap(&(at), ((ax_i32)(30)), ((ax_i32)(50)));
     ax_assert_axiom((not_swapped == AX_FALSE), AX_STR("(not_swapped == AX_FALSE)"));
     ax_assert_axiom((ax__AX_std_Atomic_i32_load(&(at)) == 40), AX_STR("(ax__AX_std_Atomic_i32_load(&(at)) == 40)"));
-    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_atomic_operations", .len=30}).ptr);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  PASS: test_atomic_operations\n", .len=31});
 }
 
 static void ax_test_mutex_operations(void) {
@@ -131,7 +145,7 @@ static void ax_test_mutex_operations(void) {
     struct ax__AX_std_MutexGuard_i32 g = ax_AX_std_unwrap__AX_std_MutexGuard_i32(guard_opt);
     ax_assert_axiom((ax__AX_std_MutexGuard_i32_get(g) == 200), AX_STR("(ax__AX_std_MutexGuard_i32_get(g) == 200)"));
     ax__AX_std_MutexGuard_i32_unlock(g);
-    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_mutex_operations", .len=29}).ptr);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  PASS: test_mutex_operations\n", .len=30});
 }
 
 static void ax_test_rwlock_operations(void) {
@@ -147,15 +161,15 @@ static void ax_test_rwlock_operations(void) {
     ax__AX_std_WriteGuard_i32_set(w, ((ax_i32)(1000)));
     ax_assert_axiom((ax__AX_std_WriteGuard_i32_get(w) == 1000), AX_STR("(ax__AX_std_WriteGuard_i32_get(w) == 1000)"));
     ax__AX_std_WriteGuard_i32_unlock(w);
-    puts((const char*)((ax_string){.ptr=(const ax_u8*)"  PASS: test_rwlock_operations", .len=30}).ptr);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  PASS: test_rwlock_operations\n", .len=31});
 }
 
 ax_i32 ax_main_usr(void) {
-    puts((const char*)((ax_string){.ptr=(const ax_u8*)"Running AXIOM-native synchronization unit tests...", .len=50}).ptr);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"Running AXIOM-native synchronization unit tests...\n", .len=51});
     ax_test_atomic_operations();
     ax_test_mutex_operations();
     ax_test_rwlock_operations();
-    return puts((const char*)((ax_string){.ptr=(const ax_u8*)"All AXIOM-native synchronization tests passed!", .len=46}).ptr);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"All AXIOM-native synchronization tests passed!\n", .len=47});
     return 0;
 }
 

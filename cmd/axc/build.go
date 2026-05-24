@@ -290,10 +290,28 @@ func runBuild(args []string) int {
 		backend := native.NewNativeBackend(target)
 		backend.Pool = intern
 		backend.Table = table
-		objBytes, err := backend.Compile(mod)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "axc: native codegen error: %v\n", err)
-			return 1
+
+		// Check if the user requested direct Assembly text output (.asm, .s, .nasm, .fasm, .masm, .winasm)
+		if strings.HasSuffix(outputPath, ".asm") || strings.HasSuffix(outputPath, ".s") ||
+			strings.HasSuffix(outputPath, ".nasm") || strings.HasSuffix(outputPath, ".fasm") ||
+			strings.HasSuffix(outputPath, ".masm") || strings.HasSuffix(outputPath, ".winasm") {
+			format := "nasm"
+			if strings.HasSuffix(outputPath, ".fasm") {
+				format = "fasm"
+			} else if strings.HasSuffix(outputPath, ".masm") || strings.HasSuffix(outputPath, ".winasm") {
+				format = "winasm"
+			}
+			asmStr, err := backend.CompileAsm(mod, format)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "axc: assembly codegen error: %v\n", err)
+				return 1
+			}
+			if err := os.WriteFile(outputPath, []byte(asmStr), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "axc: cannot write assembly file: %v\n", err)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "axc: built assembly file %s (format: %s, target: %s)\n", outputPath, format, targetTriple)
+			return 0
 		}
 
 		// Write object file to a temporary file
@@ -309,9 +327,50 @@ func runBuild(args []string) int {
 			objExt = ".obj"
 		}
 		tmpObjPath := filepath.Join(tmpDir, "output"+objExt)
-		if err := os.WriteFile(tmpObjPath, objBytes, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "axc: cannot write temporary object file: %v\n", err)
-			return 1
+
+		// Try to compile via auto-detected assembler if available
+		asmPath, format, objFmt := detectAssembler()
+		assembledSuccessfully := false
+
+		if asmPath != "" {
+			fmt.Fprintf(os.Stderr, "axc: detected assembler %s (%s format), compiling via direct assembly...\n", format, format)
+			asmStr, err := backend.CompileAsm(mod, format)
+			if err == nil {
+				tmpAsmPath := filepath.Join(tmpDir, "output.asm")
+				if err := os.WriteFile(tmpAsmPath, []byte(asmStr), 0644); err == nil {
+					var asmCmd *exec.Cmd
+					if format == "nasm" {
+						asmCmd = exec.Command(asmPath, "-f", objFmt, tmpAsmPath, "-o", tmpObjPath)
+					} else if format == "fasm" {
+						asmCmd = exec.Command(asmPath, tmpAsmPath, tmpObjPath)
+					} else if format == "winasm" {
+						asmCmd = exec.Command(asmPath, "/c", "/Fo"+tmpObjPath, tmpAsmPath)
+					}
+
+					if asmCmd != nil {
+						var asmStderr bytes.Buffer
+						asmCmd.Stderr = &asmStderr
+						if err := asmCmd.Run(); err == nil {
+							assembledSuccessfully = true
+						} else {
+							fmt.Fprintf(os.Stderr, "axc: warning: assembler failed: %v\n%s\nfalling back to direct object emission...\n", err, asmStderr.String())
+						}
+					}
+				}
+			}
+		}
+
+		if !assembledSuccessfully {
+			// Fallback: compile directly to PE/COFF or ELF64 object bytes
+			objBytes, err := backend.Compile(mod)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "axc: native codegen error: %v\n", err)
+				return 1
+			}
+			if err := os.WriteFile(tmpObjPath, objBytes, 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "axc: cannot write temporary object file: %v\n", err)
+				return 1
+			}
 		}
 
 		// Link object file with the runtime
@@ -336,6 +395,14 @@ func runBuild(args []string) int {
 				filepath.Join(runtimeDir, "ax_math.c"),
 				filepath.Join(runtimeDir, "ax_print.c"),
 				filepath.Join(runtimeDir, "ax_string_ops.c"),
+				filepath.Join(runtimeDir, "actor", "actor.c"),
+				filepath.Join(runtimeDir, "actor", "async.c"),
+				filepath.Join(runtimeDir, "actor", "ioloop.c"),
+				filepath.Join(runtimeDir, "actor", "isolated.c"),
+				filepath.Join(runtimeDir, "actor", "msgqueue.c"),
+				filepath.Join(runtimeDir, "actor", "runtime_init.c"),
+				filepath.Join(runtimeDir, "actor", "scheduler.c"),
+				filepath.Join(runtimeDir, "actor", "supervisor.c"),
 			}
 		} else {
 			// GCC / Clang link arguments
@@ -350,6 +417,14 @@ func runBuild(args []string) int {
 				filepath.Join(runtimeDir, "ax_math.c"),
 				filepath.Join(runtimeDir, "ax_print.c"),
 				filepath.Join(runtimeDir, "ax_string_ops.c"),
+				filepath.Join(runtimeDir, "actor", "actor.c"),
+				filepath.Join(runtimeDir, "actor", "async.c"),
+				filepath.Join(runtimeDir, "actor", "ioloop.c"),
+				filepath.Join(runtimeDir, "actor", "isolated.c"),
+				filepath.Join(runtimeDir, "actor", "msgqueue.c"),
+				filepath.Join(runtimeDir, "actor", "runtime_init.c"),
+				filepath.Join(runtimeDir, "actor", "scheduler.c"),
+				filepath.Join(runtimeDir, "actor", "supervisor.c"),
 			}
 		}
 
@@ -405,6 +480,14 @@ func runBuild(args []string) int {
 			filepath.Join(runtimeDir, "ax_math.c"),
 			filepath.Join(runtimeDir, "ax_print.c"),
 			filepath.Join(runtimeDir, "ax_string_ops.c"),
+			filepath.Join(runtimeDir, "actor", "actor.c"),
+			filepath.Join(runtimeDir, "actor", "async.c"),
+			filepath.Join(runtimeDir, "actor", "ioloop.c"),
+			filepath.Join(runtimeDir, "actor", "isolated.c"),
+			filepath.Join(runtimeDir, "actor", "msgqueue.c"),
+			filepath.Join(runtimeDir, "actor", "runtime_init.c"),
+			filepath.Join(runtimeDir, "actor", "scheduler.c"),
+			filepath.Join(runtimeDir, "actor", "supervisor.c"),
 		},
 		Debug: true,
 	}); err != nil {
@@ -447,4 +530,41 @@ func findRuntimeDir() string {
 // isWindows returns true if running on Windows.
 func isWindows() bool {
 	return os.PathSeparator == '\\'
+}
+
+// detectAssembler finds an available assembler (nasm, fasm, or ml64) on the system.
+// Returns the assembler executable path, the assembly format, and the object format.
+func detectAssembler() (string, string, string) {
+	// Look up nasm first
+	if path, err := exec.LookPath("nasm"); err == nil {
+		if isWindows() {
+			return path, "nasm", "win64"
+		}
+		return path, "nasm", "elf64"
+	}
+	// Try standard Windows user location for NASM (installed by winget)
+	userHome, err := os.UserHomeDir()
+	if err == nil {
+		winHomeNasm := filepath.Join(userHome, "AppData\\Local\\bin\\NASM\\nasm.exe")
+		if _, err := os.Stat(winHomeNasm); err == nil {
+			return winHomeNasm, "nasm", "win64"
+		}
+	}
+
+	// Try fasm next
+	if path, err := exec.LookPath("fasm"); err == nil {
+		if isWindows() {
+			return path, "fasm", "win64"
+		}
+		return path, "fasm", "elf64"
+	}
+
+	// Try ml64 (MASM) on Windows
+	if isWindows() {
+		if path, err := exec.LookPath("ml64"); err == nil {
+			return path, "winasm", "win64"
+		}
+	}
+
+	return "", "", ""
 }

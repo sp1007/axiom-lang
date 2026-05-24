@@ -21,7 +21,9 @@ const (
 
 // InliningPass implements OptPass for function inlining.
 type InliningPass struct {
-	Threshold int // max callee instructions (0 = use default)
+	Threshold      int     // max callee instructions (0 = use default 30)
+	MaxModuleBloat float64 // max total module instructions growth factor (e.g. 1.5, 0 = use default 2.0)
+	MaxCallerLimit int     // max total instructions allowed in a caller (0 = use default 150)
 }
 
 func (p *InliningPass) Name() string { return "inline" }
@@ -33,58 +35,125 @@ func (p *InliningPass) threshold() int {
 	return DefaultInlineThreshold
 }
 
-// Run scans all functions for OpCall sites and inlines eligible callees.
+// Run performs bottom-up Call-Graph inlining with code-bloat limit checks.
 func (p *InliningPass) Run(mod *air.AirModule) bool {
-	if len(mod.Funcs) == 0 {
+	numFuncs := len(mod.Funcs)
+	if numFuncs == 0 {
 		return false
 	}
 
-	// Build function index: NameID → function index
-	funcByName := make(map[uint32]int, len(mod.Funcs))
+	// 1. Build function index: NameID → function index
+	funcIdxByName := make(map[uint32]int, numFuncs)
 	for i := range mod.Funcs {
-		funcByName[mod.Funcs[i].Name] = i
+		funcIdxByName[mod.Funcs[i].Name] = i
 	}
 
+	// 2. Build Call-Graph (caller -> callees)
+	callees := make([][]int, numFuncs)
+	for i := 0; i < numFuncs; i++ {
+		fn := &mod.Funcs[i]
+		seenCallees := make(map[int]bool)
+		for _, inst := range fn.Insts {
+			if inst.Opcode == air.OpCall {
+				if calleeIdx, exists := funcIdxByName[inst.Src1]; exists {
+					if !seenCallees[calleeIdx] {
+						seenCallees[calleeIdx] = true
+						callees[i] = append(callees[i], calleeIdx)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Topological Sort (Bottom-Up: callees before callers)
+	visited := make([]bool, numFuncs)
+	onStack := make([]bool, numFuncs)
+	order := make([]int, 0, numFuncs)
+
+	var visit func(u int)
+	visit = func(u int) {
+		if onStack[u] {
+			return // recursion cycle detected, avoid infinite loop
+		}
+		if visited[u] {
+			return
+		}
+		onStack[u] = true
+		for _, v := range callees[u] {
+			visit(v)
+		}
+		onStack[u] = false
+		visited[u] = true
+		order = append(order, u)
+	}
+
+	for i := 0; i < numFuncs; i++ {
+		if !visited[i] {
+			visit(i)
+		}
+	}
+
+	// 4. Calculate initial and target code-bloat limits
+	initialTotalCost := 0
+	for i := 0; i < numFuncs; i++ {
+		initialTotalCost += costOf(&mod.Funcs[i])
+	}
+
+	bloatFactor := p.MaxModuleBloat
+	if bloatFactor <= 0 {
+		bloatFactor = 2.0
+	}
+	maxModuleCost := int(float64(initialTotalCost) * bloatFactor)
+	currentTotalCost := initialTotalCost
+
+	callerLimit := p.MaxCallerLimit
+	if callerLimit <= 0 {
+		callerLimit = 150
+	}
+
+	// 5. Bottom-up inlining
 	changed := false
-	for fi := range mod.Funcs {
+	for _, fi := range order {
 		caller := &mod.Funcs[fi]
-		if inlineCalls(caller, mod, funcByName, p.threshold()) {
+
+		// Scan and inline calls inside the caller
+		for i := 0; i < len(caller.Insts); i++ {
+			inst := &caller.Insts[i]
+			if inst.Opcode != air.OpCall {
+				continue
+			}
+
+			calleeIdx, exists := funcIdxByName[inst.Src1]
+			if !exists {
+				continue
+			}
+
+			callee := &mod.Funcs[calleeIdx]
+			if !isInlineable(callee, caller, p.threshold()) {
+				continue
+			}
+
+			calleeCost := costOf(callee)
+			callerCost := costOf(caller)
+
+			// Code-bloat limit checks
+			if callerCost+calleeCost-1 > callerLimit {
+				continue // Caller would exceed budget
+			}
+			if currentTotalCost+calleeCost-1 > maxModuleCost {
+				continue // Module total size would exceed budget
+			}
+
+			// Perform inlining
+			inlineCallSite(caller, uint32(i), callee)
+			currentTotalCost += calleeCost - 1
 			changed = true
+
+			// Decrement index to re-scan at current position for newly inlined calls
+			i--
 		}
 	}
-	return changed
-}
 
-// inlineCalls scans a single function for inlineable call sites.
-func inlineCalls(caller *air.AirFunc, mod *air.AirModule, funcByName map[uint32]int, threshold int) bool {
-	changed := false
-
-	for i := 0; i < len(caller.Insts); i++ {
-		inst := &caller.Insts[i]
-		if inst.Opcode != air.OpCall {
-			continue
-		}
-
-		// Src1 holds the callee NameID (or function index in extras)
-		calleeNameID := inst.Src1
-		calleeIdx, ok := funcByName[calleeNameID]
-		if !ok {
-			continue // unknown function (extern, function pointer)
-		}
-
-		callee := &mod.Funcs[calleeIdx]
-		if !isInlineable(callee, caller, threshold) {
-			continue
-		}
-
-		// Inline the callee at this call site
-		inlineCallSite(caller, uint32(i), callee)
-		changed = true
-
-		// After inlining, the instruction list has changed.
-		// Restart scan from the current position to avoid skipping.
-		// (The inlined code replaces the OpCall, so we re-check the same index.)
-	}
 	return changed
 }
 

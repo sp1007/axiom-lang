@@ -1,0 +1,358 @@
+// bootstrap/stage1/x86_emitter.ax
+// Binary machine code emitter for x86-64 in self-hosted AXIOM.
+
+pub const RELOC_PC32:  u8 = 0
+pub const RELOC_ABS64: u8 = 1
+pub const RELOC_PLT32: u8 = 2
+
+pub struct Relocation:
+    pub offset: i64
+    pub kind: u8
+    pub padding1: u8
+    pub padding2: u16
+    pub sym_name: u32 // Interned symbol name index
+    pub addend: i64
+
+pub struct RelocationVec:
+    pub data: ptr[Relocation]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_relocation_vec() -> RelocationVec:
+    return RelocationVec(data: null as ptr[Relocation], len: 0, cap: 0)
+
+pub fn push_reloc(mut self: ptr[RelocationVec], r: Relocation):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 24) as ptr[Relocation]
+        if self.data != null as ptr[Relocation]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = r
+    self.len = self.len + 1
+
+pub struct Fixup:
+    pub offset: i64
+    pub label_id: u32
+    pub inst_size: i32
+
+pub struct FixupVec:
+    pub data: ptr[Fixup]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_fixup_vec() -> FixupVec:
+    return FixupVec(data: null as ptr[Fixup], len: 0, cap: 0)
+
+pub fn push_fixup(mut self: ptr[FixupVec], f: Fixup):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 16) as ptr[Fixup]
+        if self.data != null as ptr[Fixup]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = f
+    self.len = self.len + 1
+
+pub struct LabelMap:
+    pub keys: ptr[u32]
+    pub values: ptr[i64]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_label_map() -> LabelMap:
+    return LabelMap(keys: null as ptr[u32], values: null as ptr[i64], len: 0, cap: 0)
+
+pub fn label_map_set(mut self: ptr[LabelMap], key: u32, val: i64):
+    mut i := 0 as i64
+    while i < self.len:
+        if self.keys[i] == key:
+            self.values[i] = val
+            return
+        i = i + 1
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_keys = @alloc(new_cap * 4) as ptr[u32]
+        let new_values = @alloc(new_cap * 8) as ptr[i64]
+        if self.keys != null as ptr[u32]:
+            @memcpy(new_keys as ptr[u8], self.keys as ptr[u8], self.len * 4)
+            @memcpy(new_values as ptr[u8], self.values as ptr[u8], self.len * 8)
+            @free(self.keys as ptr[u8])
+            @free(self.values as ptr[u8])
+        self.keys = new_keys
+        self.values = new_values
+        self.cap = new_cap
+    self.keys[self.len] = key
+    self.values[self.len] = val
+    self.len = self.len + 1
+
+pub fn label_map_get(self: ptr[LabelMap], key: u32, out_val: ptr[i64]) -> bool:
+    mut i := 0 as i64
+    while i < self.len:
+        if self.keys[i] == key:
+            out_val[0] = self.values[i]
+            return true
+        i = i + 1
+    return false
+
+pub struct MachEmitter:
+    pub code: ByteVec
+    pub relocs: RelocationVec
+    pub labels: LabelMap
+    pub fixups: FixupVec
+
+pub fn new_mach_emitter() -> MachEmitter:
+    return MachEmitter(
+        code: new_byte_vec(),
+        relocs: new_relocation_vec(),
+        labels: new_label_map(),
+        fixups: new_fixup_vec()
+    )
+
+pub fn free_mach_emitter(mut self: ptr[MachEmitter]):
+    if self.code.data != null as ptr[u8]:
+        @free(self.code.data)
+    if self.relocs.data != null as ptr[Relocation]:
+        @free(self.relocs.data as ptr[u8])
+    if self.labels.keys != null as ptr[u32]:
+        @free(self.labels.keys as ptr[u8])
+    if self.labels.values != null as ptr[i64]:
+        @free(self.labels.values as ptr[u8])
+    if self.fixups.data != null as ptr[Fixup]:
+        @free(self.fixups.data as ptr[u8])
+
+pub fn emitter_resolve_reg(op: MachOperand, allocs: ptr[RegAllocation]) -> u8:
+    if op.kind == OPND_PHYS:
+        return op.phys
+    elif op.kind == OPND_VREG:
+        let r = op.vreg
+        let alloc = allocs[r]
+        return alloc.phys
+    return REG_NONE
+
+pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation]):
+    let op = inst.op
+    let buf = &e.code
+    
+    if op == MACH_NOP:
+        x86_encode_nop(buf)
+    elif op == MACH_LABEL:
+        label_map_set(&e.labels, inst.dst.label, buf.len)
+    elif op == MACH_RET:
+        x86_encode_ret(buf)
+    elif op == MACH_MOV:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        if dst != REG_NONE and src != REG_NONE:
+            x86_encode_mov_rr(dst, src, buf)
+    elif op == MACH_MOV_IMM:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if dst != REG_NONE:
+            let imm = inst.src1.imm
+            if inst.src1.vreg == 1 as u32: // Symbol index!
+                let offset = buf.len + 2 as i64
+                push_reloc(&e.relocs, Relocation(
+                    offset: offset,
+                    kind: RELOC_ABS64,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: imm as u32,
+                    addend: 0 as i64
+                ))
+                x86_encode_mov_ri64(dst, 0 as i64, buf)
+            elif inst.src1.vreg == 2 as u32: // String literal!
+                let offset = buf.len + 3 as i64
+                let sym_val = 0xE0000000 as i64 + imm
+                push_reloc(&e.relocs, Relocation(
+                    offset: offset,
+                    kind: RELOC_PC32,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: sym_val as u32,
+                    addend: -4 as i64
+                ))
+                x86_encode_lea_rip(dst, 0 as i32, buf)
+
+            else:
+                if imm >= -2147483648 as i64 and imm <= 2147483647 as i64:
+                    x86_encode_mov_ri(dst, imm as i32, buf)
+                else:
+                    x86_encode_mov_ri64(dst, imm, buf)
+
+    elif op == MACH_XOR_ZERO:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if dst != REG_NONE:
+            x86_encode_xor_zero(dst, buf)
+    elif op == MACH_ADD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_add_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_add_rr(dst, src, buf)
+    elif op == MACH_SUB:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_sub_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_sub_rr(dst, src, buf)
+    elif op == MACH_IMUL:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_imul_rr(dst, src, buf)
+    elif op == MACH_IDIV:
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_idiv_r(src, buf)
+    elif op == MACH_CQO:
+        x86_encode_cqo(buf)
+    elif op == MACH_NEG:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        x86_encode_neg_r(dst, buf)
+    elif op == MACH_NOT:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        x86_encode_not_r(dst, buf)
+    elif op == MACH_AND:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_and_rr(dst, src, buf)
+    elif op == MACH_OR:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_or_rr(dst, src, buf)
+    elif op == MACH_XOR:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_xor_rr(dst, src, buf)
+    elif op == MACH_SHL:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_shl_imm(dst, inst.src1.imm as u8, buf)
+        else:
+            x86_encode_shl_cl(dst, buf)
+    elif op == MACH_SAR:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_sar_imm(dst, inst.src1.imm as u8, buf)
+        else:
+            x86_encode_sar_cl(dst, buf)
+    elif op == MACH_CMP:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_cmp_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_cmp_rr(dst, src, buf)
+    elif op == MACH_TEST:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_test_rr(dst, src, buf)
+    elif op == MACH_SETCC:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        x86_encode_setcc(inst.cc, dst, buf)
+    elif op == MACH_MOVZX_B:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_movzx_br(dst, src, buf)
+    elif op == MACH_PUSH:
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_push(src, buf)
+    elif op == MACH_POP:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        x86_encode_pop(dst, buf)
+    elif op == MACH_JMP:
+        if inst.dst.kind == OPND_LABEL:
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.dst.label, inst_size: 5))
+            x86_encode_jmp_rel32(0 as i32, buf)
+    elif op == MACH_JCC:
+        if inst.dst.kind == OPND_LABEL:
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 2, label_id: inst.dst.label, inst_size: 6))
+            x86_encode_jcc_rel32(inst.cc, 0 as i32, buf)
+    elif op == MACH_CALL:
+        mut disp := 0 as i32
+        if inst.src1.imm == 0 as i64:
+            // Recursive call to current function (starts at 0)
+            disp = -(buf.len + 5) as i32
+        else:
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5))
+        x86_encode_call_rel32(disp, buf)
+    elif op == MACH_SYSCALL:
+        x86_encode_syscall(buf)
+    elif op == MACH_LOAD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let base = emitter_resolve_reg(inst.src1, allocs)
+        mut disp := 0 as i32
+        if inst.src2.kind == OPND_IMM:
+            disp = inst.src2.imm as i32
+        x86_encode_mov_load(dst, base, disp, buf)
+    elif op == MACH_STORE:
+        let base = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        mut disp := 0 as i32
+        if inst.src2.kind == OPND_IMM:
+            disp = inst.src2.imm as i32
+        x86_encode_mov_store(base, disp, src, buf)
+
+pub fn emitter_resolve_fixups(mut e: ptr[MachEmitter]):
+    mut i := 0 as i64
+    while i < e.fixups.len:
+        let fix = e.fixups.data[i]
+        mut target := 0 as i64
+        let found = label_map_get(&e.labels, fix.label_id, &target)
+        if not found:
+            // External symbol — needs linker relocation
+            push_reloc(&e.relocs, Relocation(
+                offset: fix.offset,
+                kind: RELOC_PC32,
+                padding1: 0 as u8,
+                padding2: 0 as u16,
+                sym_name: fix.label_id,
+                addend: -4 as i64
+            ))
+        else:
+            // Compute PC-relative offset
+            let rel = (target - (fix.offset + 4 as i64)) as i32
+            
+            // Patch rel32 field in code
+            e.code.data[fix.offset + 0] = (rel & 0xFF as i32) as u8
+            e.code.data[fix.offset + 1] = ((rel >> 8) & 0xFF as i32) as u8
+            e.code.data[fix.offset + 2] = ((rel >> 16) & 0xFF as i32) as u8
+            e.code.data[fix.offset + 3] = ((rel >> 24) & 0xFF as i32) as u8
+        i = i + 1
+
+pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame]):
+    mut prologue := new_mach_inst_vec()
+    emit_prologue(frame, &prologue)
+    mut i := 0 as i64
+    while i < prologue.len:
+        emit_mach_inst(e, prologue.data[i], allocs)
+        i = i + 1
+    if prologue.data != null as ptr[MachInst]:
+        @free(prologue.data as ptr[u8])
+        
+    i = 0 as i64
+    while i < insts_len:
+        let inst = insts[i]
+        if inst.op == MACH_RET:
+            mut epilogue := new_mach_inst_vec()
+            emit_epilogue(frame, &epilogue)
+            mut j := 0 as i64
+            while j < epilogue.len:
+                emit_mach_inst(e, epilogue.data[j], allocs)
+                j = j + 1
+            if epilogue.data != null as ptr[MachInst]:
+                @free(epilogue.data as ptr[u8])
+        emit_mach_inst(e, inst, allocs)
+        i = i + 1
+        
+    emitter_resolve_fixups(e)

@@ -62,7 +62,7 @@ typedef struct {
  * Scheduler
  * -------------------------------------------------------------------------- */
 
-typedef struct {
+typedef struct AxScheduler {
     AxWorker   workers[AX_MAX_WORKERS];
     uint32_t   worker_count;
     int        running;

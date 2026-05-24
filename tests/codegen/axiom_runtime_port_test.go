@@ -23,10 +23,11 @@ func TestAxiomRuntimePorts(t *testing.T) {
 	runtimeDir := filepath.Join(workspaceDir, "runtime")
 
 	t.Run("Scheduler", func(t *testing.T) {
+		memAllocPath := filepath.Join(workspaceDir, "std/mem/alloc.ax")
 		allocPath := filepath.Join(workspaceDir, "std/scheduler.ax")
 		testPath := filepath.Join(workspaceDir, "std/scheduler_test.ax")
 
-		sourceBytes, err := concatenateAxiomFiles(allocPath, testPath)
+		sourceBytes, err := concatenateAxiomFiles(memAllocPath, allocPath, testPath)
 		if err != nil {
 			t.Fatalf("failed to concatenate scheduler files: %v", err)
 		}
@@ -171,27 +172,56 @@ func compileCBackendWithActor(t *testing.T, source []byte, outPath string, runti
 	}
 	defer cFile.Close()
 
+	// Write helper functions to bridge void* parameters to C runtime AxActor* parameters
+	cFile.WriteString("struct AxActor;\n")
+	cFile.WriteString("int ax_actor_step(struct AxActor* actor);\n")
+	cFile.WriteString("int ax_actor_is_running(struct AxActor* actor);\n")
+	cFile.WriteString("int ax_actor_has_messages(struct AxActor* actor);\n\n")
+
+	cFile.WriteString("int ax_actor_step_impl(void* actor_ptr) {\n")
+	cFile.WriteString("    return ax_actor_step((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("}\n")
+	cFile.WriteString("int ax_actor_is_running_impl(void* actor_ptr) {\n")
+	cFile.WriteString("    return ax_actor_is_running((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("}\n")
+	cFile.WriteString("int ax_actor_has_messages_impl(void* actor_ptr) {\n")
+	cFile.WriteString("    return ax_actor_has_messages((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("}\n\n")
+
 	if err := pipeline.GenerateC(cFile); err != nil {
 		return err
 	}
 	cFile.Close()
 
+	// Build extra C sources list, excluding duplicates if they are implemented in AXIOM
+	extraSrcs := []string{
+		filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
+		filepath.Join(runtimeDir, "panic", "panic.c"),
+		filepath.Join(runtimeDir, "ax_assert.c"),
+		filepath.Join(runtimeDir, "ax_collections.c"),
+		filepath.Join(runtimeDir, "ax_math.c"),
+		filepath.Join(runtimeDir, "ax_print.c"),
+		filepath.Join(runtimeDir, "ax_string_ops.c"),
+		filepath.Join(runtimeDir, "actor", "actor.c"),
+		filepath.Join(runtimeDir, "actor", "msgqueue.c"),
+		filepath.Join(runtimeDir, "actor", "async.c"),
+		filepath.Join(runtimeDir, "actor", "runtime_init.c"),
+		filepath.Join(runtimeDir, "actor", "supervisor.c"),
+		filepath.Join(runtimeDir, "actor", "isolated.c"),
+	}
+
+	if !strings.Contains(outPath, "scheduler") {
+		extraSrcs = append(extraSrcs, filepath.Join(runtimeDir, "actor", "scheduler.c"))
+	}
+	if !strings.Contains(outPath, "reactor") {
+		extraSrcs = append(extraSrcs, filepath.Join(runtimeDir, "actor", "ioloop.c"))
+	}
+
 	// Compile C with full actor libraries
 	err = pipeline.CompileCWithOptions(outPath, cSrcPath, cgen.CompileOptions{
 		IncludeDirs: []string{runtimeDir},
-		ExtraSrcs: []string{
-			filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
-			filepath.Join(runtimeDir, "panic", "panic.c"),
-			filepath.Join(runtimeDir, "ax_assert.c"),
-			filepath.Join(runtimeDir, "ax_collections.c"),
-			filepath.Join(runtimeDir, "ax_math.c"),
-			filepath.Join(runtimeDir, "ax_print.c"),
-			filepath.Join(runtimeDir, "ax_string_ops.c"),
-			filepath.Join(runtimeDir, "actor", "actor.c"),
-			filepath.Join(runtimeDir, "actor", "msgqueue.c"),
-			filepath.Join(runtimeDir, "actor", "async.c"),
-		},
-		Debug: true,
+		ExtraSrcs:   extraSrcs,
+		Debug:       true,
 	})
 	return err
 }

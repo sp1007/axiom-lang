@@ -47,7 +47,8 @@ int ax_runtime_init(const AxRuntimeConfig* config) {
     /* ax_register_crash_cleanup(); — linked from axalloc */
 
     /* Step 3: Global allocator */
-    /* ax_segment_manager_init(); — linked from axalloc */
+    extern void ax_segment_manager_init(void);
+    ax_segment_manager_init();
 
     /* Step 4: Actor table */
     ax_actor_table_init();
@@ -72,6 +73,9 @@ int ax_runtime_init(const AxRuntimeConfig* config) {
 void ax_runtime_shutdown(void) {
     if (!g_runtime_initialized) return;
 
+    /* Single-threaded cooperative scheduler: run all actors to completion before shutdown */
+    ax_scheduler_run(&g_scheduler);
+
     /* Step 1: Scheduler shutdown */
     ax_scheduler_shutdown(&g_scheduler);
 
@@ -90,6 +94,11 @@ void ax_runtime_shutdown(void) {
 
 int ax_runtime_is_init(void) {
     return g_runtime_initialized;
+}
+
+struct AxScheduler* ax_get_global_scheduler(void) {
+    if (!g_runtime_initialized) return NULL;
+    return &g_scheduler;
 }
 
 /* --------------------------------------------------------------------------

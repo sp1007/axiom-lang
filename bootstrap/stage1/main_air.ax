@@ -14,6 +14,8 @@ extern "C" fn puts(s: str) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
 extern "C" fn snprintf(buf: ptr[void], size: i64, format: str, a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
+extern "C" fn fflush(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: str, stream: ptr[void]) -> i32
 
 fn print_inst(inst: AirInst):
     let op = inst.opcode
@@ -105,6 +107,83 @@ fn print_module(mod: AirModule):
         print_func(mod.funcs.data[i])
         i = i + 1
 
+fn read_file_content(path: str) -> str:
+    let file = fopen(path as ptr[void], "rb")
+    if file == null as ptr[void]:
+        return ""
+    fseek(file, 0, 2)
+    let size = ftell(file)
+    rewind(file)
+    if size <= 0:
+        fclose(file)
+        return ""
+    let buffer = @alloc(size + 1) as ptr[u8]
+    if buffer == null as ptr[u8]:
+        fclose(file)
+        return ""
+    let bytes_read = fread(buffer as ptr[void], 1, size, file)
+    fclose(file)
+    buffer[bytes_read] = 0 as u8
+    return buffer as str
+
+fn match_prefix(s: str, i: i64, prefix: str) -> bool:
+    let s_ptr = s as ptr[u8]
+    let p_ptr = prefix as ptr[u8]
+    let s_len = std.string.len(s)
+    let p_len = std.string.len(prefix)
+    if i + p_len > s_len:
+        return false
+    mut j := 0 as i64
+    while j < p_len:
+        if s_ptr[i + j] != p_ptr[j]:
+            return false
+        j = j + 1 as i64
+    return true
+
+fn strip_imports(s: str) -> str:
+    let s_ptr = s as ptr[u8]
+    let s_len = std.string.len(s)
+    let out_buf = @alloc(s_len + 1 as i64) as ptr[u8]
+    mut out_idx := 0 as i64
+    mut i := 0 as i64
+    
+    while i < s_len:
+        mut is_line_start := false
+        if i == 0 as i64:
+            is_line_start = true
+        elif s_ptr[i - 1 as i64] == 10 as u8:
+            is_line_start = true
+            
+        mut skip_line := false
+        if is_line_start:
+            if match_prefix(s, i, "import std.mem.alloc"):
+                skip_line = true
+            elif match_prefix(s, i, "import std.scheduler"):
+                skip_line = true
+            elif match_prefix(s, i, "import std.runtime"):
+                skip_line = true
+                
+        if skip_line:
+            while i < s_len and s_ptr[i] != 10 as u8:
+                i = i + 1 as i64
+            if i < s_len and s_ptr[i] == 10 as u8:
+                i = i + 1 as i64
+        else:
+            out_buf[out_idx] = s_ptr[i]
+            out_idx = out_idx + 1 as i64
+            i = i + 1 as i64
+            
+    out_buf[out_idx] = 0 as u8
+    return out_buf as str
+
+fn strip_package_prefixes(s: str) -> str:
+    let r1 = std.string.replace(s, "std.mem.alloc.", "")
+    let r2 = std.string.replace(r1, "std.scheduler.", "")
+    if r1 as ptr[u8] != s as ptr[u8] and r1 as ptr[u8] != r2 as ptr[u8]:
+        @free(r1 as ptr[u8])
+    return r2
+
+
 pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     if argc < 2:
         puts("Usage: axc <command> [args]")
@@ -112,36 +191,34 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
         puts("  dump-air <file.ax>")
         puts("  emit-c <file.ax> [-o <out.c>]")
         puts("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
+        puts("  fmt <file.ax>")
         return 1
 
     mut is_dump_air := false
     mut is_emit_c := false
     mut is_build := false
+    mut is_fmt := false
     mut file_arg_idx := 1
     mut output_file := ""
     mut target_wasm32 := false
+    mut self_link := false
+    mut optimize := false
 
-    let arg1 = argv[1] as str
-    if arg1 == "dump-air":
-        if argc < 3:
-            puts("Error: missing filename for dump-air")
-            return 1
+    // Parse commands
+    let cmd = argv[1] as str
+    if cmd == "dump-air":
         is_dump_air = true
         file_arg_idx = 2
-    elif arg1 == "emit-c":
-        if argc < 3:
-            puts("Error: missing filename for emit-c")
-            return 1
+    elif cmd == "emit-c":
         is_emit_c = true
         file_arg_idx = 2
-    elif arg1 == "build":
-        if argc < 3:
-            puts("Error: missing filename for build")
-            return 1
+    elif cmd == "build":
         is_build = true
         file_arg_idx = 2
+    elif cmd == "fmt":
+        is_fmt = true
+        file_arg_idx = 2
     else:
-        // Compatibility mode (backward-compatible with triple_build.ps1 verification loop)
         is_dump_air = true
         file_arg_idx = 1
 
@@ -165,6 +242,10 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             else:
                 puts("Error: missing value for --target option")
                 return 1
+        elif opt == "-self-link" or opt == "--self-link":
+            self_link = true
+        elif opt == "-O1" or opt == "--opt":
+            optimize = true
         opt_idx = opt_idx + 1
 
     let filename_ptr = argv[file_arg_idx]
@@ -193,46 +274,186 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
 
     buffer[bytes_read] = 0 as u8
 
-    let src = buffer as str
+    mut src := buffer as str
 
+    if is_fmt:
+        puts("[Debug] Running pure-AXIOM Formatter...")
+        mut formatter := new_formatter()
+        let formatted = formatter.format(src)
+        
+        let out_file = fopen(filename_ptr as ptr[void], "wb")
+        if out_file != null as ptr[void]:
+            fputs(formatted, out_file)
+            fclose(out_file)
+            puts("[Debug] Formatted file successfully!")
+        else:
+            puts("Error: could not write formatted file")
+        
+        @free(formatted as ptr[u8])
+        @free(buffer)
+        return 0
+
+    if self_link:
+        puts("[Debug] Reading alloc.ax...")
+        fflush(null as ptr[void])
+        let raw_alloc = read_file_content("std/mem/alloc.ax")
+        puts("[Debug] Reading scheduler.ax...")
+        fflush(null as ptr[void])
+        let raw_sched = read_file_content("std/scheduler.ax")
+        puts("[Debug] Reading runtime.ax...")
+        fflush(null as ptr[void])
+        let raw_rt = read_file_content("std/runtime.ax")
+        
+        puts("[Debug] Stripping imports from alloc.ax...")
+        fflush(null as ptr[void])
+        let alloc_src_raw = strip_imports(raw_alloc)
+        let alloc_src = strip_package_prefixes(alloc_src_raw)
+
+        puts("[Debug] Stripping imports from scheduler.ax...")
+        fflush(null as ptr[void])
+        let sched_src_raw = strip_imports(raw_sched)
+        let sched_src = strip_package_prefixes(sched_src_raw)
+
+        puts("[Debug] Stripping imports from runtime.ax...")
+        fflush(null as ptr[void])
+        let rt_src_raw = strip_imports(raw_rt)
+        let rt_src = strip_package_prefixes(rt_src_raw)
+
+        puts("[Debug] Stripping imports from src...")
+        fflush(null as ptr[void])
+        let clean_src_raw = strip_imports(src)
+        let clean_src = strip_package_prefixes(clean_src_raw)
+        
+        puts("[Debug] Concatenating buffers...")
+        fflush(null as ptr[void])
+        let len_src = std.string.len(clean_src)
+        let len_alloc = std.string.len(alloc_src)
+        let len_sched = std.string.len(sched_src)
+        let len_rt = std.string.len(rt_src)
+        
+        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_src
+        printf("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_src, total_len, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
+        
+        @memcpy(new_buf, alloc_src as ptr[u8], len_alloc)
+        new_buf[len_alloc] = 10 as u8
+        
+        let off_sched = len_alloc + 1 as i64
+        @memcpy(((new_buf as i64) + off_sched) as ptr[u8], sched_src as ptr[u8], len_sched)
+        new_buf[off_sched + len_sched] = 10 as u8
+        
+        let off_rt = off_sched + len_sched + 1 as i64
+        @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
+        new_buf[off_rt + len_rt] = 10 as u8
+        
+        let off_src = off_rt + len_rt + 1 as i64
+        @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
+        new_buf[total_len] = 0 as u8
+        
+        puts("[Debug] Cleaning up...")
+        fflush(null as ptr[void])
+        if std.string.len(raw_alloc) > 0 as i64:
+            @free(raw_alloc as ptr[u8])
+        if std.string.len(raw_sched) > 0 as i64:
+            @free(raw_sched as ptr[u8])
+        if std.string.len(raw_rt) > 0 as i64:
+            @free(raw_rt as ptr[u8])
+            
+        if alloc_src as ptr[u8] != alloc_src_raw as ptr[u8]:
+            @free(alloc_src as ptr[u8])
+        @free(alloc_src_raw as ptr[u8])
+        
+        if sched_src as ptr[u8] != sched_src_raw as ptr[u8]:
+            @free(sched_src as ptr[u8])
+        @free(sched_src_raw as ptr[u8])
+        
+        if rt_src as ptr[u8] != rt_src_raw as ptr[u8]:
+            @free(rt_src as ptr[u8])
+        @free(rt_src_raw as ptr[u8])
+        
+        if clean_src as ptr[u8] != clean_src_raw as ptr[u8]:
+            @free(clean_src as ptr[u8])
+        @free(clean_src_raw as ptr[u8])
+            
+        src = new_buf as str
+        puts("[Debug] Concatenation finished successfully!")
+        fflush(null as ptr[void])
+        
+        let out_file = fopen("scratch/self_linked_concatenated.ax" as ptr[void], "wb")
+        if out_file != null as ptr[void]:
+            fputs(src, out_file)
+            fclose(out_file)
+
+    if not is_dump_air:
+        puts("[Debug] Stage 1: Starting compilation...")
+        fflush(null as ptr[void])
     // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
+    if not is_dump_air:
+        puts("[Debug] Finished Lexing.")
+        fflush(null as ptr[void])
 
     // 2. Parse
     mut pool := new_intern_pool()
     mut parser := new_parser(tokens, src, pool)
     parser.parse_program()
+    if not is_dump_air:
+        puts("[Debug] Finished Parsing.")
+        fflush(null as ptr[void])
 
     // 3. Resolve
     mut symtable := new_symbol_table(parser.pool)
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
     resolver.resolve()
+    if not is_dump_air:
+        puts("[Debug] Finished Resolving.")
+        fflush(null as ptr[void])
 
     // 4. Typecheck
     mut typetable := new_type_table()
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
     checker.run_type_checker()
     typetable = checker.types
-
-    // 5. Memory Safety & Ownership pipeline (only if NOT in dump-air/compatibility mode!)
     if not is_dump_air:
+        puts("[Debug] Finished Typechecking.")
+        fflush(null as ptr[void])
+
+    if not is_dump_air:
+        puts("[Debug] Running Ownership Checker...")
+        fflush(null as ptr[void])
         mut ownership_chk := new_ownership_checker(parser.tree, parser.pool, resolver.symtable, typetable)
         ownership_chk.check()
 
+        puts("[Debug] Running Escape Analyser...")
+        fflush(null as ptr[void])
         mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
         escape_an.run()
 
+        puts("[Debug] Running CTGC Injector...")
+        fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
         ctgc_inj.run()
 
+        puts("[Debug] Running Alias Reuse Optimizer...")
+        fflush(null as ptr[void])
         mut alias_opt := new_alias_reuse_optimizer(parser.tree, parser.pool, resolver.symtable, typetable)
         alias_opt.run()
+
+        puts("[Debug] Running AIR Builder...")
+        fflush(null as ptr[void])
 
     // 6. Build AIR
     mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     mut air_builder := &air_builder_val
     air_builder.build_module()
+    if not is_dump_air:
+        puts("[Debug] Stage 2: Finished building AIR module.")
+
+    if optimize:
+        mut optimizer := new_ssa_optimizer()
+        optimizer.run(&air_builder.module)
 
     // 7. Handle output phase
     if is_dump_air:
@@ -277,34 +498,53 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
             free_pool(parser.pool)
             return 0
 
-        mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
-        let temp_c = "axiom_temp.c"
-        let success = cgen.generate(temp_c)
+        let temp_obj = "axiom_temp.obj"
+        puts("[Debug] Stage 3: Starting native code generation...")
+        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff")
         if not success:
-            puts("Error: could not generate C code")
+            puts("Error: could not generate native binary code")
             return 1
+        let temp_asm = "axiom_temp.asm"
+        compile_native_asm(temp_asm, air_builder.module, resolver.symtable, parser.pool, typetable, "nasm")
+        puts("[Debug] Stage 4: Finished native code generation.")
 
         if std.string.len(output_file) == 0:
             output_file = "output.exe"
 
-        // Compile using gcc
-        let cmd_buf = @alloc(2048) as ptr[u8]
-        let output_file_nt = str_to_null_terminated(output_file)
-        let temp_c_nt = str_to_null_terminated(temp_c)
+        if self_link:
+            puts("[Debug] Stage 5: Starting self-linking...")
+            mut linker := new_axiom_linker()
+            axiom_linker_add_input(&linker, temp_obj)
+            linker.output_path = output_file
+            let link_success = axiom_linker_link(&linker)
+            puts("[Debug] Stage 6: Finished self-linking.")
+            
+            let temp_obj_nt = str_to_null_terminated(temp_obj)
+            // remove(temp_obj_nt as ptr[void])
+            @free(temp_obj_nt)
+            
+            if not link_success:
+                puts("Error: Self-linking failed")
+                return 1
+        else:
+            // Link using gcc directly on the generated object file
+            let cmd_buf = @alloc(2048) as ptr[u8]
+            let output_file_nt = str_to_null_terminated(output_file)
+            let temp_obj_nt = str_to_null_terminated(temp_obj)
 
-        snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c", output_file_nt as ptr[void], temp_c_nt as ptr[void])
+            // Run gcc: gcc -O2 -o output.exe axiom_temp.obj -Iruntime runtime/axalloc/axalloc.c ...
+            snprintf(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c", output_file_nt as ptr[void], temp_obj_nt as ptr[void])
+            let link_status = system(cmd_buf as ptr[void])
 
-        let status = system(cmd_buf as ptr[void])
+            // Clean up
+            // remove(temp_obj_nt as ptr[void])
+            @free(output_file_nt)
+            @free(temp_obj_nt)
+            @free(cmd_buf)
 
-        // Clean up
-        // remove(temp_c_nt as ptr[void])
-        @free(output_file_nt)
-        @free(temp_c_nt)
-        @free(cmd_buf)
-
-        if status != 0:
-            puts("Error: C compilation failed")
-            return status
+            if link_status != 0:
+                puts("Error: Linking failed")
+                return link_status
 
     // Free resources
     @free(buffer)
@@ -327,5 +567,8 @@ pub fn main(argc: i32, argv: ptr[ptr[u8]]) -> i32:
     free_typetable(typetable)
     free_symtable(resolver.symtable)
     free_pool(parser.pool)
+
+    if self_link:
+        @free(src as ptr[u8])
 
     return 0

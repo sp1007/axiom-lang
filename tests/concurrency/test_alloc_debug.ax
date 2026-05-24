@@ -1,0 +1,30 @@
+import std.mem.alloc
+
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+
+fn main() -> i32:
+    putchar(49) // '1'
+    putchar(10)
+    
+    let state = get_global_state()
+    if state == null as ptr[AxGlobalState]:
+        putchar(70) // 'F'
+        ExitProcess(1 as u32)
+        
+    putchar(50) // '2'
+    putchar(10)
+    
+    let slab = std_mem_alloc_get_slab()
+    if slab == null as ptr[Segment]:
+        putchar(83) // 'S'
+        ExitProcess(2 as u32)
+        
+    putchar(51) // '3'
+    putchar(10)
+    
+    ax_segment_manager_init()
+    putchar(52) // '4'
+    putchar(10)
+    
+    return 0

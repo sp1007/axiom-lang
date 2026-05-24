@@ -1,0 +1,370 @@
+// bootstrap/stage1/x86_asm_emitter.ax
+// Assembly Text Emitter for NASM, FASM, and WinAsm/MASM in self-hosted AXIOM.
+
+import std.string
+
+pub fn to_byte_reg(reg: u8) -> str:
+    let hw = reg_hw_reg(reg)
+    if reg_is_gpr(reg):
+        if hw == 0:
+            return "al"
+        if hw == 1:
+            return "cl"
+        if hw == 2:
+            return "dl"
+        if hw == 3:
+            return "bl"
+        if hw == 4:
+            return "spl"
+        if hw == 5:
+            return "bpl"
+        if hw == 6:
+            return "sil"
+        if hw == 7:
+            return "dil"
+        if hw == 8:
+            return "r8b"
+        if hw == 9:
+            return "r9b"
+        if hw == 10:
+            return "r10b"
+        if hw == 11:
+            return "r11b"
+        if hw == 12:
+            return "r12b"
+        if hw == 13:
+            return "r13b"
+        if hw == 14:
+            return "r14b"
+        if hw == 15:
+            return "r15b"
+    return "al"
+
+pub fn format_operand(op: MachOperand, format: str, allocs: ptr[RegAllocation]) -> str:
+    if op.kind == OPND_PHYS:
+        return reg_to_str(op.phys)
+    elif op.kind == OPND_VREG:
+        let r = op.vreg
+        let alloc = allocs[r]
+        return reg_to_str(alloc.phys)
+    elif op.kind == OPND_IMM:
+        return format_int(op.imm)
+    elif op.kind == OPND_LABEL:
+        if format == "winasm":
+            return std.string.concat("L_b_", format_int(op.label as i64))
+        return std.string.concat(".L_b_", format_int(op.label as i64))
+    return "none"
+
+pub fn emit_inst(file: ptr[void], inst: MachInst, fn_name: str, allocs: ptr[RegAllocation], format: str, symbols: SymbolTable, pool: InternPool):
+    let op = inst.op
+    if op == MACH_NOP:
+        fprintf(file, "    nop\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_LABEL:
+        let lbl_id = inst.dst.label
+        if format == "winasm":
+            fprintf(file, "L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, ".L_b_%d:\n", lbl_id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_RET:
+        fprintf(file, "    ret\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_MOV:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_MOV_IMM:
+        let dst = format_operand(inst.dst, format, allocs)
+        if inst.src1.vreg == 1 as u32:
+            let sym_name = x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            if format == "winasm":
+                fprintf(file, "    mov %s, OFFSET %s\n", (dst as ptr[u8]) as i64, (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            let src = format_operand(inst.src1, format, allocs)
+            fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_XOR_ZERO:
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    xor %s, %s\n", (dst as ptr[u8]) as i64, (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_ADD:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    add %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_SUB:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    sub %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_IMUL:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    imul %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_IDIV:
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    idiv %s\n", (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_CQO:
+        fprintf(file, "    cqo\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_NEG:
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    neg %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_NOT:
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    not %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_AND:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    and %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_OR:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    or %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_XOR:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    xor %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_SHL:
+        let dst = format_operand(inst.dst, format, allocs)
+        if inst.src1.kind == OPND_IMM:
+            fprintf(file, "    shl %s, %d\n", (dst as ptr[u8]) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "    shl %s, cl\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_SAR:
+        let dst = format_operand(inst.dst, format, allocs)
+        if inst.src1.kind == OPND_IMM:
+            fprintf(file, "    sar %s, %d\n", (dst as ptr[u8]) as i64, inst.src1.imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "    sar %s, cl\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_CMP:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    cmp %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_TEST:
+        let dst = format_operand(inst.dst, format, allocs)
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    test %s, %s\n", (dst as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_SETCC:
+        mut dst_reg := REG_NONE
+        if inst.dst.kind == OPND_PHYS:
+            dst_reg = inst.dst.phys
+        elif inst.dst.kind == OPND_VREG:
+            dst_reg = allocs[inst.dst.vreg].phys
+        let byte_reg = to_byte_reg(dst_reg)
+        let cc_str = cond_code_to_str(inst.cc)
+        fprintf(file, "    set%s %s\n", (cc_str as ptr[u8]) as i64, (byte_reg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_MOVZX_B:
+        mut src_reg := REG_NONE
+        if inst.src1.kind == OPND_PHYS:
+            src_reg = inst.src1.phys
+        elif inst.src1.kind == OPND_VREG:
+            src_reg = allocs[inst.src1.vreg].phys
+        let byte_reg = to_byte_reg(src_reg)
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    movzx %s, %s\n", (dst as ptr[u8]) as i64, (byte_reg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_PUSH:
+        let src = format_operand(inst.src1, format, allocs)
+        fprintf(file, "    push %s\n", (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_POP:
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    pop %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_JMP:
+        let dst = format_operand(inst.dst, format, allocs)
+        fprintf(file, "    jmp %s\n", (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_JCC:
+        let dst = format_operand(inst.dst, format, allocs)
+        let cc_str = cond_code_to_str(inst.cc)
+        fprintf(file, "    j%s %s\n", (cc_str as ptr[u8]) as i64, (dst as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif op == MACH_LOAD:
+        let base = format_operand(inst.src1, format, allocs)
+        mut disp := 0 as i64
+        if inst.src2.kind == OPND_IMM:
+            disp = inst.src2.imm
+        
+        mut addr_str := ""
+        if disp == 0 as i64:
+            addr_str = std.string.concat("[", std.string.concat(base, "]"))
+        elif disp > 0 as i64:
+            addr_str = std.string.concat("[", std.string.concat(base, std.string.concat(" + ", std.string.concat(format_int(disp), "]"))))
+        else:
+            addr_str = std.string.concat("[", std.string.concat(base, std.string.concat(" - ", std.string.concat(format_int(0 as i64 - disp), "]"))))
+            
+        let dst = format_operand(inst.dst, format, allocs)
+        if format == "winasm":
+            fprintf(file, "    mov %s, qword ptr %s\n", (dst as ptr[u8]) as i64, (addr_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "    mov %s, %s\n", (dst as ptr[u8]) as i64, (addr_str as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+    elif op == MACH_STORE:
+        let base = format_operand(inst.dst, format, allocs)
+        mut disp := 0 as i64
+        if inst.src2.kind == OPND_IMM:
+            disp = inst.src2.imm
+            
+        mut addr_str := ""
+        if disp == 0 as i64:
+            addr_str = std.string.concat("[", std.string.concat(base, "]"))
+        elif disp > 0 as i64:
+            addr_str = std.string.concat("[", std.string.concat(base, std.string.concat(" + ", std.string.concat(format_int(disp), "]"))))
+        else:
+            addr_str = std.string.concat("[", std.string.concat(base, std.string.concat(" - ", std.string.concat(format_int(0 as i64 - disp), "]"))))
+            
+        let src = format_operand(inst.src1, format, allocs)
+        if format == "winasm":
+            fprintf(file, "    mov qword ptr %s, %s\n", (addr_str as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            fprintf(file, "    mov %s, %s\n", (addr_str as ptr[u8]) as i64, (src as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+    elif op == MACH_CALL:
+        if inst.src1.imm <= 0 as i64:
+            if inst.src1.imm == -1 as i64:
+                fprintf(file, "    call malloc\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -2 as i64:
+                fprintf(file, "    call free\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -3 as i64:
+                fprintf(file, "    call ax_actor_spawn\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -4 as i64:
+                fprintf(file, "    call __ax_runtime_init\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -5 as i64:
+                fprintf(file, "    call __ax_runtime_shutdown\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif inst.src1.imm == -8 as i64:
+                fprintf(file, "    call abort\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(file, "    call %s\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            let sym_name = x86_resolve_sym_name(inst.src1.imm as u32, symbols, pool)
+            fprintf(file, "    call %s\n", (sym_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], format: str, symbols: SymbolTable, pool: InternPool):
+    if format == "winasm":
+        fprintf(file, "%s PROC\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    else:
+        fprintf(file, "%s:\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    mut prologue := new_mach_inst_vec()
+    emit_prologue(frame, &prologue)
+    mut i := 0 as i64
+    while i < prologue.len:
+        emit_inst(file, prologue.data[i], fn_name, allocs, format, symbols, pool)
+        i = i + 1
+    if prologue.data != null as ptr[MachInst]:
+        @free(prologue.data as ptr[u8])
+
+    i = 0 as i64
+    while i < insts_len:
+        let inst = insts[i]
+        if inst.op == MACH_RET:
+            mut epilogue := new_mach_inst_vec()
+            emit_epilogue(frame, &epilogue)
+            mut j := 0 as i64
+            while j < epilogue.len:
+                emit_inst(file, epilogue.data[j], fn_name, allocs, format, symbols, pool)
+                j = j + 1
+            if epilogue.data != null as ptr[MachInst]:
+                @free(epilogue.data as ptr[u8])
+        emit_inst(file, inst, fn_name, allocs, format, symbols, pool)
+        i = i + 1
+
+    if format == "winasm":
+        fprintf(file, "%s ENDP\n", (fn_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+extern "C" fn fopen(filename: ptr[void], mode: str) -> ptr[void]
+extern "C" fn fclose(stream: ptr[void]) -> i32
+
+fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
+    let len = std.string.len(s)
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, s as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf
+
+pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str) -> bool:
+    let output_asm_file_nt = x86_str_to_null_terminated(output_asm_file)
+    let file = fopen(output_asm_file_nt as ptr[void], "wb")
+    @free(output_asm_file_nt)
+    if file == null as ptr[void]:
+        return false
+
+    // 1. Emit assembler-specific header
+    if format == "fasm":
+        fprintf(file, "; Generated by AXIOM Compiler (FASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(file, "format ELF64 executable\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(file, "segment readable executable\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    elif format == "winasm":
+        fprintf(file, "; Generated by AXIOM Compiler (WinAsm / MASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(file, ".code\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    else:
+        // Default to NASM
+        fprintf(file, "; Generated by AXIOM Compiler (NASM format)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(file, "bits 64\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fprintf(file, "section .text\n\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    // 2. Declare external symbols
+    mut fi := 0 as i64
+    while fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[fi]
+        if fn_ptr.is_extern:
+            let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            if format == "fasm":
+                fprintf(file, "extrn %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif format == "winasm":
+                fprintf(file, "EXTERN %s:PROC\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(file, "extern %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fi = fi + 1
+    fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    // 3. Declare global symbols
+    fi = 0
+    while fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[fi]
+        if not fn_ptr.is_extern:
+            let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            if format == "fasm":
+                fprintf(file, "public %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            elif format == "winasm":
+                fprintf(file, "PUBLIC %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            else:
+                fprintf(file, "global %s\n", (name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fi = fi + 1
+    fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    // 4. Compile each function to assembly text
+    let abi = "win64"
+    fi = 0
+    while fi < mod.funcs.len:
+        let fn_ptr = &mod.funcs.data[fi]
+        if not fn_ptr.is_extern:
+            let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            
+            // Run selection & register allocation
+            let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
+            let intervals = compute_liveness(mach_insts.data, mach_insts.len)
+            
+            mut gpr_len := 0 as i64
+            let avail_gprs = get_allocatable_gprs(&gpr_len)
+            let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
+            
+            mut cs_len := 0 as i64
+            let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
+            let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, 0 as i32, abi)
+            
+            let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame)
+            
+            // Emit ASM
+            emit_function(file, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, format, symbols, pool)
+            fprintf(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            
+            // Free structures
+            @free(cs_regs)
+            @free(avail_gprs)
+            @free(alloc_res.allocs)
+            if intervals.data != null as ptr[LiveInterval]:
+                @free(intervals.data as ptr[u8])
+            if mach_insts.data != null as ptr[MachInst]:
+                @free(mach_insts.data as ptr[u8])
+            if final_insts.data != null as ptr[MachInst]:
+                @free(final_insts.data as ptr[u8])
+        fi = fi + 1
+
+    if format == "winasm":
+        fprintf(file, "END\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+
+    fclose(file)
+    return true

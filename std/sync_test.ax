@@ -2,8 +2,19 @@
 //
 // Standalone unit tests for AXIOM-native synchronization primitives.
 
-extern "C" fn puts(s: str) -> i32
-extern "C" fn printf(fmt: str, a1: i64) -> i32
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+fn test_print_str(s: str):
+    if @compiler_intrinsic("is_windows"):
+        let h = GetStdHandle(0xFFFFFFF5 as u32)
+        mut written := 0 as u32
+        WriteFile(h, s as ptr[u8], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
+    else:
+        syscall(1 as u64, 1 as u64, s as ptr[u8] as u64, std.string.len(s) as u64, 0 as u64, 0 as u64, 0 as u64)
 
 fn test_atomic_operations():
     mut at := atomic_new[i32](10 as i32)
@@ -23,7 +34,7 @@ fn test_atomic_operations():
     let not_swapped = at.compare_and_swap(30 as i32, 50 as i32)
     assert(not_swapped == false)
     assert(at.load() == 40)
-    puts("  PASS: test_atomic_operations")
+    test_print_str("  PASS: test_atomic_operations\n")
 
 fn test_mutex_operations():
     mut m := mutex_new[i32](100 as i32)
@@ -41,7 +52,7 @@ fn test_mutex_operations():
     let g = guard_opt.unwrap()
     assert(g.get() == 200)
     g.unlock()
-    puts("  PASS: test_mutex_operations")
+    test_print_str("  PASS: test_mutex_operations\n")
 
 fn test_rwlock_operations():
     mut l := rwlock_new[i32](500 as i32)
@@ -60,11 +71,11 @@ fn test_rwlock_operations():
     w.set(1000 as i32)
     assert(w.get() == 1000)
     w.unlock()
-    puts("  PASS: test_rwlock_operations")
+    test_print_str("  PASS: test_rwlock_operations\n")
 
 pub fn main():
-    puts("Running AXIOM-native synchronization unit tests...")
+    test_print_str("Running AXIOM-native synchronization unit tests...\n")
     test_atomic_operations()
     test_mutex_operations()
     test_rwlock_operations()
-    puts("All AXIOM-native synchronization tests passed!")
+    test_print_str("All AXIOM-native synchronization tests passed!\n")

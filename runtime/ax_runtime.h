@@ -84,6 +84,7 @@ typedef struct {
 #include "axalloc/axalloc.h"
 /* Note: axalloc.h includes genref.h at the bottom */
 #include "panic/panic.h"
+#include "actor/actor.h"
 
 /* ================================================================
  * 5. Slice types
@@ -154,6 +155,9 @@ extern int ax_main(ax_i32 argc, ax_u8** argv);
 extern int ax_main(void);
 #endif
 
+extern void __ax_runtime_init(void);
+extern void __ax_runtime_shutdown(void);
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -169,13 +173,16 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(65001);
 #endif
     ax_set_program_name(argc > 0 ? argv[0] : "<axiom>");
+    __ax_runtime_init();
 #ifdef AX_MAIN_WITH_ARGS
-    return ax_main((ax_i32)argc, (ax_u8**)argv);
+    int ret = ax_main((ax_i32)argc, (ax_u8**)argv);
 #else
     (void)argc;
     (void)argv;
-    return ax_main();
+    int ret = ax_main();
 #endif
+    __ax_runtime_shutdown();
+    return ret;
 }
 #endif
 

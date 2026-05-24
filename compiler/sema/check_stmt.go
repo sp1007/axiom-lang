@@ -314,6 +314,11 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 		
 		tc.insideLoop = prevInsideLoop
 
+	case ast.NodeBreakStmt, ast.NodeContinueStmt:
+		if !tc.insideLoop {
+			tc.errorf(nodeIdx, 3013, "%s outside loop", node.Kind.String())
+		}
+
 	case ast.NodeReturnStmt:
 		expr := node.FirstChild
 		if expr != 0 {

@@ -29,6 +29,7 @@ ax_bool   ax_str_ends_with(ax_string s, ax_string suffix);
 ax_i64    ax_str_index_of(ax_string s, ax_string sub);
 ax_string ax_str_trim(ax_string s);
 ax_bool   ax_str_eq(ax_string a, ax_string b);
+ax_string ax_str_replace(ax_string s, ax_string old, ax_string new_val);
 ax_string ax_i64_to_str(ax_i64 value);
 ax_string ax_f64_to_str(ax_f64 value);
 ax_string ax_bool_to_str(ax_bool value);
@@ -39,6 +40,8 @@ ax_string ax_bool_to_str(ax_bool value);
 
 void ax_print_str(ax_string s);
 void ax_println_str(ax_string s);
+void ax_print_str_native(const char* ptr);
+void ax_println_str_native(const char* ptr);
 void ax_print_i64(ax_i64 value);
 void ax_println_i64(ax_i64 value);
 void ax_print_f64(ax_f64 value);

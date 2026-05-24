@@ -26,7 +26,6 @@ func TestCTGC_FreeAllocReuse(t *testing.T) {
 	}
 
 	hasReuse := false
-	hasFree := false
 	for _, inst := range mod.Funcs[0].Insts {
 		if inst.Opcode == air.OpAliasReuse {
 			hasReuse = true
@@ -34,15 +33,13 @@ func TestCTGC_FreeAllocReuse(t *testing.T) {
 				t.Errorf("alias_reuse should reference freed reg %d, got %d", ptrReg, inst.Src1)
 			}
 		}
-		if inst.Opcode == air.OpFree {
-			hasFree = true
-		}
 	}
 	if !hasReuse {
 		t.Error("expected OpAliasReuse")
 	}
-	if hasFree {
-		t.Error("OpFree should be NOPed")
+	// The original free instruction (second instruction emitted) should be NOPed
+	if mod.Funcs[0].Insts[1].Opcode != air.OpNop {
+		t.Error("original OpFree should be NOPed")
 	}
 }
 
@@ -145,5 +142,53 @@ func TestCTGC_NoChangeOnCleanCode(t *testing.T) {
 
 	if changed {
 		t.Error("no allocations means no CTGC changes")
+	}
+}
+
+func TestCTGC_EscapeAnalysisAndCompileTimeGC(t *testing.T) {
+	// Case 1: Allocation does not escape and is not freed.
+	// Expected: Insert OpFree before return.
+	fb1 := air.NewAirFuncBuilder(1, 0)
+	ptrReg1 := fb1.FreshReg()
+	fb1.Emit(air.AirInst{Opcode: air.OpAlloc, TypeID: 3, Dest: ptrReg1})
+	fb1.Emit(air.AirInst{Opcode: air.OpReturn})
+	fn1 := fb1.Build()
+	mod1 := &air.AirModule{Funcs: []air.AirFunc{*fn1}}
+
+	pass := &opt.CTGCOptPass{}
+	changed1 := pass.Run(mod1)
+
+	if !changed1 {
+		t.Fatal("expected CTGC to insert OpFree for non-escaping alloc")
+	}
+
+	foundFree1 := false
+	for _, inst := range mod1.Funcs[0].Insts {
+		if inst.Opcode == air.OpFree && inst.Src1 == ptrReg1 {
+			foundFree1 = true
+		}
+	}
+	if !foundFree1 {
+		t.Error("expected OpFree of ptrReg1 to be inserted")
+	}
+
+	// Case 2: Allocation escapes by being returned.
+	// Expected: No OpFree inserted.
+	fb2 := air.NewAirFuncBuilder(1, 0)
+	ptrReg2 := fb2.FreshReg()
+	fb2.Emit(air.AirInst{Opcode: air.OpAlloc, TypeID: 3, Dest: ptrReg2})
+	fb2.Emit(air.AirInst{Opcode: air.OpReturn, Src1: ptrReg2})
+	fn2 := fb2.Build()
+	mod2 := &air.AirModule{Funcs: []air.AirFunc{*fn2}}
+
+	changed2 := pass.Run(mod2)
+	if changed2 {
+		t.Error("expected no change because allocation escapes via OpReturn")
+	}
+
+	for _, inst := range mod2.Funcs[0].Insts {
+		if inst.Opcode == air.OpFree {
+			t.Error("should not insert OpFree for escaping allocation")
+		}
 	}
 }

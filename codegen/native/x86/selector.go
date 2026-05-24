@@ -450,6 +450,17 @@ func (sel *instructionSelector) typeSizeAndAlign(typeID uint16) (uint32, uint32)
 	switch entry.Kind {
 	case types.KindPrimitive:
 		return entry.Size, entry.Align
+	case types.KindArray:
+		elemID := sel.table.ArrayElem(types.TypeID(typeID))
+		length := sel.table.ArrayLength(types.TypeID(typeID))
+		elemSize, elemAlign := sel.typeSizeAndAlign(uint16(elemID))
+		if elemAlign == 0 {
+			elemAlign = 8
+		}
+		size := elemSize * length
+		entry.Size = size
+		entry.Align = elemAlign
+		return size, elemAlign
 	case types.KindStruct:
 		// Compute struct layout dynamically
 		info := sel.table.StructInfo(types.TypeID(typeID))

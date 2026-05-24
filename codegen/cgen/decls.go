@@ -92,6 +92,8 @@ func (e *DeclEmitter) ProcessModule() {
 			e.processFunc(child, node)
 		case ast.NodeConstDecl:
 			e.processConst(child, node)
+		case ast.NodeVarDecl:
+			e.processGlobalVar(child, node)
 		case ast.NodeTypeAliasDecl:
 			e.processTypeAlias(child, node)
 		}
@@ -431,6 +433,45 @@ func (e *DeclEmitter) processConst(idx uint32, node *ast.AstNode) {
 	}
 }
 
+// processGlobalVar processes a top-level global mutable variable declaration.
+func (e *DeclEmitter) processGlobalVar(idx uint32, node *ast.AstNode) {
+	nameID := e.nodeNameID(idx)
+	name := e.resolveName(nameID, idx)
+
+	symIdx := node.Payload
+	ctype := "ax_i32" // default
+	if symIdx != 0 && int(symIdx) < len(e.symbols.Symbols) {
+		sym := e.symbols.SymbolAt(symIdx)
+		if sym.TypeID != 0 {
+			ctype = CTypeName(types.TypeID(sym.TypeID), e.table, e.intern, e.queue)
+		}
+	}
+
+	mangledName := MangleGlobalName("", name)
+	e.globals = append(e.globals, fmt.Sprintf("extern %s %s;", ctype, mangledName))
+
+	// Find the initializer expression node
+	var initNode uint32
+	child := node.FirstChild
+	for child != ast.NullIdx {
+		childNode := e.tree.Node(child)
+		if childNode.Kind != ast.NodeTypeExpr {
+			initNode = child
+			break
+		}
+		child = childNode.NextSibling
+	}
+
+	if initNode != 0 {
+		eg := NewExprGen(e.table, e.intern, e.symbols, e.tree, e.queue)
+		initValStr := eg.Emit(initNode)
+		e.globals = append(e.globals, fmt.Sprintf("%s %s = %s;", ctype, mangledName, initValStr))
+	} else {
+		// If there is no initializer, default initialize it to 0
+		e.globals = append(e.globals, fmt.Sprintf("%s %s = {0};", ctype, mangledName))
+	}
+}
+
 // processTypeAlias processes a type alias (sum type) declaration.
 func (e *DeclEmitter) processTypeAlias(idx uint32, node *ast.AstNode) {
 	// Type aliases that map to sum types need their tag enum + struct emitted
@@ -678,6 +719,8 @@ var stdLibFuncs = map[string]bool{
 	"sprintf":  true,
 	"snprintf": true,
 	"fprintf":  true,
+	"fflush":   true,
+	"perror":   true,
 	"scanf":    true,
 	"fscanf":   true,
 	"sscanf":   true,
@@ -724,6 +767,12 @@ var stdLibFuncs = map[string]bool{
 	"ceil":     true,
 	"VirtualAlloc": true,
 	"VirtualFree":  true,
+	"GetStdHandle": true,
+	"WriteFile":    true,
+	"ReadFile":     true,
+	"CreateFileA":  true,
+	"CloseHandle":  true,
+	"ExitProcess":  true,
 }
 
 func isStdLibFunc(name string) bool {

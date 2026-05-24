@@ -1,0 +1,1108 @@
+// AXIOM Standard Library — std::mem::alloc
+//
+// AXIOM-native production-grade memory allocator.
+// Implements a segmented, size-classed allocator with per-actor heaps.
+// Avoids global lock contention and leverages direct OS virtual memory APIs.
+
+pub struct AxHeader:
+    pub gen_id: u32
+    pub flags: u32
+
+pub struct FreeSlot:
+    pub next: ptr[FreeSlot]
+
+pub struct FreeList:
+    pub head: ptr[FreeSlot]
+    pub count: i64
+
+// 64KB per segment
+pub const SEGMENT_SIZE: i64 = 65536
+pub const MAX_SEGMENTS: i64 = 4096
+pub const SEGMENT_MAGIC: u32 = 0xAF5E6000
+
+pub struct Segment:
+    pub base: ptr[u8]
+    pub bump: ptr[u8]
+    pub limit: ptr[u8]
+    pub sclass: i32
+    pub next: ptr[Segment]
+    pub magic: u32
+
+pub struct SegmentList:
+    pub active: ptr[Segment]
+    pub retired: ptr[Segment]
+    pub count: i64
+
+pub const ACTOR_HEAP_MAGIC: u32 = 0xAC704EA0
+
+pub struct ActorHeap:
+    pub actor_id: u64
+    pub magic: u32
+    pub padding: u32 // Padding to align fields
+
+    // per-size-class segments
+    pub seg_0: SegmentList
+    pub seg_1: SegmentList
+    pub seg_2: SegmentList
+    pub seg_3: SegmentList
+    pub seg_4: SegmentList
+    pub seg_5: SegmentList
+    pub seg_6: SegmentList
+    pub seg_7: SegmentList
+    pub seg_8: SegmentList
+    pub seg_9: SegmentList
+
+    // per-size-class free lists
+    pub free_0: FreeList
+    pub free_1: FreeList
+    pub free_2: FreeList
+    pub free_3: FreeList
+    pub free_4: FreeList
+    pub free_5: FreeList
+    pub free_6: FreeList
+    pub free_7: FreeList
+    pub free_8: FreeList
+    pub free_9: FreeList
+
+    pub total_allocated: u64
+    pub total_freed: u64
+    pub alloc_count: u64
+    pub free_count: u64
+
+// --------------------------------------------------------------------------
+// External OS Bindings
+// --------------------------------------------------------------------------
+
+extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
+extern "C" fn VirtualFree(lpAddress: ptr[void], dwSize: u64, dwFreeType: u32) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+
+extern "C" fn GetLastError() -> u32
+
+pub fn mmap(addr: ptr[void], length: u64, prot: i32, flags: i32, fd: i32, offset: i64) -> ptr[void]:
+    return null as ptr[void]
+
+pub fn munmap(addr: ptr[void], length: u64) -> i32:
+    return 0 as i32
+
+pub struct AxGlobalState:
+    pub is_rt_initialized: bool
+    pub g_sched_initialized: bool
+    pub padding: i64
+    pub g_slab_used: i64
+    pub g_free_pool: ptr[Segment]
+    pub g_slab: ptr[Segment]
+    pub global_heap: ptr[ActorHeap]
+    pub g_actor_table: ptr[void]
+    pub g_sched: ptr[void]
+
+pub fn get_global_state() -> ptr[AxGlobalState]:
+    let addr = 0x50000000 as ptr[void]
+    let state = VirtualAlloc(addr, 4096 as u64, 0x3000 as u32, 0x04 as u32) as ptr[AxGlobalState]
+    if state == null as ptr[AxGlobalState]:
+        return 0x50000000 as ptr[AxGlobalState]
+    return state
+
+
+pub fn std_mem_alloc_get_slab_used() -> ptr[i64]:
+    let state = get_global_state()
+    return (state as i64 + 16 as i64) as ptr[i64]
+
+pub fn std_mem_alloc_get_free_pool() -> ptr[ptr[Segment]]:
+    let state = get_global_state()
+    return (state as i64 + 24 as i64) as ptr[ptr[Segment]]
+
+pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
+    let state = get_global_state()
+    if state.g_slab == null as ptr[Segment]:
+        state.g_slab = VirtualAlloc(null as ptr[void], 4096 as u64 * 48 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+    return state.g_slab
+
+// --------------------------------------------------------------------------
+// Size Classes
+// --------------------------------------------------------------------------
+
+pub fn ax_size_class_size(sc: i32) -> i64:
+    if sc == 0:
+        return 8
+    if sc == 1:
+        return 16
+    if sc == 2:
+        return 32
+    if sc == 3:
+        return 64
+    if sc == 4:
+        return 128
+    if sc == 5:
+        return 256
+    if sc == 6:
+        return 512
+    if sc == 7:
+        return 1024
+    if sc == 8:
+        return 2048
+    if sc == 9:
+        return 4096
+    return 0
+
+pub fn ax_size_class_for(user_size: i64) -> i32:
+    let total = user_size + 8 // 8-byte AxHeader
+    if total <= 8:
+        return 0
+    if total <= 16:
+        return 1
+    if total <= 32:
+        return 2
+    if total <= 64:
+        return 3
+    if total <= 128:
+        return 4
+    if total <= 256:
+        return 5
+    if total <= 512:
+        return 6
+    if total <= 1024:
+        return 7
+    if total <= 2048:
+        return 8
+    if total <= 4096:
+        return 9
+    return 10 // SIZE_CLASS_LARGE
+
+// --------------------------------------------------------------------------
+// Offset mapping helpers for ActorHeap structures
+// --------------------------------------------------------------------------
+
+pub fn ax_get_segment_list(heap: ptr[ActorHeap], sc: i32) -> ptr[SegmentList]:
+    if sc == 0:
+        return (heap as i64 + 16) as ptr[SegmentList]
+    if sc == 1:
+        return (heap as i64 + 16 + 24) as ptr[SegmentList]
+    if sc == 2:
+        return (heap as i64 + 16 + 48) as ptr[SegmentList]
+    if sc == 3:
+        return (heap as i64 + 16 + 72) as ptr[SegmentList]
+    if sc == 4:
+        return (heap as i64 + 16 + 96) as ptr[SegmentList]
+    if sc == 5:
+        return (heap as i64 + 16 + 120) as ptr[SegmentList]
+    if sc == 6:
+        return (heap as i64 + 16 + 144) as ptr[SegmentList]
+    if sc == 7:
+        return (heap as i64 + 16 + 168) as ptr[SegmentList]
+    if sc == 8:
+        return (heap as i64 + 16 + 192) as ptr[SegmentList]
+    if sc == 9:
+        return (heap as i64 + 16 + 216) as ptr[SegmentList]
+    return null as ptr[SegmentList]
+
+pub fn ax_get_free_list(heap: ptr[ActorHeap], sc: i32) -> ptr[FreeList]:
+    let base = heap as i64 + 16 + 240 // 10 * 24 = 240
+    if sc == 0:
+        return base as ptr[FreeList]
+    if sc == 1:
+        return (base + 16) as ptr[FreeList]
+    if sc == 2:
+        return (base + 32) as ptr[FreeList]
+    if sc == 3:
+        return (base + 48) as ptr[FreeList]
+    if sc == 4:
+        return (base + 64) as ptr[FreeList]
+    if sc == 5:
+        return (base + 80) as ptr[FreeList]
+    if sc == 6:
+        return (base + 96) as ptr[FreeList]
+    if sc == 7:
+        return (base + 112) as ptr[FreeList]
+    if sc == 8:
+        return (base + 128) as ptr[FreeList]
+    if sc == 9:
+        return (base + 144) as ptr[FreeList]
+    return null as ptr[FreeList]
+
+// --------------------------------------------------------------------------
+// Free List Primitives
+// --------------------------------------------------------------------------
+
+pub fn ax_free_list_push(list: ptr[FreeList], block: ptr[u8]):
+    let slot = (block as i64 + 8) as ptr[FreeSlot]
+    slot.next = list.head
+    list.head = slot
+    list.count = list.count + 1
+
+pub fn ax_free_list_pop(list: ptr[FreeList]) -> ptr[u8]:
+    let slot = list.head
+    if slot == null as ptr[FreeSlot]:
+        return null as ptr[u8]
+    list.head = slot.next
+    list.count = list.count - 1
+    return ((slot as i64) - 8) as ptr[u8]
+
+// --------------------------------------------------------------------------
+// OS Virtual Memory Allocator
+// --------------------------------------------------------------------------
+
+pub fn ax_os_alloc(size: i64) -> ptr[void]:
+    if @compiler_intrinsic("is_windows"):
+        // Windows: MEM_COMMIT | MEM_RESERVE = 0x3000, PAGE_READWRITE = 0x04
+        return VirtualAlloc(null as ptr[void], size as u64, 0x3000 as u32, 0x04 as u32)
+    else:
+        // POSIX: PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
+        return mmap(null as ptr[void], size as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64)
+
+pub fn ax_os_free(ptr: ptr[void], size: i64):
+    if ptr == null as ptr[void]:
+        return
+    if @compiler_intrinsic("is_windows"):
+        // Windows: MEM_RELEASE = 0x8000
+        VirtualFree(ptr, 0 as u64, 0x8000 as u32)
+    else:
+        munmap(ptr, size as u64)
+
+// --------------------------------------------------------------------------
+// Segment Pool & Lifecycle
+// --------------------------------------------------------------------------
+
+pub fn ax_segment_manager_init():
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    slab_used_ptr.* = 0
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    free_pool_ptr.* = null as ptr[Segment]
+    let slab_ptr = std_mem_alloc_get_slab()
+    @memset(slab_ptr as ptr[u8], 0 as u8, 4096 as i64 * @compiler_intrinsic("size_of")[Segment]() as i64)
+
+pub fn ax_segment_manager_shutdown():
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    let slab_ptr = std_mem_alloc_get_slab()
+    mut i := 0 as i64
+    while i < slab_used_ptr.*:
+        let seg = (slab_ptr as i64 + i * @compiler_intrinsic("size_of")[Segment]() as i64) as ptr[Segment]
+        if seg.magic == SEGMENT_MAGIC:
+            ax_os_free(seg.base as ptr[void], SEGMENT_SIZE)
+            seg.magic = 0 as u32
+        i = i + 1
+    slab_used_ptr.* = 0
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    free_pool_ptr.* = null as ptr[Segment]
+
+fn alloc_segment_meta() -> ptr[Segment]:
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    if free_pool_ptr.* != null as ptr[Segment]:
+        let seg = free_pool_ptr.*
+        free_pool_ptr.* = seg.next
+        return seg
+    let slab_used_ptr = std_mem_alloc_get_slab_used()
+    if slab_used_ptr.* >= 4096 as i64:
+        return null as ptr[Segment]
+    let slab_ptr = std_mem_alloc_get_slab()
+    let seg = (slab_ptr as i64 + slab_used_ptr.* * @compiler_intrinsic("size_of")[Segment]() as i64) as ptr[Segment]
+    slab_used_ptr.* = slab_used_ptr.* + 1
+    return seg
+
+fn free_segment_meta(seg: ptr[Segment]):
+    @memset(seg as ptr[u8], 0 as u8, @compiler_intrinsic("size_of")[Segment]())
+    let free_pool_ptr = std_mem_alloc_get_free_pool()
+    seg.next = free_pool_ptr.*
+    free_pool_ptr.* = seg
+
+pub fn ax_segment_acquire(sc: i32) -> ptr[Segment]:
+    let seg = alloc_segment_meta()
+    if seg == null as ptr[Segment]:
+        return null as ptr[Segment]
+    let mem = ax_os_alloc(SEGMENT_SIZE) as ptr[u8]
+    if mem == null as ptr[u8]:
+        free_segment_meta(seg)
+        return null as ptr[Segment]
+    seg.base = mem
+    seg.bump = mem
+    seg.limit = (mem as i64 + SEGMENT_SIZE) as ptr[u8]
+    seg.sclass = sc
+    seg.next = null as ptr[Segment]
+    seg.magic = SEGMENT_MAGIC
+    return seg
+
+pub fn ax_segment_release(seg: ptr[Segment]):
+    if seg == null as ptr[Segment] or seg.magic != SEGMENT_MAGIC:
+        return
+    ax_os_free(seg.base as ptr[void], SEGMENT_SIZE)
+    seg.magic = 0 as u32
+    free_segment_meta(seg)
+
+pub fn ax_segment_get_active(list: ptr[SegmentList], sc: i32) -> ptr[Segment]:
+    if list.active != null as ptr[Segment] and list.active.bump < list.active.limit:
+        return list.active
+    if list.active != null as ptr[Segment]:
+        list.active.next = list.retired
+        list.retired = list.active
+        list.count = list.count + 1
+    let seg = ax_segment_acquire(sc)
+    list.active = seg
+    return seg
+
+pub fn ax_segment_list_release_all(list: ptr[SegmentList]):
+    if list.active != null as ptr[Segment]:
+        ax_segment_release(list.active)
+        list.active = null as ptr[Segment]
+    mut seg := list.retired
+    while seg != null as ptr[Segment]:
+        let next = seg.next
+        ax_segment_release(seg)
+        seg = next
+    list.retired = null as ptr[Segment]
+    list.count = 0
+
+pub fn ax_segment_bump_alloc(seg: ptr[Segment], sc: i32) -> ptr[u8]:
+    if seg == null as ptr[Segment] or sc >= 10:
+        return null as ptr[u8]
+    let block_size = ax_size_class_size(sc)
+    if (seg.bump as i64 + block_size) > seg.limit as i64:
+        return null as ptr[u8]
+    let block = seg.bump
+    seg.bump = (seg.bump as i64 + block_size) as ptr[u8]
+    return block
+
+// --------------------------------------------------------------------------
+// Large Allocations (> 4096 bytes)
+// --------------------------------------------------------------------------
+
+pub fn ax_large_alloc(user_size: i64) -> ptr[u8]:
+    let total = 8 + user_size
+    let page_aligned = ((total + 4095) / 4096) * 4096
+    let block = ax_os_alloc(page_aligned) as ptr[u8]
+    if block == null as ptr[u8]:
+        return null as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    hdr.gen_id = 1 as u32
+    hdr.flags = 10 as u32
+    return (block as i64 + 8) as ptr[u8]
+
+pub fn ax_large_free(user_ptr: ptr[u8], user_size: i64):
+    if user_ptr == null as ptr[u8]:
+        return
+    let block = (user_ptr as i64 - 8) as ptr[u8]
+    let total = 8 + user_size
+    let page_aligned = ((total + 4095) / 4096) * 4096
+    ax_os_free(block as ptr[void], page_aligned)
+
+// --------------------------------------------------------------------------
+// Actor Heap Management
+// --------------------------------------------------------------------------
+
+pub fn ax_actor_heap_create(actor_id: u64) -> ptr[ActorHeap]:
+    let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
+    let page_aligned = ((size + 4095) / 4096) * 4096
+    let heap = ax_os_alloc(page_aligned) as ptr[ActorHeap]
+    if heap == null as ptr[ActorHeap]:
+        return null as ptr[ActorHeap]
+    @memset(heap as ptr[u8], 0 as u8, page_aligned)
+    heap.actor_id = actor_id
+    heap.magic = ACTOR_HEAP_MAGIC
+    return heap
+
+pub fn ax_actor_heap_destroy(heap: ptr[ActorHeap]):
+    if heap == null as ptr[ActorHeap] or heap.magic != ACTOR_HEAP_MAGIC:
+        return
+    mut sc := 0
+    while sc < 10:
+        let list = ax_get_segment_list(heap, sc)
+        ax_segment_list_release_all(list)
+        sc = sc + 1
+    heap.magic = 0 as u32
+    let size = @compiler_intrinsic("size_of")[ActorHeap]() as i64
+    let page_aligned = ((size + 4095) / 4096) * 4096
+    ax_os_free(heap as ptr[void], page_aligned)
+
+pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:
+    if heap == null as ptr[ActorHeap] or heap.magic != ACTOR_HEAP_MAGIC:
+        return null as ptr[u8]
+    let sc = ax_size_class_for(user_size)
+    if sc == 10:
+        let ptr_val = ax_large_alloc(user_size)
+        if ptr_val != null as ptr[u8]:
+            heap.total_allocated = heap.total_allocated + user_size as u64
+            heap.alloc_count = heap.alloc_count + 1 as u64
+        return ptr_val
+    let free_list = ax_get_free_list(heap, sc)
+    mut block := ax_free_list_pop(free_list)
+    if block == null as ptr[u8]:
+        let seg_list = ax_get_segment_list(heap, sc)
+        mut seg := ax_segment_get_active(seg_list, sc)
+        if seg == null as ptr[Segment]:
+            return null as ptr[u8]
+        block = ax_segment_bump_alloc(seg, sc)
+        if block == null as ptr[u8]:
+            seg = ax_segment_get_active(seg_list, sc)
+            if seg == null as ptr[Segment]:
+                return null as ptr[u8]
+            block = ax_segment_bump_alloc(seg, sc)
+            if block == null as ptr[u8]:
+                return null as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    hdr.gen_id = 1 as u32
+    hdr.flags = sc as u32
+    let block_size = ax_size_class_size(sc)
+    heap.total_allocated = heap.total_allocated + block_size as u64
+    heap.alloc_count = heap.alloc_count + 1 as u64
+    return (block as i64 + 8) as ptr[u8]
+
+pub fn ax_actor_free(heap: ptr[ActorHeap], user_ptr: ptr[u8]):
+    if heap == null as ptr[ActorHeap] or user_ptr == null as ptr[u8] or heap.magic != ACTOR_HEAP_MAGIC:
+        return
+    let block = (user_ptr as i64 - 8) as ptr[u8]
+    let hdr = block as ptr[AxHeader]
+    let sc = (hdr.flags & 15 as u32) as i32
+    hdr.gen_id = 0 as u32
+    if sc == 10 or sc >= 10:
+        return
+    let block_size = ax_size_class_size(sc)
+    heap.total_freed = heap.total_freed + block_size as u64
+    heap.free_count = heap.free_count + 1 as u64
+    let free_list = ax_get_free_list(heap, sc)
+    ax_free_list_push(free_list, block)
+
+pub fn ax_numa_alloc(size: i64, node_id: i32) -> ptr[u8]:
+    return ax_os_alloc(size) as ptr[u8]
+
+// AXIOM Standard Library — std/scheduler.ax
+//
+// M:N Adaptive Work-Stealing Scheduler thread pool implementation in AXIOM.
+// Maps N actors/coroutines onto M worker threads using Chase-Lev queues.
+
+
+pub struct AxMessage:
+    pub next: ptr[AxMessage]
+    pub sender: u64
+    pub msg_type: u32
+    pub size: u32
+
+pub struct AxMsgQueue:
+    pub head: ptr[AxMessage]
+    pub tail: ptr[AxMessage]
+    pub msg_count: u64
+    pub pending: u64
+
+pub struct AxActor:
+    pub id: u64
+    pub state: i32 // 0: SPAWNING, 1: RUNNING, 2: STOPPING, 3: DEAD
+    pub mailbox: AxMsgQueue
+    pub handler: ptr[void]
+    pub state_data: ptr[void]
+    pub state_size: u64
+    pub heap: ptr[ActorHeap]
+
+pub struct AxActorTable:
+    pub actors: ptr[AxActor]
+    pub next_id: u64
+    pub actor_count: u32
+
+// --------------------------------------------------------------------------
+// Run Queue (Chase-Lev Work-Stealing Deque)
+// --------------------------------------------------------------------------
+
+pub struct runq:
+    pub buffer: [u64; 4096]
+    pub top: u64
+    pub bottom: u64
+
+pub fn init(mut self: runq):
+    let p = self as ptr[void]
+    memset(p, 0 as i32, 4096 as u64 * 8 as u64)
+    self.top = 0 as u64
+    self.bottom = 0 as u64
+
+pub fn push(mut self: runq, id: u64) -> i32:
+    let b = self.bottom
+    let t = self.top
+    if b - t >= 4096 as u64:
+        return -1 as i32
+    self.buffer[(b % 4096 as u64) as i64] = id
+    self.bottom = b + 1 as u64
+    return 0 as i32
+
+pub fn pop(mut self: runq) -> u64:
+    mut b := self.bottom
+    if b == 0 as u64:
+        return 0 as u64
+    
+    b = b - 1 as u64
+    self.bottom = b
+    let t = self.top
+    
+    if t <= b:
+        return self.buffer[(b % 4096 as u64) as i64]
+        
+    if t == b:
+        self.bottom = t + 1 as u64
+        self.top = t + 1 as u64
+        return self.buffer[(b % 4096 as u64) as i64]
+        
+    self.bottom = t
+    return 0 as u64
+
+pub fn steal(mut self: runq) -> u64:
+    let t = self.top
+    let b = self.bottom
+    if t >= b:
+        return 0 as u64
+        
+    let id = self.buffer[(t % 4096 as u64) as i64]
+    self.top = t + 1 as u64
+    return id
+
+pub fn empty(lent self: runq) -> i32:
+    if self.top >= self.bottom:
+        return 1 as i32
+    return 0 as i32
+
+// --------------------------------------------------------------------------
+// Worker Thread Struct
+// --------------------------------------------------------------------------
+
+pub struct worker:
+    pub id: u32
+    pub runq: runq
+    pub tasks_executed: u64
+    pub steals_attempted: u64
+    pub steals_succeeded: u64
+    pub running: i32
+
+// --------------------------------------------------------------------------
+// Scheduler Stats Struct
+// --------------------------------------------------------------------------
+
+pub struct SchedulerStats:
+    pub worker_count: u32
+    pub total_submitted: u64
+    pub total_executed: u64
+    pub total_steals: u64
+
+// --------------------------------------------------------------------------
+// Scheduler Struct
+// --------------------------------------------------------------------------
+
+pub struct scheduler:
+    pub workers: [worker; 256]
+    pub worker_count: u32
+    pub running: i32
+    pub total_submitted: u64
+
+pub fn init(mut self: scheduler, worker_count: u32) -> i32:
+    if worker_count == 0 as u32 or worker_count > 256 as u32:
+        return -1 as i32
+
+    let p = self as ptr[void]
+    let sz = @compiler_intrinsic("size_of")[scheduler]()
+    memset(p, 0 as i32, sz as u64)
+    
+    self.worker_count = worker_count
+    self.running = 0 as i32
+
+    mut i := 0 as u32
+    while i < worker_count:
+        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        w.id = i
+        let q = (w as i64 + 8 as i64) as ptr[runq]
+        q.init()
+        w.running = 0 as i32
+        i = i + 1 as u32
+
+    return 0 as i32
+
+pub fn submit(mut self: scheduler, actor_id: u64) -> i32:
+    if actor_id == 0 as u64:
+        return -1 as i32
+
+    let target = (self.total_submitted % (self.worker_count as u64)) as u32
+    let w = (self as i64 + target as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+    let q = (w as i64 + 8 as i64) as ptr[runq]
+    let res = q.push(actor_id)
+    if res == 0 as i32:
+        self.total_submitted = self.total_submitted + 1 as u64
+    return res
+
+fn get_state() -> ptr[AxGlobalState]:
+    return get_global_state()
+
+pub fn ax_actor_system_init():
+    let state = get_state()
+    let actor_table = state.g_actor_table as ptr[AxActorTable]
+    if actor_table != null as ptr[AxActorTable]:
+        return
+    let table_size = @compiler_intrinsic("size_of")[AxActorTable]() as i64
+    let new_table = ax_os_alloc(table_size) as ptr[AxActorTable]
+    new_table.next_id = 1 as u64
+    new_table.actor_count = 0 as u32
+    
+    let actors_size = 1024 as i64 * @compiler_intrinsic("size_of")[AxActor]() as i64
+    new_table.actors = ax_os_alloc(actors_size) as ptr[AxActor]
+    @memset(new_table.actors as ptr[u8], 0 as u8, actors_size)
+    state.g_actor_table = new_table as ptr[void]
+    
+    let sz = @compiler_intrinsic("size_of")[scheduler]() as i64
+    let new_sched = ax_os_alloc(sz) as ptr[scheduler]
+    new_sched.init(1 as u32)
+    state.g_sched = new_sched as ptr[void]
+    state.g_sched_initialized = true
+
+pub fn ax_actor_lookup(id: u64) -> ptr[void]:
+    let state = get_state()
+    let actor_table = state.g_actor_table as ptr[AxActorTable]
+    if actor_table == null as ptr[AxActorTable] or id == 0 as u64:
+        return null as ptr[void]
+    let slot = (id % 1024 as u64) as i64
+    mut attempts := 0 as i64
+    while attempts < 1024 as i64:
+        let actor = (actor_table.actors as i64 + ((slot + attempts) % 1024 as i64) * @compiler_intrinsic("size_of")[AxActor]() as i64) as ptr[AxActor]
+        if actor.id == id and actor.state != 3:
+            return actor as ptr[void]
+        attempts = attempts + 1 as i64
+    return null as ptr[void]
+
+pub fn ax_msgq_init(q: ptr[AxMsgQueue]):
+    q.head = null as ptr[AxMessage]
+    q.tail = null as ptr[AxMessage]
+    q.msg_count = 0 as u64
+    q.pending = 0 as u64
+
+pub fn ax_msgq_push(q: ptr[AxMsgQueue], msg: ptr[AxMessage]):
+    msg.next = null as ptr[AxMessage]
+    if q.tail == null as ptr[AxMessage]:
+        q.head = msg
+        q.tail = msg
+    else:
+        q.tail.next = msg
+        q.tail = msg
+    q.msg_count = q.msg_count + 1 as u64
+    q.pending = q.pending + 1 as u64
+
+pub fn ax_msgq_pop(q: ptr[AxMsgQueue]) -> ptr[AxMessage]:
+    let msg = q.head
+    if msg == null as ptr[AxMessage]:
+        return null as ptr[AxMessage]
+    q.head = msg.next
+    if q.head == null as ptr[AxMessage]:
+        q.tail = null as ptr[AxMessage]
+    q.pending = q.pending - 1 as u64
+    return msg
+
+pub fn ax_actor_send(target: u64, sender: u64, msg_type: u32, payload: ptr[void], size: u32) -> i32:
+    let actor_ptr = ax_actor_lookup(target) as ptr[AxActor]
+    if actor_ptr == null as ptr[AxActor]:
+        return -1 as i32
+    let total_msg_size = @compiler_intrinsic("size_of")[AxMessage]() as i64 + size as i64
+    let msg = ax_actor_alloc(actor_ptr.heap, total_msg_size) as ptr[AxMessage]
+    if msg == null as ptr[AxMessage]:
+        return -1 as i32
+    msg.next = null as ptr[AxMessage]
+    msg.sender = sender
+    msg.msg_type = msg_type
+    msg.size = size
+    if payload != null as ptr[void] and size > 0 as u32:
+        let payload_dest = (msg as i64 + @compiler_intrinsic("size_of")[AxMessage]() as i64) as ptr[u8]
+        @memcpy(payload_dest, payload as ptr[u8], size as i64)
+    ax_msgq_push((actor_ptr as i64 + 16 as i64) as ptr[AxMsgQueue], msg)
+    return 0 as i32
+
+pub fn ax_actor_spawn(handler: ptr[void], init_data: ptr[void], data_size: u64) -> u64:
+    let state = get_state()
+    let actor_table = state.g_actor_table as ptr[AxActorTable]
+    if actor_table == null as ptr[AxActorTable]:
+        ax_actor_system_init()
+    let table = state.g_actor_table as ptr[AxActorTable]
+    if handler == null as ptr[void]:
+        return 0 as u64
+    let id = table.next_id
+    table.next_id = id + 1 as u64
+    let slot = (id % 1024 as u64) as i64
+    mut attempts := 0 as i64
+    mut found_slot := -1 as i64
+    while attempts < 1024 as i64:
+        let cur_slot = (slot + attempts) % 1024 as i64
+        let actor = (table.actors as i64 + cur_slot * @compiler_intrinsic("size_of")[AxActor]() as i64) as ptr[AxActor]
+        if actor.id == 0 as u64 or actor.state == 3:
+            found_slot = cur_slot
+            break
+        attempts = attempts + 1 as i64
+    if found_slot == -1 as i64:
+        return 0 as u64
+    let actor = (table.actors as i64 + found_slot * @compiler_intrinsic("size_of")[AxActor]() as i64) as ptr[AxActor]
+    @memset(actor as ptr[u8], 0 as u8, @compiler_intrinsic("size_of")[AxActor]())
+    actor.id = id
+    actor.state = 0
+    actor.handler = handler
+    let heap = ax_actor_heap_create(id)
+    actor.heap = heap
+    if init_data != null as ptr[void] and data_size > 0 as u64:
+        let state_mem = ax_actor_alloc(heap, data_size as i64)
+        if state_mem != null as ptr[u8]:
+            @memcpy(state_mem, init_data as ptr[u8], data_size as i64)
+            actor.state_data = state_mem as ptr[void]
+            actor.state_size = data_size
+    actor.state = 1
+    table.actor_count = table.actor_count + 1 as u32
+    ax_actor_send(id, 0 as u64, 0 as u32, init_data, data_size as u32)
+    if state.g_sched_initialized:
+        let sched = state.g_sched as ptr[scheduler]
+        sched.submit(id)
+    return id
+
+pub fn ax_actor_step(actor_ptr: ptr[void]) -> i32:
+    let actor = actor_ptr as ptr[AxActor]
+    if actor == null as ptr[AxActor] or actor.state != 1:
+        return 0 as i32
+    let msg = ax_msgq_pop((actor as i64 + 16 as i64) as ptr[AxMsgQueue])
+    if msg == null as ptr[AxMessage]:
+        return 0 as i32
+    let handler_fn = actor.handler as fn(ptr[void], ptr[void], u32)
+    let payload = (msg as i64 + @compiler_intrinsic("size_of")[AxMessage]() as i64) as ptr[void]
+    handler_fn(actor as ptr[void], payload, msg.msg_type)
+    ax_actor_free(actor.heap, msg as ptr[u8])
+    return 1 as i32
+
+pub fn ax_actor_is_running(actor_ptr: ptr[void]) -> i32:
+    let actor = actor_ptr as ptr[AxActor]
+    if actor != null as ptr[AxActor] and actor.state == 1:
+        return 1 as i32
+    return 0 as i32
+
+pub fn ax_actor_has_messages(actor_ptr: ptr[void]) -> i32:
+    let actor = actor_ptr as ptr[AxActor]
+    if actor != null as ptr[AxActor] and actor.mailbox.head != null as ptr[AxMessage]:
+        return 1 as i32
+    return 0 as i32
+
+fn has_active_actors() -> bool:
+    let state = get_state()
+    let actor_table = state.g_actor_table as ptr[AxActorTable]
+    if actor_table == null as ptr[AxActorTable]:
+        return false
+    mut i := 0 as i64
+    while i < 1024 as i64:
+        let actor = (actor_table.actors as i64 + i * @compiler_intrinsic("size_of")[AxActor]() as i64) as ptr[AxActor]
+        if actor.id != 0 as u64 and actor.state == 1:
+            if actor.mailbox.pending > 0 as u64:
+                return true
+        i = i + 1 as i64
+    return false
+
+pub fn run(mut self: scheduler) -> i32:
+    self.running = 1 as i32
+    
+    mut i := 0 as u32
+    while i < self.worker_count:
+        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        w.running = 1 as i32
+        i = i + 1 as u32
+
+    while has_active_actors():
+        mut j := 0 as u32
+        while j < self.worker_count:
+            let w = (self as i64 + j as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+            let q = (w as i64 + 8 as i64) as ptr[runq]
+            mut id := q.pop()
+            if id != 0 as u64:
+                let actor_ptr = ax_actor_lookup(id)
+                if actor_ptr != null as ptr[void]:
+                    while ax_actor_step(actor_ptr) != 0 as i32:
+                        w.tasks_executed = w.tasks_executed + 1 as u64
+                    if ax_actor_is_running(actor_ptr) != 0 as i32 and ax_actor_has_messages(actor_ptr) != 0 as i32:
+                        q.push(id)
+            j = j + 1 as u32
+
+    return 0 as i32
+
+fn worker_loop(mut self: scheduler, w: ptr[worker]):
+    let q = (w as i64 + 8 as i64) as ptr[runq]
+    while w.running != 0 as i32:
+        mut id := q.pop()
+        
+        if id == 0 as u64:
+            mut i := 0 as u32
+            mut stop_loop := 0 as i32
+            while i < self.worker_count and stop_loop == 0 as i32:
+                if i != w.id:
+                    w.steals_attempted = w.steals_attempted + 1 as u64
+                    let w_other = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+                    let q_other = (w_other as i64 + 8 as i64) as ptr[runq]
+                    let stolen_id = q_other.steal()
+                    if stolen_id != 0 as u64:
+                        id = stolen_id
+                        w.steals_succeeded = w.steals_succeeded + 1 as u64
+                        stop_loop = 1 as i32
+                i = i + 1 as u32
+
+        if id == 0 as u64:
+            return
+
+        let actor_ptr = ax_actor_lookup(id)
+        if actor_ptr != null as ptr[void]:
+            while ax_actor_step(actor_ptr) != 0 as i32:
+                w.tasks_executed = w.tasks_executed + 1 as u64
+
+            if ax_actor_is_running(actor_ptr) != 0 as i32 and ax_actor_has_messages(actor_ptr) != 0 as i32:
+                q.push(id)
+
+pub fn shutdown(mut self: scheduler):
+    self.running = 0 as i32
+    mut i := 0 as u32
+    while i < self.worker_count:
+        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        w.running = 0 as i32
+        i = i + 1 as u32
+
+pub fn stats(lent self: scheduler, stats: ptr[SchedulerStats]):
+    if stats == null as ptr[SchedulerStats]:
+        return
+
+    stats.worker_count = self.worker_count
+    stats.total_submitted = self.total_submitted
+    stats.total_executed = 0 as u64
+    stats.total_steals = 0 as u64
+
+    mut i := 0 as u32
+    while i < self.worker_count:
+        let w = (self as i64 + i as i64 * @compiler_intrinsic("size_of")[worker]() as i64) as ptr[worker]
+        stats.total_executed = stats.total_executed + w.tasks_executed
+        stats.total_steals = stats.total_steals + w.steals_succeeded
+        i = i + 1 as u32
+
+// std/runtime.ax
+// AXIOM-Native Core Runtime and Allocation Bootstrap
+
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[u32], lpOverlapped: ptr[void]) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn puts(s: ptr[u8]) -> i32
+extern "C" fn fflush(stream: ptr[void]) -> i32
+
+pub fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64:
+    return 0 as i64
+
+// Core Panic, Assert & Bounds checking routines
+pub fn ax_panic(msg: str):
+    if @compiler_intrinsic("is_windows"):
+        puts("AXIOM RUNTIME PANIC: " as ptr[u8])
+        puts(msg as ptr[u8])
+        fflush(null as ptr[void])
+        ExitProcess(1 as u32)
+    else:
+        let prefix = "AXIOM RUNTIME PANIC: "
+        syscall(1 as u64, 2 as u64, prefix as ptr[u8] as u64, std.string.len(prefix) as u64, 0 as u64, 0 as u64, 0 as u64)
+        syscall(1 as u64, 2 as u64, msg as ptr[u8] as u64, std.string.len(msg) as u64, 0 as u64, 0 as u64, 0 as u64)
+        let newline = "\n"
+        syscall(1 as u64, 2 as u64, newline as ptr[u8] as u64, std.string.len(newline) as u64, 0 as u64, 0 as u64, 0 as u64)
+        syscall(60 as u64, 1 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+pub fn ax_bounds_check(idx: i64, len: i64):
+    if idx < 0 or idx >= len:
+        ax_panic("index out of bounds")
+
+pub fn ax_assert(cond: bool, msg: str):
+    if not cond:
+        ax_panic(msg)
+
+fn get_state() -> ptr[AxGlobalState]:
+    return get_global_state()
+
+pub fn __ax_runtime_init():
+    let state = get_state()
+    if state.is_rt_initialized:
+        return
+    ax_segment_manager_init()
+    state.global_heap = ax_actor_heap_create(1 as u64)
+    ax_actor_system_init()
+    state.is_rt_initialized = true
+
+pub fn __ax_runtime_shutdown():
+    let state = get_state()
+    if not state.is_rt_initialized:
+        return
+    if state.g_sched_initialized:
+        let sched = state.g_sched as ptr[scheduler]
+        sched.run()
+        sched.shutdown()
+    if state.global_heap != null as ptr[ActorHeap]:
+        ax_actor_heap_destroy(state.global_heap)
+    ax_segment_manager_shutdown()
+    state.is_rt_initialized = false
+
+// Export standard malloc and free signatures matching system ABI
+pub fn malloc(size: u64) -> ptr[void]:
+    let state = get_state()
+    if not state.is_rt_initialized:
+        __ax_runtime_init()
+    let p = ax_actor_alloc(state.global_heap, size as i64)
+    if p == null as ptr[u8]:
+        ax_panic("Out of memory")
+    return p as ptr[void]
+
+pub fn free(p: ptr[void]):
+    if p == null as ptr[void]:
+        return
+    let state = get_state()
+    if state.is_rt_initialized and state.global_heap != null as ptr[ActorHeap]:
+        ax_actor_free(state.global_heap, p as ptr[u8])
+
+// Stub for program name registry
+pub fn ax_set_program_name(name: ptr[u8]):
+    return
+
+fn streq(a: str, b: str) -> bool:
+    let len_a = a.len
+    let len_b = b.len
+    if len_a != len_b:
+        return false
+    mut i := 0 as i64
+    while i < len_a:
+        let char_a = ((a.ptr as i64 + i) as ptr[u8]).*
+        let char_b = ((b.ptr as i64 + i) as ptr[u8]).*
+        if char_a != char_b:
+            return false
+        i = i + 1 as i64
+    return true
+
+pub fn compiler_intrinsic(name: str) -> i64:
+    if streq(name, "is_windows"):
+        return 1 as i64
+    return 0 as i64
+
+pub fn handler_fn(a: ptr[void], b: ptr[void], c: u32):
+    return
+
+pub fn ax_str_len(s: str) -> i64:
+    return s.len
+
+pub fn ax_str_concat(a: str, b: str) -> str:
+    let total = a.len + b.len
+    let buf = malloc((total + 1) as u64) as ptr[u8]
+    if buf == null as ptr[u8]:
+        ax_panic("out of memory in string concat")
+    @memcpy(buf, a.ptr, a.len)
+    @memcpy(((buf as i64) + a.len) as ptr[u8], b.ptr, b.len)
+    buf[total] = 0 as u8
+    return buf as str
+
+pub fn ax_str_slice(s: str, mut start: i64, mut end: i64) -> str:
+    if start < 0 as i64:
+        start = 0 as i64
+    if end > s.len:
+        end = s.len
+    if start >= end:
+        return ""
+    let len = end - start
+    let buf = malloc((len + 1) as u64) as ptr[u8]
+    if buf == null as ptr[u8]:
+        ax_panic("out of memory in string slice")
+    @memcpy(buf, ((s.ptr as i64) + start) as ptr[u8], len)
+    buf[len] = 0 as u8
+    return buf as str
+
+pub fn ax_str_replace(s: str, old: str, new_val: str) -> str:
+    if old.len == 0 as i64:
+        return s
+    if s.len < old.len:
+        return s
+
+    let s_ptr = s as ptr[u8]
+    let old_ptr = old as ptr[u8]
+    let new_ptr = new_val as ptr[u8]
+
+    // Count occurrences
+    mut count := 0 as i64
+    mut i := 0 as i64
+    let limit = s.len - old.len
+    while i <= limit:
+        mut matched := true
+        mut j := 0 as i64
+        while j < old.len:
+            if s_ptr[i + j] != old_ptr[j]:
+                matched = false
+                break
+            j = j + 1 as i64
+        if matched:
+            count = count + 1 as i64
+            i = i + old.len
+        else:
+            i = i + 1 as i64
+
+    if count == 0 as i64:
+        return s
+
+    let new_len = s.len + count * (new_val.len - old.len)
+    if new_len < 0 as i64:
+        ax_panic("negative length or overflow in string replace")
+
+    let buf = malloc((new_len + 1 as i64) as u64) as ptr[u8]
+    if buf == null as ptr[u8]:
+        ax_panic("out of memory in string replace")
+
+    mut dest_idx := 0 as i64
+    i = 0 as i64
+    while i < s.len:
+        mut matched := false
+        if i <= limit:
+            matched = true
+            mut j := 0 as i64
+            while j < old.len:
+                if s_ptr[i + j] != old_ptr[j]:
+                    matched = false
+                    break
+                j = j + 1 as i64
+        if matched:
+            if new_val.len > 0 as i64:
+                @memcpy(((buf as i64) + dest_idx) as ptr[u8], new_ptr, new_val.len)
+                dest_idx = dest_idx + new_val.len
+            i = i + old.len
+        else:
+            buf[dest_idx] = s_ptr[i]
+            dest_idx = dest_idx + 1 as i64
+            i = i + 1 as i64
+
+    buf[new_len] = 0 as u8
+    return buf as str
+
+
+extern "C" fn malloc(size: u64) -> ptr[void]
+extern "C" fn free(p: ptr[void])
+extern "C" fn putchar(c: i32) -> i32
+
+struct MyData:
+    pub value: i32
+
+fn main() -> i32:
+    // 1. Allocate a struct block
+    let p = malloc(16 as u64) as ptr[MyData]
+    if p == null as ptr[MyData]:
+        return 1
+
+    p.value = 42
+
+    // 2. Read gen_id from header (displacement -8 from user pointer)
+    let gen_id = ((p as i64) - 8 as i64) as ptr[u32].*
+
+    // 3. Construct the fat generational reference in a u64
+    let ref_val = (p as u64 & 0x0000FFFFFFFFFFFF as u64) | ((gen_id as u64) << 48 as u64)
+
+    // 4. Cast it to ptr[MyData] so we can dereference it via NodeDerefExpr
+    let ref_ptr = ref_val as ptr[MyData]
+
+    // 5. Dereference it safely (this should succeed because p is still live)
+    let live_ptr = ref_ptr.*
+    if live_ptr.value != 42:
+        return 2
+
+    putchar(79) // 'O'
+    putchar(75) // 'K'
+    putchar(10) // '\n'
+
+    // 6. Free the block (this invalidates gen_id in the header to 0)
+    free(p as ptr[void])
+
+    // 7. Dereference again (this MUST trigger a generational ID mismatch abort!)
+    let dead_ptr = ref_ptr.*
+    if dead_ptr.value != 42:
+        return 3
+
+    return 0

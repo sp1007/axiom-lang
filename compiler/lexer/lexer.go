@@ -262,7 +262,19 @@ func (l *lexer) scanChar() {
 				l.pos++ // skip escaped char
 			}
 		} else if l.src[l.pos] != '\'' {
-			l.pos++ // skip the character
+			b := l.src[l.pos]
+			var size int = 1
+			if b >= 192 && b < 224 {
+				size = 2
+			} else if b >= 224 && b < 240 {
+				size = 3
+			} else if b >= 240 && b < 248 {
+				size = 4
+			}
+			l.pos += size
+			if l.pos > len(l.src) {
+				l.pos = len(l.src)
+			}
 		}
 	}
 

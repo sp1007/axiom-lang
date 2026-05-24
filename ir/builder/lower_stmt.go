@@ -14,6 +14,10 @@ type funcLowering struct {
 	locals map[uint32]uint32 // name ID → SSA register holding current value
 	params []uint32          // parameter type IDs
 
+	// Loop tracking for break/continue
+	loopConds []uint32
+	loopExits []uint32
+
 	// Track whether the current block already has a terminator.
 	terminated bool
 }
@@ -116,6 +120,10 @@ func (fl *funcLowering) lowerStmt(idx uint32, node *ast.AstNode) {
 	case ast.NodeDeferStmt:
 		// Defer is handled at scope exit; record for later emission
 		fl.lowerDefer(idx, node)
+	case ast.NodeBreakStmt:
+		fl.lowerBreak(idx, node)
+	case ast.NodeContinueStmt:
+		fl.lowerContinue(idx, node)
 	default:
 		// Expression statement (e.g., function call)
 		fl.lowerExpr(idx, node)
@@ -304,6 +312,13 @@ func (fl *funcLowering) lowerWhile(idx uint32, node *ast.AstNode) {
 	bodyBlock := fl.fb.NewBlock()
 	exitBlock := fl.fb.NewBlock()
 
+	fl.loopConds = append(fl.loopConds, condBlock)
+	fl.loopExits = append(fl.loopExits, exitBlock)
+	defer func() {
+		fl.loopConds = fl.loopConds[:len(fl.loopConds)-1]
+		fl.loopExits = fl.loopExits[:len(fl.loopExits)-1]
+	}()
+
 	// Jump from current to condition
 	curBlock := fl.fb.CurrentBlock()
 	fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
@@ -350,12 +365,16 @@ func (fl *funcLowering) lowerWhile(idx uint32, node *ast.AstNode) {
 
 // lowerFor lowers a for-in loop (range-based).
 func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
-	// For now, treat like a while loop with iterator variable
-	// Full range lowering requires iterator protocol; emit loop structure
-
 	condBlock := fl.fb.NewBlock()
 	bodyBlock := fl.fb.NewBlock()
 	exitBlock := fl.fb.NewBlock()
+
+	fl.loopConds = append(fl.loopConds, condBlock)
+	fl.loopExits = append(fl.loopExits, exitBlock)
+	defer func() {
+		fl.loopConds = fl.loopConds[:len(fl.loopConds)-1]
+		fl.loopExits = fl.loopExits[:len(fl.loopExits)-1]
+	}()
 
 	// Get loop variable name/symbol from payload
 	symIdx := node.Payload
@@ -369,18 +388,55 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 			typeID = uint16(sym.TypeID)
 		}
 	} else {
-		// Fallback
 		nameID = symIdx
 	}
 
-	// Initialize loop variable to 0
+	rangeExprIdx := node.FirstChild
+	var startReg uint32 = 0
+	var limitReg uint32 = 0
+	isRange := false
+
+	if rangeExprIdx != ast.NullIdx {
+		rangeNode := fl.mb.tree.Node(rangeExprIdx)
+		if rangeNode.Kind == ast.NodeBinaryExpr {
+			opText := string(fl.mb.tree.TokenText(rangeNode.TokenIdx))
+			if opText == ".." {
+				isRange = true
+				startNodeIdx := rangeNode.FirstChild
+				if startNodeIdx != ast.NullIdx {
+					startNode := fl.mb.tree.Node(startNodeIdx)
+					startReg = fl.lowerExpr(startNodeIdx, startNode)
+					endNodeIdx := startNode.NextSibling
+					if endNodeIdx != ast.NullIdx {
+						endNode := fl.mb.tree.Node(endNodeIdx)
+						limitReg = fl.lowerExpr(endNodeIdx, endNode)
+					}
+				}
+			}
+		}
+	}
+
 	iterReg := fl.fb.FreshReg()
-	fl.fb.Emit(air.AirInst{
-		Opcode: air.OpIConst,
-		TypeID: typeID,
-		Dest:   iterReg,
-		Src1:   0,
-	})
+	if isRange {
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpCopy,
+			TypeID: typeID,
+			Dest:   iterReg,
+			Src1:   startReg,
+		})
+	} else {
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpIConst,
+			TypeID: typeID,
+			Dest:   iterReg,
+			Src1:   0,
+		})
+		if rangeExprIdx != ast.NullIdx {
+			rangeNode := fl.mb.tree.Node(rangeExprIdx)
+			limitReg = fl.lowerExpr(rangeExprIdx, rangeNode)
+		}
+	}
+
 	fl.locals[nameID] = iterReg
 
 	// Jump to condition
@@ -388,21 +444,9 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 	fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
 	fl.fb.AddEdge(curBlock, condBlock)
 
-	// Condition: i < limit (simplified — full lowering needs range expr)
+	// Condition
 	fl.fb.SwitchTo(condBlock)
 	fl.terminated = false
-
-	// Lower the range expression (second child)
-	limitReg := uint32(0)
-	child := node.FirstChild
-	if child != ast.NullIdx {
-		cn := fl.mb.tree.Node(child)
-		child = cn.NextSibling // skip iterator variable decl, get range expr
-		if child != ast.NullIdx {
-			cn = fl.mb.tree.Node(child)
-			limitReg = fl.lowerExpr(child, cn)
-		}
-	}
 
 	// Comparison: currentIter < limit
 	cmpReg := fl.fb.FreshReg()
@@ -428,14 +472,14 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 	fl.fb.SwitchTo(bodyBlock)
 	fl.terminated = false
 
-	// Lower body (last child should be the block)
-	if child != ast.NullIdx {
-		cn := fl.mb.tree.Node(child)
-		child = cn.NextSibling
-		if child != ast.NullIdx {
-			cn = fl.mb.tree.Node(child)
-			if cn.Kind == ast.NodeBlock {
-				fl.lowerBlock(child)
+	// Lower body
+	if rangeExprIdx != ast.NullIdx {
+		rangeNode := fl.mb.tree.Node(rangeExprIdx)
+		bodyNodeIdx := rangeNode.NextSibling
+		if bodyNodeIdx != ast.NullIdx {
+			bodyNode := fl.mb.tree.Node(bodyNodeIdx)
+			if bodyNode.Kind == ast.NodeBlock {
+				fl.lowerBlock(bodyNodeIdx)
 			}
 		}
 	}
@@ -450,12 +494,19 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 			Src1:   1,
 		})
 		iterReg := fl.locals[nameID]
+		newValReg := fl.fb.FreshReg()
 		fl.fb.Emit(air.AirInst{
 			Opcode: air.OpIAdd,
 			TypeID: typeID,
-			Dest:   iterReg,
+			Dest:   newValReg,
 			Src1:   iterReg,
 			Src2:   oneReg,
+		})
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpCopy,
+			TypeID: typeID,
+			Dest:   iterReg,
+			Src1:   newValReg,
 		})
 
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
@@ -499,4 +550,24 @@ func (fl *funcLowering) lowerDefer(idx uint32, node *ast.AstNode) {
 		cn := fl.mb.tree.Node(node.FirstChild)
 		fl.lowerExpr(node.FirstChild, cn)
 	}
+}
+
+func (fl *funcLowering) lowerBreak(idx uint32, node *ast.AstNode) {
+	if len(fl.loopExits) == 0 {
+		return
+	}
+	target := fl.loopExits[len(fl.loopExits)-1]
+	fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: target})
+	fl.fb.AddEdge(fl.fb.CurrentBlock(), target)
+	fl.terminated = true
+}
+
+func (fl *funcLowering) lowerContinue(idx uint32, node *ast.AstNode) {
+	if len(fl.loopConds) == 0 {
+		return
+	}
+	target := fl.loopConds[len(fl.loopConds)-1]
+	fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: target})
+	fl.fb.AddEdge(fl.fb.CurrentBlock(), target)
+	fl.terminated = true
 }

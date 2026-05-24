@@ -23,6 +23,8 @@ type InferenceEngine struct {
 	
 	// Track current function's return type for 'return' statement checking
 	currentReturn types.TypeID
+	// Track current match statement's scrutinee type for pattern type inference
+	currentMatchScrutinee types.TypeID
 }
 
 // NewInferenceEngine creates a new InferenceEngine.
@@ -686,7 +688,25 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		if obj != 0 {
 			objType := ie.inferNode(obj, types.TypeUnknown)
 			fmt.Printf("[DEBUG-FIELD] FieldExpr nodeIdx=%d objType=%d fieldNameID=%d\n", nodeIdx, objType, uint32(node.Payload))
-			if objType != types.TypeUnknown {
+
+			lhsIsModule := false
+			curr := obj
+			for ie.ast.Nodes[curr].Kind == ast.NodeFieldExpr {
+				curr = ie.ast.Nodes[curr].FirstChild
+			}
+			if ie.ast.Nodes[curr].Kind == ast.NodeIdent {
+				name := string(ie.ast.NodeText(curr))
+				nameID := ie.symtable.intern.InternString(name)
+				symIdx, found := ie.symtable.Resolve(nameID)
+				if found && int(symIdx) < len(ie.symtable.Symbols) {
+					sym := ie.symtable.SymbolAt(symIdx)
+					if sym.Kind == SymModule {
+						lhsIsModule = true
+					}
+				}
+			}
+
+			if !lhsIsModule && objType != types.TypeUnknown {
 				entry := ie.types.Entry(objType)
 				if entry.Kind == types.KindPointer {
 					objType = ie.types.PointerElem(objType)
@@ -963,6 +983,14 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 				}
 			} else {
 				// Fallback for unknown callee types (e.g. alloc, free, memcpy calls)
+				if identNode := ie.ast.Nodes[callee]; identNode.Kind == ast.NodeIdent {
+					name := string(ie.ast.NodeText(callee))
+					if name == "syscall0" || name == "syscall1" || name == "syscall2" ||
+						name == "syscall3" || name == "syscall4" || name == "syscall5" ||
+						name == "syscall6" {
+						resultType = types.TypeI64
+					}
+				}
 				arg := ie.ast.Nodes[callee].NextSibling
 				for arg != 0 {
 					ie.inferNode(arg, types.TypeUnknown)
@@ -1080,6 +1108,8 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		resultType = types.TypeF64
 	case ast.NodeStringLit:
 		resultType = types.TypeString
+	case ast.NodeCharLit:
+		resultType = types.TypeChar8
 	case ast.NodeBoolLit:
 		resultType = types.TypeBool
 	case ast.NodeNilLit:
@@ -1181,6 +1211,112 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			}
 		}
 		ie.ast.SetPayload(nodeIdx, uint32(resultType))
+
+	case ast.NodeMatchStmt:
+		scrutinee := node.FirstChild
+		if scrutinee != 0 {
+			scrutineeType := ie.inferNode(scrutinee, types.TypeUnknown)
+			prevScrutinee := ie.currentMatchScrutinee
+			ie.currentMatchScrutinee = scrutineeType
+
+			arm := ie.ast.Nodes[scrutinee].NextSibling
+			for arm != 0 {
+				ie.inferNode(arm, types.TypeUnknown)
+				arm = ie.ast.Nodes[arm].NextSibling
+			}
+			ie.currentMatchScrutinee = prevScrutinee
+		}
+
+	case ast.NodeMatchArm:
+		pattern := node.FirstChild
+		body := uint32(0)
+		if pattern != 0 {
+			body = ie.ast.Nodes[pattern].NextSibling
+		}
+
+		if ie.currentMatchScrutinee != 0 {
+			var sumInfo *types.SumType
+			scrutineeEntry := ie.types.Entry(ie.currentMatchScrutinee)
+			if scrutineeEntry.Kind == types.KindSum {
+				sumInfo = ie.types.SumInfo(ie.currentMatchScrutinee)
+			} else if scrutineeEntry.Kind == types.KindGenericInst {
+				for idx := 0; idx < ie.types.Count(); idx++ {
+					e := ie.types.Entry(types.TypeID(idx))
+					if e.Kind == types.KindSum && e.NameID == scrutineeEntry.NameID {
+						sumInfo = ie.types.SumInfo(types.TypeID(idx))
+						break
+					}
+				}
+			}
+
+			if sumInfo != nil {
+				patNode := &ie.ast.Nodes[pattern]
+				if patNode.Kind == ast.NodeVariantPat {
+					symIdx := patNode.Payload
+					arg := patNode.FirstChild
+					if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+						sym := ie.symtable.SymbolAt(symIdx)
+						var payloadType types.TypeID = 0
+						for _, v := range sumInfo.Variants {
+							if v.NameID == sym.NameID {
+								payloadType = v.PayloadType
+								break
+							}
+						}
+						
+						// In generic sum types, we need to map generic params to inst args
+						if scrutineeEntry.Kind == types.KindGenericInst && payloadType != types.TypeUnknown {
+							params := sumInfo.GenericParams
+							args := ie.types.GenericInstArgs(ie.currentMatchScrutinee)
+							payloadType = ie.types.SubstituteGenericType(payloadType, params, args)
+						}
+
+						ie.nodeTypes[pattern] = ie.currentMatchScrutinee
+
+						if arg != 0 {
+							argNode := &ie.ast.Nodes[arg]
+							if argNode.Kind == ast.NodeBindingPat || argNode.Kind == ast.NodeIdent {
+								argSymIdx := argNode.Payload
+								if argSymIdx != 0 && int(argSymIdx) < len(ie.symtable.Symbols) {
+									argSym := ie.symtable.SymbolAt(argSymIdx)
+									argSym.TypeID = uint32(payloadType)
+								}
+								ie.nodeTypes[arg] = payloadType
+							}
+						}
+					}
+				} else if patNode.Kind == ast.NodeBindingPat {
+					symIdx := patNode.Payload
+					if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+						sym := ie.symtable.SymbolAt(symIdx)
+						if sym.Kind == SymVar {
+							sym.TypeID = uint32(ie.currentMatchScrutinee)
+							ie.nodeTypes[pattern] = ie.currentMatchScrutinee
+						}
+					}
+				} else {
+					ie.inferNode(pattern, types.TypeUnknown)
+				}
+			} else if pattern != 0 {
+				ie.inferNode(pattern, types.TypeUnknown)
+			}
+		} else if pattern != 0 {
+			ie.inferNode(pattern, types.TypeUnknown)
+		}
+
+		if body != 0 {
+			ie.inferNode(body, types.TypeUnknown)
+		}
+
+	case ast.NodeBindingPat:
+		symIdx := node.Payload
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			resultType = types.TypeID(sym.TypeID)
+		}
+
+	case ast.NodeVariantPat:
+		resultType = ie.currentMatchScrutinee
 
 	default:
 		// Recurse for anything else

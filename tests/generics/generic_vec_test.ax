@@ -1,0 +1,36 @@
+struct Vec[T]:
+    data: ptr[T]
+    len: i64
+    cap: i64
+
+fn new_vec[T]() -> Vec[T]:
+    return Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
+
+fn push[T](mut v: Vec[T], item: T) -> Vec[T]:
+    if v.len == v.cap:
+        mut new_cap := 8 as i64
+        if v.cap != 0 as i64:
+            new_cap = v.cap * 2 as i64
+        let new_data = @alloc(new_cap * 8 as i64) as ptr[T]
+        if v.data != null as ptr[T]:
+            @memcpy(new_data as ptr[u8], v.data as ptr[u8], v.len * 8 as i64)
+            @free(v.data as ptr[u8])
+        v.data = new_data
+        v.cap = new_cap
+    v.data[v.len] = item
+    v.len = v.len + 1 as i64
+    return v
+
+fn main():
+    mut v := new_vec[i32]()
+    v = push(v, 10)
+    v = push(v, 20)
+    v = push(v, 30)
+
+    let first = v.data[0]
+    let second = v.data[1]
+    let third = v.data[2]
+    
+    // Cleanup
+    if v.data != null as ptr[i32]:
+        @free(v.data as ptr[u8])
