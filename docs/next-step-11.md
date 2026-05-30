@@ -14,14 +14,14 @@ Tài liệu này ghi nhận kết quả hoàn thành giai đoạn sửa lỗi th
 - [x] **Nhiệm vụ 1.3: Chạy Kiểm Thử Tích Hợp và Xác Minh**
   * **Hành động**: Chạy lệnh `go test -v -run TestAxiomProcess ./tests/codegen` trên Windows. Kết quả đã biên dịch thành công và kiểm thử pass hoàn toàn.
 
-### Giai Đoạn 2: Kiểm Chứng Trình Biên Dịch Tự Trị Natively và Freestanding (Đang thực hiện)
-- [ ] **Nhiệm vụ 2.1: Viết test case biên dịch tự trị thông qua Native Backend trực tiếp**
+### Giai Đoạn 2: Kiểm Chứng Trình Biên Dịch Tự Trị Natively và Freestanding (Đã hoàn thành 100%)
+- [x] **Nhiệm vụ 2.1: Viết test case biên dịch tự trị thông qua Native Backend trực tiếp**
   * **Mục tiêu**: Chạy thử nghiệm trình biên dịch tự trị viết bằng Axiom (`main_air.ax` hay `bin/axc_stage2_selfhosted.exe`) với cờ tự liên kết (`self_link = true`) để sinh mã máy PE COFF trực tiếp cho một chương trình đơn giản, sau đó liên kết nhị phân độc lập không qua GCC/MSVC.
-- [ ] **Nhiệm vụ 2.2: Kiểm tra tính đúng đắn của file thực thi tự trị sinh ra**
+- [x] **Nhiệm vụ 2.2: Kiểm tra tính đúng đắn của file thực thi tự trị sinh ra**
   * **Hành động**: Thực thi nhị phân sinh ra từ Native Self-Linker để đảm bảo nó hoạt động không có lỗi bộ nhớ.
 
-### Giai Đoạn 3: Thiết Kế Thư Viện Mạng Freestanding `std/net.ax` (Đang thực hiện)
-- [ ] **Nhiệm vụ 3.1: Định nghĩa các cấu trúc Socket FFI thuần túy**
-  * **Chi tiết**: Khai báo cấu trúc FFI của Winsock trên Windows (`SOCKET`, `sockaddr_in`) và syscall Socket trên Linux.
-- [ ] **Nhiệm vụ 3.2: Triển khai các API cơ bản (socket, bind, listen, accept, connect, send, recv)**
-  * **Mục tiêu**: Hỗ trợ giao tiếp TCP/IP cơ bản freestanding hoàn toàn không phụ thuộc C standard library.
+### Giai Đoạn 3: Thiết Kế Thư Viện Mạng Freestanding `std/net.ax` (Đã hoàn thành 100%)
+- [x] **Nhiệm vụ 3.1: Định nghĩa các cấu trúc Socket FFI thuần túy**
+  * **Giải pháp**: Đã khai báo đầy đủ Winsock FFI trên Windows (như `WSAStartup`, `socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`, `closesocket`, `ioctlsocket`) và socket syscalls trên Linux thông qua `std.os.linux_sys.syscall` (như syscall socket, connect, accept, bind, listen, send, recv).
+- [x] **Nhiệm vụ 3.2: Triển khai các API cơ bản (socket, bind, listen, accept, connect, send, recv)**
+  * **Giải pháp**: Đã tích hợp hoàn hảo vào cấu trúc `TcpStream` và `TcpListener` cho cả Windows và Linux. Hỗ trợ giao tiếp TCP/IP FFI freestanding hoàn chỉnh, độc lập hoàn toàn với libc, phục vụ khả năng nối mạng độc lập của compiler/runtime.

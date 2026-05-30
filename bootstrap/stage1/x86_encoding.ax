@@ -13,12 +13,12 @@ pub fn x86_encode_int3(buf: ptr[ByteVec]):
 pub fn x86_encode_push(reg: u8, buf: ptr[ByteVec]):
     if reg_needs_rex(reg):
         push_byte(buf, REX_BASE | REX_B)
-    push_byte(buf, 0x50 as u8 + reg_hw_reg(reg))
+    push_byte(buf, 0x50 as u8 + (reg_hw_reg(reg) & 7 as u8))
 
 pub fn x86_encode_pop(reg: u8, buf: ptr[ByteVec]):
     if reg_needs_rex(reg):
         push_byte(buf, REX_BASE | REX_B)
-    push_byte(buf, 0x58 as u8 + reg_hw_reg(reg))
+    push_byte(buf, 0x58 as u8 + (reg_hw_reg(reg) & 7 as u8))
 
 pub fn x86_encode_mov_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
     mut modrm := 0 as u8
@@ -35,7 +35,7 @@ pub fn x86_encode_mov_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_mov_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(dst))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | reg_hw_reg(dst)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xC7 as u8)
     push_byte(buf, modrm)
@@ -44,7 +44,7 @@ pub fn x86_encode_mov_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
 pub fn x86_encode_mov_ri64(dst: u8, imm: i64, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(dst))
     push_byte(buf, rex)
-    push_byte(buf, 0xB8 as u8 + reg_hw_reg(dst))
+    push_byte(buf, 0xB8 as u8 + (reg_hw_reg(dst) & 7 as u8))
     push_u64_le(buf, imm as u64)
 
 pub fn x86_encode_add_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
@@ -62,7 +62,7 @@ pub fn x86_encode_add_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_add_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(dst))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | reg_hw_reg(dst)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0x81 as u8)
     push_byte(buf, modrm)
@@ -83,7 +83,7 @@ pub fn x86_encode_sub_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_sub_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(dst))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | reg_hw_reg(dst)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0x81 as u8)
     push_byte(buf, modrm)
@@ -109,21 +109,21 @@ pub fn x86_encode_cqo(buf: ptr[ByteVec]):
 
 pub fn x86_encode_idiv_r(divisor: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(divisor))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | reg_hw_reg(divisor)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | (reg_hw_reg(divisor) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xF7 as u8)
     push_byte(buf, modrm)
 
 pub fn x86_encode_neg_r(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (3 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (3 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xF7 as u8)
     push_byte(buf, modrm)
 
 pub fn x86_encode_not_r(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (2 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (2 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xF7 as u8)
     push_byte(buf, modrm)
@@ -143,7 +143,7 @@ pub fn x86_encode_cmp_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_cmp_ri(reg: u8, imm: i32, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0x81 as u8)
     push_byte(buf, modrm)
@@ -203,27 +203,27 @@ pub fn x86_encode_xor_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_shl_cl(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xD3 as u8)
     push_byte(buf, modrm)
 
 pub fn x86_encode_sar_cl(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xD3 as u8)
     push_byte(buf, modrm)
 
 pub fn x86_encode_shr_cl(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xD3 as u8)
     push_byte(buf, modrm)
 
 pub fn x86_encode_xor_zero(reg: u8, buf: ptr[ByteVec]):
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (reg_hw_reg(reg) << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | ((reg_hw_reg(reg) & 7 as u8) << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     if reg_needs_rex(reg):
         let rex = REX_BASE | REX_R | REX_B
         push_byte(buf, rex)
@@ -236,14 +236,14 @@ pub fn x86_encode_setcc(cc: u8, dst: u8, buf: ptr[ByteVec]):
         if reg_needs_rex(dst):
             rex = rex | REX_B
         push_byte(buf, rex)
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | reg_hw_reg(dst)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (0 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
     push_byte(buf, 0x0F as u8)
     push_byte(buf, 0x90 as u8 + cc)
     push_byte(buf, modrm)
 
 pub fn x86_encode_movzx_br(dst: u8, src: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, reg_needs_rex(dst), false, reg_needs_rex(src))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (reg_hw_reg(dst) << 3 as u8) | reg_hw_reg(src)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | ((reg_hw_reg(dst) & 7 as u8) << 3 as u8) | (reg_hw_reg(src) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0x0F as u8)
     push_byte(buf, 0xB6 as u8)
@@ -265,7 +265,7 @@ pub fn x86_encode_call_rel32(rel32: i32, buf: ptr[ByteVec]):
 pub fn x86_encode_call_r(reg: u8, buf: ptr[ByteVec]):
     if reg_needs_rex(reg):
         push_byte(buf, REX_BASE | REX_B)
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (2 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (2 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, 0xFF as u8)
     push_byte(buf, modrm)
 
@@ -358,13 +358,13 @@ pub fn x86_encode_lea_rip(dst: u8, disp32: i32, buf: ptr[ByteVec]):
     push_byte(buf, rex)
     push_byte(buf, 0x8D as u8)
     let reg_field = reg_hw_reg(dst)
-    let modrm = (MOD_INDIRECT << 6 as u8) | (reg_field << 3 as u8) | 0x05 as u8
+    let modrm = (MOD_INDIRECT << 6 as u8) | ((reg_field & 7 as u8) << 3 as u8) | 0x05 as u8
     push_byte(buf, modrm)
     push_u32_le(buf, disp32 as u32)
 
 pub fn x86_encode_shl_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xC1 as u8)
     push_byte(buf, modrm)
@@ -372,7 +372,7 @@ pub fn x86_encode_shl_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_sar_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (7 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xC1 as u8)
     push_byte(buf, modrm)
@@ -380,7 +380,7 @@ pub fn x86_encode_sar_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
 
 pub fn x86_encode_shr_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
-    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | reg_hw_reg(reg)
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)
     push_byte(buf, rex)
     push_byte(buf, 0xC1 as u8)
     push_byte(buf, modrm)

@@ -472,7 +472,8 @@ pub fn is_valid_runtime_dll_symbol(name: str) -> bool:
         name == "ax_scheduler_stats" or name == "ax_scheduler_submit" or
         name == "ax_scheduler_init" or name == "ax_scheduler_run" or
         name == "ax_scheduler_shutdown" or name == "ax_compiler_intrinsic" or
-        name == "ax_get_global_state_internal"):
+        name == "ax_get_global_state_internal" or name == "ax_str_parse_i64" or
+        name == "ax_str_parse_f64" or name == "ax_sum_layout_is_pointer"):
         return true
     return false
 
@@ -1621,7 +1622,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     while entry_search < func_names.len:
         let fn_name = func_names.data[entry_search]
         if fn_name == "main" or fn_name == "_AX_main_main_v_v":
-            entry_rva = (0x1000 as i64 + func_offsets.data[entry_search].offset) as u32
+            let name_nt = x86_str_to_null_terminated(fn_name)
+            let offset_val = func_offsets.data[entry_search].offset
+            ax_printf_local("[Debug Linker Entry] Found entry fn=%s, offset=%d, RVA=%d\n", name_nt as i64, offset_val as i64, (0x1000 as i64 + offset_val) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            @free(name_nt)
+            entry_rva = (0x1000 as i64 + offset_val) as u32
             break
         entry_search = entry_search + 1
         

@@ -132,6 +132,12 @@ global ax_stdin
 global ax_stdout
 global ax_stderr
 global main
+global ax__AX_std_Option__i32__AX_std_is_some__i32
+global ax__AX_std_Option__i32__AX_std_unwrap__i32
+global ax__AX_std_Result__i32__i32__AX_std_is_ok__i32__i32
+global ax__AX_std_Result__i32__i32__AX_std_is_err__i32__i32
+global ax__AX_std_Result__i32__i32__AX_std_unwrap__i32__i32
+global ax__AX_std_Result__i32__i32__AX_std_unwrap_err__i32__i32
 global ax__AX_std_Result__FileMetadata__string__AX_std_is_ok__FileMetadata__string
 global ax__AX_std_Option__PathBuf__AX_std_is_some__PathBuf
 global ax__AX_std_Option__PathBuf__AX_std_unwrap__PathBuf
@@ -142,9 +148,6 @@ global ax__AX_std_Result__i64__string__AX_std_is_ok__i64__string
 global ax__AX_std_Option__i64__AX_std_unwrap__i64
 global ax__AX_std_Result__i64__string__AX_std_unwrap_err__i64__string
 global ax__AX_std_BufWriter__i32__AX_std_flush_buf__i32
-global ax__AX_std_Result__i32__i32__AX_std_is_ok__i32__i32
-global ax__AX_std_Option__i32__AX_std_unwrap__i32
-global ax__AX_std_Result__i32__i32__AX_std_unwrap_err__i32__i32
 global ax__AX_std_Result__void__string__AX_std_unwrap_err__void__string
 
 ax_mmap:
@@ -1540,7 +1543,7 @@ ax_ax_os_alloc_report_error:
     add rsp, 32
     mov rax, rax
     mov r12, rax
-    lea rdx, [rel Linfo.string.685]
+    lea rdx, [rel Linfo.string.700]
     mov [rbp - 104], rdx
     mov rdx, 32
     mov [rbp - 96], rdx
@@ -3252,7 +3255,7 @@ ax_runq_push:
     mov r10, [rbp - 40]
     mov rax, [r10 + 32776]
     mov rsi, rax
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 104], rdx
     mov rdx, 11
     mov [rbp - 96], rdx
@@ -3300,7 +3303,7 @@ ax_runq_push:
     mov rax, rdx
     add rax, rcx
     mov [rax], rdi
-    lea rdx, [rel Linfo.string.687]
+    lea rdx, [rel Linfo.string.702]
     mov [rbp - 120], rdx
     mov rdx, 12
     mov [rbp - 112], rdx
@@ -3380,7 +3383,7 @@ ax_runq_pop:
     mov rax, r12
     sub rax, rcx
     mov r12, rax
-    lea rdx, [rel Linfo.string.687]
+    lea rdx, [rel Linfo.string.702]
     mov [rbp - 176], rdx
     mov rdx, 12
     mov [rbp - 168], rdx
@@ -3402,7 +3405,7 @@ ax_runq_pop:
     call ax_compiler_intrinsic
     add rsp, 32
     mov rax, rax
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 192], rdx
     mov rdx, 11
     mov [rbp - 184], rdx
@@ -3467,7 +3470,7 @@ ax_runq_pop:
     jne .L_b_8
     jmp .L_b_9
 .L_b_5:
-    lea rdx, [rel Linfo.string.687]
+    lea rdx, [rel Linfo.string.702]
     mov [rbp - 208], rdx
     mov rdx, 12
     mov [rbp - 200], rdx
@@ -3511,7 +3514,7 @@ ax_runq_pop:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.688]
+    lea rdx, [rel Linfo.string.703]
     mov [rbp - 224], rdx
     mov rdx, 10
     mov [rbp - 216], rdx
@@ -3547,7 +3550,7 @@ ax_runq_pop:
 .L_b_9:
     jmp .L_b_7
 .L_b_10:
-    lea rdx, [rel Linfo.string.687]
+    lea rdx, [rel Linfo.string.702]
     mov [rbp - 240], rdx
     mov rdx, 12
     mov [rbp - 232], rdx
@@ -3593,7 +3596,7 @@ ax_runq_steal:
 .L_b_0:
     mov r11, rcx
     mov [rbp - 40], r11
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 128], rdx
     mov rdx, 11
     mov [rbp - 120], rdx
@@ -3615,7 +3618,7 @@ ax_runq_steal:
     add rsp, 32
     mov rax, rax
     mov r12, rax
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 144], rdx
     mov rdx, 11
     mov [rbp - 136], rdx
@@ -3660,7 +3663,7 @@ ax_runq_steal:
     add rcx, rdx
     mov rax, [rcx]
     mov rsi, rax
-    lea rdx, [rel Linfo.string.688]
+    lea rdx, [rel Linfo.string.703]
     mov [rbp - 160], rdx
     mov rdx, 10
     mov [rbp - 152], rdx
@@ -3734,7 +3737,7 @@ ax_runq_empty:
     sub rsp, 128
 .L_b_0:
     mov rbx, rcx
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 80], rdx
     mov rdx, 11
     mov [rbp - 72], rdx
@@ -3755,7 +3758,7 @@ ax_runq_empty:
     add rsp, 32
     mov rax, rax
     mov rsi, rax
-    lea rdx, [rel Linfo.string.686]
+    lea rdx, [rel Linfo.string.701]
     mov [rbp - 96], rdx
     mov rdx, 11
     mov [rbp - 88], rdx
@@ -5774,7 +5777,7 @@ ax_ax_panic:
     xor rcx, rcx
     mov rax, rcx
     mov dword [rdi], eax
-    lea rdx, [rel Linfo.string.689]
+    lea rdx, [rel Linfo.string.704]
     mov [rbp - 328], rdx
     mov rdx, 21
     mov [rbp - 320], rdx
@@ -5832,7 +5835,7 @@ ax_ax_panic:
     call WriteFile
     add rsp, 48
     mov rax, rax
-    lea rdx, [rel Linfo.string.690]
+    lea rdx, [rel Linfo.string.705]
     mov [rbp - 344], rdx
     mov rdx, 1
     mov [rbp - 336], rdx
@@ -5868,7 +5871,7 @@ ax_ax_panic:
     mov rax, rax
     jmp .L_b_1
 .L_b_3:
-    lea rdx, [rel Linfo.string.689]
+    lea rdx, [rel Linfo.string.704]
     mov [rbp - 360], rdx
     mov rdx, 21
     mov [rbp - 352], rdx
@@ -5950,7 +5953,7 @@ ax_ax_panic:
     call syscall
     add rsp, 64
     mov rax, rax
-    lea rdx, [rel Linfo.string.690]
+    lea rdx, [rel Linfo.string.705]
     mov [rbp - 376], rdx
     mov rdx, 1
     mov [rbp - 368], rdx
@@ -6054,7 +6057,7 @@ ax_ax_bounds_check:
     pop rbp
     ret
 .L_b_2:
-    lea rdx, [rel Linfo.string.691]
+    lea rdx, [rel Linfo.string.706]
     mov [rbp - 48], rdx
     mov rdx, 19
     mov [rbp - 40], rdx
@@ -6664,7 +6667,7 @@ ax_print_num_OOM:
     sub rsp, 88
 .L_b_0:
     mov rbx, rcx
-    lea rdx, [rel Linfo.string.692]
+    lea rdx, [rel Linfo.string.707]
     mov [rbp - 40], rdx
     mov rdx, 20
     mov [rbp - 32], rdx
@@ -6781,7 +6784,7 @@ ax_alloc:
     call ax_print_num_OOM
     add rsp, 32
     mov rax, rax
-    lea rdx, [rel Linfo.string.693]
+    lea rdx, [rel Linfo.string.708]
     mov [rbp - 64], rdx
     mov rdx, 13
     mov [rbp - 56], rdx
@@ -7028,7 +7031,7 @@ ax_compiler_intrinsic:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.694]
+    lea rdx, [rel Linfo.string.709]
     mov [rbp - 48], rdx
     mov rdx, 10
     mov [rbp - 40], rdx
@@ -7203,7 +7206,7 @@ ax_ax_str_concat:
     pop rbp
     ret
 .L_b_2:
-    lea rdx, [rel Linfo.string.695]
+    lea rdx, [rel Linfo.string.710]
     mov [rbp - 208], rdx
     mov rdx, 30
     mov [rbp - 200], rdx
@@ -7304,7 +7307,7 @@ ax_ax_str_slice:
     jne .L_b_11
     jmp .L_b_12
 .L_b_8:
-    lea rdx, [rel Linfo.string.696]
+    lea rdx, [rel Linfo.string.711]
     mov [rbp - 176], rdx
     mov rdx, 0
     mov [rbp - 168], rdx
@@ -7369,7 +7372,7 @@ ax_ax_str_slice:
     pop rbp
     ret
 .L_b_11:
-    lea rdx, [rel Linfo.string.697]
+    lea rdx, [rel Linfo.string.712]
     mov [rbp - 192], rdx
     mov rdx, 29
     mov [rbp - 184], rdx
@@ -7687,7 +7690,7 @@ ax_ax_str_replace:
     jne .L_b_26
     jmp .L_b_27
 .L_b_23:
-    lea rdx, [rel Linfo.string.698]
+    lea rdx, [rel Linfo.string.713]
     mov [rbp - 528], rdx
     mov rdx, 45
     mov [rbp - 520], rdx
@@ -7714,7 +7717,7 @@ ax_ax_str_replace:
     mov r15, rax
     jmp .L_b_28
 .L_b_26:
-    lea rdx, [rel Linfo.string.699]
+    lea rdx, [rel Linfo.string.714]
     mov [rbp - 544], rdx
     mov rdx, 31
     mov [rbp - 536], rdx
@@ -7968,7 +7971,7 @@ ax_PathBuf_pathbuf_join:
     mov r10, [rbp - 104]
     mov rax, [r10 + 8]
     mov [rcx + 8], rax
-    lea rdx, [rel Linfo.string.700]
+    lea rdx, [rel Linfo.string.715]
     mov [rbp - 120], rdx
     mov rdx, 1
     mov [rbp - 112], rdx
@@ -8582,7 +8585,7 @@ ax_PathBuf_pathbuf_with_extension:
 .L_b_8:
     jmp .L_b_4
 .L_b_9:
-    lea rdx, [rel Linfo.string.701]
+    lea rdx, [rel Linfo.string.716]
     mov [rbp - 304], rdx
     mov rdx, 1
     mov [rbp - 296], rdx
@@ -8634,7 +8637,7 @@ ax_PathBuf_pathbuf_with_extension:
     lea rax, [rbp - 112]
     mov [rax], rax
     mov [rax + 8], rdx
-    lea rdx, [rel Linfo.string.701]
+    lea rdx, [rel Linfo.string.716]
     mov [rbp - 320], rdx
     mov rdx, 1
     mov [rbp - 312], rdx
@@ -9176,7 +9179,7 @@ ax_metadata:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.702]
+    lea rdx, [rel Linfo.string.717]
     mov [rbp - 128], rdx
     mov rdx, 14
     mov [rbp - 120], rdx
@@ -9307,7 +9310,7 @@ ax_metadata:
     call ax_free
     add rsp, 32
     mov rax, rax
-    lea rdx, [rel Linfo.string.702]
+    lea rdx, [rel Linfo.string.717]
     mov [rbp - 144], rdx
     mov rdx, 14
     mov [rbp - 136], rdx
@@ -9474,7 +9477,7 @@ ax_create_dir:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.703]
+    lea rdx, [rel Linfo.string.718]
     mov [rbp - 112], rdx
     mov rdx, 26
     mov [rbp - 104], rdx
@@ -9518,7 +9521,7 @@ ax_create_dir:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.703]
+    lea rdx, [rel Linfo.string.718]
     mov [rbp - 128], rdx
     mov rdx, 26
     mov [rbp - 120], rdx
@@ -9801,7 +9804,7 @@ ax_remove_file:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.704]
+    lea rdx, [rel Linfo.string.719]
     mov [rbp - 112], rdx
     mov rdx, 21
     mov [rbp - 104], rdx
@@ -9845,7 +9848,7 @@ ax_remove_file:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.704]
+    lea rdx, [rel Linfo.string.719]
     mov [rbp - 128], rdx
     mov rdx, 21
     mov [rbp - 120], rdx
@@ -9983,7 +9986,7 @@ ax_remove_dir:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.705]
+    lea rdx, [rel Linfo.string.720]
     mov [rbp - 112], rdx
     mov rdx, 26
     mov [rbp - 104], rdx
@@ -10027,7 +10030,7 @@ ax_remove_dir:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.705]
+    lea rdx, [rel Linfo.string.720]
     mov [rbp - 128], rdx
     mov rdx, 26
     mov [rbp - 120], rdx
@@ -10189,7 +10192,7 @@ ax_rename:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.706]
+    lea rdx, [rel Linfo.string.721]
     mov [rbp - 136], rdx
     mov rdx, 16
     mov [rbp - 128], rdx
@@ -10235,7 +10238,7 @@ ax_rename:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.706]
+    lea rdx, [rel Linfo.string.721]
     mov [rbp - 152], rdx
     mov rdx, 16
     mov [rbp - 144], rdx
@@ -10344,7 +10347,7 @@ ax_copy:
     call ax_free
     add rsp, 32
     mov rax, rax
-    lea rdx, [rel Linfo.string.708]
+    lea rdx, [rel Linfo.string.723]
     mov [rbp - 104], rdx
     mov rdx, 50
     mov [rbp - 96], rdx
@@ -10382,7 +10385,7 @@ ax_copy:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.707]
+    lea rdx, [rel Linfo.string.722]
     mov [rbp - 120], rdx
     mov rdx, 19
     mov [rbp - 112], rdx
@@ -10414,7 +10417,7 @@ ax_temp_dir:
     push rsi
     sub rsp, 272
 .L_b_0:
-    lea rdx, [rel Linfo.string.709]
+    lea rdx, [rel Linfo.string.724]
     mov [rbp - 192], rdx
     mov rdx, 6
     mov [rbp - 184], rdx
@@ -10439,7 +10442,7 @@ ax_temp_dir:
     jne .L_b_2
     jmp .L_b_3
 .L_b_1:
-    lea rdx, [rel Linfo.string.710]
+    lea rdx, [rel Linfo.string.725]
     mov [rbp - 208], rdx
     mov rdx, 4
     mov [rbp - 200], rdx
@@ -10519,7 +10522,7 @@ ax_temp_dir:
 .L_b_6:
     jmp .L_b_4
 .L_b_7:
-    lea rdx, [rel Linfo.string.712]
+    lea rdx, [rel Linfo.string.727]
     mov [rbp - 224], rdx
     mov rdx, 4
     mov [rbp - 216], rdx
@@ -10545,7 +10548,7 @@ ax_temp_dir:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.711]
+    lea rdx, [rel Linfo.string.726]
     mov [rbp - 240], rdx
     mov rdx, 15
     mov [rbp - 232], rdx
@@ -11937,7 +11940,7 @@ ax_args:
     mov rcx, rax
     mov rax, rcx
     mov rdi, rax
-    lea rdx, [rel Linfo.string.713]
+    lea rdx, [rel Linfo.string.728]
     mov [rbp - 56], rdx
     mov rdx, 18
     mov [rbp - 48], rdx
@@ -12085,7 +12088,7 @@ ax_env:
     mov rcx, rax
     mov rax, rcx
     mov rsi, rax
-    lea rdx, [rel Linfo.string.714]
+    lea rdx, [rel Linfo.string.729]
     mov [rbp - 296], rdx
     mov rdx, 18
     mov [rbp - 288], rdx
@@ -12173,7 +12176,7 @@ ax_env:
 .L_b_6:
     jmp .L_b_4
 .L_b_7:
-    lea rdx, [rel Linfo.string.715]
+    lea rdx, [rel Linfo.string.730]
     mov [rbp - 312], rdx
     mov rdx, 1
     mov [rbp - 304], rdx
@@ -12387,7 +12390,7 @@ ax_char_count:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.716]
+    lea rdx, [rel Linfo.string.731]
     mov [rbp - 48], rdx
     mov rdx, 14
     mov [rbp - 40], rdx
@@ -12422,7 +12425,7 @@ ax_concat:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.717]
+    lea rdx, [rel Linfo.string.732]
     mov [rbp - 64], rdx
     mov rdx, 10
     mov [rbp - 56], rdx
@@ -12456,7 +12459,7 @@ ax_slice:
     mov [rax + 8], rcx
     mov rsi, rdx
     mov rbx, r8
-    lea rdx, [rel Linfo.string.718]
+    lea rdx, [rel Linfo.string.733]
     mov [rbp - 64], rdx
     mov rdx, 9
     mov [rbp - 56], rdx
@@ -12493,7 +12496,7 @@ ax_contains:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.719]
+    lea rdx, [rel Linfo.string.734]
     mov [rbp - 64], rdx
     mov rdx, 12
     mov [rbp - 56], rdx
@@ -12528,7 +12531,7 @@ ax_starts_with:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.720]
+    lea rdx, [rel Linfo.string.735]
     mov [rbp - 64], rdx
     mov rdx, 15
     mov [rbp - 56], rdx
@@ -12563,7 +12566,7 @@ ax_ends_with:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.721]
+    lea rdx, [rel Linfo.string.736]
     mov [rbp - 64], rdx
     mov rdx, 13
     mov [rbp - 56], rdx
@@ -12598,7 +12601,7 @@ ax_index_of:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.722]
+    lea rdx, [rel Linfo.string.737]
     mov [rbp - 64], rdx
     mov rdx, 12
     mov [rbp - 56], rdx
@@ -12633,7 +12636,7 @@ ax_split:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.723]
+    lea rdx, [rel Linfo.string.738]
     mov [rbp - 64], rdx
     mov rdx, 9
     mov [rbp - 56], rdx
@@ -12663,7 +12666,7 @@ ax_trim:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.724]
+    lea rdx, [rel Linfo.string.739]
     mov [rbp - 48], rdx
     mov rdx, 8
     mov [rbp - 40], rdx
@@ -12693,7 +12696,7 @@ ax_to_upper:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.725]
+    lea rdx, [rel Linfo.string.740]
     mov [rbp - 48], rdx
     mov rdx, 12
     mov [rbp - 40], rdx
@@ -12723,7 +12726,7 @@ ax_to_lower:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.726]
+    lea rdx, [rel Linfo.string.741]
     mov [rbp - 48], rdx
     mov rdx, 12
     mov [rbp - 40], rdx
@@ -12755,7 +12758,7 @@ ax_repeat:
     mov [rax], rdx
     mov [rax + 8], rcx
     mov rbx, rdx
-    lea rdx, [rel Linfo.string.727]
+    lea rdx, [rel Linfo.string.742]
     mov [rbp - 56], rdx
     mov rdx, 10
     mov [rbp - 48], rdx
@@ -12796,7 +12799,7 @@ ax_replace:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.728]
+    lea rdx, [rel Linfo.string.743]
     mov [rbp - 80], rdx
     mov rdx, 11
     mov [rbp - 72], rdx
@@ -12857,7 +12860,7 @@ ax_to_i64:
     pop rbp
     ret
 .L_b_3:
-    lea rdx, [rel Linfo.string.729]
+    lea rdx, [rel Linfo.string.744]
     mov [rbp - 56], rdx
     mov rdx, 22
     mov [rbp - 48], rdx
@@ -12917,7 +12920,7 @@ ax_to_f64:
     pop rbp
     ret
 .L_b_3:
-    lea rdx, [rel Linfo.string.730]
+    lea rdx, [rel Linfo.string.745]
     mov [rbp - 56], rdx
     mov rdx, 20
     mov [rbp - 48], rdx
@@ -12947,7 +12950,7 @@ ax_is_valid_utf8:
     lea rax, [rbp - 32]
     mov [rax], rdx
     mov [rax + 8], rcx
-    lea rdx, [rel Linfo.string.731]
+    lea rdx, [rel Linfo.string.746]
     mov [rbp - 48], rdx
     mov rdx, 17
     mov [rbp - 40], rdx
@@ -13203,7 +13206,7 @@ ax_open:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.732]
+    lea rdx, [rel Linfo.string.747]
     mov [rbp - 120], rdx
     mov rdx, 19
     mov [rbp - 112], rdx
@@ -13263,7 +13266,7 @@ ax_open:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.732]
+    lea rdx, [rel Linfo.string.747]
     mov [rbp - 136], rdx
     mov rdx, 19
     mov [rbp - 128], rdx
@@ -13442,7 +13445,7 @@ ax_create:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.733]
+    lea rdx, [rel Linfo.string.748]
     mov [rbp - 120], rdx
     mov rdx, 21
     mov [rbp - 112], rdx
@@ -13502,7 +13505,7 @@ ax_create:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.733]
+    lea rdx, [rel Linfo.string.748]
     mov [rbp - 136], rdx
     mov rdx, 21
     mov [rbp - 128], rdx
@@ -13624,7 +13627,7 @@ ax_File_close:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.734]
+    lea rdx, [rel Linfo.string.749]
     mov [rbp - 96], rdx
     mov rdx, 20
     mov [rbp - 88], rdx
@@ -13668,7 +13671,7 @@ ax_File_close:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.734]
+    lea rdx, [rel Linfo.string.749]
     mov [rbp - 112], rdx
     mov rdx, 20
     mov [rbp - 104], rdx
@@ -13811,7 +13814,7 @@ ax_File_read:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.735]
+    lea rdx, [rel Linfo.string.750]
     mov [rbp - 120], rdx
     mov rdx, 24
     mov [rbp - 112], rdx
@@ -13857,7 +13860,7 @@ ax_File_read:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.735]
+    lea rdx, [rel Linfo.string.750]
     mov [rbp - 136], rdx
     mov rdx, 24
     mov [rbp - 128], rdx
@@ -14001,7 +14004,7 @@ ax_File_write:
     pop rbp
     ret
 .L_b_5:
-    lea rdx, [rel Linfo.string.736]
+    lea rdx, [rel Linfo.string.751]
     mov [rbp - 120], rdx
     mov rdx, 23
     mov [rbp - 112], rdx
@@ -14047,7 +14050,7 @@ ax_File_write:
     pop rbp
     ret
 .L_b_8:
-    lea rdx, [rel Linfo.string.736]
+    lea rdx, [rel Linfo.string.751]
     mov [rbp - 136], rdx
     mov rdx, 23
     mov [rbp - 128], rdx
@@ -14123,7 +14126,7 @@ ax_File_read_all:
     xor rax, rax
     mov rcx, rax
     mov rax, rcx
-    lea rdx, [rel Linfo.string.696]
+    lea rdx, [rel Linfo.string.711]
     mov [rbp - 168], rdx
     mov rdx, 0
     mov [rbp - 160], rdx
@@ -14432,7 +14435,7 @@ ax_File_write_all:
     add rsp, 32
     mov rcx, rax
     mov rax, rcx
-    lea rdx, [rel Linfo.string.737]
+    lea rdx, [rel Linfo.string.752]
     mov [rbp - 160], rdx
     mov rdx, 25
     mov [rbp - 152], rdx
@@ -14489,7 +14492,7 @@ ax_stdin:
     mov rbx, rax
     mov rax, rsi
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.738]
+    lea rdx, [rel Linfo.string.753]
     mov [rbp - 64], rdx
     mov rdx, 5
     mov [rbp - 56], rdx
@@ -14522,7 +14525,7 @@ ax_stdin:
     xor rcx, rcx
     mov rax, rcx
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.738]
+    lea rdx, [rel Linfo.string.753]
     mov [rbp - 80], rdx
     mov rdx, 5
     mov [rbp - 72], rdx
@@ -14578,7 +14581,7 @@ ax_stdout:
     mov rbx, rax
     mov rax, rsi
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.739]
+    lea rdx, [rel Linfo.string.754]
     mov [rbp - 64], rdx
     mov rdx, 6
     mov [rbp - 56], rdx
@@ -14611,7 +14614,7 @@ ax_stdout:
     mov rcx, 1
     mov rax, rcx
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.739]
+    lea rdx, [rel Linfo.string.754]
     mov [rbp - 80], rdx
     mov rdx, 6
     mov [rbp - 72], rdx
@@ -14667,7 +14670,7 @@ ax_stderr:
     mov rbx, rax
     mov rax, rsi
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.740]
+    lea rdx, [rel Linfo.string.755]
     mov [rbp - 64], rdx
     mov rdx, 6
     mov [rbp - 56], rdx
@@ -14700,7 +14703,7 @@ ax_stderr:
     mov rcx, 2
     mov rax, rcx
     mov [rbx], rax
-    lea rdx, [rel Linfo.string.740]
+    lea rdx, [rel Linfo.string.755]
     mov [rbp - 80], rdx
     mov rdx, 6
     mov [rbp - 72], rdx
@@ -14728,259 +14731,154 @@ ax_stderr:
 main:
     push rbp
     mov rbp, rsp
-    push rbx
-    push rsi
-    sub rsp, 96
+    sub rsp, 32
 .L_b_0:
     sub rsp, 32
     call ax___ax_runtime_init
     add rsp, 32
-    xor rax, rax
-    mov rsi, 30
-    mov rbx, rax
-    jmp .L_b_1
-.L_b_1:
-    cmp rbx, rsi
-    setl al
-    movzx rax, al
-    test rax, rax
-    jne .L_b_2
-    jmp .L_b_3
-.L_b_2:
-    lea rdx, [rel Linfo.string.741]
-    mov [rbp - 64], rdx
-    mov rdx, 13
-    mov [rbp - 56], rdx
-    lea rdx, [rbp - 64]
-    lea rcx, [rbp - 48]
-    mov rax, [rdx]
-    mov [rcx], rax
-    mov rax, [rdx + 8]
-    mov [rcx + 8], rax
-    lea rdx, [rbp - 32]
-    lea rcx, [rbp - 48]
-    mov rax, [rcx]
-    mov [rdx], rax
-    mov rax, [rcx + 8]
-    mov [rdx + 8], rax
-    sub rsp, 32
-    lea rcx, [rbp - 32]
-    call ax_println_str
-    add rsp, 32
-    mov rax, rax
-    mov rcx, 1
-    mov rax, rbx
-    add rax, rcx
-    mov rbx, rax
-    jmp .L_b_1
-.L_b_3:
-    xor rax, rax
+    mov rax, 42
     mov rax, rax
     sub rsp, 48
     mov [rsp + 40], rax
     call ax___ax_runtime_shutdown
     mov rax, [rsp + 40]
     add rsp, 48
-    add rsp, 96
-    pop rsi
-    pop rbx
+    add rsp, 32
     pop rbp
     mov ecx, eax
     sub rsp, 40
     call ExitProcess
 
-ax__AX_std_Result__FileMetadata__string__AX_std_is_ok__FileMetadata__string:
+ax__AX_std_Option__i32__AX_std_is_some__i32:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
-    mov rax, 1
-    mov rax, rax
-    add rsp, 32
-    pop rbp
-    ret
-
-ax__AX_std_Option__PathBuf__AX_std_is_some__PathBuf:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
-    cmp rcx, rax
-    setne al
-    movzx rax, al
-    mov rax, rax
-    add rsp, 32
-    pop rbp
-    ret
-
-ax__AX_std_Option__PathBuf__AX_std_unwrap__PathBuf:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 112
+    sub rsp, 48
 .L_b_0:
     mov r11, rcx
     mov [rbp - 8], r11
-    mov r11, [rbp - 8]
-    cmp r11, rax
-    sete al
-    movzx rax, al
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
     test rax, rax
     jne .L_b_2
     jmp .L_b_3
 .L_b_1:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
     mov r10, [rbp - 8]
     lea rcx, [r10]
     mov rax, rcx
     mov rdx, rax
-    and rdx, rdx
-    lea rcx, [rbp - 24]
-    mov rax, [rdx]
-    mov [rcx], rax
-    mov rax, [rdx + 8]
-    mov [rcx + 8], rax
-    lea rax, [rbp - 24]
-    mov rax, [rax]
-    mov rdx, [rax + 8]
-    add rsp, 112
-    pop rbp
-    ret
-.L_b_2:
-    lea rdx, [rel Linfo.string.742]
-    mov [rbp - 56], rdx
-    mov rdx, 31
-    mov [rbp - 48], rdx
-    lea rdx, [rbp - 56]
-    lea rcx, [rbp - 40]
-    mov rax, [rdx]
-    mov [rcx], rax
-    mov rax, [rdx + 8]
-    mov [rcx + 8], rax
-    sub rsp, 32
-    lea rcx, [rbp - 40]
-    call ax_panic
-    add rsp, 32
-    mov rax, rax
-    jmp .L_b_1
-.L_b_3:
-    jmp .L_b_1
-
-ax__AX_std_Result__void__string__AX_std_is_err__void__string:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
     xor rax, rax
-    mov rax, rax
-    add rsp, 32
-    pop rbp
-    ret
-
-ax__AX_std_Option__string__AX_std_is_some__string:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
-    cmp rcx, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
     setne al
     movzx rax, al
     mov rax, rax
-    add rsp, 32
+    add rsp, 48
     pop rbp
     ret
-
-ax__AX_std_Option__string__AX_std_unwrap__string:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 112
-.L_b_0:
-    mov r11, rcx
-    mov [rbp - 24], r11
-    mov r11, [rbp - 24]
-    cmp r11, rax
-    sete al
-    movzx rax, al
-    test rax, rax
-    jne .L_b_2
-    jmp .L_b_3
-.L_b_1:
-    mov r10, [rbp - 24]
-    lea rax, [r10]
-    mov rcx, rax
-    mov rax, rcx
-    and rax, rax
-    mov r11, [rax]
-    mov [rbp - 16], r11
-    lea rax, [rbp - 16]
-    mov rax, [rax]
-    mov rdx, [rax + 8]
-    add rsp, 112
-    pop rbp
-    ret
-.L_b_2:
-    lea rdx, [rel Linfo.string.742]
-    mov [rbp - 56], rdx
-    mov rdx, 31
-    mov [rbp - 48], rdx
-    lea rdx, [rbp - 56]
-    lea rcx, [rbp - 40]
-    mov rax, [rdx]
-    mov [rcx], rax
-    mov rax, [rdx + 8]
-    mov [rcx + 8], rax
-    sub rsp, 32
-    lea rcx, [rbp - 40]
-    call ax_panic
-    add rsp, 32
-    mov rax, rax
-    jmp .L_b_1
 .L_b_3:
     jmp .L_b_1
-
-ax__AX_std_Result__i64__string__AX_std_is_ok__i64__string:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
-    mov rax, 1
+.L_b_4:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
     mov rax, rax
-    add rsp, 32
+    add rsp, 48
     pop rbp
     ret
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
 
-ax__AX_std_Option__i64__AX_std_unwrap__i64:
+ax__AX_std_Option__i32__AX_std_unwrap__i32:
     push rbp
     mov rbp, rsp
     sub rsp, 96
 .L_b_0:
     mov r11, rcx
     mov [rbp - 8], r11
-    mov r11, [rbp - 8]
-    cmp r11, rax
+    sub rsp, 32
+    mov r10, [rbp - 8]
+    mov rcx, r10
+    call ax__AX_std_Option__i32__AX_std_is_some__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_2
     jmp .L_b_3
 .L_b_1:
-    mov r10, [rbp - 8]
-    lea rcx, [r10]
-    mov rax, rcx
-    mov rcx, rax
-    and rcx, rcx
-    mov rax, [rcx]
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
     mov rax, rax
-    add rsp, 96
-    pop rbp
-    ret
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
 .L_b_2:
-    lea rdx, [rel Linfo.string.742]
+    lea rdx, [rel Linfo.string.756]
     mov [rbp - 40], rdx
-    mov rdx, 31
+    mov rdx, 38
     mov [rbp - 32], rdx
     lea rdx, [rbp - 40]
     lea rcx, [rbp - 24]
@@ -14996,16 +14894,1146 @@ ax__AX_std_Option__i64__AX_std_unwrap__i64:
     jmp .L_b_1
 .L_b_3:
     jmp .L_b_1
+.L_b_4:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
 
-ax__AX_std_Result__i64__string__AX_std_unwrap_err__i64__string:
+ax__AX_std_Result__i32__i32__AX_std_is_ok__i32__i32:
     push rbp
     mov rbp, rsp
-    sub rsp, 64
+    push rbx
+    sub rsp, 40
 .L_b_0:
     mov r11, rcx
-    mov [rbp - 24], r11
-    mov r10, [rbp - 24]
+    mov [rbp - 16], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rbx, [rax]
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rbx
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    mov rax, 1
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Result__i32__i32__AX_std_is_err__i32__i32:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 16], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rbx, [rax]
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rbx
+    and rdx, rax
+    mov rcx, 1
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    mov rcx, 1
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    xor rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Result__i32__i32__AX_std_unwrap__i32__i32:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 96
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    mov r10, [rbp - 8]
+    mov rcx, r10
+    call ax__AX_std_Result__i32__i32__AX_std_is_ok__i32__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.757]
+    mov [rbp - 48], rdx
+    mov rdx, 38
+    mov [rbp - 40], rdx
+    lea rdx, [rbp - 48]
+    lea rcx, [rbp - 32]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 32]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    mov rax, 4294967294
+    mov rcx, rax
+    mov rax, rdx
+    and rax, rcx
+    mov r11, rax
+    mov [rbp - 16], r11
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 8]
     lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
+
+ax__AX_std_Result__i32__i32__AX_std_unwrap_err__i32__i32:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 96
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    mov r10, [rbp - 8]
+    mov rcx, r10
+    call ax__AX_std_Result__i32__i32__AX_std_is_err__i32__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.758]
+    mov [rbp - 48], rdx
+    mov rdx, 41
+    mov [rbp - 40], rdx
+    lea rdx, [rbp - 48]
+    lea rcx, [rbp - 32]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 32]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 4
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    mov rax, 4294967294
+    mov rcx, rax
+    mov rax, rdx
+    and rax, rcx
+    mov r11, rax
+    mov [rbp - 16], r11
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov ecx, dword [rax]
+    mov rax, 4294967295
+    and rcx, rax
+    mov rax, rcx
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
+
+ax__AX_std_Result__FileMetadata__string__AX_std_is_ok__FileMetadata__string:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 16], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 32
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rbx, [rax]
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rbx
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    mov rax, 1
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Option__PathBuf__AX_std_is_some__PathBuf:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Option__PathBuf__AX_std_unwrap__PathBuf:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 144
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    mov r10, [rbp - 8]
+    mov rcx, r10
+    call ax__AX_std_Option__i32__AX_std_is_some__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.756]
+    mov [rbp - 88], rdx
+    mov rdx, 38
+    mov [rbp - 80], rdx
+    lea rdx, [rbp - 88]
+    lea rcx, [rbp - 72]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 72]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    and rdx, rdx
+    lea rcx, [rbp - 56]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    lea rax, [rbp - 56]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rax, 8
+    mov rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    and rdx, rdx
+    lea rcx, [rbp - 24]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    lea rax, [rbp - 24]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    and rdx, rdx
+    lea rcx, [rbp - 40]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    lea rax, [rbp - 40]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
+
+ax__AX_std_Result__void__string__AX_std_is_err__void__string:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 16], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    xor rdx, rdx
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rbx, [rax]
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rbx
+    and rdx, rax
+    mov rcx, 1
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    mov rcx, 1
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    xor rax, rax
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Option__string__AX_std_is_some__string:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 48
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    setne al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 48
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Option__string__AX_std_unwrap__string:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 144
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 40], r11
+    sub rsp, 32
+    mov r10, [rbp - 40]
+    mov rcx, r10
+    call ax__AX_std_Option__i32__AX_std_is_some__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.756]
+    mov [rbp - 88], rdx
+    mov rdx, 38
+    mov [rbp - 80], rdx
+    lea rdx, [rbp - 88]
+    lea rcx, [rbp - 72]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 72]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 56], r11
+    lea rax, [rbp - 56]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 40]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 32], r11
+    lea rax, [rbp - 32]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
     mov rcx, rax
     mov rax, rcx
     and rax, rax
@@ -15014,9 +16042,351 @@ ax__AX_std_Result__i64__string__AX_std_unwrap_err__i64__string:
     lea rax, [rbp - 16]
     mov rax, [rax]
     mov rdx, [rax + 8]
-    add rsp, 64
+    add rsp, 144
     pop rbp
     ret
+.L_b_9:
+    jmp .L_b_7
+
+ax__AX_std_Result__i64__string__AX_std_is_ok__i64__string:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 40
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 16], r11
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    mov rdx, 8
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rbx, [rax]
+    mov rcx, 1
+    mov rax, rcx
+    mov rdx, rbx
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov r10, [rbp - 16]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 4
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov edx, dword [rax]
+    mov rax, 4294967295
+    and rdx, rax
+    xor rcx, rcx
+    mov rax, rcx
+    cmp rdx, rax
+    sete al
+    movzx rax, al
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_5:
+    mov rax, 1
+    mov rax, rax
+    add rsp, 40
+    pop rbx
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+
+ax__AX_std_Option__i64__AX_std_unwrap__i64:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 96
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 8], r11
+    sub rsp, 32
+    mov r10, [rbp - 8]
+    mov rcx, r10
+    call ax__AX_std_Option__i32__AX_std_is_some__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.756]
+    mov [rbp - 40], rdx
+    mov rdx, 38
+    mov [rbp - 32], rdx
+    lea rdx, [rbp - 40]
+    lea rcx, [rbp - 24]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 24]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 8
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    and rcx, rcx
+    mov rax, [rcx]
+    mov rax, rax
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rax, 8
+    mov rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    and rcx, rcx
+    mov rax, [rcx]
+    mov rax, rax
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 8]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    and rcx, rcx
+    mov rax, [rcx]
+    mov rax, rax
+    add rsp, 96
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
+
+ax__AX_std_Result__i64__string__AX_std_unwrap_err__i64__string:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 144
+.L_b_0:
+    mov r11, rcx
+    mov [rbp - 40], r11
+    sub rsp, 32
+    mov r10, [rbp - 40]
+    mov rcx, r10
+    call ax__AX_std_Result__i32__i32__AX_std_is_err__i32__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
+    sete al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_2
+    jmp .L_b_3
+.L_b_1:
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
+.L_b_2:
+    lea rdx, [rel Linfo.string.758]
+    mov [rbp - 96], rdx
+    mov rdx, 41
+    mov [rbp - 88], rdx
+    lea rdx, [rbp - 96]
+    lea rcx, [rbp - 80]
+    mov rax, [rdx]
+    mov [rcx], rax
+    mov rax, [rdx + 8]
+    mov [rcx + 8], rax
+    sub rsp, 32
+    lea rcx, [rbp - 80]
+    call ax_panic
+    add rsp, 32
+    mov rax, rax
+    jmp .L_b_1
+.L_b_3:
+    jmp .L_b_1
+.L_b_4:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    mov rax, 4294967294
+    mov rcx, rax
+    mov rax, rdx
+    and rax, rcx
+    mov r11, rax
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 56], r11
+    lea rax, [rbp - 56]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 40]
+    lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 32], r11
+    lea rax, [rbp - 32]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 16], r11
+    lea rax, [rbp - 16]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_9:
+    jmp .L_b_7
 
 ax__AX_std_BufWriter__i32__AX_std_flush_buf__i32:
     push rbp
@@ -15111,7 +16481,7 @@ ax__AX_std_BufWriter__i32__AX_std_flush_buf__i32:
     mov [rsi + 24], rax
     jmp .L_b_4
 .L_b_8:
-    lea rdx, [rel Linfo.string.743]
+    lea rdx, [rel Linfo.string.759]
     mov [rbp - 56], rdx
     mov rdx, 28
     mov [rbp - 48], rdx
@@ -15136,94 +16506,129 @@ ax__AX_std_BufWriter__i32__AX_std_flush_buf__i32:
 .L_b_9:
     jmp .L_b_7
 
-ax__AX_std_Result__i32__i32__AX_std_is_ok__i32__i32:
+ax__AX_std_Result__void__string__AX_std_unwrap_err__void__string:
     push rbp
     mov rbp, rsp
-    sub rsp, 32
-.L_b_0:
-    mov rcx, rcx
-    mov rax, 1
-    mov rax, rax
-    add rsp, 32
-    pop rbp
-    ret
-
-ax__AX_std_Option__i32__AX_std_unwrap__i32:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 96
+    sub rsp, 144
 .L_b_0:
     mov r11, rcx
-    mov [rbp - 8], r11
-    mov r11, [rbp - 8]
-    cmp r11, rax
+    mov [rbp - 40], r11
+    sub rsp, 32
+    mov r10, [rbp - 40]
+    mov rcx, r10
+    call ax__AX_std_Result__i32__i32__AX_std_is_err__i32__i32
+    add rsp, 32
+    mov rax, rax
+    cmp rax, 0
     sete al
     movzx rax, al
     test rax, rax
     jne .L_b_2
     jmp .L_b_3
 .L_b_1:
-    mov r10, [rbp - 8]
-    lea rax, [r10]
-    mov rcx, rax
-    mov rax, rcx
-    and rax, rax
-    mov ecx, dword [rax]
-    mov rax, 4294967295
-    and rcx, rax
-    mov rax, rcx
-    add rsp, 96
-    pop rbp
-    ret
+    sub rsp, 32
+    call ax_sum_layout_is_pointer
+    add rsp, 32
+    mov rax, rax
+    test rax, rax
+    jne .L_b_5
+    jmp .L_b_6
 .L_b_2:
-    lea rdx, [rel Linfo.string.742]
-    mov [rbp - 40], rdx
-    mov rdx, 31
-    mov [rbp - 32], rdx
-    lea rdx, [rbp - 40]
-    lea rcx, [rbp - 24]
+    lea rdx, [rel Linfo.string.758]
+    mov [rbp - 96], rdx
+    mov rdx, 41
+    mov [rbp - 88], rdx
+    lea rdx, [rbp - 96]
+    lea rcx, [rbp - 80]
     mov rax, [rdx]
     mov [rcx], rax
     mov rax, [rdx + 8]
     mov [rcx + 8], rax
     sub rsp, 32
-    lea rcx, [rbp - 24]
+    lea rcx, [rbp - 80]
     call ax_panic
     add rsp, 32
     mov rax, rax
     jmp .L_b_1
 .L_b_3:
     jmp .L_b_1
-
-ax__AX_std_Result__i32__i32__AX_std_unwrap_err__i32__i32:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 48
-.L_b_0:
-    mov r11, rcx
-    mov [rbp - 8], r11
-    mov r10, [rbp - 8]
-    lea rax, [r10]
+.L_b_4:
+    mov rdx, 16
+    mov rax, 2
+    mov rcx, rax
+    mov rax, rdx
+    imul rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    cmp rdx, rax
+    setle al
+    movzx rax, al
+    test rax, rax
+    jne .L_b_8
+    jmp .L_b_9
+.L_b_5:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rdx, rax
+    xor rax, rax
+    mov rcx, rax
+    mov rax, 8
+    imul rcx, rax
+    mov rax, rdx
+    add rax, rcx
+    mov rdx, [rax]
+    mov rax, 4294967294
+    mov rcx, rax
+    mov rax, rdx
+    and rax, rcx
+    mov r11, rax
+    mov [rbp - 64], r11
+    mov r10, [rbp - 64]
+    lea rcx, [r10]
+    mov rax, rcx
     mov rcx, rax
     mov rax, rcx
     and rax, rax
-    mov ecx, dword [rax]
-    mov rax, 4294967295
-    and rcx, rax
-    mov rax, rcx
-    add rsp, 48
+    mov r11, [rax]
+    mov [rbp - 56], r11
+    lea rax, [rbp - 56]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
     pop rbp
     ret
-
-ax__AX_std_Result__void__string__AX_std_unwrap_err__void__string:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-.L_b_0:
-    mov r11, rcx
-    mov [rbp - 24], r11
-    mov r10, [rbp - 24]
+.L_b_6:
+    jmp .L_b_4
+.L_b_7:
+    mov r10, [rbp - 40]
     lea rax, [r10]
+    mov rcx, rax
+    mov rax, rcx
+    mov rdx, rax
+    mov rcx, 8
+    mov rax, rcx
+    mov rcx, rdx
+    add rcx, rax
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
+    and rax, rax
+    mov r11, [rax]
+    mov [rbp - 32], r11
+    lea rax, [rbp - 32]
+    mov rax, [rax]
+    mov rdx, [rax + 8]
+    add rsp, 144
+    pop rbp
+    ret
+.L_b_8:
+    mov r10, [rbp - 40]
+    lea rcx, [r10]
+    mov rax, rcx
+    mov rcx, rax
+    mov rax, rcx
     mov rcx, rax
     mov rax, rcx
     and rax, rax
@@ -15232,9 +16637,11 @@ ax__AX_std_Result__void__string__AX_std_unwrap_err__void__string:
     lea rax, [rbp - 16]
     mov rax, [rax]
     mov rdx, [rax + 8]
-    add rsp, 64
+    add rsp, 144
     pop rbp
     ret
+.L_b_9:
+    jmp .L_b_7
 
 global ax_Ok
 ax_Ok:
@@ -15261,121 +16668,123 @@ ax_block_size:
     jmp ax_str_slice
 
 section .rdata
-Linfo.string.685:
-    db 97, 120, 95, 111, 115, 95, 97, 108, 108, 111, 99, 32, 70, 65, 73, 76, 69, 68, 33, 32, 69, 114, 114, 111, 114, 32, 99, 111, 100, 101, 58, 32, 0
-Linfo.string.686:
-    db 97, 116, 111, 109, 105, 99, 95, 108, 111, 97, 100, 0
-Linfo.string.687:
-    db 97, 116, 111, 109, 105, 99, 95, 115, 116, 111, 114, 101, 0
-Linfo.string.688:
-    db 97, 116, 111, 109, 105, 99, 95, 99, 97, 115, 0
-Linfo.string.689:
-    db 65, 88, 73, 79, 77, 32, 82, 85, 78, 84, 73, 77, 69, 32, 80, 65, 78, 73, 67, 58, 32, 0
-Linfo.string.690:
-    db 10, 0
-Linfo.string.691:
-    db 105, 110, 100, 101, 120, 32, 111, 117, 116, 32, 111, 102, 32, 98, 111, 117, 110, 100, 115, 0
-Linfo.string.692:
-    db 79, 79, 77, 32, 115, 105, 122, 101, 32, 114, 101, 113, 117, 101, 115, 116, 101, 100, 58, 32, 0
-Linfo.string.693:
-    db 79, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 0
-Linfo.string.694:
-    db 105, 115, 95, 119, 105, 110, 100, 111, 119, 115, 0
-Linfo.string.695:
-    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 99, 111, 110, 99, 97, 116, 0
-Linfo.string.696:
-    db 0
-Linfo.string.697:
-    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 115, 108, 105, 99, 101, 0
-Linfo.string.698:
-    db 110, 101, 103, 97, 116, 105, 118, 101, 32, 108, 101, 110, 103, 116, 104, 32, 111, 114, 32, 111, 118, 101, 114, 102, 108, 111, 119, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 114, 101, 112, 108, 97, 99, 101, 0
-Linfo.string.699:
-    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 114, 101, 112, 108, 97, 99, 101, 0
 Linfo.string.700:
-    db 92, 0
+    db 97, 120, 95, 111, 115, 95, 97, 108, 108, 111, 99, 32, 70, 65, 73, 76, 69, 68, 33, 32, 69, 114, 114, 111, 114, 32, 99, 111, 100, 101, 58, 32, 0
 Linfo.string.701:
-    db 46, 0
+    db 97, 116, 111, 109, 105, 99, 95, 108, 111, 97, 100, 0
 Linfo.string.702:
-    db 102, 105, 108, 101, 32, 110, 111, 116, 32, 102, 111, 117, 110, 100, 0
+    db 97, 116, 111, 109, 105, 99, 95, 115, 116, 111, 114, 101, 0
 Linfo.string.703:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 114, 101, 97, 116, 101, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 0
+    db 97, 116, 111, 109, 105, 99, 95, 99, 97, 115, 0
 Linfo.string.704:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 102, 105, 108, 101, 0
+    db 65, 88, 73, 79, 77, 32, 82, 85, 78, 84, 73, 77, 69, 32, 80, 65, 78, 73, 67, 58, 32, 0
 Linfo.string.705:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 0
+    db 10, 0
 Linfo.string.706:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 110, 97, 109, 101, 0
+    db 105, 110, 100, 101, 120, 32, 111, 117, 116, 32, 111, 102, 32, 98, 111, 117, 110, 100, 115, 0
 Linfo.string.707:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 111, 112, 121, 32, 102, 105, 108, 101, 0
+    db 79, 79, 77, 32, 115, 105, 122, 101, 32, 114, 101, 113, 117, 101, 115, 116, 101, 100, 58, 32, 0
 Linfo.string.708:
-    db 99, 111, 112, 121, 32, 110, 111, 116, 32, 105, 109, 112, 108, 101, 109, 101, 110, 116, 101, 100, 32, 111, 110, 32, 76, 105, 110, 117, 120, 32, 105, 110, 32, 102, 114, 101, 101, 115, 116, 97, 110, 100, 105, 110, 103, 32, 109, 111, 100, 101, 0
+    db 79, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 0
 Linfo.string.709:
-    db 84, 77, 80, 68, 73, 82, 0
+    db 105, 115, 95, 119, 105, 110, 100, 111, 119, 115, 0
 Linfo.string.710:
-    db 84, 69, 77, 80, 0
+    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 99, 111, 110, 99, 97, 116, 0
 Linfo.string.711:
-    db 67, 58, 92, 87, 105, 110, 100, 111, 119, 115, 92, 84, 101, 109, 112, 0
+    db 0
 Linfo.string.712:
-    db 47, 116, 109, 112, 0
+    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 115, 108, 105, 99, 101, 0
 Linfo.string.713:
-    db 47, 112, 114, 111, 99, 47, 115, 101, 108, 102, 47, 99, 109, 100, 108, 105, 110, 101, 0
+    db 110, 101, 103, 97, 116, 105, 118, 101, 32, 108, 101, 110, 103, 116, 104, 32, 111, 114, 32, 111, 118, 101, 114, 102, 108, 111, 119, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 114, 101, 112, 108, 97, 99, 101, 0
 Linfo.string.714:
-    db 47, 112, 114, 111, 99, 47, 115, 101, 108, 102, 47, 101, 110, 118, 105, 114, 111, 110, 0
+    db 111, 117, 116, 32, 111, 102, 32, 109, 101, 109, 111, 114, 121, 32, 105, 110, 32, 115, 116, 114, 105, 110, 103, 32, 114, 101, 112, 108, 97, 99, 101, 0
 Linfo.string.715:
-    db 61, 0
+    db 92, 0
 Linfo.string.716:
-    db 115, 116, 114, 95, 99, 104, 97, 114, 95, 99, 111, 117, 110, 116, 0
+    db 46, 0
 Linfo.string.717:
-    db 115, 116, 114, 95, 99, 111, 110, 99, 97, 116, 0
+    db 102, 105, 108, 101, 32, 110, 111, 116, 32, 102, 111, 117, 110, 100, 0
 Linfo.string.718:
-    db 115, 116, 114, 95, 115, 108, 105, 99, 101, 0
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 114, 101, 97, 116, 101, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 0
 Linfo.string.719:
-    db 115, 116, 114, 95, 99, 111, 110, 116, 97, 105, 110, 115, 0
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 102, 105, 108, 101, 0
 Linfo.string.720:
-    db 115, 116, 114, 95, 115, 116, 97, 114, 116, 115, 95, 119, 105, 116, 104, 0
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 0
 Linfo.string.721:
-    db 115, 116, 114, 95, 101, 110, 100, 115, 95, 119, 105, 116, 104, 0
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 110, 97, 109, 101, 0
 Linfo.string.722:
-    db 115, 116, 114, 95, 105, 110, 100, 101, 120, 95, 111, 102, 0
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 111, 112, 121, 32, 102, 105, 108, 101, 0
 Linfo.string.723:
-    db 115, 116, 114, 95, 115, 112, 108, 105, 116, 0
+    db 99, 111, 112, 121, 32, 110, 111, 116, 32, 105, 109, 112, 108, 101, 109, 101, 110, 116, 101, 100, 32, 111, 110, 32, 76, 105, 110, 117, 120, 32, 105, 110, 32, 102, 114, 101, 101, 115, 116, 97, 110, 100, 105, 110, 103, 32, 109, 111, 100, 101, 0
 Linfo.string.724:
-    db 115, 116, 114, 95, 116, 114, 105, 109, 0
+    db 84, 77, 80, 68, 73, 82, 0
 Linfo.string.725:
-    db 115, 116, 114, 95, 116, 111, 95, 117, 112, 112, 101, 114, 0
+    db 84, 69, 77, 80, 0
 Linfo.string.726:
-    db 115, 116, 114, 95, 116, 111, 95, 108, 111, 119, 101, 114, 0
+    db 67, 58, 92, 87, 105, 110, 100, 111, 119, 115, 92, 84, 101, 109, 112, 0
 Linfo.string.727:
-    db 115, 116, 114, 95, 114, 101, 112, 101, 97, 116, 0
+    db 47, 116, 109, 112, 0
 Linfo.string.728:
-    db 115, 116, 114, 95, 114, 101, 112, 108, 97, 99, 101, 0
+    db 47, 112, 114, 111, 99, 47, 115, 101, 108, 102, 47, 99, 109, 100, 108, 105, 110, 101, 0
 Linfo.string.729:
-    db 73, 110, 118, 97, 108, 105, 100, 32, 105, 110, 116, 101, 103, 101, 114, 32, 102, 111, 114, 109, 97, 116, 0
+    db 47, 112, 114, 111, 99, 47, 115, 101, 108, 102, 47, 101, 110, 118, 105, 114, 111, 110, 0
 Linfo.string.730:
-    db 73, 110, 118, 97, 108, 105, 100, 32, 102, 108, 111, 97, 116, 32, 102, 111, 114, 109, 97, 116, 0
+    db 61, 0
 Linfo.string.731:
-    db 115, 116, 114, 95, 105, 115, 95, 118, 97, 108, 105, 100, 95, 117, 116, 102, 56, 0
+    db 115, 116, 114, 95, 99, 104, 97, 114, 95, 99, 111, 117, 110, 116, 0
 Linfo.string.732:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 111, 112, 101, 110, 32, 102, 105, 108, 101, 0
+    db 115, 116, 114, 95, 99, 111, 110, 99, 97, 116, 0
 Linfo.string.733:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 114, 101, 97, 116, 101, 32, 102, 105, 108, 101, 0
+    db 115, 116, 114, 95, 115, 108, 105, 99, 101, 0
 Linfo.string.734:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 108, 111, 115, 101, 32, 102, 105, 108, 101, 0
+    db 115, 116, 114, 95, 99, 111, 110, 116, 97, 105, 110, 115, 0
 Linfo.string.735:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 97, 100, 32, 102, 114, 111, 109, 32, 102, 105, 108, 101, 0
+    db 115, 116, 114, 95, 115, 116, 97, 114, 116, 115, 95, 119, 105, 116, 104, 0
 Linfo.string.736:
-    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 119, 114, 105, 116, 101, 32, 116, 111, 32, 102, 105, 108, 101, 0
+    db 115, 116, 114, 95, 101, 110, 100, 115, 95, 119, 105, 116, 104, 0
 Linfo.string.737:
-    db 102, 97, 105, 108, 101, 100, 32, 116, 111, 32, 119, 114, 105, 116, 101, 32, 97, 110, 121, 32, 98, 121, 116, 101, 115, 0
+    db 115, 116, 114, 95, 105, 110, 100, 101, 120, 95, 111, 102, 0
 Linfo.string.738:
-    db 115, 116, 100, 105, 110, 0
+    db 115, 116, 114, 95, 115, 112, 108, 105, 116, 0
 Linfo.string.739:
-    db 115, 116, 100, 111, 117, 116, 0
+    db 115, 116, 114, 95, 116, 114, 105, 109, 0
 Linfo.string.740:
-    db 115, 116, 100, 101, 114, 114, 0
+    db 115, 116, 114, 95, 116, 111, 95, 117, 112, 112, 101, 114, 0
 Linfo.string.741:
-    db 72, 101, 108, 108, 111, 44, 32, 119, 111, 114, 108, 100, 33, 0
+    db 115, 116, 114, 95, 116, 111, 95, 108, 111, 119, 101, 114, 0
 Linfo.string.742:
-    db 99, 97, 108, 108, 101, 100, 32, 117, 110, 119, 114, 97, 112, 40, 41, 32, 111, 110, 32, 97, 32, 78, 111, 110, 101, 32, 118, 97, 108, 117, 101, 0
+    db 115, 116, 114, 95, 114, 101, 112, 101, 97, 116, 0
 Linfo.string.743:
+    db 115, 116, 114, 95, 114, 101, 112, 108, 97, 99, 101, 0
+Linfo.string.744:
+    db 73, 110, 118, 97, 108, 105, 100, 32, 105, 110, 116, 101, 103, 101, 114, 32, 102, 111, 114, 109, 97, 116, 0
+Linfo.string.745:
+    db 73, 110, 118, 97, 108, 105, 100, 32, 102, 108, 111, 97, 116, 32, 102, 111, 114, 109, 97, 116, 0
+Linfo.string.746:
+    db 115, 116, 114, 95, 105, 115, 95, 118, 97, 108, 105, 100, 95, 117, 116, 102, 56, 0
+Linfo.string.747:
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 111, 112, 101, 110, 32, 102, 105, 108, 101, 0
+Linfo.string.748:
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 114, 101, 97, 116, 101, 32, 102, 105, 108, 101, 0
+Linfo.string.749:
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 99, 108, 111, 115, 101, 32, 102, 105, 108, 101, 0
+Linfo.string.750:
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 114, 101, 97, 100, 32, 102, 114, 111, 109, 32, 102, 105, 108, 101, 0
+Linfo.string.751:
+    db 99, 111, 117, 108, 100, 32, 110, 111, 116, 32, 119, 114, 105, 116, 101, 32, 116, 111, 32, 102, 105, 108, 101, 0
+Linfo.string.752:
+    db 102, 97, 105, 108, 101, 100, 32, 116, 111, 32, 119, 114, 105, 116, 101, 32, 97, 110, 121, 32, 98, 121, 116, 101, 115, 0
+Linfo.string.753:
+    db 115, 116, 100, 105, 110, 0
+Linfo.string.754:
+    db 115, 116, 100, 111, 117, 116, 0
+Linfo.string.755:
+    db 115, 116, 100, 101, 114, 114, 0
+Linfo.string.756:
+    db 99, 97, 108, 108, 101, 100, 32, 79, 112, 116, 105, 111, 110, 46, 117, 110, 119, 114, 97, 112, 40, 41, 32, 111, 110, 32, 97, 32, 78, 111, 110, 101, 32, 118, 97, 108, 117, 101, 0
+Linfo.string.757:
+    db 99, 97, 108, 108, 101, 100, 32, 82, 101, 115, 117, 108, 116, 46, 117, 110, 119, 114, 97, 112, 40, 41, 32, 111, 110, 32, 97, 110, 32, 69, 114, 114, 32, 118, 97, 108, 117, 101, 0
+Linfo.string.758:
+    db 99, 97, 108, 108, 101, 100, 32, 82, 101, 115, 117, 108, 116, 46, 117, 110, 119, 114, 97, 112, 95, 101, 114, 114, 40, 41, 32, 111, 110, 32, 97, 110, 32, 79, 107, 32, 118, 97, 108, 117, 101, 0
+Linfo.string.759:
     db 102, 97, 105, 108, 101, 100, 32, 116, 111, 32, 119, 114, 105, 116, 101, 32, 119, 104, 111, 108, 101, 32, 98, 117, 102, 102, 101, 114, 0

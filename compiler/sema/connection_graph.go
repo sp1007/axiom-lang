@@ -195,6 +195,9 @@ func (cg *ConnectionGraph) AllOutEdges(nodeID uint32) []CGEdge {
 // or transitively through Owns/FlowsTo chains.
 // Uses DFS with a visited set to handle cycles in O(V+E).
 func (cg *ConnectionGraph) Escapes(nodeID uint32) bool {
+	if nodeID == 0 {
+		return false
+	}
 	visited := make(map[uint32]bool)
 	return cg.escapeDFS(nodeID, visited)
 }

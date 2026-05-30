@@ -629,13 +629,13 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
             if std.string.starts_with(mod_name, "std."):
                 let rel_path = std.string.replace(mod_name, ".", "/")
                 file_path = std.string.concat(rel_path, ".ax")
-                @free(get_str_ptr(rel_path))
+                // @free(get_str_ptr(rel_path))
             else:
                 file_path = std.string.concat(mod_name, ".ax")
             
             sym_idx = self.lazy.lazy_resolver_register_import(name_id, file_path, node_idx)
             let _ = self.lazy.lazy_resolver_preload_module(name_id)
-            @free(get_str_ptr(mod_name))
+            // @free(get_str_ptr(mod_name))
         else:
             sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, node_idx)
             
@@ -654,7 +654,7 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
                 self.symtable.define(args_name, SYM_FUNC, 0 as u16, node_idx)
                 let env_name = self.intern.intern_string("std.os.env")
                 self.symtable.define(env_name, SYM_FUNC, 0 as u16, node_idx)
-            @free(get_str_ptr(name))
+            // @free(get_str_ptr(name))
             
         self.tree.nodes.data[node_idx].payload = sym_idx
 
@@ -691,9 +691,9 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
                             self.tree.nodes.data[node_idx].payload = sym_idx
                             self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | 2048 as u16
                             is_module_import = true
-                @free(get_str_ptr(full_name))
-                @free(get_str_ptr(lhs_name))
-                @free(get_str_ptr(rhs_name))
+                // @free(get_str_ptr(full_name))
+                // @free(get_str_ptr(lhs_name))
+                // @free(get_str_ptr(rhs_name))
                         
             if not is_module_import:
                 self.resolve_node(lhs_idx)
@@ -715,9 +715,9 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
                                 let full_name = std.string.concat(module_name, std.string.concat(".", field_name))
                                 let full_name_id = self.intern.intern_string(full_name)
                                 resolved_idx = self.symtable.resolve(full_name_id)
-                                @free(get_str_ptr(full_name))
-                                @free(get_str_ptr(field_name))
-                                @free(get_str_ptr(module_name))
+                                // @free(get_str_ptr(full_name))
+                                // @free(get_str_ptr(field_name))
+                                // @free(get_str_ptr(module_name))
                                 
                             if resolved_idx != 0 as u32:
                                 self.tree.nodes.data[node_idx].payload = resolved_idx
@@ -856,7 +856,7 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
                 self.tree.nodes.data[node_idx].payload = sym_idx
                 self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
         self.resolve_children(node_idx)
-        @free(get_str_ptr(name))
+        // @free(get_str_ptr(name))
 
     elif kind == NODE_TYPE_EXPR:
         if self.tree.nodes.data[node_idx].payload != 0 as u32:

@@ -71,6 +71,7 @@ struct ax__AX_std_WriteGuard__i32 {
 
 
 /* Function prototypes */
+ax_bool ax_sum_layout_is_pointer(void);
 ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
 static void ax_test_print_str(ax_string s);
 static void ax_test_atomic_operations(void);
@@ -101,6 +102,7 @@ ax_i32 ax__AX_std_WriteGuard__i32_get(struct ax__AX_std_WriteGuard__i32 self);
 void ax__AX_std_WriteGuard__i32_set(struct ax__AX_std_WriteGuard__i32 self, ax_i32 value);
 void ax__AX_std_WriteGuard__i32_unlock(struct ax__AX_std_WriteGuard__i32 self);
 ax_i64 ax_std_string_len(ax_string p0);
+ax_bool ax_std_string_starts_with(ax_string p0, ax_string p1);
 
 
 static void ax_test_print_str(ax_string s) {

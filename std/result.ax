@@ -17,8 +17,8 @@ pub fn is_some[T](self: Option[T]) -> bool:
     if ax_sum_layout_is_pointer():
         let raw = (&self) as ptr[u64]
         return raw[0] != 0 as u64
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         let raw = (&self) as ptr[u64]
         return raw[0] != 0 as u64
     let raw = (&self) as ptr[u32]
@@ -28,8 +28,8 @@ pub fn is_none[T](self: Option[T]) -> bool:
     if ax_sum_layout_is_pointer():
         let raw = (&self) as ptr[u64]
         return raw[0] == 0 as u64
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         let raw = (&self) as ptr[u64]
         return raw[0] == 0 as u64
     let raw = (&self) as ptr[u32]
@@ -41,8 +41,8 @@ pub fn unwrap[T](self: Option[T]) -> T:
     if ax_sum_layout_is_pointer():
         let raw = (&self) as ptr[T]
         return raw.*
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         let raw = (&self) as ptr[u8]
         let typed = raw as ptr[T]
         return typed.*
@@ -96,8 +96,8 @@ pub fn is_ok[T, E](self: Result[T, E]) -> bool:
     if ax_sum_layout_is_pointer():
         let raw = (&self) as ptr[u64]
         return (raw[0] & 1 as u64) == 0 as u64
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         return true
     let raw = (&self) as ptr[u32]
     return raw[0] == 0 as u32
@@ -106,8 +106,8 @@ pub fn is_err[T, E](self: Result[T, E]) -> bool:
     if ax_sum_layout_is_pointer():
         let raw = (&self) as ptr[u64]
         return (raw[0] & 1 as u64) == 1 as u64
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         return false
     let raw = (&self) as ptr[u32]
     return raw[0] == 1 as u32
@@ -120,8 +120,8 @@ pub fn unwrap[T, E](self: Result[T, E]) -> T:
         let masked = raw[0] & (0xfffffffffffffffe as u64)
         let typed = (&masked) as ptr[T]
         return typed.*
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
+    if size <= (8 as u64):
         let raw = (&self) as ptr[u8]
         let typed = raw as ptr[T]
         return typed.*
@@ -137,8 +137,8 @@ pub fn unwrap_err[T, E](self: Result[T, E]) -> E:
         let masked = raw[0] & (0xfffffffffffffffe as u64)
         let typed = (&masked) as ptr[E]
         return typed.*
-    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
-    if size <= 8:
+    let size = @compiler_intrinsic("size_of")[E]() * (2 as u64)
+    if size <= (8 as u64):
         let raw = (&self) as ptr[u8]
         let typed = raw as ptr[E]
         return typed.*

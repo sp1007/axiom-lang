@@ -1072,6 +1072,8 @@ func (e *DeclEmitter) processTree(tree *ast.AstTree) {
 				if structTypeID != 0 {
 					e.queue.Enqueue(structTypeID)
 				}
+			} else {
+				e.processStruct(child, node)
 			}
 			sChild := node.FirstChild
 			for sChild != ast.NullIdx {

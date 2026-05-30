@@ -91,10 +91,11 @@ func TestCGAddEdges(t *testing.T) {
 
 func TestCGEscapeDetection(t *testing.T) {
 	cg := NewConnectionGraph()
+	cg.AddValueNode(0, 0, 0) // RETURN_SLOT (ID 0)
 
 	local := cg.AddValueNode(1, 10, 1)
-	global := cg.AddValueNode(0, 10, 0)
-	escapingLocal := cg.AddValueNode(2, 10, 1)
+	global := cg.AddValueNode(2, 10, 0)
+	escapingLocal := cg.AddValueNode(3, 10, 1)
 
 	// escapingLocal escapes to global
 	cg.AddEdge(escapingLocal, global, EdgeEscapesTo)
@@ -110,14 +111,14 @@ func TestCGEscapeDetection(t *testing.T) {
 
 func TestCGTransitiveEscape(t *testing.T) {
 	cg := NewConnectionGraph()
+	cg.AddValueNode(0, 0, 0) // RETURN_SLOT (ID 0)
 
 	a := cg.AddValueNode(1, 10, 1)
 	b := cg.AddValueNode(2, 10, 1)
-	global := cg.AddValueNode(0, 10, 0)
 
-	// a Owns b, b EscapesTo global
+	// a Owns b, b EscapesTo global (which has ID 3, wait, global is ID 3 but global has lifetime 0, wait, it escapes to ID 0 return slot!)
 	cg.AddEdge(a, b, EdgeOwns)
-	cg.AddEdge(b, global, EdgeEscapesTo)
+	cg.AddEdge(b, 0, EdgeEscapesTo) // escapes to return slot (ID 0)
 
 	if !cg.Escapes(a) {
 		t.Error("a should escape transitively (a Owns b, b EscapesTo global)")
@@ -130,14 +131,14 @@ func TestCGTransitiveEscape(t *testing.T) {
 
 func TestCGFlowsToEscape(t *testing.T) {
 	cg := NewConnectionGraph()
+	cg.AddValueNode(0, 0, 0) // RETURN_SLOT (ID 0)
 
 	a := cg.AddValueNode(1, 10, 1)
 	b := cg.AddValueNode(2, 10, 1)
-	retval := cg.AddValueNode(0, 10, 0)
 
-	// a FlowsTo b, b EscapesTo retval (return value)
+	// a FlowsTo b, b EscapesTo retval (retval has ID 3, escapes to ID 0 return slot)
 	cg.AddEdge(a, b, EdgeFlowsTo)
-	cg.AddEdge(b, retval, EdgeEscapesTo)
+	cg.AddEdge(b, 0, EdgeEscapesTo)
 
 	if !cg.Escapes(a) {
 		t.Error("a should escape transitively via FlowsTo chain")
@@ -146,6 +147,7 @@ func TestCGFlowsToEscape(t *testing.T) {
 
 func TestCGCycleHandling(t *testing.T) {
 	cg := NewConnectionGraph()
+	cg.AddValueNode(0, 0, 0) // RETURN_SLOT (ID 0)
 
 	a := cg.AddValueNode(1, 10, 1)
 	b := cg.AddValueNode(2, 10, 1)
@@ -204,13 +206,14 @@ func TestCGReset(t *testing.T) {
 
 func TestCGSerialization(t *testing.T) {
 	cg := NewConnectionGraph()
+	cg.AddValueNode(0, 0, 0) // RETURN_SLOT (ID 0)
 
 	n0 := cg.AddValueNode(1, 10, 0)
 	n1 := cg.AddValueNode(2, 11, 1)
 	n2 := cg.AddValueNode(3, 12, 2)
 	cg.AddEdge(n0, n1, EdgeOwns)
 	cg.AddEdge(n1, n2, EdgeFlowsTo)
-	cg.AddEdge(n2, n0, EdgeEscapesTo)
+	cg.AddEdge(n2, 0, EdgeEscapesTo) // escapes to return slot (ID 0)
 
 	// Marshal to JSON
 	data, err := json.Marshal(cg)
@@ -225,8 +228,8 @@ func TestCGSerialization(t *testing.T) {
 	}
 
 	// Verify node count
-	if cg2.NodeCount() != 3 {
-		t.Errorf("deserialized NodeCount() = %d, want 3", cg2.NodeCount())
+	if cg2.NodeCount() != 4 {
+		t.Errorf("deserialized NodeCount() = %d, want 4", cg2.NodeCount())
 	}
 
 	// Verify edge count
@@ -241,8 +244,8 @@ func TestCGSerialization(t *testing.T) {
 
 	// Verify sym lookup
 	nodeID, ok := cg2.NodeOfSym(2)
-	if !ok || nodeID != 1 {
-		t.Errorf("deserialized: NodeOfSym(2) = %d, %v; want 1, true", nodeID, ok)
+	if !ok || nodeID != 2 {
+		t.Errorf("deserialized: NodeOfSym(2) = %d, %v; want 2, true", nodeID, ok)
 	}
 }
 

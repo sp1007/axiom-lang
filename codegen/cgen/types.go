@@ -592,6 +592,9 @@ func findMonomorphizedStruct(entryNameID uint32, typeArgs []types.TypeID, table 
 		e := table.Entry(types.TypeID(idx))
 		if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID != 0 {
 			name := resolveName(e.NameID, intern)
+			if !strings.Contains(name, "__") && !strings.HasPrefix(name, "_AX_") {
+				continue
+			}
 			if cleanMangledName(name) == cleanSuffix {
 				if queue != nil {
 					queue.Enqueue(types.TypeID(idx))

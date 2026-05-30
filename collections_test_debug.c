@@ -84,6 +84,7 @@ static inline struct ax__AX_std_Option__bool ax__AX_std_Option__bool_none(void) 
 
 
 /* Function prototypes */
+ax_bool ax_sum_layout_is_pointer(void);
 ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
 static void ax_test_print_str(ax_string s);
 static void ax_test_vec(void);
@@ -117,7 +118,7 @@ ax_bool ax__AX_std_HashMap__i64__bool_remove(struct ax__AX_std_HashMap__i64__boo
 void ax__AX_std_HashSet__i64_destroy(struct ax__AX_std_HashSet__i64* self);
 void ax__AX_std_HashMap__i64__bool_destroy(struct ax__AX_std_HashMap__i64__bool* self);
 ax_i64 ax_std_string_len(ax_string p0);
-ax_bool ax_std_string_starts_with(ax_string p0, ax_string p1);
+ax_string ax_std_string_to_upper(ax_string p0);
 
 
 static void ax_test_print_str(ax_string s) {
@@ -419,9 +420,10 @@ void ax__AX_std_Vec__i64_push(ax_vec* self, ax_i64 item) {
         if ((self->cap != 0)) {
             new_cap = (self->cap * 2);
         }
-        ax_i64* new_data = ((ax_i64*)(ax_alloc((new_cap * 8))));
+        ax_i64 item_size = ((ax_i64)(sizeof(ax_i64)));
+        ax_i64* new_data = ((ax_i64*)(ax_alloc((new_cap * item_size))));
         if ((self->data != ((ax_i64*)(NULL)))) {
-            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * 8));
+            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * item_size));
             ax_free(((ax_u8*)(self->data)));
         }
         self->data = new_data;

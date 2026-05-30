@@ -3,11 +3,11 @@
 #include "ax_stdlib.h"
 
 /* Forward declarations */
-struct ax__AX_std_Result__void__string;
 struct ax_PathBuf;
 struct ax_FileMetadata;
 struct ax__AX_std_Result__FileMetadata__string;
 struct ax__AX_std_Option__PathBuf;
+struct ax__AX_std_Result__void__string;
 struct ax__AX_std_Option__string;
 struct ax__AX_std_HashMap__string__string;
 struct ax_Command;
@@ -20,31 +20,6 @@ struct ax__AX_std_Result__Output__string;
 struct ax__AX_std_Result__u64__string;
 
 /* Type definitions */
-enum ax__AX_std_Result__void__string_tag {
-    ax__AX_std_Result__void__string_Ok = 0,
-    ax__AX_std_Result__void__string_Err = 1,
-};
-
-struct ax__AX_std_Result__void__string {
-    enum ax__AX_std_Result__void__string_tag tag;
-    union {
-        ax_string Err;
-    } data;
-};
-
-static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_ok(void) {
-    struct ax__AX_std_Result__void__string _result;
-    _result.tag = ax__AX_std_Result__void__string_Ok;
-    return _result;
-}
-
-static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_err(ax_string value) {
-    struct ax__AX_std_Result__void__string _result;
-    _result.tag = ax__AX_std_Result__void__string_Err;
-    _result.data.Err = value;
-    return _result;
-}
-
 struct ax_PathBuf {
     ax_string inner;
 };
@@ -108,6 +83,31 @@ static inline struct ax__AX_std_Option__PathBuf ax__AX_std_Option__PathBuf_some(
 static inline struct ax__AX_std_Option__PathBuf ax__AX_std_Option__PathBuf_none(void) {
     struct ax__AX_std_Option__PathBuf _result;
     _result.tag = ax__AX_std_Option__PathBuf_None;
+    return _result;
+}
+
+enum ax__AX_std_Result__void__string_tag {
+    ax__AX_std_Result__void__string_Ok = 0,
+    ax__AX_std_Result__void__string_Err = 1,
+};
+
+struct ax__AX_std_Result__void__string {
+    enum ax__AX_std_Result__void__string_tag tag;
+    union {
+        ax_string Err;
+    } data;
+};
+
+static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_ok(void) {
+    struct ax__AX_std_Result__void__string _result;
+    _result.tag = ax__AX_std_Result__void__string_Ok;
+    return _result;
+}
+
+static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_err(ax_string value) {
+    struct ax__AX_std_Result__void__string _result;
+    _result.tag = ax__AX_std_Result__void__string_Err;
+    _result.data.Err = value;
     return _result;
 }
 
@@ -300,6 +300,7 @@ extern const ax_i32 ax_SIGUSR2;
 const ax_i32 ax_SIGUSR2 = 12;
 
 /* Function prototypes */
+ax_bool ax_sum_layout_is_pointer(void);
 struct ax_PathBuf ax_pathbuf_new(ax_string s);
 struct ax_PathBuf ax_PathBuf_pathbuf_join(struct ax_PathBuf self, ax_string component);
 struct ax__AX_std_Option__PathBuf ax_PathBuf_pathbuf_parent(struct ax_PathBuf self);
@@ -347,7 +348,6 @@ ax_bool ax_AX_std_is_ok__FileMetadata__string(struct ax__AX_std_Result__FileMeta
 ax_bool ax_AX_std_is_some__PathBuf(struct ax__AX_std_Option__PathBuf self);
 struct ax_PathBuf ax_AX_std_unwrap__PathBuf(struct ax__AX_std_Option__PathBuf self);
 ax_bool ax_AX_std_is_err__void__string(struct ax__AX_std_Result__void__string self);
-ax_bool ax_AX_std_is_ok__void__string(struct ax__AX_std_Result__void__string self);
 ax_bool ax_AX_std_is_some__string(struct ax__AX_std_Option__string self);
 ax_string ax_AX_std_unwrap__string(struct ax__AX_std_Option__string self);
 void ax__AX_std_Vec__u8_push(ax_vec* self, ax_u8 item);
@@ -1131,129 +1131,95 @@ ax_i32 ax_main_usr(void) {
 }
 
 ax_bool ax_AX_std_is_ok__FileMetadata__string(struct ax__AX_std_Result__FileMetadata__string self) {
-    {
-        struct ax__AX_std_Result__FileMetadata__string _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Result__FileMetadata__string_Ok: {
-            return AX_TRUE;
-            break;
-        }
-        case ax__AX_std_Result__FileMetadata__string_Err: {
-            return AX_FALSE;
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if (ax_sum_layout_is_pointer()) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return (((((ax_u64*)(raw))[0]) & ((ax_u64)(1))) == ((ax_u64)(0)));
     }
+    ax_u64 size = (sizeof(struct ax_FileMetadata) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        return AX_TRUE;
+    }
+    ax_u32* raw = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
 }
 
 ax_bool ax_AX_std_is_some__PathBuf(struct ax__AX_std_Option__PathBuf self) {
-    {
-        struct ax__AX_std_Option__PathBuf _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Option__PathBuf_Some: {
-            return AX_TRUE;
-            break;
-        }
-        case ax__AX_std_Option__PathBuf_None: {
-            return AX_FALSE;
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if (ax_sum_layout_is_pointer()) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
     }
+    ax_u64 size = (sizeof(struct ax_PathBuf) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+    }
+    ax_u32* raw = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
 }
 
 struct ax_PathBuf ax_AX_std_unwrap__PathBuf(struct ax__AX_std_Option__PathBuf self) {
-    {
-        struct ax__AX_std_Option__PathBuf _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Option__PathBuf_Some: {
-            struct ax_PathBuf v = (_discrim).data.Some;
-            return v;
-            break;
-        }
-        case ax__AX_std_Option__PathBuf_None: {
-            ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called unwrap() on a None value", .len=31}).ptr);
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if ((!ax_AX_std_is_some__PathBuf(self))) {
+        ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called Option.unwrap() on a None value", .len=38}).ptr);
     }
+    if (ax_sum_layout_is_pointer()) {
+        struct ax_PathBuf* raw = ((struct ax_PathBuf*)(&(self)));
+        return (*((struct ax_PathBuf*)(raw)));
+    }
+    ax_u64 size = (sizeof(struct ax_PathBuf) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        ax_u8* raw = ((ax_u8*)(&(self)));
+        struct ax_PathBuf* typed = ((struct ax_PathBuf*)(raw));
+        return (*((struct ax_PathBuf*)(typed)));
+    }
+    ax_u8* raw = ((ax_u8*)(&(self)));
+    struct ax_PathBuf* payload_ptr = ((struct ax_PathBuf*)((((ax_i64)(raw)) + ((ax_i64)(8)))));
+    return (*((struct ax_PathBuf*)(payload_ptr)));
 }
 
 ax_bool ax_AX_std_is_err__void__string(struct ax__AX_std_Result__void__string self) {
-    return (!ax_AX_std_is_ok__void__string(self));
-}
-
-ax_bool ax_AX_std_is_ok__void__string(struct ax__AX_std_Result__void__string self) {
-    {
-        struct ax__AX_std_Result__void__string _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Result__void__string_Ok: {
-            return AX_TRUE;
-            break;
-        }
-        case ax__AX_std_Result__void__string_Err: {
-            return AX_FALSE;
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if (ax_sum_layout_is_pointer()) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return (((((ax_u64*)(raw))[0]) & ((ax_u64)(1))) == ((ax_u64)(1)));
     }
+    ax_u64 size = (sizeof(void) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        return AX_FALSE;
+    }
+    ax_u32* raw = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(1)));
 }
 
 ax_bool ax_AX_std_is_some__string(struct ax__AX_std_Option__string self) {
-    {
-        struct ax__AX_std_Option__string _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Option__string_Some: {
-            return AX_TRUE;
-            break;
-        }
-        case ax__AX_std_Option__string_None: {
-            return AX_FALSE;
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if (ax_sum_layout_is_pointer()) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
     }
+    ax_u64 size = (sizeof(ax_string) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        ax_u64* raw = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+    }
+    ax_u32* raw = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
 }
 
 ax_string ax_AX_std_unwrap__string(struct ax__AX_std_Option__string self) {
-    {
-        struct ax__AX_std_Option__string _discrim = self;
-        switch (_discrim.tag) {
-        case ax__AX_std_Option__string_Some: {
-            ax_string v = (_discrim).data.Some;
-            return v;
-            break;
-        }
-        case ax__AX_std_Option__string_None: {
-            ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called unwrap() on a None value", .len=31}).ptr);
-            break;
-        }
-            default: {
-                /* unreachable: exhaustiveness checked by type checker */
-                __builtin_unreachable();
-            }
-        }
+    if ((!ax_AX_std_is_some__string(self))) {
+        ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called Option.unwrap() on a None value", .len=38}).ptr);
     }
+    if (ax_sum_layout_is_pointer()) {
+        ax_string* raw = ((ax_string*)(&(self)));
+        return (*((ax_string*)(raw)));
+    }
+    ax_u64 size = (sizeof(ax_string) * ((ax_u64)(2)));
+    if ((size <= ((ax_u64)(8)))) {
+        ax_u8* raw = ((ax_u8*)(&(self)));
+        ax_string* typed = ((ax_string*)(raw));
+        return (*((ax_string*)(typed)));
+    }
+    ax_u8* raw = ((ax_u8*)(&(self)));
+    ax_string* payload_ptr = ((ax_string*)((((ax_i64)(raw)) + ((ax_i64)(8)))));
+    return (*((ax_string*)(payload_ptr)));
 }
 
 void ax__AX_std_Vec__u8_push(ax_vec* self, ax_u8 item) {
@@ -1262,9 +1228,10 @@ void ax__AX_std_Vec__u8_push(ax_vec* self, ax_u8 item) {
         if ((self->cap != 0)) {
             new_cap = (self->cap * 2);
         }
-        ax_u8* new_data = ((ax_u8*)(ax_alloc((new_cap * 8))));
+        ax_i64 item_size = ((ax_i64)(sizeof(ax_u8)));
+        ax_u8* new_data = ((ax_u8*)(ax_alloc((new_cap * item_size))));
         if ((self->data != ((ax_u8*)(NULL)))) {
-            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * 8));
+            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * item_size));
             ax_free(((ax_u8*)(self->data)));
         }
         self->data = new_data;
@@ -1280,9 +1247,10 @@ void ax__AX_std_Vec__string_push(ax_vec* self, ax_string item) {
         if ((self->cap != 0)) {
             new_cap = (self->cap * 2);
         }
-        ax_string* new_data = ((ax_string*)(ax_alloc((new_cap * 8))));
+        ax_i64 item_size = ((ax_i64)(sizeof(ax_string)));
+        ax_string* new_data = ((ax_string*)(ax_alloc((new_cap * item_size))));
         if ((self->data != ((ax_string*)(NULL)))) {
-            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * 8));
+            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * item_size));
             ax_free(((ax_u8*)(self->data)));
         }
         self->data = new_data;
@@ -1307,9 +1275,10 @@ void ax__AX_std_Vec__u16_push(ax_vec* self, ax_u16 item) {
         if ((self->cap != 0)) {
             new_cap = (self->cap * 2);
         }
-        ax_u16* new_data = ((ax_u16*)(ax_alloc((new_cap * 8))));
+        ax_i64 item_size = ((ax_i64)(sizeof(ax_u16)));
+        ax_u16* new_data = ((ax_u16*)(ax_alloc((new_cap * item_size))));
         if ((self->data != ((ax_u16*)(NULL)))) {
-            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * 8));
+            memcpy(((ax_u8*)(new_data)), ((ax_u8*)(self->data)), (self->len * item_size));
             ax_free(((ax_u8*)(self->data)));
         }
         self->data = new_data;

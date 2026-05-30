@@ -21,7 +21,7 @@ func main() {
 			name = string(sym.Name[:])
 		}
 		if sym.SectionNumber > 0 {
-			fmt.Printf("  [DEF] Section %d: %s\n", sym.SectionNumber, name)
+			fmt.Printf("  [DEF] Section %d: %s (Value: 0x%08X)\n", sym.SectionNumber, name, sym.Value)
 		} else if sym.SectionNumber == 0 {
 			if sym.StorageClass == 2 { // External
 				fmt.Printf("  [UNDEF]: %s\n", name)
