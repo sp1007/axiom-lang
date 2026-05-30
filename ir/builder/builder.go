@@ -19,6 +19,8 @@
 package builder
 
 import (
+	"sort"
+
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/sema"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -53,10 +55,38 @@ func NewModuleBuilder(
 // Build walks all top-level function declarations and lowers them to AIR.
 // Returns the completed AirModule.
 func (mb *ModuleBuilder) Build() *air.AirModule {
-	root := mb.tree.Node(0) // NodeProgram
+	// 1. Build main tree
+	mb.buildTree(mb.tree)
+
+	// 2. Build all loaded module trees
+	if mb.symbols != nil && mb.symbols.LazyResolver != nil {
+		var modKeys []uint32
+		for k := range mb.symbols.LazyResolver.GetModules() {
+			modKeys = append(modKeys, k)
+		}
+		sort.Slice(modKeys, func(i, j int) bool {
+			return modKeys[i] < modKeys[j]
+		})
+		for _, k := range modKeys {
+			mod := mb.symbols.LazyResolver.GetModules()[k]
+			if mod.AstTree != nil {
+				mb.buildTree(mod.AstTree)
+			}
+		}
+	}
+
+	return mb.module
+}
+
+func (mb *ModuleBuilder) buildTree(tree *ast.AstTree) {
+	oldTree := mb.tree
+	mb.tree = tree
+	defer func() { mb.tree = oldTree }()
+
+	root := tree.Node(0) // NodeProgram
 	child := root.FirstChild
 	for child != ast.NullIdx {
-		node := mb.tree.Node(child)
+		node := tree.Node(child)
 		if node.Kind == ast.NodeFuncDecl {
 			fn := mb.lowerFunc(child, node)
 			if fn != nil {
@@ -65,7 +95,7 @@ func (mb *ModuleBuilder) Build() *air.AirModule {
 		} else if node.Kind == ast.NodeStructDecl {
 			sChild := node.FirstChild
 			for sChild != ast.NullIdx {
-				sNode := mb.tree.Node(sChild)
+				sNode := tree.Node(sChild)
 				if sNode.Kind == ast.NodeFuncDecl {
 					fn := mb.lowerFunc(sChild, sNode)
 					if fn != nil {
@@ -77,7 +107,6 @@ func (mb *ModuleBuilder) Build() *air.AirModule {
 		}
 		child = node.NextSibling
 	}
-	return mb.module
 }
 
 // lowerFunc creates an AirFunc from a NodeFuncDecl AST node.

@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -49,14 +50,21 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 
 	case ast.NodeIndexExpr:
 		collection := node.FirstChild
+		if collection != 0 {
+			tc.checkStmt(collection)
+			arg := tc.ast.Nodes[collection].NextSibling
+			for arg != 0 {
+				tc.checkStmt(arg)
+				arg = tc.ast.Nodes[arg].NextSibling
+			}
+		}
+
 		index := uint32(0)
 		if collection != 0 {
 			index = tc.ast.Nodes[collection].NextSibling
 		}
 
 		if collection != 0 && index != 0 {
-			tc.checkStmt(collection)
-			tc.checkStmt(index)
 
 			colType := tc.infer.TypeOf(collection)
 			idxType := tc.infer.TypeOf(index)
@@ -70,7 +78,7 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					} else {
 						// Is collection an Ident to a generic template?
 						isGeneric := false
-						if tc.ast.Nodes[collection].Kind == ast.NodeIdent {
+						if tc.ast.Nodes[collection].Kind == ast.NodeIdent || tc.ast.Nodes[collection].Kind == ast.NodeFieldExpr {
 							symIdx := tc.ast.Nodes[collection].Payload
 							if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 								if tc.symtable.SymbolAt(symIdx).Flags&SymFlagGeneric != 0 {
@@ -94,7 +102,7 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					}
 				}
 
-				if tc.ast.Nodes[collection].Kind == ast.NodeIdent {
+				if tc.ast.Nodes[collection].Kind == ast.NodeIdent || tc.ast.Nodes[collection].Kind == ast.NodeFieldExpr {
 					name := string(tc.ast.NodeText(collection))
 					if name == "compiler_intrinsic" || name == "@compiler_intrinsic" {
 						isGenericApp = true
@@ -123,34 +131,102 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 		}
 
 	case ast.NodeFieldExpr:
+		symIdx := node.Payload
+		if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+			sym := tc.symtable.SymbolAt(symIdx)
+			if sym.Kind == SymModule {
+				break
+			}
+		}
 		obj := node.FirstChild
 		if obj != 0 {
 			tc.checkStmt(obj)
 			objType := tc.infer.TypeOf(obj)
-			fmt.Printf("[DEBUG-FIELD] nodeIdx=%d LHS=%d LHS-Type=%d\n", nodeIdx, obj, objType)
-			
 			lhsIsModule := false
-			curr := obj
-			for tc.ast.Nodes[curr].Kind == ast.NodeFieldExpr {
-				curr = tc.ast.Nodes[curr].FirstChild
-			}
-			if tc.ast.Nodes[curr].Kind == ast.NodeIdent {
-				name := string(tc.ast.NodeText(curr))
-				nameID := tc.intern.InternString(name)
-				symIdx, found := tc.symtable.Resolve(nameID)
-				if found && int(symIdx) < len(tc.symtable.Symbols) {
+			if tc.ast.Nodes[obj].Kind == ast.NodeFieldExpr || tc.ast.Nodes[obj].Kind == ast.NodeIdent {
+				symIdx := tc.ast.Nodes[obj].Payload
+				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 					sym := tc.symtable.SymbolAt(symIdx)
 					if sym.Kind == SymModule {
 						lhsIsModule = true
 					}
 				}
 			}
+			if !lhsIsModule {
+				curr := obj
+				for tc.ast.Nodes[curr].Kind == ast.NodeFieldExpr {
+					curr = tc.ast.Nodes[curr].FirstChild
+				}
+				if tc.ast.Nodes[curr].Kind == ast.NodeIdent {
+					symIdx := tc.ast.Nodes[curr].Payload
+					if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+						sym := tc.symtable.SymbolAt(symIdx)
+						if sym.Kind == SymModule {
+							lhsIsModule = true
+						}
+					}
+				}
+			}
+			if !lhsIsModule && tc.parents != nil {
+				currParent := tc.parents[nodeIdx]
+				for currParent != 0 && tc.ast.Nodes[currParent].Kind == ast.NodeFieldExpr {
+					symIdx := tc.ast.Nodes[currParent].Payload
+					if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+						sym := tc.symtable.SymbolAt(symIdx)
+						if sym.Kind == SymModule {
+							lhsIsModule = true
+							break
+						}
+					}
+					currParent = tc.parents[currParent]
+				}
+			}
+
+			// Check for built-in .len property access on string, slice, array
+			fieldName := ""
+			fieldNodeIdx := node.FirstChild
+			if fieldNodeIdx != 0 {
+				fieldNodeIdx = tc.ast.Nodes[fieldNodeIdx].NextSibling
+				if fieldNodeIdx != 0 && tc.ast.Nodes[fieldNodeIdx].Kind == ast.NodeIdent {
+					fieldName = string(tc.ast.NodeText(fieldNodeIdx))
+				}
+			}
+			if fieldName == "" && node.Payload != 0 {
+				if int(node.Payload) <= tc.intern.Len() {
+					fieldName = string(tc.intern.Get(uint32(node.Payload)))
+				}
+			}
+			isLenAccess := false
+			if (fieldName == "len" || fieldName == "ptr") && objType != types.TypeUnknown {
+				actualObjType := objType
+				entry := tc.types.Entry(actualObjType)
+				if entry.Kind == types.KindPointer {
+					actualObjType = tc.types.PointerElem(actualObjType)
+					entry = tc.types.Entry(actualObjType)
+				}
+				if actualObjType == types.TypeString || entry.Kind == types.KindSlice || entry.Kind == types.KindArray {
+					isLenAccess = true
+				}
+			}
 
 			isStructAccess := false
 			var structType types.TypeID = objType
 			var entry *types.TypeEntry
+			isResolvedSym := false
+			symIdx := node.Payload
+			if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
+				sym := tc.symtable.SymbolAt(symIdx)
+				symName := string(tc.symtable.intern.Get(sym.NameID))
+				if symName == fieldName {
+					if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst || sym.Kind == SymStruct || sym.Kind == SymInterface {
+						isResolvedSym = true
+					}
+				}
+			}
+
 			if !lhsIsModule && objType != types.TypeUnknown {
 				entry = tc.types.Entry(objType)
+				fmt.Printf("[DEBUG-CHECK-FIELD] objType=%d entry.Kind=%d fieldName='%s' isResolvedSym=%v\n", objType, entry.Kind, fieldName, isResolvedSym)
 				if entry.Kind == types.KindPointer {
 					objType = tc.types.PointerElem(objType)
 					entry = tc.types.Entry(objType)
@@ -159,7 +235,14 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				if entry.Kind == types.KindGenericInst {
 					for idx := 0; idx < tc.types.Count(); idx++ {
 						e := tc.types.Entry(types.TypeID(idx))
-						if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID == entry.NameID {
+						var name1, name2 string
+						if e.NameID != 0 {
+							name1 = tc.symtable.intern.Get(e.NameID)
+						}
+						if entry.NameID != 0 {
+							name2 = tc.symtable.intern.Get(entry.NameID)
+						}
+						if (e.Kind == types.KindStruct || e.Kind == types.KindSum || e.Kind == types.KindGenericInst) && name1 != "" && name1 == name2 {
 							structType = types.TypeID(idx)
 							entry = e
 							break
@@ -167,13 +250,57 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					}
 				}
 				if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
-					isStructAccess = true
+					if !isResolvedSym {
+						isStructAccess = true
+					}
+				} else if entry.Kind == types.KindGeneric {
+					constraintID := tc.types.GenericConstraint(objType)
+					fmt.Printf("[DEBUG-CHECK-FIELD] generic constraintID=%d for objType=%d\n", constraintID, objType)
+					if constraintID != 0 {
+						ifaceInfo := tc.types.InterfaceInfo(constraintID)
+						fieldNameID := tc.symtable.intern.InternString(fieldName)
+						fmt.Printf("[DEBUG-CHECK-FIELD] looking for fieldNameID=%d in interface %d methods:\n", fieldNameID, constraintID)
+						for _, method := range ifaceInfo.Methods {
+							fmt.Printf("[DEBUG-CHECK-FIELD]   method.NameID=%d ('%s')\n", method.NameID, tc.symtable.intern.Get(method.NameID))
+							if method.NameID == fieldNameID {
+								isStructAccess = true
+								break
+							}
+						}
+					}
+				}
+				fmt.Printf("[DEBUG-CHECK-FIELD] final isStructAccess=%v\n", isStructAccess)
+			}
+
+			isBuiltinMethod := false
+			if entry != nil && entry.Kind == types.KindGenericInst {
+				name := string(tc.symtable.intern.Get(entry.NameID))
+				if name == "Vec" && (fieldName == "len" || fieldName == "get" || fieldName == "push" || fieldName == "data" || fieldName == "destroy" || fieldName == "cap") {
+					isBuiltinMethod = true
+				} else if name == "Option" && (fieldName == "unwrap" || fieldName == "unwrap_or" || fieldName == "expect" || fieldName == "is_ok" || fieldName == "is_some" || fieldName == "is_none" || fieldName == "map" || fieldName == "flat_map" || fieldName == "ok_or" || fieldName == "filter" || fieldName == "or_other") {
+					isBuiltinMethod = true
+				} else if name == "Result" && (fieldName == "unwrap" || fieldName == "unwrap_err" || fieldName == "unwrap_or" || fieldName == "expect" || fieldName == "is_ok" || fieldName == "is_err" || fieldName == "map" || fieldName == "map_err" || fieldName == "flat_map" || fieldName == "ok" || fieldName == "err") {
+					isBuiltinMethod = true
+				}
+			}
+			if tc.ast.Nodes[obj].Kind == ast.NodeIdent || tc.ast.Nodes[obj].Kind == ast.NodeFieldExpr {
+				objName := string(tc.ast.NodeText(obj))
+				if (objName == "Vec" || strings.HasSuffix(objName, ".Vec") || objName == "Option" || strings.HasSuffix(objName, ".Option") || objName == "Result" || strings.HasSuffix(objName, ".Result")) && fieldName == "new" {
+					isBuiltinMethod = true
+				}
+			} else if tc.ast.Nodes[obj].Kind == ast.NodeIndexExpr {
+				col := tc.ast.Nodes[obj].FirstChild
+				if col != 0 && (tc.ast.Nodes[col].Kind == ast.NodeIdent || tc.ast.Nodes[col].Kind == ast.NodeFieldExpr) {
+					objName := string(tc.ast.NodeText(col))
+					if (objName == "Vec" || strings.HasSuffix(objName, ".Vec") || objName == "Option" || strings.HasSuffix(objName, ".Option") || objName == "Result" || strings.HasSuffix(objName, ".Result")) && fieldName == "new" {
+						isBuiltinMethod = true
+					}
 				}
 			}
 
-			if !isStructAccess {
-				isResolvedSym := false
-				symIdx := node.Payload
+			if isLenAccess || isBuiltinMethod {
+				// Valid built-in property access for .len and generic methods, skip error checks.
+			} else if !isStructAccess {
 				nodeIsModule := false
 				if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 					sym := tc.symtable.SymbolAt(symIdx)
@@ -189,20 +316,32 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 						}
 					}
 				}
-				if !isResolvedSym && objType != types.TypeUnknown {
+				if !lhsIsModule && !isResolvedSym && objType != types.TypeUnknown {
 					tc.errorf(nodeIdx, 3025, "cannot access field on non-struct type %d", objType)
 				}
 			} else {
 				// Verify that the field or method exists on the struct or sum type
 				found := false
-				fieldNameID := uint32(node.Payload)
 				
 				if entry.Kind == types.KindStruct {
 					structInfo := tc.types.StructInfo(structType)
 					for _, field := range structInfo.Fields {
-						if field.NameID == fieldNameID {
+						fieldNameInStruct := tc.symtable.intern.Get(field.NameID)
+						if fieldNameInStruct == fieldName {
 							found = true
 							break
+						}
+					}
+				} else if entry.Kind == types.KindGeneric {
+					constraintID := tc.types.GenericConstraint(objType)
+					if constraintID != 0 {
+						ifaceInfo := tc.types.InterfaceInfo(constraintID)
+						fieldNameID := tc.symtable.intern.InternString(fieldName)
+						for _, method := range ifaceInfo.Methods {
+							if method.NameID == fieldNameID {
+								found = true
+								break
+							}
 						}
 					}
 				}
@@ -210,7 +349,8 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				if !found && tc.ifaces != nil {
 					methods := tc.ifaces.getMethodsOfStruct(structType)
 					for _, method := range methods {
-						if method.NameID == fieldNameID {
+						methodNameInStruct := tc.symtable.intern.Get(method.NameID)
+						if methodNameInStruct == fieldName {
 							found = true
 							break
 						}
@@ -221,7 +361,8 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				if !found && tc.ifaces != nil && objType != structType {
 					methods := tc.ifaces.getMethodsOfStruct(objType)
 					for _, method := range methods {
-						if method.NameID == fieldNameID {
+						methodNameInStruct := tc.symtable.intern.Get(method.NameID)
+						if methodNameInStruct == fieldName {
 							found = true
 							break
 						}
@@ -229,10 +370,6 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 				}
 
 				if !found {
-					fieldName := ""
-					if fieldNameID != 0 {
-						fieldName = tc.intern.Get(fieldNameID)
-					}
 					tc.errorf(nodeIdx, 3026, "type %d has no field or method '%s'", objType, fieldName)
 				}
 			}

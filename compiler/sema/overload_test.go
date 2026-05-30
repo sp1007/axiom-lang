@@ -101,9 +101,9 @@ func TestOverloadAmbiguous(t *testing.T) {
 	pool, st, tt, or := setupOverloadTest()
 	fooID := pool.Intern([]byte("foo"))
 	
-	// Create fn foo(x: i64) in global scope
+	// Create fn foo(x: f32) in global scope
 	symIdx1, _ := st.Define(fooID, sema.SymFunc, 0, 0)
-	funcTypeID1 := tt.RegisterFunction([]types.TypeID{types.TypeI64}, types.TypeVoid, nil)
+	funcTypeID1 := tt.RegisterFunction([]types.TypeID{types.TypeF32}, types.TypeVoid, nil)
 	st.SymbolAt(symIdx1).TypeID = uint32(funcTypeID1)
 	
 	// Push scope, create fn foo(x: f64)
@@ -112,7 +112,7 @@ func TestOverloadAmbiguous(t *testing.T) {
 	funcTypeID2 := tt.RegisterFunction([]types.TypeID{types.TypeF64}, types.TypeVoid, nil)
 	st.SymbolAt(symIdx2).TypeID = uint32(funcTypeID2)
 	
-	// Call with i32. Both i64 and f64 are coercible targets, score 3.
+	// Call with i32. Both f32 and f64 are coercible targets, score 2.
 	_, err := or.Resolve(fooID, []types.TypeID{types.TypeI32})
 	if err == nil || err.Code != 3031 {
 		t.Errorf("expected ambiguity error, got %v", err)

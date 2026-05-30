@@ -1,41 +1,6 @@
-// scratch/test_args.ax
-import std.string
-
-extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
-extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn GetCommandLineW() -> ptr[u16]
 
-fn print_raw(s: str):
-    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
-    mut written := 0 as u32
-    let s_ptr = s as ptr[void]
-    let s_len = std.string.len(s) as u32
-    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
-
-fn print_i64(val: i64):
-    if val == 0:
-        print_raw("0")
-        return
-    mut v := val
-    mut buf := @alloc(32) as ptr[u8]
-    mut len := 0
-    while v > 0:
-        let digit = (v % 10) as u8
-        buf[len] = '0' as u8 + digit
-        len = len + 1
-        v = v / 10
-    // reverse
-    mut i := 0
-    while i < len / 2:
-        let tmp = buf[i]
-        buf[i] = buf[len - 1 - i]
-        buf[len - 1 - i] = tmp
-        i = i + 1
-    buf[len] = 0 as u8
-    print_raw(std.string.slice(buf as str, 0, len as i64))
-    @free(buf)
-
-fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
+fn local_wslice_to_ptr(data: ptr[u16], len: i64) -> ptr[u8]:
     let res = @alloc(len + 1) as ptr[u8]
     mut i := 0 as i64
     while i < len:
@@ -43,28 +8,97 @@ fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
         res[i] = val as u8
         i = i + 1
     res[len] = 0 as u8
-    return res as str
+    return res
+
+fn populate_str_in_place(s_ptr: ptr[u8], s_len: i64, dest: ptr[str]):
+    let out_bytes = dest as ptr[u8]
+    let ptr_val = s_ptr as i64
+    out_bytes[0] = (ptr_val & 0xFF) as u8
+    out_bytes[1] = ((ptr_val >> 8) & 0xFF) as u8
+    out_bytes[2] = ((ptr_val >> 16) & 0xFF) as u8
+    out_bytes[3] = ((ptr_val >> 24) & 0xFF) as u8
+    out_bytes[4] = ((ptr_val >> 32) & 0xFF) as u8
+    out_bytes[5] = ((ptr_val >> 40) & 0xFF) as u8
+    out_bytes[6] = ((ptr_val >> 48) & 0xFF) as u8
+    out_bytes[7] = ((ptr_val >> 56) & 0xFF) as u8
+
+    out_bytes[8] = (s_len & 0xFF) as u8
+    out_bytes[9] = ((s_len >> 8) & 0xFF) as u8
+    out_bytes[10] = ((s_len >> 16) & 0xFF) as u8
+    out_bytes[11] = ((s_len >> 24) & 0xFF) as u8
+    out_bytes[12] = ((s_len >> 32) & 0xFF) as u8
+    out_bytes[13] = ((s_len >> 40) & 0xFF) as u8
+    out_bytes[14] = ((s_len >> 48) & 0xFF) as u8
+    out_bytes[15] = ((s_len >> 56) & 0xFF) as u8
+
+fn is_space(c: u16) -> bool:
+    if c == ' ' as u16:
+        return true
+    if c == '\t' as u16:
+        return true
+    if c == '\r' as u16:
+        return true
+    if c == '\n' as u16:
+        return true
+    return false
+
+fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
+    let args = @alloc(64 * 16) as ptr[str]
+    mut count := 0 as i64
+    if @compiler_intrinsic("is_windows"):
+        let cmdline = GetCommandLineW()
+        println("cmdline pointer:")
+        println(cmdline as i64)
+        if cmdline != null as ptr[u16]:
+            mut d := 0
+            while d < 10:
+                println(cmdline[d] as i64)
+                d = d + 1
+            mut i := 0 as i64
+            while cmdline[i] != 0 as u16 and count < 64:
+                while is_space(cmdline[i]):
+                    i = i + 1
+                if cmdline[i] == 0 as u16:
+                    break
+                let start = i
+                mut in_quotes := false
+                while cmdline[i] != 0 as u16:
+                    let ch = cmdline[i]
+                    if ch == '"' as u16:
+                        in_quotes = not in_quotes
+                    else:
+                        if not in_quotes:
+                            if is_space(ch):
+                                break
+                    i = i + 1
+                let arg_len = i - start
+                mut final_ptr := ((cmdline as i64) + start * 2) as ptr[u16]
+                mut final_len := arg_len
+                
+                mut is_quoted := false
+                if arg_len >= 2:
+                    if cmdline[start] == '"' as u16:
+                        if cmdline[i - 1] == '"' as u16:
+                            is_quoted = true
+                if is_quoted:
+                    final_ptr = ((cmdline as i64) + (start + 1) * 2) as ptr[u16]
+                    final_len = arg_len - 2
+                let s_ptr = local_wslice_to_ptr(final_ptr, final_len)
+                populate_str_in_place(s_ptr, final_len, ((args as i64) + count * 16) as ptr[str])
+                count = count + 1
+    out_argc[0] = count as i32
+    return args
 
 fn main() -> i32:
-    let cmdline = GetCommandLineW()
-    print_raw("Raw cmdline ptr: ")
-    print_i64(cmdline as i64)
-    print_raw("\n")
-    if cmdline == null as ptr[u16]:
-        print_raw("cmdline is null!\n")
-        return 1
-    
-    // Print first 50 characters of raw command line
-    print_raw("First 20 chars: ")
-    mut j := 0
-    while j < 20 and cmdline[j] != 0 as u16:
-        let ch = cmdline[j]
-        let buf = @alloc(2) as ptr[u8]
-        buf[0] = ch as u8
-        buf[1] = 0 as u8
-        print_raw(buf as str)
-        @free(buf)
-        j = j + 1
-    print_raw("\n")
-
+    println("Start test_args...")
+    let argc_ptr = @alloc(4) as ptr[i32]
+    argc_ptr[0] = 0 as i32
+    let args = get_freestanding_args(argc_ptr)
+    let argc = argc_ptr[0]
+    println("get_freestanding_args finished")
+    println(argc as i64)
+    if argc > 0:
+        println(args[0])
+    if argc > 1:
+        println(args[1])
     return 0

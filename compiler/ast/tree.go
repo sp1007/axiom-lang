@@ -184,3 +184,54 @@ func (t *AstTree) CloneSubtree(nodeIdx uint32) uint32 {
 
 	return newIdx
 }
+
+// CloneSubtreeFrom creates a deep copy of the subtree rooted at nodeIdx from a source AST tree.
+func (t *AstTree) CloneSubtreeFrom(src *AstTree, nodeIdx uint32) uint32 {
+	if nodeIdx == NullIdx {
+		return NullIdx
+	}
+
+	orig := src.Nodes[nodeIdx]
+	
+	// Clone token
+	newTokenIdx := uint32(0)
+	if orig.TokenIdx != 0 && int(orig.TokenIdx) < len(src.Tokens) {
+		tok := src.Tokens[orig.TokenIdx]
+		tokText := src.Source[tok.Offset : tok.Offset+uint32(tok.Len)]
+		
+		// Append tokText to t.Source
+		newOffset := uint32(len(t.Source))
+		t.Source = append(t.Source, tokText...)
+		
+		// Append new token to t.Tokens
+		newTokenIdx = uint32(len(t.Tokens))
+		t.Tokens = append(t.Tokens, lexer.Token{
+			Kind:   tok.Kind,
+			Offset: newOffset,
+			Len:    tok.Len,
+		})
+	}
+	
+	newIdx := t.AddNode(orig.Kind, newTokenIdx)
+	t.Nodes[newIdx].Payload = orig.Payload
+	t.Nodes[newIdx].Flags = orig.Flags
+	t.Nodes[newIdx].ExtraIdx = orig.ExtraIdx
+	
+	// Clone children recursively
+	child := orig.FirstChild
+	if child != NullIdx {
+		firstClone := t.CloneSubtreeFrom(src, child)
+		t.Nodes[newIdx].FirstChild = firstClone
+		
+		prevClone := firstClone
+		child = src.Nodes[child].NextSibling
+		for child != NullIdx {
+			siblingClone := t.CloneSubtreeFrom(src, child)
+			t.Nodes[prevClone].NextSibling = siblingClone
+			prevClone = siblingClone
+			child = src.Nodes[child].NextSibling
+		}
+	}
+
+	return newIdx
+}

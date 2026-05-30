@@ -57,6 +57,9 @@ func (q *TypeDeclQueue) Len() int {
 // Determinism guarantee: given the same TypeTable and TypeID,
 // CTypeName always returns the identical string.
 func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue) string {
+	if queue == nil {
+		queue = NewTypeDeclQueue()
+	}
 	if id == types.TypeActorRef {
 		return "AxActorID"
 	}
@@ -77,8 +80,12 @@ func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		return name
 
 	case types.KindStruct:
+		name := resolveName(entry.NameID, intern)
+		if isVecName(name) {
+			return "ax_vec"
+		}
 		queue.Enqueue(id)
-		return "struct ax_" + resolveName(entry.NameID, intern)
+		return "struct ax_" + name
 
 	case types.KindSum:
 		name := buildMangledName(entry.NameID, table.SumInfo(id).Variants, table, intern, queue)
@@ -86,7 +93,13 @@ func CTypeName(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		return name
 
 	case types.KindGenericInst:
+		if isVecName(resolveName(entry.NameID, intern)) {
+			return "ax_vec"
+		}
 		typeArgs := table.GenericInstArgs(id)
+		if monoName, found := findMonomorphizedStruct(entry.NameID, typeArgs, table, intern, queue); found {
+			return monoName
+		}
 		parts := make([]string, len(typeArgs))
 		for i, arg := range typeArgs {
 			typeNameStr := CTypeName(arg, table, intern, queue)
@@ -142,6 +155,10 @@ func CTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 
 	switch entry.Kind {
 	case types.KindStruct:
+		name := resolveName(entry.NameID, intern)
+		if isVecName(name) {
+			return ""
+		}
 		return structDecl(id, table, intern, queue)
 
 	case types.KindSlice:
@@ -151,12 +168,20 @@ func CTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		return sumTypeDecl(id, table, intern, queue)
 
 	case types.KindGenericInst:
+		if isVecName(resolveName(entry.NameID, intern)) {
+			return ""
+		}
+		typeArgs := table.GenericInstArgs(id)
+		if _, found := findMonomorphizedStruct(entry.NameID, typeArgs, table, intern, queue); found {
+			return ""
+		}
 		// Find the underlying template structure or sum type
 		var templateID types.TypeID
 		var templateEntry *types.TypeEntry
 		for idx := 0; idx < table.Count(); idx++ {
 			e := table.Entry(types.TypeID(idx))
-			if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID == entry.NameID {
+			if (e.Kind == types.KindStruct || e.Kind == types.KindSum) &&
+				resolveName(e.NameID, intern) == resolveName(entry.NameID, intern) {
 				templateID = types.TypeID(idx)
 				templateEntry = e
 				break
@@ -164,7 +189,12 @@ func CTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool, 
 		}
 
 		if templateEntry == nil {
-			panic(fmt.Sprintf("CTypeDecl: generic base template not found for %s", resolveName(entry.NameID, intern)))
+			var sb strings.Builder
+			for idx := 0; idx < table.Count(); idx++ {
+				e := table.Entry(types.TypeID(idx))
+				fmt.Fprintf(&sb, "  Type %d: Kind=%d Name=%s\n", idx, e.Kind, resolveName(e.NameID, intern))
+			}
+			panic(fmt.Sprintf("CTypeDecl: generic base template not found for %s\nAll registered types:\n%s", resolveName(entry.NameID, intern), sb.String()))
 		}
 
 		if templateEntry.Kind == types.KindStruct {
@@ -245,7 +275,7 @@ func sumTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool
 
 	hasPayload := false
 	for _, v := range info.Variants {
-		if v.PayloadType != types.TypeUnknown {
+		if v.PayloadType != types.TypeUnknown && v.PayloadType != types.TypeVoid {
 			hasPayload = true
 			break
 		}
@@ -255,7 +285,7 @@ func sumTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool
 		b.WriteString("    union {\n")
 		for _, v := range info.Variants {
 			vname := resolveName(v.NameID, intern)
-			if v.PayloadType != types.TypeUnknown {
+			if v.PayloadType != types.TypeUnknown && v.PayloadType != types.TypeVoid {
 				payloadC := CTypeName(v.PayloadType, table, intern, queue)
 				fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
 			}
@@ -269,7 +299,7 @@ func sumTypeDecl(id types.TypeID, table *types.TypeTable, intern *ast.InternPool
 		vname := resolveName(v.NameID, intern)
 		vnameLower := strings.ToLower(vname)
 		structName := "struct " + cname
-		if v.PayloadType == types.TypeUnknown {
+		if v.PayloadType == types.TypeUnknown || v.PayloadType == types.TypeVoid {
 			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(void) {\n",
 				structName, baseName, vnameLower)
 			fmt.Fprintf(&b, "    %s _result;\n", structName)
@@ -393,11 +423,14 @@ func genericInstStructDecl(id types.TypeID, templateID types.TypeID, table *type
 }
 
 func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue, emittedTags map[string]bool) string {
-	templateEntry := table.Entry(templateID)
 	info := table.SumInfo(templateID)
-	baseName := resolveName(templateEntry.NameID, intern)
 	cname := CTypeName(id, table, intern, queue)
 	mangledName := strings.TrimPrefix(cname, "struct ")
+
+	mangledBaseName := mangledName
+	if strings.HasPrefix(mangledBaseName, "ax_") {
+		mangledBaseName = strings.TrimPrefix(mangledBaseName, "ax_")
+	}
 
 	params := info.GenericParams
 	args := table.GenericInstArgs(id)
@@ -405,25 +438,28 @@ func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *typ
 	var b strings.Builder
 
 	// 1. Emit the tag enum once per template name
-	if !emittedTags[baseName] {
-		emittedTags[baseName] = true
-		fmt.Fprintf(&b, "enum ax_%s_tag {\n", baseName)
+	if !emittedTags[mangledBaseName] {
+		emittedTags[mangledBaseName] = true
+		fmt.Fprintf(&b, "enum ax_%s_tag {\n", mangledBaseName)
 		for _, v := range info.Variants {
 			vname := resolveName(v.NameID, intern)
-			fmt.Fprintf(&b, "    ax_%s_%s = %d,\n", baseName, vname, v.Tag)
+			fmt.Fprintf(&b, "    ax_%s_%s = %d,\n", mangledBaseName, vname, v.Tag)
 		}
 		b.WriteString("};\n\n")
 	}
 
 	// 2. Emit the concrete tagged union struct
 	fmt.Fprintf(&b, "struct %s {\n", mangledName)
-	fmt.Fprintf(&b, "    enum ax_%s_tag tag;\n", baseName)
+	fmt.Fprintf(&b, "    enum ax_%s_tag tag;\n", mangledBaseName)
 
 	hasPayload := false
 	for _, v := range info.Variants {
 		if v.PayloadType != types.TypeUnknown {
-			hasPayload = true
-			break
+			specType := table.SubstituteGenericType(v.PayloadType, params, args)
+			if specType != types.TypeVoid {
+				hasPayload = true
+				break
+			}
 		}
 	}
 
@@ -431,10 +467,12 @@ func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *typ
 		b.WriteString("    union {\n")
 		for _, v := range info.Variants {
 			if v.PayloadType != types.TypeUnknown {
-				vname := resolveName(v.NameID, intern)
 				specType := table.SubstituteGenericType(v.PayloadType, params, args)
-				payloadC := CTypeName(specType, table, intern, queue)
-				fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
+				if specType != types.TypeVoid {
+					vname := resolveName(v.NameID, intern)
+					payloadC := CTypeName(specType, table, intern, queue)
+					fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
+				}
 			}
 		}
 		b.WriteString("    } data;\n")
@@ -446,20 +484,20 @@ func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *typ
 		vname := resolveName(v.NameID, intern)
 		vnameLower := strings.ToLower(vname)
 		structName := "struct " + mangledName
-		if v.PayloadType == types.TypeUnknown {
-			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(void) {\n",
+		specType := table.SubstituteGenericType(v.PayloadType, params, args)
+		if v.PayloadType == types.TypeUnknown || specType == types.TypeVoid {
+			fmt.Fprintf(&b, "\nstatic inline %s %s_%s(void) {\n",
 				structName, mangledName, vnameLower)
 			fmt.Fprintf(&b, "    %s _result;\n", structName)
-			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", mangledBaseName, vname)
 			fmt.Fprintf(&b, "    return _result;\n")
 			b.WriteString("}\n")
 		} else {
-			specType := table.SubstituteGenericType(v.PayloadType, params, args)
 			payloadC := CTypeName(specType, table, intern, queue)
-			fmt.Fprintf(&b, "\nstatic inline %s ax_%s_%s(%s value) {\n",
+			fmt.Fprintf(&b, "\nstatic inline %s %s_%s(%s value) {\n",
 				structName, mangledName, vnameLower, payloadC)
 			fmt.Fprintf(&b, "    %s _result;\n", structName)
-			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", baseName, vname)
+			fmt.Fprintf(&b, "    _result.tag = ax_%s_%s;\n", mangledBaseName, vname)
 			fmt.Fprintf(&b, "    _result.data.%s = value;\n", vname)
 			fmt.Fprintf(&b, "    return _result;\n")
 			b.WriteString("}\n")
@@ -467,5 +505,101 @@ func genericInstSumTypeDecl(id types.TypeID, templateID types.TypeID, table *typ
 	}
 
 	return b.String()
+}
+
+func isVecName(name string) bool {
+	return name == "Vec" || strings.HasSuffix(name, ".Vec") || strings.Contains(name, "_Vec_") || strings.HasSuffix(name, "_Vec")
+}
+
+func getMonoArgName(arg types.TypeID, table *types.TypeTable, intern *ast.InternPool) string {
+	entry := table.Entry(arg)
+	if entry.Kind == types.KindGenericInst {
+		base := resolveName(entry.NameID, intern)
+		typeArgs := table.GenericInstArgs(arg)
+		parts := make([]string, len(typeArgs))
+		for i, a := range typeArgs {
+			parts[i] = getMonoArgName(a, table, intern)
+		}
+		return base + "__" + strings.Join(parts, "__")
+	}
+	if entry.NameID != 0 {
+		return resolveName(entry.NameID, intern)
+	}
+	if arg >= types.TypeI8 && arg <= types.TypeUSize {
+		if arg == types.TypeString {
+			return "string"
+		}
+		return arg.String()
+	}
+	switch entry.Kind {
+	case types.KindPointer:
+		return "ptr_" + getMonoArgName(types.TypeID(entry.Extra), table, intern)
+	case types.KindRef:
+		return "ref_" + getMonoArgName(types.TypeID(entry.Extra), table, intern)
+	case types.KindSlice:
+		return "slice_" + getMonoArgName(types.TypeID(entry.Extra), table, intern)
+	case types.KindArray:
+		elem := table.ArrayElem(arg)
+		length := table.ArrayLength(arg)
+		return fmt.Sprintf("arr_%d_%s", length, getMonoArgName(elem, table, intern))
+	case types.KindFunction:
+		fInfo := table.FuncInfo(arg)
+		resStr := "func_" + getMonoArgName(fInfo.Return, table, intern) + "_args"
+		for _, pVal := range fInfo.Params {
+			resStr += "_" + getMonoArgName(pVal, table, intern)
+		}
+		return resStr
+	}
+	return "type"
+}
+
+func cleanMangledName(name string) string {
+	name = strings.TrimPrefix(name, "struct ")
+	name = strings.TrimPrefix(name, "ax_")
+	for {
+		old := name
+		name = strings.ReplaceAll(name, "_AX_std_", "")
+		name = strings.ReplaceAll(name, "_AX_", "")
+		name = strings.ReplaceAll(name, "_ax_", "")
+		name = strings.ReplaceAll(name, "ax_", "")
+		name = strings.ReplaceAll(name, "__", "_")
+		if name == old {
+			break
+		}
+	}
+	return name
+}
+
+func findMonomorphizedStruct(entryNameID uint32, typeArgs []types.TypeID, table *types.TypeTable, intern *ast.InternPool, queue *TypeDeclQueue) (string, bool) {
+	baseName := resolveName(entryNameID, intern)
+	if baseName == "" {
+		return "", false
+	}
+	
+	argNames := make([]string, len(typeArgs))
+	for i, arg := range typeArgs {
+		argNames[i] = getMonoArgName(arg, table, intern)
+	}
+	
+	suffix := baseName
+	for _, argName := range argNames {
+		suffix += "__" + argName
+	}
+	
+	cleanSuffix := cleanMangledName(suffix)
+	
+	for idx := 0; idx < table.Count(); idx++ {
+		e := table.Entry(types.TypeID(idx))
+		if (e.Kind == types.KindStruct || e.Kind == types.KindSum) && e.NameID != 0 {
+			name := resolveName(e.NameID, intern)
+			if cleanMangledName(name) == cleanSuffix {
+				if queue != nil {
+					queue.Enqueue(types.TypeID(idx))
+				}
+				return "struct ax_" + name, true
+			}
+		}
+	}
+	return "", false
 }
 

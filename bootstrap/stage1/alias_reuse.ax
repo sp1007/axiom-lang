@@ -4,23 +4,23 @@
 import std.string
 
 pub struct AliasReuseOptimizer:
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
 
-pub fn new_alias_reuse_optimizer(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> AliasReuseOptimizer:
-    return AliasReuseOptimizer(
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-    )
+pub fn new_alias_reuse_optimizer(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[AliasReuseOptimizer]:
+    let aro = @alloc(@compiler_intrinsic("size_of")[AliasReuseOptimizer]()) as ptr[AliasReuseOptimizer]
+    aro.tree = tree
+    aro.pool = pool
+    aro.symtable = symtable
+    aro.typetable = typetable
+    return aro
 
-pub fn run(mut self: AliasReuseOptimizer):
+pub fn run(mut self: ptr[AliasReuseOptimizer]):
     self.optimize_node(0 as u32)
 
-pub fn optimize_node(mut self: AliasReuseOptimizer, node_idx: u32):
+pub fn optimize_node(mut self: ptr[AliasReuseOptimizer], node_idx: u32):
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 

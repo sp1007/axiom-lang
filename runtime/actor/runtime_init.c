@@ -112,3 +112,12 @@ void __ax_runtime_init(void) {
 void __ax_runtime_shutdown(void) {
     ax_runtime_shutdown();
 }
+
+void ax___ax_runtime_init(void) {
+    ax_runtime_init(NULL);
+}
+
+void ax___ax_runtime_shutdown(void) {
+    ax_runtime_shutdown();
+}
+

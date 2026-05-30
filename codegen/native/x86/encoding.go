@@ -399,3 +399,184 @@ func (cc CondCode) String() string {
 	}
 	return "??"
 }
+
+// EncodeMovDQ encodes MOVQ xmm, r64 (move GPR to XMM).
+// REX.W + 0x0F 0x6E /r
+func EncodeMovDQ(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	if needREX {
+		rex |= REXW
+		return []byte{rex, 0x0F, 0x6E, modrm}
+	}
+	return []byte{EncodeREX(true, false, false, false), 0x0F, 0x6E, modrm}
+}
+
+// EncodeMovQD encodes MOVQ r64, xmm (move XMM to GPR).
+// REX.W + 0x0F 0x7E /r
+func EncodeMovQD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(src, dst)
+	if needREX {
+		rex |= REXW
+		return []byte{rex, 0x0F, 0x7E, modrm}
+	}
+	return []byte{EncodeREX(true, false, false, false), 0x0F, 0x7E, modrm}
+}
+
+// EncodeAddSD encodes ADDSD dst, src (scalar double addition).
+// F2 0F 58 /r
+func EncodeAddSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x58, modrm)
+	return buf
+}
+
+// EncodeSubSD encodes SUBSD dst, src (scalar double subtraction).
+// F2 0F 5C /r
+func EncodeSubSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x5C, modrm)
+	return buf
+}
+
+// EncodeMulSD encodes MULSD dst, src (scalar double multiplication).
+// F2 0F 59 /r
+func EncodeMulSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x59, modrm)
+	return buf
+}
+
+// EncodeDivSD encodes DIVSD dst, src (scalar double division).
+// F2 0F 5E /r
+func EncodeDivSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x5E, modrm)
+	return buf
+}
+
+// EncodeCvtSI2SD encodes CVTSI2SD dst, src (convert 64-bit int in GPR to double in XMM).
+// F2 REX.W 0F 2A /r
+func EncodeCvtSI2SD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		rex |= REXW
+		buf = append(buf, rex)
+	} else {
+		buf = append(buf, EncodeREX(true, false, false, false))
+	}
+	buf = append(buf, 0x0F, 0x2A, modrm)
+	return buf
+}
+
+// EncodeCvtTSD2SI encodes CVTTSD2SI dst, src (convert double in XMM to 64-bit int in GPR with truncation).
+// F2 REX.W 0F 2C /r
+func EncodeCvtTSD2SI(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		rex |= REXW
+		buf = append(buf, rex)
+	} else {
+		buf = append(buf, EncodeREX(true, false, false, false))
+	}
+	buf = append(buf, 0x0F, 0x2C, modrm)
+	return buf
+}
+
+// EncodeComiSD encodes COMISD dst, src (compare double, set EFLAGS).
+// EncodeComiSD encodes COMISD dst, src (compare double, set EFLAGS).
+// 66 0F 2F /r
+func EncodeComiSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0x66)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x2F, modrm)
+	return buf
+}
+
+// EncodeMovSD encodes MOVSD dst, src (XMM to XMM).
+// F2 0F 10 /r
+func EncodeMovSD(dst, src PhysReg) []byte {
+	modrm, rex, needREX := EncodeModRM_RR(dst, src)
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if needREX {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x10, modrm)
+	return buf
+}
+
+// EncodeMovSDLoad encodes MOVSD dst, [base + disp32] (load float from memory to XMM).
+// F2 0F 10 /r
+func EncodeMovSDLoad(dst, base PhysReg, disp int32) []byte {
+	rex := EncodeREX(false, dst.NeedsREX(), false, base.NeedsREX())
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if rex != 0 {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x10)
+	modrmBuf := EncodeModRM_RM(dst, base, disp)
+	if len(modrmBuf) > 0 && (modrmBuf[0]&0xF0) == 0x40 {
+		if rex == 0 {
+			buf = append([]byte{0xF2, modrmBuf[0]}, buf[1:]...)
+		} else {
+			buf[1] |= modrmBuf[0] & 0x0F
+		}
+		modrmBuf = modrmBuf[1:]
+	}
+	buf = append(buf, modrmBuf...)
+	return buf
+}
+
+// EncodeMovSDStore encodes MOVSD [base + disp32], src (store float from XMM to memory).
+// F2 0F 11 /r
+func EncodeMovSDStore(base PhysReg, disp int32, src PhysReg) []byte {
+	rex := EncodeREX(false, src.NeedsREX(), false, base.NeedsREX())
+	var buf []byte
+	buf = append(buf, 0xF2)
+	if rex != 0 {
+		buf = append(buf, rex)
+	}
+	buf = append(buf, 0x0F, 0x11)
+	modrmBuf := EncodeModRM_RM(src, base, disp)
+	if len(modrmBuf) > 0 && (modrmBuf[0]&0xF0) == 0x40 {
+		if rex == 0 {
+			buf = append([]byte{0xF2, modrmBuf[0]}, buf[1:]...)
+		} else {
+			buf[1] |= modrmBuf[0] & 0x0F
+		}
+		modrmBuf = modrmBuf[1:]
+	}
+	buf = append(buf, modrmBuf...)
+	return buf
+}
+
+

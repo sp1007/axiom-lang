@@ -34,7 +34,7 @@ pub struct InternPool:
     ids: ptr[InternEntry]
     state: ptr[InternState]
 
-pub fn new_intern_pool() -> InternPool:
+pub fn new_intern_pool() -> ptr[InternPool]:
     let table_size = 512 as i64
     let table = @alloc(table_size * 24) as ptr[InternEntry] // InternEntry size is 24 bytes
     mut i := 0
@@ -49,12 +49,13 @@ pub fn new_intern_pool() -> InternPool:
     (state.*).table_size = table_size
     (state.*).count = 0
 
-    return InternPool(
-        arena: null as ptr[u8],
-        table: table,
-        ids: ids,
-        state: state,
-    )
+    let pool = @alloc(32) as ptr[InternPool]
+    pool.arena = null as ptr[u8]
+    pool.table = table
+    pool.ids = ids
+    pool.state = state
+
+    return pool
 
 fn alloc_str_from_raw(data: ptr[u8], len: i64) -> str:
     // Raw copy to string representation
@@ -63,17 +64,17 @@ fn alloc_str_from_raw(data: ptr[u8], len: i64) -> str:
     buf[len] = 0 as u8
     return buf as str
 
-pub fn get_str(self: InternPool, id: u32) -> str:
+pub fn get_str(self: ptr[InternPool], id: u32) -> str:
     if id == 0 as u32 or id > (self.state.*).count as u32:
         return ""
     let entry = self.ids[id as i64 - 1]
     let start_ptr = (self.arena as i64 + entry.start as i64) as ptr[u8]
     return alloc_str_from_raw(start_ptr, entry.len as i64)
 
-pub fn get(self: InternPool, id: u32) -> str:
+pub fn get(self: ptr[InternPool], id: u32) -> str:
     return self.get_str(id)
 
-pub fn intern(mut self: InternPool, s: str) -> u32:
+pub fn intern(mut self: ptr[InternPool], s: str) -> u32:
     let length = std.string.len(s)
     if length == 0:
         return 0 as u32
@@ -102,10 +103,10 @@ pub fn intern(mut self: InternPool, s: str) -> u32:
 
     return 0 as u32
 
-pub fn intern_string(mut self: InternPool, s: str) -> u32:
+pub fn intern_string(mut self: ptr[InternPool], s: str) -> u32:
     return self.intern(s)
 
-fn insert_at(mut self: InternPool, slot: i64, s: str, h: u32) -> u32:
+fn insert_at(mut self: ptr[InternPool], slot: i64, s: str, h: u32) -> u32:
     let length = std.string.len(s)
     
     // Check if we need to resize ids table
@@ -154,7 +155,7 @@ fn insert_at(mut self: InternPool, slot: i64, s: str, h: u32) -> u32:
 
     return new_id
 
-fn grow_table(mut self: InternPool):
+fn grow_table(mut self: ptr[InternPool]):
     let old_size = (self.state.*).table_size
     let new_size = old_size * 2
     let new_table = @alloc(new_size * 24) as ptr[InternEntry]
@@ -177,7 +178,7 @@ fn grow_table(mut self: InternPool):
     self.table = new_table
     (self.state.*).table_size = new_size
 
-pub fn free_pool(mut self: InternPool):
+pub fn free_pool(mut self: ptr[InternPool]):
     if self.arena != null as ptr[u8]:
         @free(self.arena)
     if self.table != null as ptr[InternEntry]:

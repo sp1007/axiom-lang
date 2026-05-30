@@ -5,6 +5,7 @@ import (
 
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/sema"
+	"github.com/axiom-lang/axiom/compiler/types"
 	"github.com/axiom-lang/axiom/ir/air"
 )
 
@@ -221,11 +222,30 @@ func (fl *funcLowering) lowerBinaryExpr(idx uint32, node *ast.AstNode) uint32 {
 	opcode := mapBinaryOp(string(opToken))
 
 	// Determine result type
-	typeID := uint16(3) // default i32
-	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(node.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
+	typeID := fl.nodeType(node)
+	if typeID == 0 {
+		isCmp := opcode == air.OpEq || opcode == air.OpNe || opcode == air.OpLt || opcode == air.OpLe || opcode == air.OpGt || opcode == air.OpGe
+		if isCmp {
+			typeID = uint16(types.TypeBool)
+		} else {
+			typeID = fl.getRegType(lhsReg)
+		}
+	}
+	if typeID == 0 {
+		typeID = 3 // default i32
+	}
+
+	// Adjust opcode to float if the result type is float
+	if types.TypeID(typeID).IsFloat() {
+		switch opcode {
+		case air.OpIAdd:
+			opcode = air.OpFAdd
+		case air.OpISub:
+			opcode = air.OpFSub
+		case air.OpIMul:
+			opcode = air.OpFMul
+		case air.OpIDiv:
+			opcode = air.OpFDiv
 		}
 	}
 
@@ -386,13 +406,7 @@ func (fl *funcLowering) lowerFieldExpr(idx uint32, node *ast.AstNode) uint32 {
 	// The field index is typically stored in ExtraIdx or Payload
 	fieldIdx := node.ExtraIdx
 
-	typeID := uint16(0)
-	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(node.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
-		}
-	}
+	typeID := fl.nodeType(node)
 
 	reg := fl.fb.FreshReg()
 	fl.fb.Emit(air.AirInst{
@@ -422,13 +436,7 @@ func (fl *funcLowering) lowerIndexExpr(idx uint32, node *ast.AstNode) uint32 {
 		idxReg = fl.lowerExpr(idxExpr, idxNode)
 	}
 
-	typeID := uint16(0)
-	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(node.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
-		}
-	}
+	typeID := fl.nodeType(node)
 
 	reg := fl.fb.FreshReg()
 	fl.fb.Emit(air.AirInst{
@@ -451,13 +459,7 @@ func (fl *funcLowering) lowerCastExpr(idx uint32, node *ast.AstNode) uint32 {
 	srcNode := fl.mb.tree.Node(child)
 	srcReg := fl.lowerExpr(child, srcNode)
 
-	typeID := uint16(0)
-	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(node.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
-		}
-	}
+	typeID := fl.nodeType(node)
 
 	reg := fl.fb.FreshReg()
 	fl.fb.Emit(air.AirInst{
@@ -479,13 +481,7 @@ func (fl *funcLowering) lowerDerefExpr(idx uint32, node *ast.AstNode) uint32 {
 	ptrNode := fl.mb.tree.Node(child)
 	ptrReg := fl.lowerExpr(child, ptrNode)
 
-	typeID := uint16(0)
-	if node.Payload != 0 && int(node.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(node.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
-		}
-	}
+	typeID := fl.nodeType(node)
 
 	reg := fl.fb.FreshReg()
 	fl.fb.Emit(air.AirInst{
@@ -678,3 +674,33 @@ func (fl *funcLowering) lowerStructConstructorCall(idx uint32, node *ast.AstNode
 
 	return structReg
 }
+
+func (fl *funcLowering) nodeType(node *ast.AstNode) uint16 {
+	if node.Payload == 0 {
+		return 0
+	}
+	// If it's an identifier or parameter reference, look up symbol
+	if node.Kind == ast.NodeIdent {
+		if int(node.Payload) < len(fl.mb.symbols.Symbols) {
+			sym := fl.mb.symbols.SymbolAt(node.Payload)
+			return uint16(sym.TypeID)
+		}
+		return 0
+	}
+	// Otherwise, for expression nodes, Payload is directly the TypeID!
+	return uint16(node.Payload)
+}
+
+func (fl *funcLowering) getRegType(reg uint32) uint16 {
+	if reg == 0 {
+		return 0
+	}
+	insts := fl.fb.Insts()
+	for i := range insts {
+		if insts[i].Dest == reg {
+			return insts[i].TypeID
+		}
+	}
+	return 0
+}
+

@@ -15,16 +15,20 @@ pub struct LocalMap:
     pub count: u32
     pub capacity: u32
 
-pub fn new_local_map() -> LocalMap:
+pub fn new_local_map() -> ptr[LocalMap]:
     let capacity = 16 as u32
     let entries = @alloc(capacity as i64 * 8) as ptr[LocalMapEntry]
     mut i := 0 as i64
     while i < capacity as i64:
         entries[i] = LocalMapEntry(name_id: 0 as u32, reg: 0 as u32)
         i = i + 1
-    return LocalMap(entries: entries, count: 0 as u32, capacity: capacity)
+    let lm = @alloc(@compiler_intrinsic("size_of")[LocalMap]()) as ptr[LocalMap]
+    lm.entries = entries
+    lm.count = 0 as u32
+    lm.capacity = capacity
+    return lm
 
-pub fn free_local_map(mut self: LocalMap):
+pub fn free_local_map(mut self: ptr[LocalMap]):
     if self.entries != null as ptr[LocalMapEntry]:
         @free(self.entries as ptr[u8])
 
@@ -40,13 +44,13 @@ fn local_map_hash(v: u32) -> u32:
     hash = hash * 16777619 as u32
     return hash
 
-pub fn local_map_put(mut self: LocalMap, name_id: u32, reg: u32):
+pub fn local_map_put(mut self: ptr[LocalMap], name_id: u32, reg: u32):
     if self.count * 4 as u32 > self.capacity * 3 as u32:
         self.local_map_grow()
     self.local_map_insert(name_id, reg)
     self.count = self.count + 1 as u32
 
-fn local_map_insert(self: LocalMap, name_id: u32, reg: u32):
+fn local_map_insert(self: ptr[LocalMap], name_id: u32, reg: u32):
     let mask = self.capacity - 1 as u32
     mut idx = local_map_hash(name_id) & mask
     while true:
@@ -56,7 +60,7 @@ fn local_map_insert(self: LocalMap, name_id: u32, reg: u32):
             return
         idx = (idx + 1 as u32) & mask
 
-pub fn local_map_get(self: LocalMap, name_id: u32) -> u32:
+pub fn local_map_get(self: ptr[LocalMap], name_id: u32) -> u32:
     if self.capacity == 0 as u32:
         return 0 as u32
     let mask = self.capacity - 1 as u32
@@ -73,7 +77,7 @@ pub fn local_map_get(self: LocalMap, name_id: u32) -> u32:
             break
     return 0 as u32
 
-fn local_map_grow(mut self: LocalMap):
+fn local_map_grow(mut self: ptr[LocalMap]):
     let old_entries = self.entries
     let old_capacity = self.capacity
     let new_cap = old_capacity * 2 as u32
@@ -93,22 +97,22 @@ fn local_map_grow(mut self: LocalMap):
     @free(old_entries as ptr[u8])
 
 pub struct AirModuleBuilder:
-    pub tree: AstTree
-    pub symbols: SymbolTable
-    pub typetable: TypeTable
-    pub pool: InternPool
+    pub tree: ptr[AstTree]
+    pub symbols: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
+    pub pool: ptr[InternPool]
     pub module: AirModule
     pub node_types: ptr[u32]
 
-pub fn new_air_module_builder(tree: AstTree, symbols: SymbolTable, typetable: TypeTable, pool: InternPool, node_types: ptr[u32]) -> AirModuleBuilder:
-    return AirModuleBuilder(
-        tree: tree,
-        symbols: symbols,
-        typetable: typetable,
-        pool: pool,
-        module: AirModule(funcs: new_air_func_vec()),
-        node_types: node_types,
-    )
+pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typetable: ptr[TypeTable], pool: ptr[InternPool], node_types: ptr[u32]) -> ptr[AirModuleBuilder]:
+    let amb = @alloc(@compiler_intrinsic("size_of")[AirModuleBuilder]()) as ptr[AirModuleBuilder]
+    amb.tree = tree
+    amb.symbols = symbols
+    amb.typetable = typetable
+    amb.pool = pool
+    amb.module = AirModule(funcs: new_air_func_vec())
+    amb.node_types = node_types
+    return amb
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
     free_air_module(self.module)
@@ -116,7 +120,7 @@ pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
 pub fn get_token_text(self: ptr[AirModuleBuilder], token_idx: u32) -> str:
     let tok = self.tree.tokens.data[token_idx as i64]
     if tok.len == 0 as u16:
-        return ""
+        return alloc_str_from_raw(null as ptr[u8], 0)
     let start_ptr = ((get_str_ptr(self.tree.src)) as i64 + tok.offset as i64) as ptr[u8]
     return alloc_str_from_raw(start_ptr, tok.len as i64)
 
@@ -187,9 +191,9 @@ pub fn map_binary_op(op: str) -> u16:
         return OP_GT
     if op == ">=":
         return OP_GE
-    if op == "and" or op == "&&":
+    if op == "and" or op == "&&" or op == "&":
         return OP_AND
-    if op == "or" or op == "||":
+    if op == "or" or op == "||" or op == "|":
         return OP_OR
     if op == "^":
         return OP_XOR
@@ -201,26 +205,34 @@ pub fn map_binary_op(op: str) -> u16:
 
 pub struct FuncLowering:
     pub mb: ptr[AirModuleBuilder]
-    pub fb: AirFuncBuilder
-    pub locals: LocalMap
+    pub fb: ptr[AirFuncBuilder]
+    pub locals: ptr[LocalMap]
     pub params: U32Vec
     pub terminated: bool
+    pub loop_conds: U32Vec
+    pub loop_exits: U32Vec
 
-pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: AirFuncBuilder, params: U32Vec) -> FuncLowering:
-    return FuncLowering(
-        mb: mb,
-        fb: fb,
-        locals: new_local_map(),
-        params: params,
-        terminated: false,
-    )
+pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: ptr[AirFuncBuilder], params: U32Vec) -> ptr[FuncLowering]:
+    let fl = @alloc(@compiler_intrinsic("size_of")[FuncLowering]()) as ptr[FuncLowering]
+    fl.mb = mb
+    fl.fb = fb
+    fl.locals = new_local_map()
+    fl.params = params
+    fl.terminated = false
+    fl.loop_conds = new_u32_vec()
+    fl.loop_exits = new_u32_vec()
+    return fl
 
-pub fn free_func_lowering(mut self: FuncLowering):
+pub fn free_func_lowering(mut self: ptr[FuncLowering]):
     free_local_map(self.locals)
     if self.params.data != null as ptr[u32]:
         @free(self.params.data as ptr[u8])
+    if self.loop_conds.data != null as ptr[u32]:
+        @free(self.loop_conds.data as ptr[u8])
+    if self.loop_exits.data != null as ptr[u32]:
+        @free(self.loop_exits.data as ptr[u8])
 
-pub fn register_params(mut self: FuncLowering, func_idx: u32, func_node: AstNode):
+pub fn register_params(mut self: ptr[FuncLowering], func_idx: u32, func_node: AstNode):
     mut child := func_node.first_child
     mut param_idx := 0 as i64
     while child != 0 as u32:
@@ -233,9 +245,9 @@ pub fn register_params(mut self: FuncLowering, func_idx: u32, func_node: AstNode
                 @free(get_str_ptr(tok_str))
 
             let reg = self.fb.fresh_reg()
-            mut type_id := 0 as u16
+            mut type_id := 0 as u32
             if param_idx < self.params.len:
-                type_id = self.params.data[param_idx] as u16
+                type_id = self.params.data[param_idx] as u32
 
             self.fb.emit(AirInst(
                 opcode: OP_COPY,
@@ -249,7 +261,7 @@ pub fn register_params(mut self: FuncLowering, func_idx: u32, func_node: AstNode
             param_idx = param_idx + 1
         child = cn.next_sibling
 
-pub fn builder_type_size_and_align(table: TypeTable, type_id: u32, out_size: ptr[u32], out_align: ptr[u32]):
+pub fn builder_type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size: ptr[u32], out_align: ptr[u32]):
     if type_id == 0 as u32:
         out_size[0] = 8 as u32
         out_align[0] = 8 as u32
@@ -265,8 +277,16 @@ pub fn builder_type_size_and_align(table: TypeTable, type_id: u32, out_size: ptr
         out_size[0] = entry.size
         out_align[0] = entry.align
         return
-    elif entry.kind == TYPE_KIND_STRUCT:
-        let struct_idx = entry.extra
+    elif entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST:
+        mut struct_idx := entry.extra
+        if entry.kind == TYPE_KIND_GENERIC_INST:
+            mut idx := 0 as i64
+            while idx < table.entries.len:
+                let e = table.entries.data[idx]
+                if e.kind == TYPE_KIND_STRUCT and e.name_id == entry.name_id:
+                    struct_idx = e.extra
+                    break
+                idx = idx + 1
         let info = table.structs.data[struct_idx]
         mut offset := 0 as u32
         mut max_align := 1 as u32
@@ -307,7 +327,7 @@ pub fn builder_type_size_and_align(table: TypeTable, type_id: u32, out_size: ptr
         out_size[0] = 8 as u32
         out_align[0] = 8 as u32
 
-pub fn try_lower_sizeof(mut self: FuncLowering, idx: u32) -> u32:
+pub fn try_lower_sizeof(mut self: ptr[FuncLowering], idx: u32) -> u32:
     let node = self.mb.tree.nodes.data[idx as i64]
     if node.kind != NODE_CALL_EXPR:
         return 0 as u32
@@ -334,7 +354,7 @@ pub fn try_lower_sizeof(mut self: FuncLowering, idx: u32) -> u32:
         return 0 as u32
         
     let inner_callee_name = self.mb.get_token_text(inner_callee_node.token_idx)
-    let is_intrinsic = (inner_callee_name == "compiler_intrinsic")
+    let is_intrinsic = (inner_callee_name == "compiler_intrinsic" or inner_callee_name == "@compiler_intrinsic")
     @free(get_str_ptr(inner_callee_name))
     if not is_intrinsic:
         return 0 as u32
@@ -353,43 +373,42 @@ pub fn try_lower_sizeof(mut self: FuncLowering, idx: u32) -> u32:
     if not is_sizeof:
         return 0 as u32
         
-    ax_puts_local("[Debug] MATCHED size_of call!")
-    
     // The type node is the index of the index expr (next sibling of the inner call)
     let type_node_idx = self.mb.tree.nodes.data[inner_call_idx as i64].next_sibling
-    if type_node_idx == 0 as u32:
-        ax_puts_local("[Debug]   type_node_idx is 0")
+    if type_node_idx == 0 as u32 or type_node_idx == 0xffffffff as u32 or (type_node_idx as i64) >= self.mb.tree.nodes.len:
         return 0 as u32
+        
+    let type_node = self.mb.tree.nodes.data[type_node_idx as i64]
         
     mut target_type := 0 as u32
     if self.mb.node_types != null as ptr[u32]:
         target_type = self.mb.node_types[type_node_idx as i64]
     if target_type == 0 as u32:
-        let type_node = self.mb.tree.nodes.data[type_node_idx as i64]
         let sym_idx = type_node.payload
         if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
             target_type = self.mb.symbols.symbols.data[sym_idx as i64].type_id
             
-    if target_type == 0 as u32:
-        ax_puts_local("[Debug]   target_type is 0")
-        return 0 as u32
-        
     mut size := 0 as u32
     mut align := 0 as u32
-    builder_type_size_and_align(self.mb.typetable, target_type, &size, &align)
+    if target_type == 0 as u32:
+        size = 8 as u32
+    elif (target_type as i64) >= self.mb.typetable.entries.len:
+        size = 8 as u32
+    else:
+        builder_type_size_and_align(self.mb.typetable, target_type, &size, &align)
     
     // Emit an OP_ICONST with the evaluated size!
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
-        type_id: 4 as u16, // i64
+        type_id: 4 as u32, // i64
         dest: reg,
         src1: size,
         src2: 0 as u32,
     ))
     return reg
 
-pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
+pub fn lower_expr(mut self: ptr[FuncLowering], idx: u32) -> u32:
     if idx == 0 as u32:
         return 0 as u32
         
@@ -436,15 +455,15 @@ pub fn lower_expr(mut self: FuncLowering, idx: u32) -> u32:
         return self.lower_array_lit(idx, node)
     return 0 as u32
 
-pub fn lower_int_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = parse_int_from_str(text)
     @free(get_str_ptr(text))
 
-    mut type_id := 3 as u16 // default i32
+    mut type_id := 3 as u32 // default i32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
@@ -455,15 +474,15 @@ pub fn lower_int_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_float_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_float_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let val = atof(get_str_ptr(text))
     @free(get_str_ptr(text))
 
-    mut type_id := 10 as u16 // default f64
+    mut type_id := 10 as u32 // default f64
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
 
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
@@ -474,7 +493,7 @@ pub fn lower_float_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_bool_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_bool_lit(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     mut val := 0 as u32
@@ -484,25 +503,25 @@ pub fn lower_bool_lit(mut self: FuncLowering, node: AstNode) -> u32:
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
-        type_id: 11 as u16, // bool
+        type_id: 11 as u32, // bool
         dest: reg,
         src1: val,
         src2: 0 as u32,
     ))
     return reg
 
-pub fn lower_nil_lit(mut self: FuncLowering) -> u32:
+pub fn lower_nil_lit(mut self: ptr[FuncLowering]) -> u32:
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: reg,
         src1: 0 as u32,
         src2: 0 as u32,
     ))
     return reg
 
-pub fn lower_string_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_string_lit(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     let str_id = self.mb.pool.intern(text)
@@ -510,33 +529,54 @@ pub fn lower_string_lit(mut self: FuncLowering, node: AstNode) -> u32:
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
-        type_id: 12 as u16, // string
+        type_id: 12 as u32, // string
         dest: reg,
         src1: str_id,
         src2: 0 as u32,
     ))
     return reg
 
-pub fn lower_char_lit(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_char_lit(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
     mut val := 0 as u32
     let length = std.string.len(text)
     if length > 0:
         if length >= 3 and text[0] as u8 == '\'' as u8 and text[length - 1] as u8 == '\'' as u8:
-            val = text[1] as u32
+            if text[1] as u8 == '\\' as u8 and length >= 4:
+                let esc = text[2] as u8
+                if esc == 'n' as u8:
+                    val = 10 as u32
+                elif esc == 't' as u8:
+                    val = 9 as u32
+                elif esc == 'r' as u8:
+                    val = 13 as u32
+                elif esc == '\'' as u8:
+                    val = 39 as u32
+                elif esc == '\\' as u8:
+                    val = 92 as u32
+                elif esc == '0' as u8:
+                    val = 0 as u32
+                elif esc == 'b' as u8:
+                    val = 8 as u32
+                elif esc == 'f' as u8:
+                    val = 12 as u32
+                else:
+                    val = esc as u32
+            else:
+                val = text[1] as u32
     @free(get_str_ptr(text))
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
-        type_id: 13 as u16, // char8
+        type_id: 13 as u32, // char8
         dest: reg,
         src1: val,
         src2: 0 as u32,
     ))
     return reg
 
-pub fn lower_ident(mut self: FuncLowering, node: AstNode) -> u32:
+pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     let text = self.mb.get_token_text(node.token_idx)
     if text == "null" or text == "nil":
         @free(get_str_ptr(text))
@@ -554,14 +594,26 @@ pub fn lower_ident(mut self: FuncLowering, node: AstNode) -> u32:
 
     if is_resolved:
         let sym = self.mb.symbols.symbols.data[sym_idx as i64]
-        if sym.kind != SYM_VAR and sym.kind != SYM_PARAM and sym.kind != SYM_CONST:
+        if sym.kind == SYM_CONST:
+            mut init_expr := 0 as u32
+            mut child := self.mb.tree.nodes.data[sym.decl_node as i64].first_child
+            while child != 0 as u32:
+                let child_node = self.mb.tree.nodes.data[child as i64]
+                if child_node.kind != NODE_TYPE_EXPR and child_node.kind != NODE_GENERIC_TYPE:
+                    init_expr = child
+                child = child_node.next_sibling
+            if init_expr != 0 as u32:
+                return self.lower_expr(init_expr)
+            return 0 as u32
+
+        if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
             return 0 as u32
         let reg = self.locals.local_map_get(sym_idx)
         return reg
 
     return 0 as u32
 
-pub fn lower_binary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
@@ -577,11 +629,9 @@ pub fn lower_binary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32
     let opcode = map_binary_op(op_token)
     @free(get_str_ptr(op_token))
 
-    mut type_id := 3 as u16 // default i32
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    mut type_id := 3 as u32 // default i32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -593,7 +643,7 @@ pub fn lower_binary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32
     ))
     return reg
 
-pub fn lower_unary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
@@ -607,13 +657,13 @@ pub fn lower_unary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         opcode = OP_NOT
     elif op_token == "~":
         opcode = OP_NOT
+    elif op_token == "&":
+        opcode = OP_MAKE_REF
     @free(get_str_ptr(op_token))
 
-    mut type_id := 3 as u16 // default i32
-    if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
-        let sym = self.mb.symbols.symbols.data[node.payload as i64]
-        if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+    mut type_id := 3 as u32 // default i32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -625,52 +675,299 @@ pub fn lower_unary_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_call_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+fn air_starts_with(s: str, prefix: str) -> bool:
+    let s_len = std.string.len(s)
+    let p_len = std.string.len(prefix)
+    if s_len < p_len:
+        return false
+    let s_ptr = get_str_ptr(s)
+    let p_ptr = get_str_ptr(prefix)
+    mut i := 0 as i64
+    while i < p_len:
+        if s_ptr[i] != p_ptr[i]:
+            return false
+        i = i + 1 as i64
+    return true
+
+fn match_mangled_method_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
+    if sym_id == method_id:
+        return true
+    if sym_id == 0 as u32 or method_id == 0 as u32:
+        return false
+        
+    let sym_entry = pool.ids[sym_id as i64 - 1]
+    let method_entry = pool.ids[method_id as i64 - 1]
+    
+    let sym_bytes = (pool.arena as i64 + sym_entry.start as i64) as ptr[u8]
+    let method_bytes = (pool.arena as i64 + method_entry.start as i64) as ptr[u8]
+    
+    let sym_len = sym_entry.len as i64
+    let method_len = method_entry.len as i64
+    
+    let prefix_part1 = get_str_ptr("_AX_std_")
+    let prefix_part1_len = 8 as i64
+    let prefix_part2_len = method_len
+    let suffix_len = 2 as i64 // "__"
+    
+    let expected_len = prefix_part1_len + prefix_part2_len + suffix_len
+    if sym_len < expected_len:
+        return false
+        
+    // 1. Check "_AX_std_"
+    mut i := 0 as i64
+    while i < prefix_part1_len:
+        if sym_bytes[i] != prefix_part1[i]:
+            return false
+        i = i + 1 as i64
+        
+    // 2. Check method_bytes
+    mut j := 0 as i64
+    while j < method_len:
+        if sym_bytes[prefix_part1_len + j] != method_bytes[j]:
+            return false
+        j = j + 1 as i64
+        
+    // 3. Check "__"
+    if sym_bytes[prefix_part1_len + method_len] != 95 as u8 or sym_bytes[prefix_part1_len + method_len + 1 as i64] != 95 as u8:
+        return false
+        
+    return true
+
+fn match_mangled_method_name(sym_name: str, method_name: str) -> bool:
+    if sym_name == method_name:
+        return true
+    let prefix = std.string.concat("_AX_std_", method_name)
+    let full_prefix = std.string.concat(prefix, "__")
+    let starts := air_starts_with(sym_name, full_prefix)
+    @free(get_str_ptr(prefix))
+    @free(get_str_ptr(full_prefix))
+    return starts
+
+pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
 
     let callee_node = self.mb.tree.nodes.data[child as i64]
+
+    if callee_node.kind == NODE_FIELD_EXPR:
+        let field_name_id = callee_node.payload
+        let field_name = self.mb.pool.get(field_name_id)
+        if field_name == "new":
+            mut is_collection_new := false
+            let rec_node = callee_node.first_child
+            if rec_node != 0 as u32:
+                mut ret_type := 0 as u32
+                if self.mb.node_types != null as ptr[u32]:
+                    ret_type = self.mb.node_types[idx as i64]
+                if ret_type != 0 as u32 and (ret_type as i64) < self.mb.typetable.entries.len:
+                    let entry = self.mb.typetable.entries.data[ret_type as i64]
+                    if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                        is_collection_new = true
+            
+            if is_collection_new:
+                mut ret_type := 0 as u32
+                if self.mb.node_types != null as ptr[u32]:
+                    ret_type = self.mb.node_types[idx as i64]
+                return self.lower_struct_constructor_call(idx, node, ret_type)
+    
+    if callee_node.kind == NODE_IDENT:
+        let sym_idx = callee_node.payload
+        if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
+            let name_id = self.mb.symbols.symbols.data[sym_idx as i64].name_id
+            let name = self.mb.pool.get(name_id)
+            if name == "compiler_intrinsic":
+                let arg_idx = callee_node.next_sibling
+                if arg_idx != 0 as u32:
+                    let arg_node = self.mb.tree.nodes.data[arg_idx as i64]
+                    if arg_node.kind == NODE_STRING_LIT:
+                        let arg_text = self.mb.get_token_text(arg_node.token_idx)
+                        mut lower_to_const := false
+                        mut const_type := 0 as u32
+                        mut const_val := 0 as u32
+                        
+                        if arg_text == "\"is_windows\"" or arg_text == "'is_windows'" or arg_text == "is_windows":
+                            lower_to_const = true
+                            const_type = 11 as u32
+                            const_val = 1 as u32
+                        elif arg_text == "\"is_linux\"" or arg_text == "'is_linux'" or arg_text == "is_linux":
+                            lower_to_const = true
+                            const_type = 11 as u32
+                            const_val = 0 as u32
+                        elif arg_text == "\"is_macos\"" or arg_text == "'is_macos'" or arg_text == "is_macos":
+                            lower_to_const = true
+                            const_type = 11 as u32
+                            const_val = 0 as u32
+                        elif arg_text == "\"os_name\"" or arg_text == "'os_name'" or arg_text == "os_name":
+                            lower_to_const = true
+                            const_type = 12 as u32
+                            const_val = self.mb.pool.intern("\"windows\"")
+                        elif arg_text == "\"arch_name\"" or arg_text == "'arch_name'" or arg_text == "arch_name":
+                            lower_to_const = true
+                            const_type = 12 as u32
+                            const_val = self.mb.pool.intern("\"x86_64\"")
+                        elif arg_text == "\"path_separator\"" or arg_text == "'path_separator'" or arg_text == "path_separator":
+                            lower_to_const = true
+                            const_type = 12 as u32
+                            const_val = self.mb.pool.intern("\"\\\\\"")
+                        
+                        if lower_to_const:
+                            @free(get_str_ptr(arg_text))
+                            let reg = self.fb.fresh_reg()
+                            self.fb.emit(AirInst(
+                                opcode: OP_ICONST,
+                                type_id: const_type,
+                                dest: reg,
+                                src1: const_val,
+                                src2: 0 as u32,
+                            ))
+                            return reg
+                        @free(get_str_ptr(arg_text))
+    
+    // Check if callee is a constant — if so, inline the value rather than calling
+    if callee_node.kind == NODE_IDENT:
+        let const_sym_idx = callee_node.payload
+        if const_sym_idx != 0 as u32 and (const_sym_idx as i64) < self.mb.symbols.symbols.len:
+            let const_sym = self.mb.symbols.symbols.data[const_sym_idx as i64]
+            if const_sym.kind == SYM_CONST:
+                // Inline the constant value by lowering its initializer expression
+                mut init_expr := 0 as u32
+                mut const_child := self.mb.tree.nodes.data[const_sym.decl_node as i64].first_child
+                while const_child != 0 as u32:
+                    let const_child_node = self.mb.tree.nodes.data[const_child as i64]
+                    if const_child_node.kind != NODE_TYPE_EXPR and const_child_node.kind != NODE_GENERIC_TYPE:
+                        init_expr = const_child
+                    const_child = const_child_node.next_sibling
+                if init_expr != 0 as u32:
+                    return self.lower_expr(init_expr)
+                // Const with no initializer — return 0
+                let zero_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: 3 as u32,
+                    dest: zero_reg,
+                    src1: 0 as u32,
+                    src2: 0 as u32,
+                ))
+                return zero_reg
     
     // Check if callee is a method call on a struct
     mut is_method_call := false
     mut method_sym_idx := 0 as u32
     mut receiver_node_idx := 0 as u32
     if callee_node.kind == NODE_FIELD_EXPR:
-        mut resolved := false
-
-        if not resolved:
-            receiver_node_idx = callee_node.first_child
-            if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
-                mut rec_type := self.mb.node_types[receiver_node_idx as i64]
-                if rec_type != 0 as u32:
-                    mut entry = self.mb.typetable.entries.data[rec_type as i64]
-                    if entry.kind == TYPE_KIND_POINTER:
-                        rec_type = entry.extra
-                        entry = self.mb.typetable.entries.data[rec_type as i64]
+        receiver_node_idx = callee_node.first_child
+        
+        if (callee_node.flags & 2048 as u16) != 0 as u16:
+            let spec_sym_idx = callee_node.payload
+            if spec_sym_idx != 0 as u32 and (spec_sym_idx as i64) < self.mb.symbols.symbols.len:
+                let sym = self.mb.symbols.symbols.data[spec_sym_idx as i64]
+                let sym_name = self.mb.pool.get(sym.name_id)
+                if match_mangled_method_name(sym_name, "is_ok") or match_mangled_method_name(sym_name, "unwrap") or match_mangled_method_name(sym_name, "unwrap_err") or match_mangled_method_name(sym_name, "is_err"):
+                    ax_puts_local("[CGEN-DEBUG-IS-OK-2] Found method symbol: ")
+                    ax_puts_local(sym_name)
+                    ax_puts_local(" | rec_type_kind=")
                     
-                    if entry.kind == TYPE_KIND_STRUCT:
-                        let method_name = self.mb.pool.get(callee_node.payload)
-                        mut i := 0 as i64
-                        while i < self.mb.symbols.symbols.len:
-                            let sym = self.mb.symbols.symbols.data[i]
-                            if sym.kind == SYM_FUNC:
-                                let sym_name = self.mb.pool.get(sym.name_id)
-                                if sym_name == method_name:
-                                    let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
-                                    if t_entry.kind == TYPE_KIND_FUNC:
-                                        let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
-                                        if fi.params.len > 0 as i64:
-                                            mut first_param := fi.params.data[0]
-                                            mut p_entry = self.mb.typetable.entries.data[first_param as i64]
-                                            if p_entry.kind == TYPE_KIND_POINTER:
-                                                first_param = p_entry.extra
-                                            if first_param == rec_type:
-                                                is_method_call = true
-                                                method_sym_idx = i as u32
-                                                resolved = true
-                                                break
-                            i = i + 1 as i64
+                    mut rec_type := 0 as u32
+                    if receiver_node_idx != 0 as u32:
+                        if self.mb.node_types != null as ptr[u32]:
+                            rec_type = self.mb.node_types[receiver_node_idx as i64]
+                            
+                    if rec_type != 0 as u32 and (rec_type as i64) < self.mb.typetable.entries.len:
+                        let entry = self.mb.typetable.entries.data[rec_type as i64]
+                        if entry.kind == TYPE_KIND_STRUCT:
+                            ax_puts_local("STRUCT")
+                        elif entry.kind == TYPE_KIND_SUM:
+                            ax_puts_local("SUM")
+                        elif entry.kind == TYPE_KIND_GENERIC_INST:
+                            ax_puts_local("GENERIC_INST")
+                        elif entry.kind == TYPE_KIND_OPTION:
+                            ax_puts_local("OPTION")
+                        elif entry.kind == TYPE_KIND_RESULT:
+                            ax_puts_local("RESULT")
+                        elif entry.kind == TYPE_KIND_POINTER:
+                            ax_puts_local("POINTER")
+                        else:
+                            ax_puts_local("OTHER")
+                    else:
+                        ax_puts_local("UNKNOWN/0")
+                    ax_puts_local("\n")
+            
+            mut is_real_method := false
+            mut rec_type := 0 as u32
+            if receiver_node_idx != 0 as u32:
+                let receiver_node = self.mb.tree.nodes.data[receiver_node_idx as i64]
+                mut is_module_rec := false
+                mut rec_sym_idx := 0 as u32
+                if receiver_node.kind == NODE_IDENT:
+                    rec_sym_idx = receiver_node.payload
+                elif receiver_node.kind == NODE_FIELD_EXPR:
+                    if (receiver_node.flags & 2048 as u16) != 0 as u16:
+                        rec_sym_idx = receiver_node.payload
+                if rec_sym_idx != 0 as u32 and (rec_sym_idx as i64) < self.mb.symbols.symbols.len:
+                    let rec_sym = self.mb.symbols.symbols.data[rec_sym_idx as i64]
+                    if rec_sym.kind == SYM_MODULE:
+                        is_module_rec = true
+                if not is_module_rec:
+                    if self.mb.node_types != null as ptr[u32]:
+                        rec_type = self.mb.node_types[receiver_node_idx as i64]
+                        if rec_type == 0 as u32:
+                            is_real_method = true
+                        elif (rec_type as i64) < self.mb.typetable.entries.len:
+                            mut entry = self.mb.typetable.entries.data[rec_type as i64]
+                            while (entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF) and (rec_type as i64) < self.mb.typetable.entries.len:
+                                rec_type = entry.extra
+                                if (rec_type as i64) < self.mb.typetable.entries.len:
+                                    entry = self.mb.typetable.entries.data[rec_type as i64]
+                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                                is_real_method = true
+            
+            if is_real_method:
+                if spec_sym_idx != 0 as u32 and (spec_sym_idx as i64) < self.mb.symbols.symbols.len:
+                    let sym = self.mb.symbols.symbols.data[spec_sym_idx as i64]
+                    if sym.kind == SYM_FUNC:
+                        let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+                        if t_entry.kind == TYPE_KIND_FUNC:
+                            let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                            if fi.params.len > 0 as i64:
+                                is_method_call = true
+                                method_sym_idx = spec_sym_idx
+        else:
+            mut resolved := false
+
+            if not resolved:
+                receiver_node_idx = callee_node.first_child
+                if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+                    mut rec_type := self.mb.node_types[receiver_node_idx as i64]
+                    if rec_type != 0 as u32 and (rec_type as i64) < self.mb.typetable.entries.len:
+                        mut entry = self.mb.typetable.entries.data[rec_type as i64]
+                        while (entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF) and (rec_type as i64) < self.mb.typetable.entries.len:
+                            rec_type = entry.extra
+                            if (rec_type as i64) < self.mb.typetable.entries.len:
+                                entry = self.mb.typetable.entries.data[rec_type as i64]
+                        
+                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                            let method_id = callee_node.payload
+                            mut i := 0 as i64
+                            while i < self.mb.symbols.symbols.len:
+                                let sym = self.mb.symbols.symbols.data[i]
+                                if sym.kind == SYM_FUNC:
+                                    if match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+                                        let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+                                        if t_entry.kind == TYPE_KIND_FUNC:
+                                            let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                                            if fi.params.len > 0 as i64:
+                                                mut first_param := fi.params.data[0]
+                                                mut p_entry = self.mb.typetable.entries.data[first_param as i64]
+                                                while p_entry.kind == TYPE_KIND_POINTER or p_entry.kind == TYPE_KIND_REF:
+                                                    first_param = p_entry.extra
+                                                    p_entry = self.mb.typetable.entries.data[first_param as i64]
+                                                if first_param == rec_type:
+                                                    method_sym_idx = i as u32
+                                                    resolved = true
+                                                    is_method_call = true
+                                                    break
+                                i = i + 1 as i64
 
     if not is_method_call and callee_node.kind == NODE_IDENT:
         let sym_idx = callee_node.payload
@@ -702,24 +999,40 @@ pub fn lower_call_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
     @free(temp_args as ptr[u8])
 
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     mut callee_reg := 0 as u32
 
     if is_method_call:
-        type_id = method_sym_idx as u16
+        type_id = method_sym_idx as u32
         callee_reg = 0 as u32
     else:
-        callee_reg = self.lower_expr(child)
         if callee_node.kind == NODE_IDENT:
-            type_id = callee_node.payload as u16
+            let call_sym_idx = callee_node.payload
+            mut is_var_or_param := false
+            if call_sym_idx != 0 as u32 and (call_sym_idx as i64) < self.mb.symbols.symbols.len:
+                let call_sym = self.mb.symbols.symbols.data[call_sym_idx as i64]
+                if call_sym.kind == SYM_VAR or call_sym.kind == SYM_PARAM:
+                    is_var_or_param = true
+            if is_var_or_param:
+                // SYM_VAR/SYM_PARAM — indirect call through function pointer variable
+                callee_reg = self.lower_ident(callee_node)
+                if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                    type_id = self.mb.node_types[idx as i64] as u32
+            else:
+                callee_reg = 0 as u32
+                type_id = callee_node.payload as u32
+        elif callee_node.kind == NODE_FIELD_EXPR and (callee_node.flags & 2048 as u16) != 0 as u16:
+            callee_reg = 0 as u32
+            type_id = callee_node.payload as u32
         else:
+            callee_reg = self.lower_expr(child)
             if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-                type_id = self.mb.node_types[idx as i64] as u16
+                type_id = self.mb.node_types[idx as i64] as u32
             else:
                 if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
                     let sym = self.mb.symbols.symbols.data[node.payload as i64]
                     if sym.type_id != 0 as u32:
-                        type_id = sym.type_id as u16
+                        type_id = sym.type_id as u32
 
     mut opcode := OP_CALL
     if not is_method_call and callee_node.kind == NODE_IDENT:
@@ -742,7 +1055,48 @@ pub fn lower_call_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_field_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
+    if (node.flags & 2048 as u16) != 0 as u16:
+        let sym_idx = node.payload
+        if self.mb.symbols != null as ptr[SymbolTable] and sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[sym_idx as i64]
+            if sym.kind == SYM_CONST and sym.decl_node != 0 as u32:
+                mut init_expr := 0 as u32
+                
+                mut imported_mod := null as ptr[ModuleInfo]
+                if self.mb.symbols.lazy_resolver != null as ptr[void]:
+                    imported_mod = lazy_resolver_find_module_of_symbol(self.mb.symbols.lazy_resolver as ptr[LazyResolver], sym_idx)
+                
+                let saved_tree = self.mb.tree
+                let saved_node_types = self.mb.node_types
+                if imported_mod != null as ptr[ModuleInfo] and imported_mod.ast_tree != null as ptr[AstTree]:
+                    self.mb.tree = imported_mod.ast_tree
+                    self.mb.node_types = imported_mod.node_types as ptr[u32]
+
+                mut child_const := 0 as u32
+                if (sym.decl_node as i64) < self.mb.tree.nodes.len:
+                    child_const = self.mb.tree.nodes.data[sym.decl_node as i64].first_child
+                while child_const != 0 as u32 and (child_const as i64) < self.mb.tree.nodes.len:
+                    let child_const_node = self.mb.tree.nodes.data[child_const as i64]
+                    if child_const_node.kind != NODE_TYPE_EXPR and child_const_node.kind != NODE_GENERIC_TYPE:
+                        init_expr = child_const
+                    child_const = child_const_node.next_sibling
+                
+                mut val_reg := 0 as u32
+                if init_expr != 0 as u32:
+                    val_reg = self.lower_expr(init_expr)
+                
+                self.mb.tree = saved_tree
+                self.mb.node_types = saved_node_types
+                
+                return val_reg
+            
+            if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
+                return 0 as u32
+            let reg = self.locals.local_map_get(sym_idx)
+            return reg
+        return 0 as u32
+
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
@@ -750,14 +1104,9 @@ pub fn lower_field_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     let obj_reg = self.lower_expr(child)
     let field_idx = node.extra_idx
 
-    mut type_id := 0 as u16
-    let obj_type = self.mb.node_types[child as i64]
-    if obj_type != 0 as u32:
-        let entry = self.mb.typetable.entries.data[obj_type as i64]
-        if entry.kind == TYPE_KIND_POINTER:
-            type_id = entry.extra as u16
-        else:
-            type_id = obj_type as u16
+    mut type_id := 0 as u32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
+        type_id = self.mb.node_types[child as i64] as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -769,7 +1118,7 @@ pub fn lower_field_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_index_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_index_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
@@ -780,14 +1129,14 @@ pub fn lower_index_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     if idx_expr != 0 as u32:
         idx_reg = self.lower_expr(idx_expr)
 
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -799,21 +1148,21 @@ pub fn lower_index_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_cast_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_cast_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
 
     let src_reg = self.lower_expr(child)
 
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -825,21 +1174,21 @@ pub fn lower_cast_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_deref_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_deref_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
 
     let ptr_reg = self.lower_expr(child)
 
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -851,13 +1200,13 @@ pub fn lower_deref_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_spawn_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_spawn_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
 
     mut target_reg := 0 as u32
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     let child_node = self.mb.tree.nodes.data[child as i64]
     if child_node.kind == NODE_CALL_EXPR:
         let callee_node_idx = child_node.first_child
@@ -865,7 +1214,7 @@ pub fn lower_spawn_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
             target_reg = self.lower_expr(callee_node_idx)
             let callee_node = self.mb.tree.nodes.data[callee_node_idx as i64]
             if callee_node.kind == NODE_IDENT:
-                type_id = callee_node.payload as u16
+                type_id = callee_node.payload as u32
     else:
         target_reg = self.lower_expr(child)
 
@@ -879,21 +1228,21 @@ pub fn lower_spawn_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
+pub fn lower_await_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
 
     let future_reg = self.lower_expr(child)
 
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -905,15 +1254,15 @@ pub fn lower_await_expr(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
     ))
     return reg
 
-pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
-    mut type_id := 0 as u16
+pub fn lower_struct_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let struct_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -943,15 +1292,15 @@ pub fn lower_struct_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         child = cn.next_sibling
     return struct_reg
 
-pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
-    mut type_id := 0 as u16
+pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
+    mut type_id := 0 as u32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
-        type_id = self.mb.node_types[idx as i64] as u16
+        type_id = self.mb.node_types[idx as i64] as u32
     else:
         if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
-                type_id = sym.type_id as u16
+                type_id = sym.type_id as u32
 
     let arr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -970,7 +1319,7 @@ pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         let idx_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
             opcode: OP_ICONST,
-            type_id: 3 as u16, // i32
+            type_id: 3 as u32, // i32
             dest: idx_reg,
             src1: elem_idx,
             src2: 0 as u32,
@@ -978,7 +1327,7 @@ pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
-            type_id: 0 as u16,
+            type_id: 0 as u32,
             dest: arr_reg,
             src1: elem_reg,
             src2: idx_reg,
@@ -988,11 +1337,11 @@ pub fn lower_array_lit(mut self: FuncLowering, idx: u32, node: AstNode) -> u32:
         child = self.mb.tree.nodes.data[child as i64].next_sibling
     return arr_reg
 
-pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: AstNode, type_id: u32) -> u32:
+pub fn lower_struct_constructor_call(mut self: ptr[FuncLowering], idx: u32, node: AstNode, type_id: u32) -> u32:
     let struct_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ALLOC,
-        type_id: type_id as u16,
+        type_id: type_id as u32,
         dest: struct_reg,
         src1: 0 as u32,
         src2: 0 as u32,
@@ -1012,7 +1361,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
                 let val_reg = self.lower_expr(val_child)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
-                    type_id: type_id as u16,
+                    type_id: type_id as u32,
                     dest: val_reg,
                     src1: struct_reg,
                     src2: field_idx,
@@ -1022,7 +1371,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
             let val_reg = self.lower_expr(child)
             self.fb.emit(AirInst(
                 opcode: OP_SET_FIELD,
-                type_id: type_id as u16,
+                type_id: type_id as u32,
                 dest: val_reg,
                 src1: struct_reg,
                 src2: field_idx,
@@ -1031,7 +1380,7 @@ pub fn lower_struct_constructor_call(mut self: FuncLowering, idx: u32, node: Ast
         child = cn.next_sibling
     return struct_reg
 
-pub fn emit_heap_alloc(mut self: FuncLowering, type_id: u16) -> u32:
+pub fn emit_heap_alloc(mut self: ptr[FuncLowering], type_id: u32) -> u32:
     let ptr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ALLOC,
@@ -1051,7 +1400,7 @@ pub fn emit_heap_alloc(mut self: FuncLowering, type_id: u16) -> u32:
     ))
     return ref_reg
 
-pub fn emit_deref(mut self: FuncLowering, ref_reg: u32, type_id: u16) -> u32:
+pub fn emit_deref(mut self: ptr[FuncLowering], ref_reg: u32, type_id: u32) -> u32:
     let ptr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_DEREF,
@@ -1062,7 +1411,7 @@ pub fn emit_deref(mut self: FuncLowering, ref_reg: u32, type_id: u16) -> u32:
     ))
     return ptr_reg
 
-pub fn emit_move(mut self: FuncLowering, src_reg: u32, type_id: u16) -> u32:
+pub fn emit_move(mut self: ptr[FuncLowering], src_reg: u32, type_id: u32) -> u32:
     let dest_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_MOVE,
@@ -1073,16 +1422,16 @@ pub fn emit_move(mut self: FuncLowering, src_reg: u32, type_id: u16) -> u32:
     ))
     return dest_reg
 
-pub fn emit_free(mut self: FuncLowering, ptr_reg: u32):
+pub fn emit_free(mut self: ptr[FuncLowering], ptr_reg: u32):
     self.fb.emit(AirInst(
         opcode: OP_FREE,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: 0 as u32,
         src1: ptr_reg,
         src2: 0 as u32,
     ))
 
-pub fn emit_arena_alloc(mut self: FuncLowering, arena_reg: u32, type_id: u16) -> u32:
+pub fn emit_arena_alloc(mut self: ptr[FuncLowering], arena_reg: u32, type_id: u32) -> u32:
     let ptr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ARENA_ALLOC,
@@ -1093,7 +1442,7 @@ pub fn emit_arena_alloc(mut self: FuncLowering, arena_reg: u32, type_id: u16) ->
     ))
     return ptr_reg
 
-pub fn emit_alias_reuse(mut self: FuncLowering, ptr_reg: u32, type_id: u16) -> u32:
+pub fn emit_alias_reuse(mut self: ptr[FuncLowering], ptr_reg: u32, type_id: u32) -> u32:
     let dest_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ALIAS_REUSE,
@@ -1104,18 +1453,18 @@ pub fn emit_alias_reuse(mut self: FuncLowering, ptr_reg: u32, type_id: u16) -> u
     ))
     return dest_reg
 
-pub fn lower_ownership_aware(mut self: FuncLowering, idx: u32, node: AstNode, init_reg: u32) -> u32:
+pub fn lower_ownership_aware(mut self: ptr[FuncLowering], idx: u32, node: AstNode, init_reg: u32) -> u32:
     if node.flags & FLAG_ESCAPES_TO_HEAP != 0 as u16:
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         if node.extra_idx != 0 as u32:
-            type_id = node.extra_idx as u16
+            type_id = node.extra_idx as u32
         let ref_reg = self.emit_heap_alloc(type_id)
 
         if init_reg != 0 as u32:
             let ptr_reg = self.emit_deref(ref_reg, type_id)
             self.fb.emit(AirInst(
                 opcode: OP_STORE,
-                type_id: 0 as u16,
+                type_id: 0 as u32,
                 dest: ptr_reg,
                 src1: init_reg,
                 src2: 0 as u32,
@@ -1123,14 +1472,14 @@ pub fn lower_ownership_aware(mut self: FuncLowering, idx: u32, node: AstNode, in
         return ref_reg
 
     if node.flags & FLAG_USES_ARENA != 0 as u16:
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         if node.extra_idx != 0 as u32:
-            type_id = node.extra_idx as u16
+            type_id = node.extra_idx as u32
         let ptr_reg = self.emit_arena_alloc(0 as u32, type_id)
         if init_reg != 0 as u32:
             self.fb.emit(AirInst(
                 opcode: OP_STORE,
-                type_id: 0 as u16,
+                type_id: 0 as u32,
                 dest: ptr_reg,
                 src1: init_reg,
                 src2: 0 as u32,
@@ -1138,24 +1487,24 @@ pub fn lower_ownership_aware(mut self: FuncLowering, idx: u32, node: AstNode, in
         return ptr_reg
 
     if node.flags & FLAG_IS_MOVED != 0 as u16 and init_reg != 0 as u32:
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         if node.extra_idx != 0 as u32:
-            type_id = node.extra_idx as u16
+            type_id = node.extra_idx as u32
         return self.emit_move(init_reg, type_id)
 
     return init_reg
 
-pub fn lower_alias_stmt(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_alias_stmt(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:
         let cn = self.mb.tree.nodes.data[node.first_child as i64]
         let src_reg = self.lower_expr(node.first_child)
 
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         if node.extra_idx != 0 as u32:
-            type_id = node.extra_idx as u16
+            type_id = node.extra_idx as u32
         self.emit_alias_reuse(src_reg, type_id)
 
-pub fn lower_block(mut self: FuncLowering, block_idx: u32):
+pub fn lower_block(mut self: ptr[FuncLowering], block_idx: u32):
     let node = self.mb.tree.nodes.data[block_idx as i64]
     mut child := node.first_child
     while child != 0 as u32:
@@ -1163,7 +1512,7 @@ pub fn lower_block(mut self: FuncLowering, block_idx: u32):
         self.lower_stmt(child, cn)
         child = cn.next_sibling
 
-pub fn lower_stmt(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_stmt(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if self.terminated:
         return
 
@@ -1187,12 +1536,44 @@ pub fn lower_stmt(mut self: FuncLowering, idx: u32, node: AstNode):
         self.lower_alias_stmt(idx, node)
     elif node.kind == NODE_DEFER_STMT:
         self.lower_defer(idx, node)
+    elif node.kind == NODE_BREAK_STMT:
+        self.lower_break(idx, node)
+    elif node.kind == NODE_CONTINUE_STMT:
+        self.lower_continue(idx, node)
     else:
         self.lower_expr(idx)
 
-pub fn lower_var_decl(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_break(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
+    if self.loop_exits.len == 0 as i64:
+        return
+    let target = self.loop_exits.data[self.loop_exits.len - 1]
+    self.fb.emit(AirInst(
+        opcode: OP_JUMP,
+        type_id: 0 as u32,
+        dest: 0 as u32,
+        src1: target,
+        src2: 0 as u32,
+    ))
+    self.fb.add_edge(self.fb.current_block(), target)
+    self.terminated = true
+
+pub fn lower_continue(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
+    if self.loop_conds.len == 0 as i64:
+        return
+    let target = self.loop_conds.data[self.loop_conds.len - 1]
+    self.fb.emit(AirInst(
+        opcode: OP_JUMP,
+        type_id: 0 as u32,
+        dest: 0 as u32,
+        src1: target,
+        src2: 0 as u32,
+    ))
+    self.fb.add_edge(self.fb.current_block(), target)
+    self.terminated = true
+
+pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let name_id = node.payload
-    mut type_id := 0 as u16
+    mut type_id := 0 as u32
 
     mut init_reg := 0 as u32
     mut child := node.first_child
@@ -1203,11 +1584,25 @@ pub fn lower_var_decl(mut self: FuncLowering, idx: u32, node: AstNode):
         child = cn.next_sibling
 
     if init_reg != 0 as u32:
+        mut src_reg := init_reg
         if node.flags & (FLAG_ESCAPES_TO_HEAP | FLAG_USES_ARENA | FLAG_IS_MOVED) != 0 as u16:
-            let owner_reg = self.lower_ownership_aware(idx, node, init_reg)
-            self.locals.local_map_put(name_id, owner_reg)
-        else:
-            self.locals.local_map_put(name_id, init_reg)
+            src_reg = self.lower_ownership_aware(idx, node, init_reg)
+
+        let reg = self.fb.fresh_reg()
+        mut var_type_id := 0 as u32
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let sym = self.mb.symbols.symbols.data[node.payload as i64]
+            if sym.type_id != 0 as u32:
+                var_type_id = sym.type_id as u32
+
+        self.fb.emit(AirInst(
+            opcode: OP_COPY,
+            type_id: var_type_id,
+            dest: reg,
+            src1: src_reg,
+            src2: 0 as u32,
+        ))
+        self.locals.local_map_put(name_id, reg)
     else:
         let reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
@@ -1219,7 +1614,7 @@ pub fn lower_var_decl(mut self: FuncLowering, idx: u32, node: AstNode):
         ))
         self.locals.local_map_put(name_id, reg)
 
-pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let lhs_idx = node.first_child
     if lhs_idx == 0 as u32:
         return
@@ -1235,14 +1630,14 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
             return
         let val_reg = self.lower_expr(rhs_idx)
 
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         let obj_type = self.mb.node_types[obj_idx as i64]
-        if obj_type != 0 as u32:
+        if obj_type != 0 as u32 and (obj_type as i64) < self.mb.typetable.entries.len:
             let entry = self.mb.typetable.entries.data[obj_type as i64]
             if entry.kind == TYPE_KIND_POINTER:
-                type_id = entry.extra as u16
+                type_id = entry.extra as u32
             else:
-                type_id = obj_type as u16
+                type_id = obj_type as u32
 
         self.fb.emit(AirInst(
             opcode: OP_SET_FIELD,
@@ -1266,12 +1661,12 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
             return
         let val_reg = self.lower_expr(rhs_idx)
 
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         let arr_type = self.mb.node_types[arr_idx as i64]
-        if arr_type != 0 as u32:
+        if arr_type != 0 as u32 and (arr_type as i64) < self.mb.typetable.entries.len:
             let entry = self.mb.typetable.entries.data[arr_type as i64]
             if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
-                type_id = entry.extra as u16
+                type_id = entry.extra as u32
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
@@ -1291,12 +1686,12 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
             return
         let val_reg = self.lower_expr(rhs_idx)
 
-        mut type_id := 0 as u16
+        mut type_id := 0 as u32
         let ptr_type = self.mb.node_types[ptr_idx as i64]
-        if ptr_type != 0 as u32:
+        if ptr_type != 0 as u32 and (ptr_type as i64) < self.mb.typetable.entries.len:
             let entry = self.mb.typetable.entries.data[ptr_type as i64]
             if entry.kind == TYPE_KIND_POINTER:
-                type_id = entry.extra as u16
+                type_id = entry.extra as u32
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
@@ -1319,11 +1714,11 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
     let rhs_node = self.mb.tree.nodes.data[rhs_idx as i64]
     let val_reg = self.lower_expr(rhs_idx)
 
-    mut type_id := 3 as u16 // default i32
+    mut type_id := 3 as u32 // default i32
     if lhs_node.payload != 0 as u32 and (lhs_node.payload as i64) < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[lhs_node.payload as i64]
         if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+            type_id = sym.type_id as u32
 
     let existing_reg = self.locals.local_map_get(name_id)
     if existing_reg != 0 as u32:
@@ -1337,34 +1732,52 @@ pub fn lower_assign(mut self: FuncLowering, idx: u32, node: AstNode):
     else:
         self.locals.local_map_put(name_id, val_reg)
 
-pub fn lower_return(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_return(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut ret_val := 0 as u32
     if node.first_child != 0 as u32:
         ret_val = self.lower_expr(node.first_child)
 
     self.fb.emit(AirInst(
         opcode: OP_RETURN,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: 0 as u32,
         src1: ret_val,
         src2: 0 as u32,
     ))
     self.terminated = true
 
-pub fn lower_if(mut self: FuncLowering, idx: u32, node: AstNode):
-    let then_block = self.fb.new_block()
-    let else_block = self.fb.new_block()
+pub fn lower_if(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let merge_block = self.fb.new_block()
 
-    mut child := node.first_child
-    if child == 0 as u32:
+    let cond_node_idx = node.first_child
+    if cond_node_idx == 0 as u32:
         return
-    let cn = self.mb.tree.nodes.data[child as i64]
-    let cond_reg = self.lower_expr(child)
+    let cond_node = self.mb.tree.nodes.data[cond_node_idx as i64]
 
+    let body_node_idx = cond_node.next_sibling
+    if body_node_idx == 0 as u32:
+        return
+    let body_node = self.mb.tree.nodes.data[body_node_idx as i64]
+
+    let next_clause_idx = body_node.next_sibling
+
+    self.lower_if_chain(cond_node_idx, cond_node, body_node_idx, body_node, next_clause_idx, merge_block)
+
+    // Merge block
+    self.fb.switch_to(merge_block)
+    self.terminated = false
+
+pub fn lower_if_chain(mut self: ptr[FuncLowering], cond_idx: u32, cond_node: AstNode, body_idx: u32, body_node: AstNode, next_clause_idx: u32, merge_block: u32):
+    let then_block = self.fb.new_block()
+    let else_block = self.fb.new_block()
+
+    // Lower condition
+    let cond_reg = self.lower_expr(cond_idx)
+
+    // Branch
     self.fb.emit(AirInst(
         opcode: OP_BRANCH,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: else_block,
         src1: cond_reg,
         src2: then_block,
@@ -1376,47 +1789,48 @@ pub fn lower_if(mut self: FuncLowering, idx: u32, node: AstNode):
     // Then block
     self.fb.switch_to(then_block)
     self.terminated = false
-    child = cn.next_sibling
-    if child != 0 as u32:
-        let tcn = self.mb.tree.nodes.data[child as i64]
-        if tcn.kind == NODE_BLOCK:
-            self.lower_block(child)
-        child = tcn.next_sibling
-
+    if body_node.kind == NODE_BLOCK:
+        self.lower_block(body_idx)
     if not self.terminated:
-        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
-        self.fb.add_edge(then_block, merge_block)
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+        self.fb.add_edge(self.fb.current_block(), merge_block)
 
     // Else block
     self.fb.switch_to(else_block)
     self.terminated = false
-    while child != 0 as u32:
-        let ecn = self.mb.tree.nodes.data[child as i64]
-        if ecn.kind == NODE_ELSE_CLAUSE or ecn.kind == NODE_ELIF_CLAUSE:
-            let else_body = ecn.first_child
-            if else_body != 0 as u32:
-                let eecn = self.mb.tree.nodes.data[else_body as i64]
-                if eecn.kind == NODE_BLOCK:
-                    self.lower_block(else_body)
-                elif ecn.kind == NODE_ELIF_CLAUSE:
-                    self.lower_if(child, ecn)
-        child = ecn.next_sibling
+    mut delegated := false
+    if next_clause_idx != 0 as u32:
+        let cn = self.mb.tree.nodes.data[next_clause_idx as i64]
+        if cn.kind == NODE_ELSE_CLAUSE:
+            let else_body_idx = cn.first_child
+            if else_body_idx != 0 as u32:
+                let else_body_node = self.mb.tree.nodes.data[else_body_idx as i64]
+                if else_body_node.kind == NODE_BLOCK:
+                    self.lower_block(else_body_idx)
+        elif cn.kind == NODE_ELIF_CLAUSE:
+            let elif_cond_idx = cn.first_child
+            if elif_cond_idx != 0 as u32:
+                let elif_cond_node = self.mb.tree.nodes.data[elif_cond_idx as i64]
+                let elif_body_idx = elif_cond_node.next_sibling
+                if elif_body_idx != 0 as u32:
+                    let elif_body_node = self.mb.tree.nodes.data[elif_body_idx as i64]
+                    self.lower_if_chain(elif_cond_idx, elif_cond_node, elif_body_idx, elif_body_node, cn.next_sibling, merge_block)
+                    delegated = true
 
-    if not self.terminated:
-        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
-        self.fb.add_edge(else_block, merge_block)
+    if not self.terminated and not delegated:
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+        self.fb.add_edge(self.fb.current_block(), merge_block)
 
-    // Merge block
-    self.fb.switch_to(merge_block)
-    self.terminated = false
-
-pub fn lower_while(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let cond_block = self.fb.new_block()
     let body_block = self.fb.new_block()
     let exit_block = self.fb.new_block()
 
+    self.loop_conds.push(cond_block)
+    self.loop_exits.push(exit_block)
+
     let cur_block = self.fb.current_block()
-    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
     self.fb.add_edge(cur_block, cond_block)
 
     // Condition
@@ -1424,13 +1838,15 @@ pub fn lower_while(mut self: FuncLowering, idx: u32, node: AstNode):
     self.terminated = false
     let child = node.first_child
     if child == 0 as u32:
+        self.loop_conds.pop()
+        self.loop_exits.pop()
         return
     let cn = self.mb.tree.nodes.data[child as i64]
     let cond_reg = self.lower_expr(child)
 
     self.fb.emit(AirInst(
         opcode: OP_BRANCH,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: exit_block,
         src1: cond_reg,
         src2: body_block,
@@ -1448,27 +1864,33 @@ pub fn lower_while(mut self: FuncLowering, idx: u32, node: AstNode):
             self.lower_block(body_child)
 
     if not self.terminated:
-        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
         self.fb.add_edge(body_block, cond_block)
 
     // Exit
     self.fb.switch_to(exit_block)
     self.terminated = false
 
-pub fn lower_for(mut self: FuncLowering, idx: u32, node: AstNode):
+    self.loop_conds.pop()
+    self.loop_exits.pop()
+
+pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let cond_block = self.fb.new_block()
     let body_block = self.fb.new_block()
     let exit_block = self.fb.new_block()
 
+    self.loop_conds.push(cond_block)
+    self.loop_exits.push(exit_block)
+
     let sym_idx = node.payload
     mut name_id := 0 as u32
-    mut type_id := 3 as u16 // default i32
+    mut type_id := 3 as u32 // default i32
 
     if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[sym_idx as i64]
         name_id = sym.name_id
         if sym.type_id != 0 as u32:
-            type_id = sym.type_id as u16
+            type_id = sym.type_id as u32
     else:
         name_id = sym_idx
 
@@ -1515,7 +1937,7 @@ pub fn lower_for(mut self: FuncLowering, idx: u32, node: AstNode):
     self.locals.local_map_put(name_id, iter_reg)
 
     let cur_block = self.fb.current_block()
-    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
     self.fb.add_edge(cur_block, cond_block)
 
     // Condition
@@ -1526,7 +1948,7 @@ pub fn lower_for(mut self: FuncLowering, idx: u32, node: AstNode):
     let current_iter = self.locals.local_map_get(name_id)
     self.fb.emit(AirInst(
         opcode: OP_LT,
-        type_id: 11 as u16, // bool
+        type_id: 11 as u32, // bool
         dest: cmp_reg,
         src1: current_iter,
         src2: limit_reg,
@@ -1534,7 +1956,7 @@ pub fn lower_for(mut self: FuncLowering, idx: u32, node: AstNode):
 
     self.fb.emit(AirInst(
         opcode: OP_BRANCH,
-        type_id: 0 as u16,
+        type_id: 0 as u32,
         dest: exit_block,
         src1: cmp_reg,
         src2: body_block,
@@ -1580,19 +2002,22 @@ pub fn lower_for(mut self: FuncLowering, idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
 
-        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
         self.fb.add_edge(body_block, cond_block)
 
     // Exit
     self.fb.switch_to(exit_block)
     self.terminated = false
 
-pub fn lower_destroy(mut self: FuncLowering, idx: u32, node: AstNode):
+    self.loop_conds.pop()
+    self.loop_exits.pop()
+
+pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:
         let val_reg = self.lower_expr(node.first_child)
         self.fb.emit(AirInst(
             opcode: OP_DESTROY,
-            type_id: 0 as u16,
+            type_id: 0 as u32,
             dest: 0 as u32,
             src1: val_reg,
             src2: 0 as u32,
@@ -1605,30 +2030,30 @@ pub fn lower_destroy(mut self: FuncLowering, idx: u32, node: AstNode):
             if reg != 0 as u32:
                 self.fb.emit(AirInst(
                     opcode: OP_DESTROY,
-                    type_id: 0 as u16,
+                    type_id: 0 as u32,
                     dest: 0 as u32,
                     src1: reg,
                     src2: 0 as u32,
                 ))
 
-pub fn lower_defer(mut self: FuncLowering, idx: u32, node: AstNode):
+pub fn lower_defer(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:
         self.lower_expr(node.first_child)
 
-pub fn ensure_return(mut self: FuncLowering):
+pub fn ensure_return(mut self: ptr[FuncLowering]):
     if not self.terminated:
         self.fb.emit(AirInst(
             opcode: OP_RETURN,
-            type_id: 0 as u16,
+            type_id: 0 as u32,
             dest: 0 as u32,
             src1: 0 as u32,
             src2: 0 as u32,
         ))
         self.terminated = true
 
-pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> ptr[AirFunc]:
+pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFunc:
     if node.flags & FLAG_IS_EXTERN != 0 as u16:
-        return null as ptr[AirFunc]
+        return AirFunc(sym_id: 0 as u32, name: 0 as u32, params: new_u32_vec(), ret_type: 0 as u32, blocks: new_basic_block_vec(), insts: new_air_inst_vec(), extras: new_u32_vec(), is_async: false, is_extern: true, block_instrs: new_u32_vec(), block_succs: new_u32_vec(), block_preds: new_u32_vec())
 
     mut name_id := 0 as u32
     mut ret_type_id := 0 as u32
@@ -1638,7 +2063,7 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> ptr[A
     if sym_idx != 0 as u32 and (sym_idx as i64) < self.symbols.symbols.len:
         let sym = self.symbols.symbols.data[sym_idx as i64]
         name_id = sym.name_id
-        if sym.type_id != 0 as u32:
+        if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[sym.type_id as i64]
             if entry.kind == TYPE_KIND_FUNC:
                 let fi = self.typetable.funcs.data[entry.extra as i64]
@@ -1671,17 +2096,17 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> ptr[A
 
     fl.ensure_return()
 
-    let fn_built = fl.fb.build_func()
-    
-    let fn_ptr = @alloc(192) as ptr[AirFunc]
-    fn_ptr[0] = fn_built
-    fn_ptr.sym_id = sym_idx
-    fn_ptr.is_async = (node.flags & FLAG_IS_ASYNC != 0 as u16)
-    fn_ptr.params = fl.params
+    mut fn_built := fl.fb.build_func()
+    fn_built.sym_id = sym_idx
+    fn_built.is_async = (node.flags & FLAG_IS_ASYNC != 0 as u16)
+    fn_built.params.data = fl.params.data
+    fn_built.params.len = fl.params.len
+    fn_built.params.cap = fl.params.cap
+
     fl.params.data = null as ptr[u32]
 
     free_func_lowering(fl)
-    return fn_ptr
+    return fn_built
 
 pub fn build_module(self: ptr[AirModuleBuilder]):
     let root = self.tree.nodes.data[0]
@@ -1689,20 +2114,19 @@ pub fn build_module(self: ptr[AirModuleBuilder]):
     while child != 0 as u32:
         let node = self.tree.nodes.data[child as i64]
         if node.kind == NODE_FUNC_DECL:
-            let fn_ptr = self.lower_func(child, node)
-            if fn_ptr != null as ptr[AirFunc]:
-                self.module.funcs.push(fn_ptr[0])
-                @free(fn_ptr as ptr[u8])
+            if node.flags & FLAG_IS_EXTERN == 0 as u16 and node.flags & FLAG_IS_GENERIC == 0 as u16:
+                let fn_val = self.lower_func(child, node)
+                self.module.funcs.push(fn_val)
         elif node.kind == NODE_STRUCT_DECL:
-            mut member := node.first_child
-            while member != 0 as u32:
-                let member_node = self.tree.nodes.data[member as i64]
-                if member_node.kind == NODE_FUNC_DECL:
-                    let fn_ptr = self.lower_func(member, member_node)
-                    if fn_ptr != null as ptr[AirFunc]:
-                        self.module.funcs.push(fn_ptr[0])
-                        @free(fn_ptr as ptr[u8])
-                member = member_node.next_sibling
+            if node.flags & FLAG_IS_GENERIC == 0 as u16:
+                mut member := node.first_child
+                while member != 0 as u32:
+                    let member_node = self.tree.nodes.data[member as i64]
+                    if member_node.kind == NODE_FUNC_DECL:
+                        if member_node.flags & FLAG_IS_EXTERN == 0 as u16 and member_node.flags & FLAG_IS_GENERIC == 0 as u16:
+                            let fn_val = self.lower_func(member, member_node)
+                            self.module.funcs.push(fn_val)
+                    member = member_node.next_sibling
         child = node.next_sibling
 
 pub fn builder_str_to_null_terminated(self: ptr[AirModuleBuilder], s: str) -> ptr[u8]:

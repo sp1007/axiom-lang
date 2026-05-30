@@ -69,10 +69,11 @@ func TestAxiomRuntimePorts(t *testing.T) {
 	})
 
 	t.Run("Reactor", func(t *testing.T) {
+		memAllocPath := filepath.Join(workspaceDir, "std/mem/alloc.ax")
 		allocPath := filepath.Join(workspaceDir, "std/reactor.ax")
 		testPath := filepath.Join(workspaceDir, "std/reactor_test.ax")
 
-		sourceBytes, err := concatenateAxiomFiles(allocPath, testPath)
+		sourceBytes, err := concatenateAxiomFiles(memAllocPath, allocPath, testPath)
 		if err != nil {
 			t.Fatalf("failed to concatenate reactor files: %v", err)
 		}
@@ -172,25 +173,26 @@ func compileCBackendWithActor(t *testing.T, source []byte, outPath string, runti
 	}
 	defer cFile.Close()
 
-	// Write helper functions to bridge void* parameters to C runtime AxActor* parameters
-	cFile.WriteString("struct AxActor;\n")
-	cFile.WriteString("int ax_actor_step(struct AxActor* actor);\n")
-	cFile.WriteString("int ax_actor_is_running(struct AxActor* actor);\n")
-	cFile.WriteString("int ax_actor_has_messages(struct AxActor* actor);\n\n")
+	// Write helper functions to bridge void* parameters to C runtime void* parameters
+	cFile.WriteString("#include <stddef.h>\n")
+	cFile.WriteString("int ax_actor_step(void* actor);\n")
+	cFile.WriteString("int ax_actor_is_running(void* actor);\n")
+	cFile.WriteString("int ax_actor_has_messages(void* actor);\n\n")
 
 	cFile.WriteString("int ax_actor_step_impl(void* actor_ptr) {\n")
-	cFile.WriteString("    return ax_actor_step((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("    return ax_actor_step(actor_ptr);\n")
 	cFile.WriteString("}\n")
 	cFile.WriteString("int ax_actor_is_running_impl(void* actor_ptr) {\n")
-	cFile.WriteString("    return ax_actor_is_running((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("    return ax_actor_is_running(actor_ptr);\n")
 	cFile.WriteString("}\n")
 	cFile.WriteString("int ax_actor_has_messages_impl(void* actor_ptr) {\n")
-	cFile.WriteString("    return ax_actor_has_messages((struct AxActor*)actor_ptr);\n")
+	cFile.WriteString("    return ax_actor_has_messages(actor_ptr);\n")
 	cFile.WriteString("}\n\n")
 
 	if err := pipeline.GenerateC(cFile); err != nil {
 		return err
 	}
+
 	cFile.Close()
 
 	// Build extra C sources list, excluding duplicates if they are implemented in AXIOM

@@ -94,3 +94,50 @@ AX_NORETURN void ax_panic(const char* msg) {
 
 #endif
 
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#endif
+
+static void* g_ax_global_state = NULL;
+void* ax_get_global_state_internal(void) {
+    if (g_ax_global_state == NULL) {
+#if defined(_WIN32)
+        g_ax_global_state = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+        g_ax_global_state = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
+    }
+    return g_ax_global_state;
+}
+
+static int my_strcmp(const char* s1, const char* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+long long ax_compiler_intrinsic(const char* name, void* p1, void* p2, void* p3) {
+    if (my_strcmp(name, "atomic_load") == 0) {
+        return (long long)__atomic_load_n((long long*)p1, 5 /* __ATOMIC_SEQ_CST */);
+    }
+    if (my_strcmp(name, "atomic_store") == 0) {
+        __atomic_store_n((long long*)p1, (long long)p2, 5 /* __ATOMIC_SEQ_CST */);
+        return 0;
+    }
+    if (my_strcmp(name, "atomic_cas") == 0) {
+        long long expected = (long long)p2;
+        return __atomic_compare_exchange_n((long long*)p1, &expected, (long long)p3, 0, 5 /* __ATOMIC_SEQ_CST */, 5 /* __ATOMIC_SEQ_CST */);
+    }
+    if (my_strcmp(name, "is_windows") == 0) {
+#if defined(_WIN32)
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    return 0;
+}
+
+

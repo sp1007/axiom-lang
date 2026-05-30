@@ -53,6 +53,9 @@ func hashFNV1a(v uint32) uint32 {
 // put inserts a new nameID -> symbolIdx mapping.
 // Assumes nameID is not already in the scope (caller must check).
 func (s *Scope) put(nameID uint32, symbolIdx uint32) {
+	if s.Overwrite(nameID, symbolIdx) {
+		return
+	}
 	// Grow if load factor > 75%
 	if s.count*4 > s.capacity*3 {
 		s.grow()

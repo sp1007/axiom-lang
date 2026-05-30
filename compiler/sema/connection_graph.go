@@ -200,6 +200,9 @@ func (cg *ConnectionGraph) Escapes(nodeID uint32) bool {
 }
 
 func (cg *ConnectionGraph) escapeDFS(nodeID uint32, visited map[uint32]bool) bool {
+	if nodeID == 0 {
+		return true
+	}
 	if visited[nodeID] {
 		return false
 	}

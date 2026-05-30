@@ -7,6 +7,16 @@
 #include <string.h>
 #include <ctype.h>
 
+#ifdef AX_NATIVE_LINK
+#define ax_str_concat ax_str_concat_real
+#define ax_str_slice ax_str_slice_real
+#define ax_str_trim ax_str_trim_real
+#define ax_i64_to_str ax_i64_to_str_real
+#define ax_f64_to_str ax_f64_to_str_real
+#define ax_bool_to_str ax_bool_to_str_real
+#define ax_str_replace ax_str_replace_real
+#endif
+
 ax_i64 ax_str_len(ax_string s) {
     return (ax_i64)s.len;
 }
@@ -214,4 +224,282 @@ ax_string ax_str_replace(ax_string s, ax_string old, ax_string new_val) {
     
     return (ax_string){ .ptr = buf, .len = (ax_u64)new_len };
 }
+
+ax_u8* ax_string_get_char_ptr(void* s) {
+    return (ax_u8*)((ax_string*)s)->ptr;
+}
+
+ax_u8* ax_string_get_ptr(ax_string s) {
+    return (ax_u8*)s.ptr;
+}
+
+struct ax_AxiomString {
+    ax_u8* ptr;
+    ax_i64 len;
+};
+
+ax_u8* ax_string_get_ptr_val(struct ax_AxiomString s) {
+    return (ax_u8*)s.ptr;
+}
+
+#ifdef AX_NATIVE_LINK
+#undef ax_str_concat
+#undef ax_str_slice
+#undef ax_str_trim
+#undef ax_i64_to_str
+#undef ax_f64_to_str
+#undef ax_bool_to_str
+#undef ax_str_replace
+static ax_string* get_ring_slot(void) {
+    ax_string* slot = (ax_string*)ax_alloc(sizeof(ax_string));
+    if (!slot) ax_panic("out of memory in get_ring_slot");
+    return slot;
+}
+
+ax_string* ax_str_concat(ax_string* a, ax_string* b) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_str_concat_real(*a, *b);
+    return slot;
+}
+
+ax_string* ax_str_slice(ax_string* s, ax_i64 start, ax_i64 end) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_str_slice_real(*s, start, end);
+    return slot;
+}
+
+ax_string* ax_str_trim(ax_string* s) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_str_trim_real(*s);
+    return slot;
+}
+
+ax_string* ax_i64_to_str(ax_i64 value) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_i64_to_str_real(value);
+    return slot;
+}
+
+ax_string* ax_f64_to_str(ax_f64 value) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_f64_to_str_real(value);
+    return slot;
+}
+
+ax_string* ax_bool_to_str(ax_bool value) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_bool_to_str_real(value);
+    return slot;
+}
+
+ax_string* ax_str_replace(ax_string* s, ax_string* old, ax_string* new_val) {
+    ax_string* slot = get_ring_slot();
+    *slot = ax_str_replace_real(*s, *old, *new_val);
+    return slot;
+}
+#endif
+
+
+/* Compatibility wrappers for standard library mangled names */
+__attribute__((weak)) ax_bool ax_std_string_starts_with(ax_string s, ax_string prefix) {
+    return ax_str_starts_with(s, prefix);
+}
+
+__attribute__((weak)) ax_string ax_std_string_replace(ax_string s, ax_string old, ax_string new_val) {
+#ifdef AX_NATIVE_LINK
+    return ax_str_replace_real(s, old, new_val);
+#else
+    return ax_str_replace(s, old, new_val);
+#endif
+}
+
+__attribute__((weak)) ax_i64 ax_std_string_len(ax_string s) {
+    return ax_str_len(s);
+}
+
+__attribute__((weak)) ax_string ax_std_string_concat(ax_string a, ax_string b) {
+#ifdef AX_NATIVE_LINK
+    return ax_str_concat_real(a, b);
+#else
+    return ax_str_concat(a, b);
+#endif
+}
+
+__attribute__((weak)) ax_string ax_std_string_slice(ax_string s, ax_i64 start, ax_i64 end) {
+#ifdef AX_NATIVE_LINK
+    return ax_str_slice_real(s, start, end);
+#else
+    return ax_str_slice(s, start, end);
+#endif
+}
+
+__attribute__((weak)) ax_string ax_std_string_trim(ax_string s) {
+#ifdef AX_NATIVE_LINK
+    return ax_str_trim_real(s);
+#else
+    return ax_str_trim(s);
+#endif
+}
+
+
+
+ax_string ax_str_to_upper(ax_string s) {
+    ax_u8* buf = s.len > 0 ? (ax_u8*)ax_alloc(s.len + 1) : NULL;
+    if (buf) {
+        for (ax_u64 i = 0; i < s.len; i++) {
+            ax_u8 c = s.ptr[i];
+            if (c >= 'a' && c <= 'z') {
+                buf[i] = c - 'a' + 'A';
+            } else {
+                buf[i] = c;
+            }
+        }
+        buf[s.len] = '\0';
+    }
+    ax_string res = { .ptr = buf ? buf : (const ax_u8*)"", .len = s.len };
+    return res;
+}
+
+ax_string ax_str_to_lower(ax_string s) {
+    ax_u8* buf = s.len > 0 ? (ax_u8*)ax_alloc(s.len + 1) : NULL;
+    if (buf) {
+        for (ax_u64 i = 0; i < s.len; i++) {
+            ax_u8 c = s.ptr[i];
+            if (c >= 'A' && c <= 'Z') {
+                buf[i] = c - 'A' + 'a';
+            } else {
+                buf[i] = c;
+            }
+        }
+        buf[s.len] = '\0';
+    }
+    ax_string res = { .ptr = buf ? buf : (const ax_u8*)"", .len = s.len };
+    return res;
+}
+
+ax_string ax_str_repeat(ax_string s, ax_i64 count) {
+    if (count < 0) count = 0;
+    ax_u64 total_len = s.len * count;
+    ax_u8* buf = total_len > 0 ? (ax_u8*)ax_alloc(total_len + 1) : NULL;
+    if (buf) {
+        for (ax_i64 i = 0; i < count; i++) {
+            memcpy(buf + i * s.len, s.ptr, (size_t)s.len);
+        }
+        buf[total_len] = '\0';
+    }
+    ax_string res = { .ptr = buf ? buf : (const ax_u8*)"", .len = total_len };
+    return res;
+}
+
+ax_bool ax_str_parse_i64(const char* s, ax_i64* out_val) {
+    if (!s) return AX_FALSE;
+    char* endptr;
+    ax_i64 val = strtoll(s, &endptr, 10);
+    if (endptr != s) {
+        *out_val = val;
+        return AX_TRUE;
+    }
+    return AX_FALSE;
+}
+
+ax_bool ax_str_parse_f64(const char* s, ax_f64* out_val) {
+    if (!s) return AX_FALSE;
+    char* endptr;
+    ax_f64 val = strtod(s, &endptr);
+    if (endptr != s) {
+        *out_val = val;
+        return AX_TRUE;
+    }
+    return AX_FALSE;
+}
+
+ax_bool ax_str_is_valid_utf8(ax_string s) {
+    ax_bool valid = AX_TRUE;
+    ax_u64 i = 0;
+    while (i < s.len) {
+        ax_u8 b = s.ptr[i];
+        if (b <= 0x7F) {
+            i++;
+        } else if ((b & 0xE0) == 0xC0) {
+            if (i + 1 >= s.len || (s.ptr[i+1] & 0xC0) != 0x80) {
+                valid = AX_FALSE;
+                break;
+            }
+            i += 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            if (i + 2 >= s.len || (s.ptr[i+1] & 0xC0) != 0x80 || (s.ptr[i+2] & 0xC0) != 0x80) {
+                valid = AX_FALSE;
+                break;
+            }
+            i += 3;
+        } else if ((b & 0xF8) == 0xF0) {
+            if (i + 3 >= s.len || (s.ptr[i+1] & 0xC0) != 0x80 || (s.ptr[i+2] & 0xC0) != 0x80 || (s.ptr[i+3] & 0xC0) != 0x80) {
+                valid = AX_FALSE;
+                break;
+            }
+            i += 4;
+        } else {
+            valid = AX_FALSE;
+            break;
+        }
+    }
+    return valid;
+}
+
+void* ax_str_split(ax_string s, ax_string sep) {
+    ax_vec* v = (ax_vec*)ax_alloc(sizeof(ax_vec));
+    *v = ax_vec_new(sizeof(ax_string));
+    if (sep.len == 0) {
+        for (ax_u64 i = 0; i < s.len; i++) {
+            ax_string sub = { .ptr = s.ptr + i, .len = 1 };
+            ax_vec_push(v, &sub);
+        }
+    } else {
+        ax_u64 last = 0;
+        for (ax_u64 i = 0; i <= s.len - sep.len; ) {
+            ax_bool match = AX_TRUE;
+            for (ax_u64 j = 0; j < sep.len; j++) {
+                if (s.ptr[i+j] != sep.ptr[j]) {
+                    match = AX_FALSE;
+                    break;
+                }
+            }
+            if (match) {
+                ax_string sub = { .ptr = s.ptr + last, .len = i - last };
+                ax_vec_push(v, &sub);
+                i += sep.len;
+                last = i;
+            } else {
+                i++;
+            }
+        }
+        if (last <= s.len) {
+            ax_string sub = { .ptr = s.ptr + last, .len = s.len - last };
+            ax_vec_push(v, &sub);
+        }
+    }
+    return v;
+}
+
+__attribute__((weak)) ax_string ax_std_string_to_upper(ax_string s) {
+    return ax_str_to_upper(s);
+}
+
+__attribute__((weak)) ax_string ax_std_string_to_lower(ax_string s) {
+    return ax_str_to_lower(s);
+}
+
+__attribute__((weak)) ax_string ax_std_string_repeat(ax_string s, ax_i64 count) {
+    return ax_str_repeat(s, count);
+}
+
+
+__attribute__((weak)) ax_bool ax_std_string_is_valid_utf8(ax_string s) {
+    return ax_str_is_valid_utf8(s);
+}
+
+__attribute__((weak)) void* ax_std_string_split(ax_string s, ax_string sep) {
+    return ax_str_split(s, sep);
+}
+
 

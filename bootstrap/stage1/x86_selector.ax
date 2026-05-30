@@ -36,6 +36,16 @@ pub const MACH_STORE: u16 = 28
 pub const MACH_XOR_ZERO: u16 = 29
 pub const MACH_LABEL: u16 = 30
 pub const MACH_SYSCALL: u16 = 31
+pub const MACH_SHR: u16 = 32
+pub const MACH_FADD: u16 = 33
+pub const MACH_FSUB: u16 = 34
+pub const MACH_FMUL: u16 = 35
+pub const MACH_FDIV: u16 = 36
+pub const MACH_FCMP: u16 = 37
+pub const MACH_ITOF: u16 = 38
+pub const MACH_FTOI: u16 = 39
+pub const MACH_MOVDQ: u16 = 40
+pub const MACH_MOVQD: u16 = 41
 
 pub const OPND_NONE: u8 = 0
 pub const OPND_VREG: u8 = 1
@@ -136,7 +146,7 @@ pub fn push(mut self: MachInstVec, inst: MachInst) -> u32:
     self.len = self.len + 1
     return idx
 
-pub fn type_size_and_align(table: TypeTable, type_id: u32, out_size: ptr[u32], out_align: ptr[u32]):
+pub fn type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size: ptr[u32], out_align: ptr[u32]):
     if type_id == 0 as u32:
         out_size[0] = 8 as u32
         out_align[0] = 8 as u32
@@ -196,13 +206,19 @@ pub fn type_size_and_align(table: TypeTable, type_id: u32, out_size: ptr[u32], o
         out_size[0] = 8 as u32
         out_align[0] = 8 as u32
 
-pub fn field_offset(table: TypeTable, struct_type_id: u32, field_idx: u32) -> u32:
+pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> u32:
     if struct_type_id == 0 as u32:
         return field_idx * 8 as u32
-    let entry = table.entries.data[struct_type_id]
-    ax_printf_local("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", struct_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("[Debug field_offset] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
-    if entry.kind != TYPE_KIND_STRUCT:
+    mut real_type_id := struct_type_id
+    mut entry = table.entries.data[real_type_id]
+    if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
+        real_type_id = entry.extra
+        entry = table.entries.data[real_type_id]
+    ax_printf_local("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", real_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    if entry.kind != 1 as u8: // TYPE_KIND_STRUCT = 1
         return field_idx * 8 as u32
     
     let struct_idx = entry.extra
@@ -228,11 +244,17 @@ pub fn field_offset(table: TypeTable, struct_type_id: u32, field_idx: u32) -> u3
         i = i + 1
     return field_idx * 8 as u32
 
-pub fn field_size(table: TypeTable, struct_type_id: u32, field_idx: u32) -> u32:
+pub fn field_size(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> u32:
     if struct_type_id == 0 as u32:
         return 8 as u32
-    let entry = table.entries.data[struct_type_id]
-    if entry.kind != TYPE_KIND_STRUCT:
+    ax_printf_local("[Debug field_size] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    mut real_type_id := struct_type_id
+    mut entry = table.entries.data[real_type_id]
+    if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
+        real_type_id = entry.extra
+        entry = table.entries.data[real_type_id]
+    if entry.kind != 1 as u8: // TYPE_KIND_STRUCT = 1
         return 8 as u32
     
     let struct_idx = entry.extra
@@ -252,16 +274,21 @@ pub fn abi_int_arg_reg(abi: str, idx: i64) -> u8:
         return get_win64_arg_reg(idx)
     return get_sysv_arg_reg(idx)
 
+pub fn abi_float_arg_reg(abi: str, idx: i64) -> u8:
+    if abi == "win64":
+        return get_win64_float_arg_reg(idx)
+    return get_sysv_float_arg_reg(idx)
+
 pub fn abi_return_reg(abi: str) -> u8:
     return REG_RAX
 
 pub struct InstructionSelector:
     pub fn_ptr: ptr[AirFunc]
     pub abi_name: str
-    pub table: TypeTable
+    pub table: ptr[TypeTable]
     pub param_idx_processed: i32
-    pub symbols: SymbolTable
-    pub pool: InternPool
+    pub symbols: ptr[SymbolTable]
+    pub pool: ptr[InternPool]
     pub max_vreg: u32
     pub max_label: u32
 
@@ -275,19 +302,166 @@ pub fn next_label(sel: ptr[InstructionSelector]) -> u32:
 
 pub fn get_register_type(sel: ptr[InstructionSelector], reg: u32) -> u32:
     if reg == 0:
-        return 0
+        return 0 as u32
+    if reg >= 1 as u32 and reg <= sel.fn_ptr.params.len as u32:
+        return sel.fn_ptr.params.data[reg as i64 - 1 as i64] as u32
     mut i := 0 as i64
     while i < sel.fn_ptr.insts.len:
         let inst = &sel.fn_ptr.insts.data[i]
         if inst.dest == reg:
+            if inst.opcode == OP_CALL and inst.src1 == 0 as u32:
+                let sym_idx = inst.type_id as u32
+                if sym_idx != 0 as u32 and (sym_idx as i64) < sel.symbols.symbols.len:
+                    let sym = sel.symbols.symbols.data[sym_idx as i64]
+                    if sym.kind == SYM_FUNC:
+                        let func_type = sym.type_id
+                        if func_type != 0 as u32 and (func_type as i64) < sel.table.entries.len:
+                            let entry = sel.table.entries.data[func_type as i64]
+                            if entry.kind == TYPE_KIND_FUNC:
+                                let fi_idx = entry.extra
+                                if (fi_idx as i64) < sel.table.funcs.len:
+                                    let fi = sel.table.funcs.data[fi_idx as i64]
+                                    return fi.ret
+                    elif sym.kind == SYM_STRUCT:
+                        return sym.type_id
+                return 0 as u32
             return inst.type_id as u32
         i = i + 1
-    return 0
+    return 0 as u32
 
-pub fn select_cmp(inst: ptr[AirInst], cc: u8, out_insts: ptr[MachInstVec]):
-    out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-    out_insts.push(MachInst(op: MACH_SETCC, cc: cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> bool:
+    if vreg == 0:
+        return false
+    if vreg >= 1 as u32 and vreg <= fn_ptr.params.len as u32:
+        let type_id = fn_ptr.params.data[vreg as i64 - 1 as i64] as u32
+        if type_id < table.entries.len as u32:
+            let size = table.entries.data[type_id].size
+            if size == 16 as u32:
+                return true
+        return false
+    mut i := 0 as i64
+    while i < fn_ptr.insts.len:
+        let inst = &fn_ptr.insts.data[i]
+        if inst.dest == vreg:
+            let op = inst.opcode
+            // Ignore control-flow, store, and other instructions that don't actually define a destination register
+            if op != OP_BRANCH and op != OP_JUMP and op != OP_RETURN and op != OP_STORE and op != OP_SET_FIELD and op != OP_FREE and op != OP_DESTROY and op != OP_LOOP_BEGIN and op != OP_LOOP_END and op != OP_SEND:
+                if op == OP_CALL:
+                    if inst.src1 == 0 as u32: // Direct function call
+                        let sym_idx = inst.type_id as u32
+                        if symbols != null as ptr[SymbolTable] and sym_idx != 0 as u32 and (sym_idx as i64) < symbols.symbols.len:
+                            let sym = &symbols.symbols.data[sym_idx as i64]
+                            if sym.kind == 1 as u8 or sym.kind == 10 as u8: // SYM_FUNC or other func symbol kinds
+                                let fn_type_id = sym.type_id as u32
+                                if fn_type_id < table.entries.len as u32:
+                                    let entry = &table.entries.data[fn_type_id]
+                                    if entry.kind == 2 as u8: // TYPE_KIND_FUNC = 2
+                                        let fi = &table.funcs.data[entry.extra as i64]
+                                        let ret_type_id = fi.ret
+                                        if ret_type_id < table.entries.len as u32:
+                                            let size = table.entries.data[ret_type_id].size
+                                            if size == 16 as u32:
+                                                return true
+                    else: // Dynamic function call
+                        let type_id = inst.type_id as u32
+                        if type_id < table.entries.len as u32:
+                            let size = table.entries.data[type_id].size
+                            if size == 16 as u32:
+                                return true
+                    return false
+                elif op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL:
+                    return false
+                elif op == OP_COPY or op == OP_MOVE or op == OP_CAST:
+                    let type_id = inst.type_id as u32
+                    if type_id < table.entries.len as u32:
+                        let size = table.entries.data[type_id].size
+                        if size == 16 as u32:
+                            return true
+                    // Recursively check src1 for type size
+                    return regalloc_is_16byte(inst.src1, fn_ptr, table, symbols)
+                else:
+                    let type_id = inst.type_id as u32
+                    if type_id < table.entries.len as u32:
+                        let size = table.entries.data[type_id].size
+                        if size == 16 as u32:
+                            return true
+                    return false
+        i = i + 1
+    return false
+
+
+pub fn select_comparison(sel: ptr[InstructionSelector], inst: ptr[AirInst], int_cc: u8, float_cc: u8, out_insts: ptr[MachInstVec]):
+    let src_type = get_register_type(sel, inst.src1)
+    if src_type == 9 as u32 or src_type == 10 as u32:
+        out_insts.push(MachInst(op: MACH_FCMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SETCC, cc: float_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+    else:
+        out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SETCC, cc: int_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
     out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+pub fn emit_block_copy_ext(sel: ptr[InstructionSelector], dst_reg: u32, dst_disp: u32, src_reg: u32, src_disp: u32, size: u32, out_insts: ptr[MachInstVec]):
+    mut offset := 0 as u32
+    mut remaining := size
+    while remaining >= 8 as u32:
+        let tmp_val = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: src_reg, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (src_disp + offset) as i64)))
+        out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dst_reg, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (dst_disp + offset) as i64)))
+        offset = offset + 8 as u32
+        remaining = remaining - 8 as u32
+        
+    if remaining >= 4 as u32:
+        let tmp_val = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 4 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: src_reg, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (src_disp + offset) as i64)))
+        out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 4 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dst_reg, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (dst_disp + offset) as i64)))
+        offset = offset + 4 as u32
+        remaining = remaining - 4 as u32
+        
+    if remaining >= 2 as u32:
+        let tmp_val = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 2 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: src_reg, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (src_disp + offset) as i64)))
+        out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 2 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dst_reg, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (dst_disp + offset) as i64)))
+        offset = offset + 2 as u32
+        remaining = remaining - 2 as u32
+        
+    if remaining >= 1 as u32:
+        let tmp_val = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 1 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: src_reg, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (src_disp + offset) as i64)))
+        out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 1 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dst_reg, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (dst_disp + offset) as i64)))
+
+pub fn emit_block_copy(sel: ptr[InstructionSelector], dst_reg: u32, dst_disp: u32, src_reg: u32, size: u32, out_insts: ptr[MachInstVec]):
+    mut final_src_reg := src_reg
+    if regalloc_is_16byte(src_reg, sel.fn_ptr, sel.table, sel.symbols):
+        final_src_reg = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, 
+            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: final_src_reg, label: 0 as u32, imm: 0 as i64), 
+            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: src_reg, label: 0 as u32, imm: 0 as i64), 
+            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+    emit_block_copy_ext(sel, dst_reg, dst_disp, final_src_reg, 0 as u32, size, out_insts)
 
 pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut out_insts: ptr[MachInstVec]):
     let op = inst.opcode
@@ -295,7 +469,11 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         return
 
     if op == OP_ICONST:
-        mut is_str := inst.type_id == 12 as u16
+        let t_id = inst.type_id as u32
+        mut is_str := (t_id == 12 as u32)
+        if t_id < sel.table.entries.len as u32:
+            if sel.table.entries.data[t_id].size == 16 as u32:
+                is_str = true
         if inst.src1 == 0 as u32 and not is_str:
             out_insts.push(MachInst(op: MACH_XOR_ZERO, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
@@ -305,7 +483,15 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 vreg_flag = 2 as u32
             ax_printf_local("[Debug select_inst] OP_ICONST dest=%d, type_id=%d, src1=%d, is_str=%d, vreg_flag=%d\n", inst.dest as i64, inst.type_id as i64, inst.src1 as i64, is_str as i64, vreg_flag as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: vreg_flag, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if is_str:
+                let tmp_struct_addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: vreg_flag, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let tmp_dest_addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                emit_block_copy(sel, tmp_dest_addr, 0 as u32, tmp_struct_addr, 16 as u32, out_insts)
+            else:
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: vreg_flag, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
 
 
     elif op == OP_FCONST:
@@ -318,13 +504,51 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             sel.param_idx_processed = sel.param_idx_processed + 1
             let phys = abi_int_arg_reg(sel.abi_name, param_idx as i64)
             if phys != REG_NONE:
-                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let dest_type = get_register_type(sel, inst.dest)
+                mut dest_size := 8 as u32
+                if dest_type < sel.table.entries.len as u32:
+                    dest_size = sel.table.entries.data[dest_type].size
+                
+                if dest_size == 16 as u32:
+                    let tmp_val1 = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    
+                    let tmp_val2 = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+
+                    let tmp_dest_addr = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                else:
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 return
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                mut offset := 0 as i64
+                if sel.abi_name == "win64":
+                    offset = 48 as i64 + (param_idx as i64 - 4 as i64) * 8 as i64
+                else:
+                    offset = 16 as i64 + (param_idx as i64 - 6 as i64) * 8 as i64
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                return
+        if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
+            let tmp_dest_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let tmp_src_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            emit_block_copy(sel, tmp_dest_addr, 0 as u32, tmp_src_addr, 16 as u32, out_insts)
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
 
     elif op == OP_CAST:
-        if inst.type_id == 12 as u16:
-            let tmp_struct = next_vreg(sel)
+        let t_id = inst.type_id as u32
+        mut is_str := (t_id == 12 as u32)
+        if t_id < sel.table.entries.len as u32:
+            if sel.table.entries.data[t_id].size == 16 as u32:
+                is_str = true
+        if is_str:
             let tmp_len = next_vreg(sel)
             let arg0 = abi_int_arg_reg(sel.abi_name, 0)
             
@@ -339,30 +563,107 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_len, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-            if sel.abi_name == "win64":
-                out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: arg0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-            if sel.abi_name == "win64":
-                out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-
-            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_len, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
-            
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let tmp_dest_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_len, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
         else:
-            if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
-                let param_idx = sel.param_idx_processed
-                sel.param_idx_processed = sel.param_idx_processed + 1
-                let phys = abi_int_arg_reg(sel.abi_name, param_idx as i64)
-                if phys != REG_NONE:
-                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    return
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let src_type = get_register_type(sel, inst.src1)
+            mut is_16byte := (src_type == 12 as u32)
+            if src_type != 0 as u32 and src_type < sel.table.entries.len as u32:
+                if sel.table.entries.data[src_type as i64].size == 16 as u32:
+                    is_16byte = true
+            if is_16byte:
+                if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
+                    let param_idx = sel.param_idx_processed
+                    sel.param_idx_processed = sel.param_idx_processed + 1
+                    let phys = abi_int_arg_reg(sel.abi_name, param_idx as i64)
+                    let dest_type = get_register_type(sel, inst.dest)
+                    mut dest_size := 8 as u32
+                    if dest_type < sel.table.entries.len as u32:
+                        dest_size = sel.table.entries.data[dest_type].size
+                    
+                    if phys != REG_NONE:
+                        if dest_size == 16 as u32:
+                            let tmp_val1 = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            let tmp_val2 = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                            let tmp_dest_addr = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                        else:
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    else:
+                        mut offset := 0 as i64
+                        if sel.abi_name == "win64":
+                            offset = 48 as i64 + (param_idx as i64 - 4 as i64) * 8 as i64
+                        else:
+                            offset = 16 as i64 + (param_idx as i64 - 6 as i64) * 8 as i64
+                        let tmp_addr = next_vreg(sel)
+                        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                        if dest_size == 16 as u32:
+                            let tmp_val1 = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            let tmp_val2 = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                            let tmp_dest_addr = next_vreg(sel)
+                            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                        else:
+                            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                else:
+                    let dest_type = get_register_type(sel, inst.dest)
+                    mut dest_size := 8 as u32
+                    if dest_type < sel.table.entries.len as u32:
+                        dest_size = sel.table.entries.data[dest_type].size
+                    
+                    if dest_size == 16 as u32:
+                        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    else:
+                        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
+                    let param_idx = sel.param_idx_processed
+                    sel.param_idx_processed = sel.param_idx_processed + 1
+                    let phys = abi_int_arg_reg(sel.abi_name, param_idx as i64)
+                    if phys != REG_NONE:
+                        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                        return
+                    else:
+                        mut offset := 0 as i64
+                        if sel.abi_name == "win64":
+                            offset = 48 as i64 + (param_idx as i64 - 4 as i64) * 8 as i64
+                        else:
+                            offset = 16 as i64 + (param_idx as i64 - 6 as i64) * 8 as i64
+                        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                        return
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+
+    elif op == OP_FADD:
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FSUB:
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FSUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FMUL:
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FDIV:
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FDIV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_ITOF:
+        out_insts.push(MachInst(op: MACH_ITOF, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FTOI:
+        out_insts.push(MachInst(op: MACH_FTOI, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_IADD:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -389,26 +690,57 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_NEG:
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_NEG, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        let t = get_register_type(sel, inst.src1)
+        if t == 9 as u32 or t == 10 as u32:
+            let tmp_sign = inst.dest + 60000 as u32
+            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0x8000000000000000 as u64 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_XOR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_NEG, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_NOT:
         out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_SETCC, cc: CC_E, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-    elif op == OP_EQ:
-        select_cmp(inst, CC_E, out_insts)
-    elif op == OP_NE:
-        select_cmp(inst, CC_NE, out_insts)
+    elif op == OP_EQ or op == OP_NE:
+        let src_type = get_register_type(sel, inst.src1)
+        if src_type == 12 as u32:
+            let arg0 = abi_int_arg_reg(sel.abi_name, 0)
+            let arg1 = abi_int_arg_reg(sel.abi_name, 1)
+            
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: arg0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: arg1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -22 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            if op == OP_NE:
+                out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_SETCC, cc: CC_E, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            mut cc := CC_E
+            if op == OP_NE:
+                cc = CC_NE
+            select_comparison(sel, inst, cc, cc, out_insts)
     elif op == OP_LT:
-        select_cmp(inst, CC_L, out_insts)
+        select_comparison(sel, inst, CC_L, CC_B, out_insts)
     elif op == OP_LE:
-        select_cmp(inst, CC_LE, out_insts)
+        select_comparison(sel, inst, CC_LE, CC_BE, out_insts)
     elif op == OP_GT:
-        select_cmp(inst, CC_G, out_insts)
+        select_comparison(sel, inst, CC_G, CC_A, out_insts)
     elif op == OP_GE:
-        select_cmp(inst, CC_GE, out_insts)
+        select_comparison(sel, inst, CC_GE, CC_AE, out_insts)
 
     elif op == OP_AND:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -430,36 +762,47 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     elif op == OP_SHR:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RCX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SAR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SHR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_RETURN:
         let fn_name_ret = sel.pool.get(sel.fn_ptr.name)
         if inst.src1 != 0 as u32:
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let is_16byte = regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols)
+            if is_16byte:
+                let tmp_src_addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                let ret_type = sel.fn_ptr.ret_type as u32
+                mut ret_phys := REG_RAX
+                if ret_type == 9 as u32 or ret_type == 10 as u32:
+                    ret_phys = REG_XMM0
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: ret_phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         
         if fn_name_ret == "main":
             if sel.abi_name == "win64":
                 if inst.src1 != 0 as u32:
                     out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 40 as i64)))
                 else:
                     out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             else:
                 if inst.src1 != 0 as u32:
                     out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
 
             out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -5 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
             if sel.abi_name == "win64":
                 if inst.src1 != 0 as u32:
-                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64)))
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 40 as i64)))
                     out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 else:
                     out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             else:
                 if inst.src1 != 0 as u32:
-                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
                     out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_RET, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
@@ -516,19 +859,20 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         mut target_name := "none"
         mut sym_imm := 0 as i64
         if inst.src1 == 0 as u32:
-            target_name = x86_resolve_sym_name(inst.type_id as u32, sel.symbols, sel.pool)
-            sym_imm = inst.type_id as i64
-        let target_len = std.string.len(target_name)
-        let target_ptr = target_name as ptr[u8]
-        ax_printf_local("[Debug selector] OP_CALL target=%.*s, arg_count=%d\n", target_len, target_ptr as i64, arg_count as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            let callee_sym_idx = inst.type_id as u32
+            target_name = x86_resolve_sym_name(callee_sym_idx, sel.symbols, sel.pool, sel.table)
+            sym_imm = callee_sym_idx as i64
+        ax_printf_local("[Debug selector] OP_CALL target=", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        print_raw(target_name)
+        ax_printf_local(", arg_count=%d\n", arg_count as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
 
-        if target_name == "println" or target_name == "print":
-            mut is_println := target_name == "println"
+        if target_name == "println" or target_name == "print" or target_name == "ax_println" or target_name == "ax_print":
+            mut is_println := (target_name == "println" or target_name == "ax_println")
             if arg_count > 0 as u32:
                 let first_arg_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32]
                 let arg_type = get_register_type(sel, first_arg_reg)
-                if arg_type == 3 as u32 or arg_type == 4 as u32: // i32 or i64
+                if arg_type == 1 as u32 or arg_type == 2 as u32 or arg_type == 3 as u32 or arg_type == 4 as u32 or arg_type == 5 as u32 or arg_type == 6 as u32 or arg_type == 7 as u32 or arg_type == 8 as u32 or arg_type == 15 as u32 or arg_type == 16 as u32: // any integer type
                     if is_println:
                         target_name = "ax_println_i64"
                         sym_imm = -11 as i64
@@ -622,48 +966,63 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if shadow_size > 0 as i64:
                 out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-            mut max_reg_args := 4 as u32
-            if sel.abi_name != "win64":
-                max_reg_args = 6 as u32
-                
-            mut idx_push := arg_count
-            if idx_push > max_reg_args:
-                idx_push = max_reg_args
-                
-            // 1. Push register arguments to stack in reverse order to protect from overwrites
-            mut p_i := idx_push
-            while p_i > 0 as u32:
-                let arg_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32 + p_i - 1 as u32]
-                out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                p_i = p_i - 1 as u32
-                
-            // 2. Pop them into the target physical registers
-            mut pop_i := 0 as u32
-            while pop_i < idx_push:
-                let phys = abi_int_arg_reg(sel.abi_name, pop_i as i64)
-                out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                pop_i = pop_i + 1 as u32
-                
-            // 3. Store stack arguments
-            mut i := max_reg_args
+            // 1. Store stack arguments (must be done first when RSP is stable and registers are safe)
+            mut i := 0 as u32
             while i < arg_count:
                 let arg_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32 + i]
-                mut offset := 0 as i64
-                if sel.abi_name == "win64":
-                    offset = 32 as i64 + (i as i64 - 4 as i64) * 8 as i64
+                let arg_type = get_register_type(sel, arg_reg)
+                mut phys := REG_NONE
+                if arg_type == 9 as u32 or arg_type == 10 as u32:
+                    phys = abi_float_arg_reg(sel.abi_name, i as i64)
                 else:
-                    offset = (i as i64 - 6 as i64) * 8 as i64
-                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                    phys = abi_int_arg_reg(sel.abi_name, i as i64)
+                
+                if phys == REG_NONE:
+                    mut offset := 0 as i64
+                    if sel.abi_name == "win64":
+                        offset = 32 as i64 + (i as i64 - 4 as i64) * 8 as i64
+                    else:
+                        offset = (i as i64 - 6 as i64) * 8 as i64
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
                 i = i + 1 as u32
-
+                
+            // 2. Set up GPR/XMM arguments directly using MACH_MOV or MACH_LEA
+            mut reg_i := 0 as u32
+            while reg_i < arg_count:
+                let arg_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32 + reg_i]
+                let arg_type = get_register_type(sel, arg_reg)
+                mut phys := REG_NONE
+                if arg_type == 9 as u32 or arg_type == 10 as u32:
+                    phys = abi_float_arg_reg(sel.abi_name, reg_i as i64)
+                else:
+                    phys = abi_int_arg_reg(sel.abi_name, reg_i as i64)
+                
+                if phys != REG_NONE:
+                    let is_16byte = regalloc_is_16byte(arg_reg, sel.fn_ptr, sel.table, sel.symbols)
+                    if is_16byte:
+                        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    else:
+                        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                reg_i = reg_i + 1 as u32
+ 
             out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-
+ 
             if shadow_size > 0 as i64:
                 out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-
+ 
             if inst.dest != 0 as u32:
-                let ret_reg = abi_return_reg(sel.abi_name)
-                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: ret_reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let is_16byte = regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols)
+                if is_16byte:
+                    let tmp_dest_addr = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                else:
+                    let dest_type = get_register_type(sel, inst.dest)
+                    mut ret_reg := abi_return_reg(sel.abi_name)
+                    if dest_type == 9 as u32 or dest_type == 10 as u32:
+                        ret_reg = REG_XMM0
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: ret_reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_ALLOC:
         mut size := 0 as u32
@@ -729,7 +1088,19 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if size == 16 as u32:
+            let tmp_dest_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            let tmp_val1 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            let tmp_val2 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         
         if size == 1 as u32:
             let tmp_mask = next_vreg(sel)
@@ -761,204 +1132,127 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 out_insts.push(MachInst(op: MACH_IMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_size, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 
             let tmp_addr = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
-            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if size > 8 as u32:
+                emit_block_copy(sel, tmp_addr, 0 as u32, inst.src1, size, out_insts)
+            else:
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if size > 8 as u32:
+                if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
+                    let tmp_dest_addr = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    emit_block_copy(sel, tmp_dest_addr, 0 as u32, inst.src1, size, out_insts)
+                else:
+                    emit_block_copy(sel, inst.dest, 0 as u32, inst.src1, size, out_insts)
+            else:
+                if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
+                    let tmp_dest_addr = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                else:
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
 
     elif op == OP_GET_FIELD:
-        let struct_type = inst.type_id as u32
+        let struct_type = get_register_type(sel, inst.src1)
         ax_printf_local("[Debug] OP_GET_FIELD: type_id=%d, field_idx=%d\n", struct_type as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
         ax_printf_local("[Debug]   -> disp=%d, size=%d\n", disp as i64, size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+        if size > 16 as u32:
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+        elif size == 16 as u32:
+            let tmp_dest_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            let tmp_val1 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            
+            let tmp_val2 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (disp as i64 + 8))))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
 
     elif op == OP_SET_FIELD:
-        let struct_type = inst.type_id as u32
+        let struct_type = get_register_type(sel, inst.src1)
         ax_printf_local("[Debug] OP_SET_FIELD: type_id=%d, field_idx=%d\n", struct_type as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
         ax_printf_local("[Debug]   -> disp=%d, size=%d\n", disp as i64, size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+        if size > 8 as u32:
+            emit_block_copy(sel, inst.src1, disp, inst.dest, size, out_insts)
+        else:
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
 
     elif op == OP_MAKE_REF:
-        let lbl_null = next_label(sel)
-        let lbl_end = next_label(sel)
-        
-        out_insts.push(MachInst(op: MACH_TEST, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_JCC, cc: 0x04 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_null, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        let tmp_gen = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -8 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_SHL, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        let tmp_ptr = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 281474976710655 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_OR, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_JMP, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_end, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_LABEL, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_null, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_XOR_ZERO, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_LABEL, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_end, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_DEREF:
-        let lbl_ok_null = next_label(sel)
-        let lbl_ok_uaf = next_label(sel)
-        
-        let tmp_ptr = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 281474976710655 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_TEST, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_JCC, cc: 0x05 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_ok_null, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        if sel.abi_name == "win64":
-            out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -8 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        if sel.abi_name == "win64":
-            out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_LABEL, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_ok_null, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        // Extract captured gen_id from original pointer (top 16 bits)
-        let tmp_cap = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_SAR, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 48 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64)))
-
-        // If captured gen_id is 0, this is a raw/unmanaged pointer — bypass all generational checks!
-        out_insts.push(MachInst(op: MACH_TEST, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_JCC, cc: 0x04 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_ok_uaf, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-
-        // Read active gen_id from [tmp_ptr - 8]
-        let tmp_gen = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -8 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_cap, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_gen, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-        out_insts.push(MachInst(op: MACH_JCC, cc: 0x04 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_ok_uaf, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        if sel.abi_name == "win64":
-            out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -8 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        if sel.abi_name == "win64":
-            out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        out_insts.push(MachInst(op: MACH_LABEL, cc: 0 as u8, padding: 0 as u8, 
-            dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: lbl_ok_uaf, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        let type_id = get_register_type(sel, inst.dest)
         mut type_size := 8 as u32
-        if type_id < sel.table.entries.len as u32:
-            type_size = sel.table.entries.data[type_id].size
+        let src_type = get_register_type(sel, inst.src1)
+        if src_type == 12 as u32:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
+                src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            let tmp_ptr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, 
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), 
+                src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                
+            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, 
+                dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 281474976710655 as i64)))
 
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: type_size as u8, 
-            dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
-            src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
-            src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let type_id = get_register_type(sel, inst.dest)
+            if type_id < sel.table.entries.len as u32:
+                type_size = sel.table.entries.data[type_id].size
+
+            if type_id == 12 as u32:
+                type_size = 8 as u32
+
+            if type_size == 16 as u32:
+                let tmp_dest_addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+                let tmp_val1 = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+                let tmp_val2 = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: type_size as u8, 
+                    dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), 
+                    src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
+                    src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
         if type_size == 1 as u32:
             let tmp_mask = next_vreg(sel)
@@ -967,7 +1261,7 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         elif type_size == 2 as u32:
             let tmp_mask = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64)))
         elif type_size == 4 as u32:
             let tmp_mask = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -976,7 +1270,7 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     else:
         out_insts.push(MachInst(op: MACH_NOP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-pub fn select_all(f: ptr[AirFunc], abi: str, table: TypeTable, symbols: SymbolTable, pool: InternPool) -> MachInstVec:
+pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr[SymbolTable], pool: ptr[InternPool]) -> MachInstVec:
     mut actual_max_vreg := 0 as u32
     mut vi := 0 as i64
     while vi < f.insts.len:
@@ -1009,7 +1303,7 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: TypeTable, symbols: SymbolTa
     mut result := new_mach_inst_vec()
 
     let fn_name = pool.get(f.name)
-    let is_main = (fn_name == "main")
+    let is_main = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
 
     if f.blocks.len > 0:
         mut bi := 0 as i64

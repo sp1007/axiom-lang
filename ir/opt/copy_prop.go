@@ -33,6 +33,15 @@ func (p *CopyPropagationPass) Run(mod *air.AirModule) bool {
 func copyPropFunc(fn *air.AirFunc) bool {
 	changed := false
 
+	// Count definitions for each register to ensure SSA safety
+	defCount := make(map[uint32]int)
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Opcode != air.OpNop && inst.Dest != 0 {
+			defCount[inst.Dest]++
+		}
+	}
+
 	// Map: copy_vreg -> source_vreg
 	copyMap := make(map[uint32]uint32)
 
@@ -44,8 +53,10 @@ func copyPropFunc(fn *air.AirFunc) bool {
 		}
 
 		if (inst.Opcode == air.OpCopy || inst.Opcode == air.OpMove) && inst.Dest != 0 && inst.Src1 != 0 {
-			// Save the copy binding
-			copyMap[inst.Dest] = inst.Src1
+			// Only propagate if both Dest and Src1 are assigned exactly once (SSA invariant)
+			if defCount[inst.Dest] == 1 && defCount[inst.Src1] == 1 {
+				copyMap[inst.Dest] = inst.Src1
+			}
 		}
 	}
 

@@ -169,6 +169,7 @@ func DefaultPipeline(level OptLevel, verify bool) *OptPipeline {
 	case O1:
 		// O1: basic optimizations
 		p.AddPass(&ConstantFoldingPass{})
+		p.AddPass(&CopyPropagationPass{})
 		p.AddPass(&DCEPass{})
 
 	case O2:

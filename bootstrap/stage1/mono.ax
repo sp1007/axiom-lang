@@ -41,67 +41,127 @@ pub fn lookup_subst(self: TypeSubstVec, name_id: u32) -> u32:
     return 0 as u32 // TYPE_UNKNOWN
 
 pub struct Monomorphizer:
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
 
-pub fn new_monomorphizer(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> Monomorphizer:
-    return Monomorphizer(
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-    )
+pub fn new_monomorphizer(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[Monomorphizer]:
+    let mm = @alloc(@compiler_intrinsic("size_of")[Monomorphizer]()) as ptr[Monomorphizer]
+    mm.tree = tree
+    mm.pool = pool
+    mm.symtable = symtable
+    mm.typetable = typetable
+    return mm
 
-pub fn substitute_type_params(mut self: Monomorphizer, node_idx: u32, subst: TypeSubstVec):
-    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
+pub fn node_text(self: ptr[Monomorphizer], tree: ptr[AstTree], node_idx: u32) -> str:
+    let node = tree.nodes.data[node_idx]
+    let tok_idx = node.token_idx
+    if tok_idx as i64 >= tree.tokens.len:
+        return ""
+    let tok = tree.tokens.data[tok_idx as i64]
+    if tok.len == 0 as u16:
+        return ""
+    let start_ptr = ((tree.src as ptr[u8]) as i64 + tok.offset as i64) as ptr[u8]
+    return alloc_str_from_raw(start_ptr, tok.len as i64)
+
+pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_node_idx: u32, src_tree: ptr[AstTree], subst: TypeSubstVec):
+    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32 or orig_node_idx == 0 as u32 or orig_node_idx == 0xffffffff as u32:
         return
 
     mut node := &self.tree.nodes.data[node_idx]
+    let orig_node = src_tree.nodes.data[orig_node_idx]
     let kind = node.kind
 
     if (kind == NODE_IDENT or kind == NODE_PARAM_DECL or kind == NODE_FIELD_DECL or
         kind == NODE_FUNC_DECL or kind == NODE_STRUCT_DECL or kind == NODE_TYPE_ALIAS_DECL or
         kind == NODE_VARIANT_DECL or kind == NODE_TYPE_EXPR or kind == NODE_VAR_DECL or
-        kind == NODE_CONST_DECL or kind == NODE_BINDING_PAT or kind == NODE_VARIANT_PAT):
+        kind == NODE_CONST_DECL or kind == NODE_BINDING_PAT or kind == NODE_VARIANT_PAT or
+        kind == NODE_INTERFACE_DECL or kind == NODE_IMPORT_DECL or kind == NODE_FOR_STMT):
         
-        let sym_idx = node.payload
-        if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
-            let sym = self.symtable.symbols.data[sym_idx]
+        mut has_sym_payload := false
+        if (kind == NODE_FUNC_DECL or kind == NODE_PARAM_DECL or kind == NODE_STRUCT_DECL or
+            kind == NODE_FIELD_DECL or kind == NODE_INTERFACE_DECL or kind == NODE_VAR_DECL or
+            kind == NODE_CONST_DECL or kind == NODE_IMPORT_DECL or kind == NODE_TYPE_ALIAS_DECL or
+            kind == NODE_VARIANT_DECL or kind == NODE_FOR_STMT or kind == NODE_IDENT or
+            kind == NODE_BINDING_PAT or kind == NODE_VARIANT_PAT):
+            has_sym_payload = true
+            
+        mut name_id := 0 as u32
+        if has_sym_payload:
+            let sym_idx = orig_node.payload
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                name_id = self.symtable.symbols.data[sym_idx as i64].name_id
+
+        if name_id == 0 as u32:
+            let text = self.node_text(src_tree, orig_node_idx)
+            name_id = self.pool.intern(text)
+            @free(get_str_ptr(text))
+
+        if name_id != 0 as u32:
             if kind == NODE_IDENT or kind == NODE_TYPE_EXPR or kind == NODE_BINDING_PAT or kind == NODE_VARIANT_PAT:
-                let type_id = lookup_subst(subst, sym.name_id)
+                let type_id = lookup_subst(subst, name_id)
                 if type_id != 0 as u32:
-                    // Substitute with the name ID of the concrete TypeID
-                    // In TypeTable, retrieve concrete entry name
                     if (type_id as i64) < self.typetable.entries.len:
                         let entry = self.typetable.entries.data[type_id]
-                        mut name_id := entry.name_id
-                        if name_id == 0 as u32:
-                            // Fallback standard type names
-                            if type_id == 3 as u32: // i32
-                                name_id = self.pool.intern("i32")
-                            elif type_id == 4 as u32: // i64
-                                name_id = self.pool.intern("i64")
-                            elif type_id == 11 as u32: // bool
-                                name_id = self.pool.intern("bool")
-                            elif type_id == 12 as u32: // string
-                                name_id = self.pool.intern("string")
+                        mut target_name_id := entry.name_id
+                        if target_name_id == 0 as u32:
+                            if type_id == 1 as u32:
+                                target_name_id = self.pool.intern("i8")
+                            elif type_id == 2 as u32:
+                                target_name_id = self.pool.intern("i16")
+                            elif type_id == 3 as u32:
+                                target_name_id = self.pool.intern("i32")
+                            elif type_id == 4 as u32:
+                                target_name_id = self.pool.intern("i64")
+                            elif type_id == 5 as u32:
+                                target_name_id = self.pool.intern("u8")
+                            elif type_id == 6 as u32:
+                                target_name_id = self.pool.intern("u16")
+                            elif type_id == 7 as u32:
+                                target_name_id = self.pool.intern("u32")
+                            elif type_id == 8 as u32:
+                                target_name_id = self.pool.intern("u64")
+                            elif type_id == 9 as u32:
+                                target_name_id = self.pool.intern("f32")
+                            elif type_id == 10 as u32:
+                                target_name_id = self.pool.intern("f64")
+                            elif type_id == 11 as u32:
+                                target_name_id = self.pool.intern("bool")
+                            elif type_id == 12 as u32:
+                                target_name_id = self.pool.intern("string")
+                            elif type_id == 13 as u32:
+                                target_name_id = self.pool.intern("char8")
+                            elif type_id == 14 as u32:
+                                target_name_id = self.pool.intern("void")
+                            elif type_id == 15 as u32:
+                                target_name_id = self.pool.intern("isize")
+                            elif type_id == 16 as u32:
+                                target_name_id = self.pool.intern("usize")
                             else:
-                                name_id = self.pool.intern("type_val")
-                        node.payload = name_id
+                                target_name_id = self.pool.intern("type_val")
+                        node.payload = target_name_id
                 else:
-                    node.payload = sym.name_id
+                    node.payload = name_id
             else:
-                node.payload = sym.name_id
+                node.payload = name_id
+    elif kind == NODE_FIELD_EXPR:
+        node.payload = orig_node.payload
+    elif (kind == NODE_INT_LIT or kind == NODE_FLOAT_LIT or kind == NODE_STRING_LIT or
+          kind == NODE_CHAR_LIT or kind == NODE_BOOL_LIT or kind == NODE_NIL_LIT):
+        node.payload = orig_node.payload
+    else:
+        node.payload = 0 as u32
 
-    // Walk children
+    // Walk children in parallel
     mut child := node.first_child
-    while child != 0 as u32:
-        self.substitute_type_params(child, subst)
+    mut orig_child := orig_node.first_child
+    while child != 0 as u32 and orig_child != 0 as u32:
+        self.substitute_type_params(child, orig_child, src_tree, subst)
         child = self.tree.nodes.data[child].next_sibling
+        orig_child = src_tree.nodes.data[orig_child].next_sibling
 
-pub fn remove_generic_params_child(mut self: Monomorphizer, node_idx: u32):
+pub fn remove_generic_params_child(mut self: ptr[Monomorphizer], node_idx: u32):
     mut node := &self.tree.nodes.data[node_idx]
     mut prev := 0 as u32
     mut curr := node.first_child
@@ -117,69 +177,117 @@ pub fn remove_generic_params_child(mut self: Monomorphizer, node_idx: u32):
         prev = curr
         curr = self.tree.nodes.data[curr].next_sibling
 
-pub fn mangle_name(self: Monomorphizer, orig_name: str, args: U32Vec) -> str:
-    // Format: _AX_std_origName_arg1_arg2
-    let base_mangled = "_AX_std_"
-    let len_base = std.string.len(base_mangled)
-    let len_orig = std.string.len(orig_name)
-    mut total_len := len_base + len_orig
+pub fn u32_to_str(val: u32) -> str:
+    if val == 0 as u32:
+        return "0"
+    mut temp_val := val
+    mut len := 0 as i64
+    mut temp := val
+    while temp > 0 as u32:
+        len = len + 1 as i64
+        temp = temp / 10 as u32
+    mut buf := @alloc(len + 1 as i64) as ptr[u8]
+    buf[len] = 0 as u8
+    mut idx := len - 1 as i64
+    while temp_val > 0 as u32:
+        let digit = temp_val % 10 as u32
+        buf[idx] = (digit + 48 as u32) as u8
+        temp_val = temp_val / 10 as u32
+        idx = idx - 1 as i64
+    return buf as str
 
-    // Count argument type name sizes
+pub fn get_type_name_recursive(self: ptr[Monomorphizer], type_id: u32) -> str:
+    if (type_id as i64) >= self.typetable.entries.len:
+        return "unknown"
+    let entry = self.typetable.entries.data[type_id]
+    if entry.name_id != 0 as u32:
+        return self.pool.get(entry.name_id)
+
+    // Prepopulated primitive types fallback
+    if type_id == 0 as u32:
+        return "unknown"
+    elif type_id == 1 as u32:
+        return "i8"
+    elif type_id == 2 as u32:
+        return "i16"
+    elif type_id == 3 as u32:
+        return "i32"
+    elif type_id == 4 as u32:
+        return "i64"
+    elif type_id == 5 as u32:
+        return "u8"
+    elif type_id == 6 as u32:
+        return "u16"
+    elif type_id == 7 as u32:
+        return "u32"
+    elif type_id == 8 as u32:
+        return "u64"
+    elif type_id == 9 as u32:
+        return "f32"
+    elif type_id == 10 as u32:
+        return "f64"
+    elif type_id == 11 as u32:
+        return "bool"
+    elif type_id == 12 as u32:
+        return "string"
+    elif type_id == 13 as u32:
+        return "char8"
+    elif type_id == 14 as u32:
+        return "void"
+    elif type_id == 15 as u32:
+        return "isize"
+    elif type_id == 16 as u32:
+        return "usize"
+
+    let kind = entry.kind
+    if kind == 9 as u8: // TYPE_KIND_POINTER
+        let inner_name = self.get_type_name_recursive(entry.extra)
+        return std.string.concat("ptr_", inner_name)
+    elif kind == 10 as u8: // TYPE_KIND_REF
+        let inner_name = self.get_type_name_recursive(entry.extra)
+        return std.string.concat("ref_", inner_name)
+    elif kind == 4 as u8: // TYPE_KIND_SLICE
+        let inner_name = self.get_type_name_recursive(entry.extra)
+        return std.string.concat("slice_", inner_name)
+    elif kind == 3 as u8: // TYPE_KIND_ARRAY
+        let inner_name = self.get_type_name_recursive(entry.extra)
+        let len_str = u32_to_str(entry.name_id)
+        let first = std.string.concat("arr_", len_str)
+        let second = std.string.concat(first, "_")
+        return std.string.concat(second, inner_name)
+    elif kind == 2 as u8: // TYPE_KIND_FUNC
+        if (entry.extra as i64) < self.typetable.funcs.len:
+            let f_info = self.typetable.funcs.data[entry.extra]
+            mut res_str := "func_"
+            res_str = std.string.concat(res_str, self.get_type_name_recursive(f_info.ret))
+            res_str = std.string.concat(res_str, "_args")
+            mut p_idx := 0 as i64
+            while p_idx < f_info.params.len:
+                let p_name = self.get_type_name_recursive(f_info.params.data[p_idx])
+                res_str = std.string.concat(res_str, "_")
+                res_str = std.string.concat(res_str, p_name)
+                p_idx = p_idx + 1 as i64
+            return res_str
+
+    return "type"
+
+pub fn mangle_name(self: ptr[Monomorphizer], orig_name: str, args: U32Vec) -> str:
+    mut mangled := ""
+    if std.string.starts_with(orig_name, "_AX_"):
+        mangled = std.string.concat("", orig_name)
+    else:
+        mangled = std.string.concat("_AX_std_", orig_name)
+        
     mut idx := 0 as i64
     while idx < args.len:
         let arg_type = args.data[idx]
-        mut name_str := "type"
-        if (arg_type as i64) < self.typetable.entries.len:
-            let entry = self.typetable.entries.data[arg_type]
-            if entry.name_id != 0 as u32:
-                name_str = self.pool.get(entry.name_id)
-            else:
-                if arg_type == 3 as u32:
-                    name_str = "i32"
-                elif arg_type == 4 as u32:
-                    name_str = "i64"
-                elif arg_type == 11 as u32:
-                    name_str = "bool"
-                elif arg_type == 12 as u32:
-                    name_str = "string"
-        total_len = total_len + 1 as i64 + std.string.len(name_str)
+        let name_str = self.get_type_name_recursive(arg_type)
+        mangled = std.string.concat(mangled, "__")
+        mangled = std.string.concat(mangled, name_str)
         idx = idx + 1 as i64
+    return mangled
 
-    // Allocate mangled string buffer
-    mut buf := @alloc(total_len + 1 as i64) as ptr[u8]
-    @memcpy(buf, base_mangled as ptr[u8], len_base)
-    @memcpy(((buf as i64) + len_base) as ptr[u8], orig_name as ptr[u8], len_orig)
-
-    mut curr_offset := len_base + len_orig
-    idx = 0
-    while idx < args.len:
-        let arg_type = args.data[idx]
-        mut name_str := "type"
-        if (arg_type as i64) < self.typetable.entries.len:
-            let entry = self.typetable.entries.data[arg_type]
-            if entry.name_id != 0 as u32:
-                name_str = self.pool.get(entry.name_id)
-            else:
-                if arg_type == 3 as u32:
-                    name_str = "i32"
-                elif arg_type == 4 as u32:
-                    name_str = "i64"
-                elif arg_type == 11 as u32:
-                    name_str = "bool"
-                elif arg_type == 12 as u32:
-                    name_str = "string"
-        
-        buf[curr_offset] = '_' as u8
-        curr_offset = curr_offset + 1 as i64
-        let len_name = std.string.len(name_str)
-        @memcpy(((buf as i64) + curr_offset) as ptr[u8], name_str as ptr[u8], len_name)
-        curr_offset = curr_offset + len_name
-        idx = idx + 1 as i64
-
-    buf[total_len] = 0 as u8
-    return buf as str
-
-pub fn instantiate_function(mut self: Monomorphizer, template_sym_id: u32, args: U32Vec) -> u32:
+pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, args: U32Vec) -> u32:
     if (template_sym_id as i64) >= self.symtable.symbols.len:
         return 0 as u32
     
@@ -188,74 +296,53 @@ pub fn instantiate_function(mut self: Monomorphizer, template_sym_id: u32, args:
     if node_idx == 0 as u32:
         return 0 as u32
 
-    // 1. Clone generic AST subtree
-    let cloned_root = self.tree.clone_subtree(node_idx)
+    // Find the correct source AstTree for the generic template
+    mut src_tree := self.tree
+    if (template_sym_id as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[template_sym_id]
+        if t != null as ptr[AstTree]:
+            src_tree = t
+
+    // 1. Clone generic AST subtree from the correct source tree
+    let cloned_root = self.tree.clone_subtree_from(src_tree, node_idx)
 
     mut struct_type_id := 0 as u32
     let cloned_kind = self.tree.nodes.data[cloned_root].kind
     if cloned_kind == NODE_STRUCT_DECL:
-        struct_type_id = self.typetable.entries.len as u32
+        struct_type_id = self.typetable.register_struct(orig_sym.name_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
 
-    // 2. Build type substitution map from original params
-    mut subst := new_type_subst_vec()
+    // 2. Build type substitution map from original params using source tree
+    mut subst := TypeSubstVec(data: null as ptr[TypeSubst], len: 0, cap: 0)
     if cloned_kind == NODE_STRUCT_DECL:
         subst.push(TypeSubst(name_id: orig_sym.name_id, type_id: struct_type_id))
 
-    mut curr := self.tree.nodes.data[node_idx].first_child
+    mut curr := src_tree.nodes.data[node_idx].first_child
     while curr != 0 as u32:
-        if self.tree.nodes.data[curr].kind == NODE_GENERIC_PARAMS:
-            mut gp := self.tree.nodes.data[curr].first_child
+        if src_tree.nodes.data[curr].kind == NODE_GENERIC_PARAMS:
+            mut gp := src_tree.nodes.data[curr].first_child
             mut idx := 0 as i64
             while gp != 0 as u32 and idx < args.len:
-                let gp_name_id = self.tree.nodes.data[gp].payload
+                mut gp_name_id := src_tree.nodes.data[gp].payload
+                if gp_name_id != 0 as u32 and (gp_name_id as i64) < self.symtable.symbols.len:
+                    gp_name_id = self.symtable.symbols.data[gp_name_id].name_id
                 subst.push(TypeSubst(name_id: gp_name_id, type_id: args.data[idx]))
-                gp = self.tree.nodes.data[gp].next_sibling
+                gp = src_tree.nodes.data[gp].next_sibling
                 idx = idx + 1 as i64
             break
-        curr = self.tree.nodes.data[curr].next_sibling
+        curr = src_tree.nodes.data[curr].next_sibling
 
     // 3. Substitute type parameters in cloned AST
-    self.substitute_type_params(cloned_root, subst)
+    self.substitute_type_params(cloned_root, node_idx, src_tree, subst)
 
     // 4. Remove generic flag and generic parameters node
     self.tree.nodes.data[cloned_root].flags = self.tree.nodes.data[cloned_root].flags & (~FLAG_IS_GENERIC)
     self.remove_generic_params_child(cloned_root)
 
-    // 5. Mangle name and update payload
+    // 5. Mangle name and update payload to mangled name_id
     let orig_name = self.pool.get(orig_sym.name_id)
     let mangled = self.mangle_name(orig_name, args)
     let mangled_id = self.pool.intern(mangled)
     self.tree.nodes.data[cloned_root].payload = mangled_id
 
-    // 6. Pre-register symbol in SymbolTable
-    let inst_sym_idx = self.symtable.symbols.len as u32
-    mut new_sym := orig_sym
-    new_sym.name_id = mangled_id
-    new_sym.decl_node = cloned_root
-    new_sym.flags = new_sym.flags & (~SYM_FLAG_GENERIC)
-
-    // 7. Check if it's a struct decl to register in TypeTable
-    if cloned_kind == NODE_STRUCT_DECL:
-        let s_idx = self.typetable.structs.len as u32
-        let fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
-        self.typetable.structs.push(StructInfo(fields: fields))
-
-        self.typetable.entries.push(TypeEntry(
-            kind: TYPE_KIND_STRUCT,
-            padding: 0 as u8,
-            flags: 0 as u16,
-            name_id: mangled_id,
-            size: 0 as u32,
-            align: 0 as u32,
-            extra: s_idx,
-        ))
-        new_sym.type_id = struct_type_id
-        self.tree.nodes.data[cloned_root].payload = inst_sym_idx
-    else:
-        self.tree.nodes.data[cloned_root].payload = inst_sym_idx
-
-    // Push Symbol
-    self.symtable.symbols.push(new_sym)
-
     @free(subst.data as ptr[u8])
-    return inst_sym_idx
+    return cloned_root

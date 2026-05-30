@@ -69,10 +69,11 @@ pub struct Lexer:
     indent_stack: IntVec
     newline_offsets: IntVec
 
-pub fn new_lexer(src: str) -> Lexer:
+pub fn new_lexer(src: str) -> ptr[Lexer]:
     mut indent_stack := new_int_vec()
     indent_stack.push(0) // base indentation level is 0
-    return Lexer(
+    let lex = @alloc(512) as ptr[Lexer]
+    lex[0] = Lexer(
         src: src,
         len: std.string.len(src),
         pos: 0,
@@ -80,13 +81,14 @@ pub fn new_lexer(src: str) -> Lexer:
         indent_stack: indent_stack,
         newline_offsets: new_int_vec(),
     )
+    return lex
 
-pub fn peek1(self: Lexer) -> u8:
+pub fn peek1(self: ptr[Lexer]) -> u8:
     if self.pos + 1 < self.len:
         return self.src[self.pos + 1] as u8
     return 0 as u8
 
-pub fn emit(mut self: Lexer, kind: u8, offset: i64, length: i64):
+pub fn emit(mut self: ptr[Lexer], kind: u8, offset: i64, length: i64):
     self.tokens.push(Token(
         kind: kind,
         padding: 0 as u8,
@@ -175,7 +177,7 @@ fn is_ident_start(b: u8) -> bool:
 fn is_ident_continue(b: u8) -> bool:
     return is_ident_start(b) or (b >= 48 and b <= 57)
 
-pub fn scan_ident(mut self: Lexer):
+pub fn scan_ident(mut self: ptr[Lexer]):
     let start = self.pos
     self.pos = self.pos + 1
     while self.pos < self.len:
@@ -200,7 +202,7 @@ fn is_oct_digit(b: u8) -> bool:
 fn is_bin_digit(b: u8) -> bool:
     return b == 48 or b == 49
 
-pub fn scan_dec_digits(mut self: Lexer):
+pub fn scan_dec_digits(mut self: ptr[Lexer]):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
         if is_dec_digit(b) or b == 95:
@@ -208,7 +210,7 @@ pub fn scan_dec_digits(mut self: Lexer):
         else:
             break
 
-pub fn scan_hex_digits(mut self: Lexer):
+pub fn scan_hex_digits(mut self: ptr[Lexer]):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
         if is_hex_digit(b) or b == 95:
@@ -216,7 +218,7 @@ pub fn scan_hex_digits(mut self: Lexer):
         else:
             break
 
-pub fn scan_oct_digits(mut self: Lexer):
+pub fn scan_oct_digits(mut self: ptr[Lexer]):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
         if is_oct_digit(b) or b == 95:
@@ -224,7 +226,7 @@ pub fn scan_oct_digits(mut self: Lexer):
         else:
             break
 
-pub fn scan_bin_digits(mut self: Lexer):
+pub fn scan_bin_digits(mut self: ptr[Lexer]):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
         if is_bin_digit(b) or b == 95:
@@ -232,7 +234,7 @@ pub fn scan_bin_digits(mut self: Lexer):
         else:
             break
 
-pub fn scan_number(mut self: Lexer):
+pub fn scan_number(mut self: ptr[Lexer]):
     let start = self.pos
     let b = self.src[self.pos] as u8
 
@@ -278,7 +280,7 @@ pub fn scan_number(mut self: Lexer):
 
     self.emit(TK_INT_LIT, start, self.pos - start)
 
-pub fn scan_string(mut self: Lexer):
+pub fn scan_string(mut self: ptr[Lexer]):
     let start = self.pos
     self.pos = self.pos + 1 // skip opening '"'
     while self.pos < self.len:
@@ -300,7 +302,7 @@ pub fn scan_string(mut self: Lexer):
 
     self.emit(TK_STRING_LIT, start, self.pos - start)
 
-pub fn scan_char(mut self: Lexer):
+pub fn scan_char(mut self: ptr[Lexer]):
     let start = self.pos
     self.pos = self.pos + 1 // skip opening '\''
     if self.pos < self.len:
@@ -325,12 +327,12 @@ pub fn scan_char(mut self: Lexer):
         self.pos = self.pos + 1
     self.emit(TK_CHAR_LIT, start, self.pos - start)
 
-pub fn scan_line_comment(mut self: Lexer):
+pub fn scan_line_comment(mut self: ptr[Lexer]):
     self.pos = self.pos + 2 // skip //
     while self.pos < self.len and self.src[self.pos] as u8 != 10: // '\n'
         self.pos = self.pos + 1
 
-pub fn scan_operator_or_punct(mut self: Lexer):
+pub fn scan_operator_or_punct(mut self: ptr[Lexer]):
     let start = self.pos
     let b = self.src[self.pos] as u8
 
@@ -502,7 +504,7 @@ pub fn scan_operator_or_punct(mut self: Lexer):
     self.pos = self.pos + 1
     self.emit(TK_ERROR, start, 1)
 
-pub fn run(mut self: Lexer):
+pub fn run(mut self: ptr[Lexer]):
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
         if b == 32 or b == 13: // ' ' or '\r'
@@ -542,7 +544,7 @@ fn find_line_start(src: str, pos: i64) -> i64:
         i = i - 1
     return 0
 
-pub fn find_next_content_offset(self: Lexer, start_idx: i64) -> i64:
+pub fn find_next_content_offset(self: ptr[Lexer], start_idx: i64) -> i64:
     mut j := start_idx
     while j < self.tokens.len:
         let tok = self.tokens.data[j]
@@ -566,7 +568,7 @@ fn count_leading_spaces(src: str, offset: i64, len: i64) -> i64:
         i = i + 1
     return count
 
-pub fn process_indentation(mut self: Lexer) -> TokenVec:
+pub fn process_indentation(mut self: ptr[Lexer]) -> TokenVec:
     mut out := new_token_vec()
     mut stack := new_int_vec()
     stack.push(0)
@@ -627,7 +629,7 @@ pub fn process_indentation(mut self: Lexer) -> TokenVec:
 
     return out
 
-pub fn tokenize(mut self: Lexer) -> TokenVec:
+pub fn tokenize(mut self: ptr[Lexer]) -> TokenVec:
     self.run()
     let processed = self.process_indentation()
     return processed

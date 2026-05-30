@@ -157,6 +157,8 @@ func (l *AxiomLinker) Link() error {
 		mergedCode = append(mergedCode, obj.Text...)
 	}
 
+	externVAs := make(map[string]uint64)
+
 	// 5. Apply relocations
 	for _, obj := range objects {
 		for _, r := range obj.Relocs {
@@ -168,8 +170,14 @@ func (l *AxiomLinker) Link() error {
 			if offset, ok := funcOffsets[targetName]; ok {
 				targetVA = baseAddr + offset
 			} else {
-				// Extern / imported symbol stub target address
-				targetVA = 0x500000 // placeholder for extern
+				// Extern / imported symbol stub target address resolved dynamically
+				if va, ok := externVAs[targetName]; ok {
+					targetVA = va
+				} else {
+					va = uint64(0x500000 + len(externVAs)*8)
+					externVAs[targetName] = va
+					targetVA = va
+				}
 			}
 
 			// Relocation offset relative to mergedCode

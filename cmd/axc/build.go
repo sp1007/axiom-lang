@@ -11,14 +11,11 @@ import (
 	"github.com/axiom-lang/axiom/codegen/cgen"
 	"github.com/axiom-lang/axiom/codegen/native"
 	"github.com/axiom-lang/axiom/codegen/wasm"
-	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/diagnostics"
-	"github.com/axiom-lang/axiom/compiler/lexer"
-	"github.com/axiom-lang/axiom/compiler/parser"
-	"github.com/axiom-lang/axiom/compiler/sema"
-	"github.com/axiom-lang/axiom/compiler/types"
+	"github.com/axiom-lang/axiom/compiler/driver"
 	"github.com/axiom-lang/axiom/ir/air"
 	"github.com/axiom-lang/axiom/ir/builder"
+	"github.com/axiom-lang/axiom/ir/opt"
 )
 
 // runBuild compiles an AXIOM source file to an executable.
@@ -32,10 +29,24 @@ func runBuild(args []string) int {
 	filename := ""
 	outputPath := "" // auto-derive from filename
 	targetTriple := ""
+	optLevel := opt.O0
+	optLevelStr := "-O0"
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-O0":
+			optLevel = opt.O0
+			optLevelStr = "-O0"
+		case "-O1":
+			optLevel = opt.O1
+			optLevelStr = "-O1"
+		case "-O2", "-O", "--opt":
+			optLevel = opt.O2
+			optLevelStr = "-O2"
+		case "-O3":
+			optLevel = opt.O3
+			optLevelStr = "-O3"
 		case "-o", "--output":
 			if i+1 < len(args) {
 				outputPath = args[i+1]
@@ -83,142 +94,18 @@ func runBuild(args []string) int {
 		return 1
 	}
 
-	// Lex
-	tokens, lt, lexDiags := lexer.Lex(source)
-
-	// Parse
-	intern := ast.NewInternPool(256)
-	tree, parseDiags := parser.Parse(tokens, source, intern)
-
-	// Report diagnostics
-	var diags []diagnostics.Diagnostic
-	diags = append(diags, lexDiags...)
-	diags = append(diags, parseDiags...)
-
-	// Build type table and symbol table
-	table := types.NewTypeTable()
-	symbols := sema.NewSymbolTable(intern)
-
-	// Run semantic analysis if there are no parsing errors
-	var hasParseErrors bool
-	for _, d := range parseDiags {
-		if d.Severity == diagnostics.SeverityError {
-			hasParseErrors = true
-			break
-		}
-	}
-
-	if !hasParseErrors {
-		// Name Resolution
-		resolver := sema.NewNameResolver(tree, intern, symbols, table, nil)
-		resolveErrs := resolver.Resolve()
-		diags = append(diags, resolveErrs...)
-
-		var hasSemaErrors bool
-		for _, d := range diags {
-			if d.Severity == diagnostics.SeverityError {
-				hasSemaErrors = true
-				break
-			}
-		}
-
-		if !hasSemaErrors {
-			// Type Inference & Checking
-			infer := sema.NewInferenceEngine(tree, symbols, table, nil)
-			inferErrs := infer.Infer()
-			diags = append(diags, inferErrs...)
-
-			var hasInferErrors bool
-			for _, d := range diags {
-				if d.Severity == diagnostics.SeverityError {
-					hasInferErrors = true
-					break
-				}
-			}
-
-			if !hasInferErrors {
-				tc := sema.NewTypeChecker(tree, intern, symbols, table, infer)
-				typeErrs := tc.Check()
-				diags = append(diags, typeErrs...)
-
-				effects := sema.NewEffectChecker(tree, intern, symbols, table, infer)
-				effectErrs := effects.Check()
-				diags = append(diags, effectErrs...)
-
-				// Run CTGC and Ownership pipeline if there are no errors so far
-				var semaHasErrors bool
-				for _, d := range diags {
-					if d.Severity == diagnostics.SeverityError {
-						semaHasErrors = true
-						break
-					}
-				}
-				if !semaHasErrors {
-					// 1. Arena Pass
-					ap := sema.NewArenaPass(tree, intern, symbols)
-					arenaDiags := ap.Process()
-					diags = append(diags, arenaDiags...)
-
-					// 2. Ownership Checker
-					oc := sema.NewOwnershipChecker(tree, intern, symbols, table)
-					ownershipDiags := oc.Check()
-					diags = append(diags, ownershipDiags...)
-
-					var ownershipHasErrors bool
-					for _, d := range diags {
-						if d.Severity == diagnostics.SeverityError {
-							ownershipHasErrors = true
-							break
-						}
-					}
-
-					if !ownershipHasErrors {
-						// 3. Escape Analysis & CTGC & Alias Reuse per function
-						ea := sema.NewEscapeAnalysis(tree, intern, symbols, table)
-
-						root := tree.Node(0)
-						child := root.FirstChild
-						for child != ast.NullIdx {
-							childNode := tree.Node(child)
-							if childNode.Kind == ast.NodeFuncDecl {
-								funcSym := childNode.Payload
-								if funcSym != 0 {
-									cg := oc.FunctionGraphs[funcSym]
-									moved := oc.FunctionMoved[funcSym]
-									if cg != nil {
-										// Escape Analysis
-										ea.AnalyzeFunction(child, cg)
-
-										// CTGC Injection
-										ctgc := sema.NewCTGCPass(tree, symbols, moved)
-										ctgc.InjectDestroys(child)
-										ctgc.InjectEarlyReturnDestroys(child)
-
-										// Alias Reuse
-										ar := sema.NewAliasReuse(tree, symbols, cg)
-										ar.Optimize(child)
-									}
-								}
-							}
-							child = childNode.NextSibling
-						}
-					}
-				}
-			}
-		}
-	}
+	// Compile via frontend driver
+	res := driver.Compile(source, filename, nil)
+	diags := res.Diags
+	source = res.Source
+	intern := res.Intern
+	tree := res.Tree
+	symbols := res.Symbols
+	table := res.Types
 
 	// Format and print all diagnostics
 	if len(diags) > 0 {
-		if lt != nil {
-			for i := range diags {
-				if diags[i].Pos.Line == 0 {
-					line, col := lt.LineCol(diags[i].Pos.Offset)
-					diags[i].Pos.Line = line
-					diags[i].Pos.Col = col
-				}
-			}
-		}
+		res.ResolvePositions()
 		opts := diagnostics.DefaultFormatOptions()
 		hasErrors := false
 		for _, d := range diags {
@@ -248,8 +135,9 @@ func runBuild(args []string) int {
 		for i := range mod.Funcs {
 			errs := air.Verify(&mod.Funcs[i])
 			if len(errs) > 0 {
+				funcName := intern.Get(mod.Funcs[i].Name)
 				for _, e := range errs {
-					fmt.Fprintf(os.Stderr, "axc: AIR verification error: %v\n", e)
+					fmt.Fprintf(os.Stderr, "axc: AIR verification error in function %s (SymID %d): %v\n", funcName, mod.Funcs[i].SymID, e)
 				}
 				return 1
 			}
@@ -288,6 +176,7 @@ func runBuild(args []string) int {
 		}
 
 		backend := native.NewNativeBackend(target)
+		backend.OptLevel = optLevel
 		backend.Pool = intern
 		backend.Table = table
 
@@ -408,6 +297,7 @@ func runBuild(args []string) int {
 			// GCC / Clang link arguments
 			linkArgs = []string{
 				tmpObjPath,
+				"-DAX_NATIVE_LINK",
 				"-o", outputPath,
 				"-I" + runtimeDir,
 				filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
@@ -425,6 +315,9 @@ func runBuild(args []string) int {
 				filepath.Join(runtimeDir, "actor", "runtime_init.c"),
 				filepath.Join(runtimeDir, "actor", "scheduler.c"),
 				filepath.Join(runtimeDir, "actor", "supervisor.c"),
+			}
+			if isWindows() {
+				linkArgs = append(linkArgs, "-Wl,--no-insert-timestamp")
 			}
 		}
 
@@ -468,9 +361,14 @@ func runBuild(args []string) int {
 	}
 	cFile.Close()
 
+	if contentBytes, err := os.ReadFile(cFilePath); err == nil {
+		_ = os.WriteFile("scratch/axiom_temp.c", contentBytes, 0644)
+	}
+
 	// Compile C to executable
 	runtimeDir := findRuntimeDir()
 	if err := pipeline.CompileCWithOptions(outputPath, cFilePath, cgen.CompileOptions{
+		OptLevel:    optLevelStr,
 		IncludeDirs: []string{runtimeDir},
 		ExtraSrcs: []string{
 			filepath.Join(runtimeDir, "axalloc", "axalloc.c"),

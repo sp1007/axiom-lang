@@ -1,6 +1,9 @@
 package cgen
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/sema"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -60,7 +63,19 @@ func (mg *MatchGen) EmitMatchStmtWithReturning(matchNodeIdx uint32, returning bo
 	discrimTypeID := mg.ExprGen.NodeType(children[0])
 	_ = node // silence unused
 
-	mg.W.Linef("switch ((%s).tag) {", discrimExpr)
+	{
+		entry := mg.Table.Entry(discrimTypeID)
+		fmt.Printf("[DEBUG-MATCH-PANIC-CHECK] discrimTypeID=%d, Kind=%v, NameID=%d\n", discrimTypeID, entry.Kind, entry.NameID)
+		if entry.Kind == types.KindGenericInst {
+			args := mg.Table.GenericInstArgs(discrimTypeID)
+			fmt.Printf("[DEBUG-MATCH-PANIC-CHECK] GenericInst args=%v\n", args)
+		}
+	}
+
+	discrimC := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
+	mg.W.Line("{")
+	mg.W.Linef("    %s _discrim = %s;", discrimC, discrimExpr)
+	mg.W.Line("    switch (_discrim.tag) {")
 
 	// Process match arms (children 1..n)
 	for i := 1; i < len(children); i++ {
@@ -75,13 +90,14 @@ func (mg *MatchGen) EmitMatchStmtWithReturning(matchNodeIdx uint32, returning bo
 		}
 
 		patternNode := mg.Tree.Node(armChildren[0])
-		mg.emitMatchArmWithReturning(discrimExpr, discrimTypeID, patternNode, armChildren, returning)
+		mg.emitMatchArmWithReturning("_discrim", discrimTypeID, patternNode, armChildren, returning)
 	}
 
 	// Add exhaustiveness guard
-	mg.W.Line("    default: {")
-	mg.W.Line("        /* unreachable: exhaustiveness checked by type checker */")
-	mg.W.Line("        __builtin_unreachable();")
+	mg.W.Line("        default: {")
+	mg.W.Line("            /* unreachable: exhaustiveness checked by type checker */")
+	mg.W.Line("            __builtin_unreachable();")
+	mg.W.Line("        }")
 	mg.W.Line("    }")
 	mg.W.Line("}")
 }
@@ -105,41 +121,68 @@ func (mg *MatchGen) emitMatchArmWithReturning(
 ) {
 	entry := mg.Table.Entry(discrimTypeID)
 	baseName := resolveName(entry.NameID, mg.Intern)
+	cName := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
+	cBaseName := strings.TrimPrefix(cName, "struct ax_")
+	fmt.Printf("[DEBUG-MATCH] discrimTypeID=%d, kind=%v, name=%s\n", discrimTypeID, entry.Kind, baseName)
 
 	switch patternNode.Kind {
 	case ast.NodeVariantPat:
 		// Variant pattern: match a specific variant
 		variantName := string(mg.Tree.TokenText(patternNode.TokenIdx))
-		mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+		mg.W.Linef("    case ax_%s_%s: {", cBaseName, variantName)
 
 		// Emit binding: extract payload into a local variable
 		if patternNode.FirstChild != ast.NullIdx {
 			bindingNode := mg.Tree.Node(patternNode.FirstChild)
 			if bindingNode.Kind == ast.NodeBindingPat {
 				bindName := string(mg.Tree.TokenText(bindingNode.TokenIdx))
-				// Find the variant's payload type
-				info := mg.Table.SumInfo(discrimTypeID)
-				for _, v := range info.Variants {
-					vname := resolveName(v.NameID, mg.Intern)
-					if vname == variantName && v.PayloadType != types.TypeUnknown {
-						payloadC := CTypeName(v.PayloadType, mg.Table, mg.Intern, mg.Queue)
-						mg.W.Linef("        %s %s = (%s).data.%s;",
-							payloadC, bindName, discrimExpr, variantName)
-						mg.W.Linef("        (void)%s;", bindName)
-						break
+				var info *types.SumType
+				var isGenericInst bool
+				var params []uint32
+				var args []types.TypeID
+				if entry.Kind == types.KindGenericInst {
+					var templateID types.TypeID
+					for idx := 0; idx < mg.Table.Count(); idx++ {
+						e := mg.Table.Entry(types.TypeID(idx))
+						if e.Kind == types.KindSum && resolveName(e.NameID, mg.Intern) == baseName {
+							templateID = types.TypeID(idx)
+							break
+						}
+					}
+					if templateID != 0 {
+						info = mg.Table.SumInfo(templateID)
+						isGenericInst = true
+						params = info.GenericParams
+						args = mg.Table.GenericInstArgs(discrimTypeID)
+					}
+				} else if entry.Kind == types.KindSum {
+					info = mg.Table.SumInfo(discrimTypeID)
+				}
+
+				if info != nil {
+					for _, v := range info.Variants {
+						if resolveName(v.NameID, mg.Intern) == variantName {
+							if v.PayloadType != types.TypeUnknown && v.PayloadType != types.TypeVoid {
+								pType := v.PayloadType
+								if isGenericInst && len(params) > 0 && len(args) == len(params) {
+									pType = mg.Table.SubstituteGenericType(pType, params, args)
+								}
+								pCType := CTypeName(pType, mg.Table, mg.Intern, mg.Queue)
+								mg.W.Linef("        %s %s = (%s).data.%s;", pCType, bindName, discrimExpr, variantName)
+							}
+							break
+						}
 					}
 				}
 			}
 		}
 
-		// Emit arm body (second child onwards)
 		mg.emitArmBodyWithReturning(armChildren, returning)
-
 		mg.W.Line("        break;")
 		mg.W.Line("    }")
 
-	case ast.NodeBindingPat:
-		// Binding pattern can be a variant with no payload (e.g. None)
+	case ast.NodeIdent, ast.NodeBindingPat:
+		// Binding pattern or variant pattern (resolved to variant symbol)
 		symIdx := patternNode.Payload
 		isVariant := false
 		var variantName string
@@ -152,7 +195,7 @@ func (mg *MatchGen) emitMatchArmWithReturning(
 		}
 
 		if isVariant {
-			mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+			mg.W.Linef("    case ax_%s_%s: {", cBaseName, variantName)
 			mg.emitArmBodyWithReturning(armChildren, returning)
 			mg.W.Line("        break;")
 			mg.W.Line("    }")
@@ -251,8 +294,11 @@ func (mg *MatchGen) EmitMatchExpr(
 
 	// Get the type of the discriminant to resolve variant names
 	discrimTypeID := mg.ExprGen.NodeType(children[0])
+	discrimC := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
 
-	mg.W.Linef("switch ((%s).tag) {", discrimExpr)
+	mg.W.Line("{")
+	mg.W.Linef("    %s _discrim = %s;", discrimC, discrimExpr)
+	mg.W.Line("    switch (_discrim.tag) {")
 
 	// Process match arms (children 1..n)
 	for i := 1; i < len(children); i++ {
@@ -267,13 +313,14 @@ func (mg *MatchGen) EmitMatchExpr(
 		}
 
 		patternNode := mg.Tree.Node(armChildren[0])
-		mg.emitMatchArmWithAssignment(discrimExpr, discrimTypeID, patternNode, armChildren, tempVarName)
+		mg.emitMatchArmWithAssignment("_discrim", discrimTypeID, patternNode, armChildren, tempVarName)
 	}
 
 	// Add exhaustiveness guard
-	mg.W.Line("    default: {")
-	mg.W.Line("        /* unreachable: exhaustiveness checked by type checker */")
-	mg.W.Line("        __builtin_unreachable();")
+	mg.W.Line("        default: {")
+	mg.W.Line("            /* unreachable: exhaustiveness checked by type checker */")
+	mg.W.Line("            __builtin_unreachable();")
+	mg.W.Line("        }")
 	mg.W.Line("    }")
 	mg.W.Line("}")
 
@@ -289,28 +336,59 @@ func (mg *MatchGen) emitMatchArmWithAssignment(
 ) {
 	entry := mg.Table.Entry(discrimTypeID)
 	baseName := resolveName(entry.NameID, mg.Intern)
+	cName := CTypeName(discrimTypeID, mg.Table, mg.Intern, mg.Queue)
+	cBaseName := strings.TrimPrefix(cName, "struct ax_")
 
 	switch patternNode.Kind {
 	case ast.NodeVariantPat:
 		// Variant pattern: match a specific variant
 		variantName := string(mg.Tree.TokenText(patternNode.TokenIdx))
-		mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+		mg.W.Linef("    case ax_%s_%s: {", cBaseName, variantName)
 
 		// Emit binding: extract payload into a local variable
 		if patternNode.FirstChild != ast.NullIdx {
 			bindingNode := mg.Tree.Node(patternNode.FirstChild)
 			if bindingNode.Kind == ast.NodeBindingPat {
 				bindName := string(mg.Tree.TokenText(bindingNode.TokenIdx))
-				// Find the variant's payload type
-				info := mg.Table.SumInfo(discrimTypeID)
-				for _, v := range info.Variants {
-					vname := resolveName(v.NameID, mg.Intern)
-					if vname == variantName && v.PayloadType != types.TypeUnknown {
-						payloadC := CTypeName(v.PayloadType, mg.Table, mg.Intern, mg.Queue)
-						mg.W.Linef("        %s %s = (%s).data.%s;",
-							payloadC, bindName, discrimExpr, variantName)
-						mg.W.Linef("        (void)%s;", bindName)
-						break
+				var info *types.SumType
+				var isGenericInst bool
+				var params []uint32
+				var args []types.TypeID
+				if entry.Kind == types.KindGenericInst {
+					var templateID types.TypeID
+					for idx := 0; idx < mg.Table.Count(); idx++ {
+						e := mg.Table.Entry(types.TypeID(idx))
+						if e.Kind == types.KindSum && resolveName(e.NameID, mg.Intern) == baseName {
+							templateID = types.TypeID(idx)
+							break
+						}
+					}
+					if templateID != 0 {
+						info = mg.Table.SumInfo(templateID)
+						isGenericInst = true
+						params = info.GenericParams
+						args = mg.Table.GenericInstArgs(discrimTypeID)
+					}
+				} else {
+					info = mg.Table.SumInfo(discrimTypeID)
+				}
+
+				if info != nil {
+					for _, v := range info.Variants {
+						vname := resolveName(v.NameID, mg.Intern)
+						if vname == variantName && v.PayloadType != types.TypeUnknown {
+							payloadType := v.PayloadType
+							if isGenericInst {
+								payloadType = mg.Table.SubstituteGenericType(v.PayloadType, params, args)
+							}
+							if payloadType != types.TypeVoid {
+								payloadC := CTypeName(payloadType, mg.Table, mg.Intern, mg.Queue)
+								mg.W.Linef("        %s %s = (%s).data.%s;",
+									payloadC, bindName, discrimExpr, variantName)
+								mg.W.Linef("        (void)%s;", bindName)
+							}
+							break
+						}
 					}
 				}
 			}
@@ -322,7 +400,7 @@ func (mg *MatchGen) emitMatchArmWithAssignment(
 		mg.W.Line("        break;")
 		mg.W.Line("    }")
 
-	case ast.NodeBindingPat:
+	case ast.NodeBindingPat, ast.NodeIdent:
 		// Binding pattern can be a variant with no payload (e.g. None)
 		symIdx := patternNode.Payload
 		isVariant := false
@@ -336,7 +414,7 @@ func (mg *MatchGen) emitMatchArmWithAssignment(
 		}
 
 		if isVariant {
-			mg.W.Linef("    case ax_%s_%s: {", baseName, variantName)
+			mg.W.Linef("    case ax_%s_%s: {", cBaseName, variantName)
 			mg.emitArmBodyWithAssignment(armChildren, tempVarName)
 			mg.W.Line("        break;")
 			mg.W.Line("    }")

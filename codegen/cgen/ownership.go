@@ -2,6 +2,7 @@ package cgen
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -73,6 +74,9 @@ func EmitParamDecl(
 	queue *TypeDeclQueue,
 ) string {
 	ctype := CTypeName(typeID, table, intern, queue)
+	if strings.Contains(ctype, "(*)") {
+		return strings.Replace(ctype, "(*)", "(*"+name+")", 1)
+	}
 
 	isLent := (flags & ast.FlagIsLent) != 0
 	isMut := (flags & ast.FlagIsMut) != 0

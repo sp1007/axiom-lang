@@ -143,7 +143,7 @@ func (b *NativeBackend) resolveSymName(symID uint32) string {
 		return "main"
 	}
 	if symID == 4294967295 {
-		return "malloc"
+		return "ax_alloc"
 	}
 	if symID == 4294967294 {
 		return "free"
@@ -168,12 +168,8 @@ func (b *NativeBackend) compileFunc(fn *air.AirFunc, abi x86.ABI) ([]byte, x86.E
 	// Step 1: Instruction selection (AIR → MachInst with VRegs)
 	machInsts := x86.Select(fn, abi, b.Table)
 
-	// Step 2: Liveness analysis
-	intervals := x86.ComputeLiveness(machInsts)
-
-	// Step 3: Register allocation
-	availRegs := allocatableCalleeSaved(abi)
-	allocResult := x86.GraphColoringAlloc(intervals, availRegs)
+	// Step 2 & 3: Register allocation with split GPR & XMM classes
+	allocResult := b.allocateRegisters(fn, machInsts, abi)
 
 	// Step 4: Compute stack frame
 	calleeSaved := computeUsedCalleeSaved(allocResult, abi)
@@ -297,9 +293,7 @@ func (b *NativeBackend) CompileAsm(mod *air.AirModule, format string) (string, e
 
 		// Run the backend code selection & register allocation pipeline
 		machInsts := x86.Select(fn, abi, b.Table)
-		intervals := x86.ComputeLiveness(machInsts)
-		availRegs := allocatableCalleeSaved(abi)
-		allocResult := x86.GraphColoringAlloc(intervals, availRegs)
+		allocResult := b.allocateRegisters(fn, machInsts, abi)
 		calleeSaved := computeUsedCalleeSaved(allocResult, abi)
 		frame := x86.ComputeFrame(calleeSaved, allocResult.SpillCount, 0)
 		machInsts = x86.InsertSpillCode(machInsts, allocResult.Allocs, &frame)
@@ -320,3 +314,99 @@ func (b *NativeBackend) CompileAsm(mod *air.AirModule, format string) (string, e
 
 	return sb.String(), nil
 }
+
+func (b *NativeBackend) isFloatVReg(fn *air.AirFunc, vreg uint32) bool {
+	if vreg == 0 {
+		return false
+	}
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Dest == vreg {
+			return types.TypeID(inst.TypeID).IsFloat()
+		}
+	}
+	return false
+}
+
+func (b *NativeBackend) is16ByteVReg(fn *air.AirFunc, vreg uint32) bool {
+	if vreg == 0 {
+		return false
+	}
+	for i := range fn.Insts {
+		inst := &fn.Insts[i]
+		if inst.Dest == vreg {
+			t := inst.TypeID
+			if t != 0 && b.Table != nil {
+				entry := b.Table.Entry(types.TypeID(t))
+				if entry.Size == 16 {
+					return true
+				}
+			}
+		}
+	}
+	if vreg >= 1 && vreg <= uint32(len(fn.Params)) {
+		t := fn.Params[vreg-1]
+		if t != 0 && b.Table != nil {
+			entry := b.Table.Entry(types.TypeID(t))
+			if entry.Size == 16 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (b *NativeBackend) allocateRegisters(fn *air.AirFunc, machInsts []x86.MachInst, abi x86.ABI) x86.RegAllocResult {
+	intervals := x86.ComputeLiveness(machInsts)
+
+	var gprIntervals []x86.LiveInterval
+	var xmmIntervals []x86.LiveInterval
+	var struct16Intervals []x86.LiveInterval
+	for _, iv := range intervals {
+		if b.is16ByteVReg(fn, iv.VReg) {
+			struct16Intervals = append(struct16Intervals, iv)
+		} else if b.isFloatVReg(fn, iv.VReg) {
+			xmmIntervals = append(xmmIntervals, iv)
+		} else {
+			gprIntervals = append(gprIntervals, iv)
+		}
+	}
+
+	gprRegs := allocatableCalleeSaved(abi)
+	xmmRegs := x86.AllocatableXMMs()
+
+	gprAlloc := x86.GraphColoringAlloc(gprIntervals, gprRegs)
+	xmmAlloc := x86.GraphColoringAlloc(xmmIntervals, xmmRegs)
+
+	allocResult := x86.RegAllocResult{
+		Allocs: make(map[uint32]x86.RegAllocation),
+	}
+	for k, v := range gprAlloc.Allocs {
+		v.Is16 = b.is16ByteVReg(fn, k)
+		allocResult.Allocs[k] = v
+	}
+
+	spillCount := gprAlloc.SpillCount
+	for _, iv := range struct16Intervals {
+		allocResult.Allocs[iv.VReg] = x86.RegAllocation{
+			VReg:     iv.VReg,
+			Phys:     x86.RegNone,
+			Spilled:  true,
+			SpillIdx: spillCount,
+			Is16:     true,
+		}
+		spillCount += 2
+	}
+
+	for k, v := range xmmAlloc.Allocs {
+		if v.Spilled {
+			v.SpillIdx += spillCount
+		}
+		v.Is16 = b.is16ByteVReg(fn, k)
+		allocResult.Allocs[k] = v
+	}
+	allocResult.SpillCount = spillCount + xmmAlloc.SpillCount
+
+	return allocResult
+}
+

@@ -155,14 +155,28 @@ func (fl *funcLowering) lowerVarDecl(idx uint32, node *ast.AstNode) {
 
 	// If we have an initializer, check ownership flags
 	if initReg != 0 {
+		srcReg := initReg
 		// Check if ownership operations are needed
 		if node.Flags&(ast.FlagEscapesToHeap|ast.FlagUsesArena|ast.FlagIsMoved) != 0 {
-			ownerReg := fl.lowerOwnershipAware(idx, node, initReg)
-			fl.locals[nameID] = ownerReg
-		} else {
-			// Default SSA: variable IS the value
-			fl.locals[nameID] = initReg
+			srcReg = fl.lowerOwnershipAware(idx, node, initReg)
 		}
+
+		reg := fl.fb.FreshReg()
+		varTypeID := uint16(0)
+		if node.Payload != 0 && fl.mb.symbols != nil && int(node.Payload) < len(fl.mb.symbols.Symbols) {
+			sym := fl.mb.symbols.SymbolAt(node.Payload)
+			if sym.TypeID != 0 {
+				varTypeID = uint16(sym.TypeID)
+			}
+		}
+
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpCopy,
+			TypeID: varTypeID,
+			Dest:   reg,
+			Src1:   srcReg,
+		})
+		fl.locals[nameID] = reg
 	} else {
 		// No initializer: create a zero/undef value
 		reg := fl.fb.FreshReg()
@@ -184,13 +198,6 @@ func (fl *funcLowering) lowerAssign(idx uint32, node *ast.AstNode) {
 	}
 	lhsNode := fl.mb.tree.Node(lhsIdx)
 
-	// The LHS is usually an identifier
-	nameID := lhsNode.Payload
-	if nameID == 0 {
-		text := fl.mb.tree.TokenText(lhsNode.TokenIdx)
-		nameID = fl.mb.intern.Intern(text)
-	}
-
 	rhsIdx := lhsNode.NextSibling
 	if rhsIdx == ast.NullIdx {
 		return
@@ -199,23 +206,86 @@ func (fl *funcLowering) lowerAssign(idx uint32, node *ast.AstNode) {
 	valReg := fl.lowerExpr(rhsIdx, rhsNode)
 
 	// Determine type
-	typeID := uint16(3) // default i32
-	if lhsNode.Payload != 0 && int(lhsNode.Payload) < len(fl.mb.symbols.Symbols) {
-		sym := fl.mb.symbols.SymbolAt(lhsNode.Payload)
-		if sym.TypeID != 0 {
-			typeID = uint16(sym.TypeID)
-		}
+	typeID := fl.nodeType(lhsNode)
+	if typeID == 0 {
+		typeID = 3 // default i32
 	}
 
-	if existingReg, ok := fl.locals[nameID]; ok {
+	if lhsNode.Kind == ast.NodeIndexExpr {
+		// Index assignment: arr[idx] = expr
+		arrIdx := lhsNode.FirstChild
+		if arrIdx == ast.NullIdx {
+			return
+		}
+		arrNode := fl.mb.tree.Node(arrIdx)
+		arrReg := fl.lowerExpr(arrIdx, arrNode)
+
+		idxExprIdx := arrNode.NextSibling
+		idxReg := uint32(0)
+		if idxExprIdx != ast.NullIdx {
+			idxNode := fl.mb.tree.Node(idxExprIdx)
+			idxReg = fl.lowerExpr(idxExprIdx, idxNode)
+		}
+
 		fl.fb.Emit(air.AirInst{
-			Opcode: air.OpCopy,
+			Opcode: air.OpStore,
 			TypeID: typeID,
-			Dest:   existingReg,
+			Dest:   arrReg,
 			Src1:   valReg,
+			Src2:   idxReg,
+		})
+	} else if lhsNode.Kind == ast.NodeDerefExpr {
+		// Dereference assignment: ptr.* = expr
+		ptrIdx := lhsNode.FirstChild
+		if ptrIdx == ast.NullIdx {
+			return
+		}
+		ptrNode := fl.mb.tree.Node(ptrIdx)
+		ptrReg := fl.lowerExpr(ptrIdx, ptrNode)
+
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpStore,
+			TypeID: typeID,
+			Dest:   ptrReg,
+			Src1:   valReg,
+			Src2:   0,
+		})
+	} else if lhsNode.Kind == ast.NodeFieldExpr {
+		// Field assignment: obj.field = expr
+		objIdx := lhsNode.FirstChild
+		if objIdx == ast.NullIdx {
+			return
+		}
+		objNode := fl.mb.tree.Node(objIdx)
+		objReg := fl.lowerExpr(objIdx, objNode)
+
+		fieldIdx := lhsNode.ExtraIdx
+
+		fl.fb.Emit(air.AirInst{
+			Opcode: air.OpSetField,
+			TypeID: typeID,
+			Dest:   valReg,
+			Src1:   objReg,
+			Src2:   fieldIdx,
 		})
 	} else {
-		fl.locals[nameID] = valReg
+		// Normal variable assignment: x = expr
+		nameID := lhsNode.Payload
+		if nameID == 0 {
+			text := fl.mb.tree.TokenText(lhsNode.TokenIdx)
+			nameID = fl.mb.intern.Intern(text)
+		}
+
+		if existingReg, ok := fl.locals[nameID]; ok {
+			fl.fb.Emit(air.AirInst{
+				Opcode: air.OpCopy,
+				TypeID: typeID,
+				Dest:   existingReg,
+				Src1:   valReg,
+			})
+		} else {
+			fl.locals[nameID] = valReg
+		}
 	}
 }
 
@@ -236,18 +306,35 @@ func (fl *funcLowering) lowerReturn(idx uint32, node *ast.AstNode) {
 
 // lowerIf lowers an if/elif/else chain.
 func (fl *funcLowering) lowerIf(idx uint32, node *ast.AstNode) {
-	// Create blocks: then, else, merge
-	thenBlock := fl.fb.NewBlock()
-	elseBlock := fl.fb.NewBlock()
 	mergeBlock := fl.fb.NewBlock()
 
-	// Lower condition (first child)
-	child := node.FirstChild
-	if child == ast.NullIdx {
+	condNodeIdx := node.FirstChild
+	if condNodeIdx == ast.NullIdx {
 		return
 	}
-	cn := fl.mb.tree.Node(child)
-	condReg := fl.lowerExpr(child, cn)
+	condNode := fl.mb.tree.Node(condNodeIdx)
+
+	bodyNodeIdx := condNode.NextSibling
+	if bodyNodeIdx == ast.NullIdx {
+		return
+	}
+	bodyNode := fl.mb.tree.Node(bodyNodeIdx)
+
+	nextClauseIdx := bodyNode.NextSibling
+
+	fl.lowerIfChain(condNodeIdx, condNode, bodyNodeIdx, bodyNode, nextClauseIdx, mergeBlock)
+
+	// Merge block
+	fl.fb.SwitchTo(mergeBlock)
+	fl.terminated = false
+}
+
+func (fl *funcLowering) lowerIfChain(condIdx uint32, condNode *ast.AstNode, bodyIdx uint32, bodyNode *ast.AstNode, nextClauseIdx uint32, mergeBlock uint32) {
+	thenBlock := fl.fb.NewBlock()
+	elseBlock := fl.fb.NewBlock()
+
+	// Lower condition
+	condReg := fl.lowerExpr(condIdx, condNode)
 
 	// Branch
 	fl.fb.Emit(air.AirInst{
@@ -263,47 +350,45 @@ func (fl *funcLowering) lowerIf(idx uint32, node *ast.AstNode) {
 	// Then block
 	fl.fb.SwitchTo(thenBlock)
 	fl.terminated = false
-	child = cn.NextSibling
-	if child != ast.NullIdx {
-		cn = fl.mb.tree.Node(child)
-		if cn.Kind == ast.NodeBlock {
-			fl.lowerBlock(child)
-		}
-		child = cn.NextSibling
+	if bodyNode.Kind == ast.NodeBlock {
+		fl.lowerBlock(bodyIdx)
 	}
 	if !fl.terminated {
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: mergeBlock})
-		fl.fb.AddEdge(thenBlock, mergeBlock)
+		fl.fb.AddEdge(fl.fb.CurrentBlock(), mergeBlock)
 	}
 
-	// Else/elif block
+	// Else block
 	fl.fb.SwitchTo(elseBlock)
 	fl.terminated = false
-	for child != ast.NullIdx {
-		cn = fl.mb.tree.Node(child)
-		if cn.Kind == ast.NodeElseClause || cn.Kind == ast.NodeElifClause {
-			elseBody := cn.FirstChild
-			if elseBody != ast.NullIdx {
-				ecn := fl.mb.tree.Node(elseBody)
-				if ecn.Kind == ast.NodeBlock {
-					fl.lowerBlock(elseBody)
-				} else if cn.Kind == ast.NodeElifClause {
-					// Elif is a nested if inside the else block
-					fl.lowerIf(child, cn)
+	delegated := false
+	if nextClauseIdx != ast.NullIdx {
+		cn := fl.mb.tree.Node(nextClauseIdx)
+		if cn.Kind == ast.NodeElseClause {
+			elseBodyIdx := cn.FirstChild
+			if elseBodyIdx != ast.NullIdx {
+				elseBodyNode := fl.mb.tree.Node(elseBodyIdx)
+				if elseBodyNode.Kind == ast.NodeBlock {
+					fl.lowerBlock(elseBodyIdx)
+				}
+			}
+		} else if cn.Kind == ast.NodeElifClause {
+			elifCondIdx := cn.FirstChild
+			if elifCondIdx != ast.NullIdx {
+				elifCondNode := fl.mb.tree.Node(elifCondIdx)
+				elifBodyIdx := elifCondNode.NextSibling
+				if elifBodyIdx != ast.NullIdx {
+					elifBodyNode := fl.mb.tree.Node(elifBodyIdx)
+					fl.lowerIfChain(elifCondIdx, elifCondNode, elifBodyIdx, elifBodyNode, cn.NextSibling, mergeBlock)
+					delegated = true
 				}
 			}
 		}
-		child = cn.NextSibling
 	}
-	if !fl.terminated {
+	if !fl.terminated && !delegated {
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: mergeBlock})
-		fl.fb.AddEdge(elseBlock, mergeBlock)
+		fl.fb.AddEdge(fl.fb.CurrentBlock(), mergeBlock)
 	}
-
-
-	// Merge block
-	fl.fb.SwitchTo(mergeBlock)
-	fl.terminated = false
 }
 
 // lowerWhile lowers a while loop.
@@ -355,7 +440,7 @@ func (fl *funcLowering) lowerWhile(idx uint32, node *ast.AstNode) {
 	}
 	if !fl.terminated {
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
-		fl.fb.AddEdge(bodyBlock, condBlock)
+		fl.fb.AddEdge(fl.fb.CurrentBlock(), condBlock)
 	}
 
 	// Exit
@@ -510,7 +595,7 @@ func (fl *funcLowering) lowerFor(idx uint32, node *ast.AstNode) {
 		})
 
 		fl.fb.Emit(air.AirInst{Opcode: air.OpJump, Src1: condBlock})
-		fl.fb.AddEdge(bodyBlock, condBlock)
+		fl.fb.AddEdge(fl.fb.CurrentBlock(), condBlock)
 	}
 
 	// Exit

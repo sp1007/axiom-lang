@@ -33,7 +33,7 @@ pub fn push(mut self: LiveIntervalVec, iv: LiveInterval) -> u32:
     return idx
 
 pub fn is_two_operand_read(op: u16) -> bool:
-    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_NEG or op == MACH_NOT:
+    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR or op == MACH_NEG or op == MACH_NOT:
         return true
     if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
         return true
@@ -203,16 +203,31 @@ pub fn reg_is_caller_saved(abi: str, r: u8) -> bool:
             return true
     return false
 
-pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], avail_regs_len: i64, insts: ptr[MachInst], insts_len: i64, abi: str) -> RegAllocResult:
+pub fn reg_is_parameter_reg(abi: str, r: u8) -> bool:
+    if abi == "win64":
+        if r == REG_RCX or r == REG_RDX or r == REG_R8 or r == REG_R9:
+            return true
+    else:
+        if r == REG_RDI or r == REG_RSI or r == REG_RDX or r == REG_RCX or r == REG_R8 or r == REG_R9:
+            return true
+    return false
+
+
+pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], avail_regs_len: i64, insts: ptr[MachInst], insts_len: i64, abi: str, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> RegAllocResult:
     if intervals.len == 0 or avail_regs_len == 0:
         return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32)
 
     mut max_vreg := 0 as u32
-    mut i := 0 as i64
-    while i < intervals.len:
-        if intervals.data[i].vreg > max_vreg:
-            max_vreg = intervals.data[i].vreg
-        i = i + 1
+    mut scan_v := 0 as i64
+    while scan_v < insts_len:
+        let inst = &insts[scan_v]
+        if inst.dst.kind == OPND_VREG and inst.dst.vreg > max_vreg:
+            max_vreg = inst.dst.vreg
+        if inst.src1.kind == OPND_VREG and inst.src1.vreg > max_vreg:
+            max_vreg = inst.src1.vreg
+        if inst.src2.kind == OPND_VREG and inst.src2.vreg > max_vreg:
+            max_vreg = inst.src2.vreg
+        scan_v = scan_v + 1
 
     let graph_size = (max_vreg + 1 as u32) as i64
 
@@ -261,6 +276,46 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     let spans_call = @alloc(graph_size) as ptr[bool]
     @memset(spans_call as ptr[u8], 0 as u8, graph_size)
 
+    let forbid_rax_rdx = @alloc(graph_size) as ptr[bool]
+    @memset(forbid_rax_rdx as ptr[u8], 0 as u8, graph_size)
+
+    let forbid_rcx = @alloc(graph_size) as ptr[bool]
+    @memset(forbid_rcx as ptr[u8], 0 as u8, graph_size)
+
+    let is_arg_vreg = @alloc(graph_size) as ptr[bool]
+    @memset(is_arg_vreg as ptr[u8], 0 as u8, graph_size)
+
+    let address_taken = @alloc(graph_size) as ptr[bool]
+    @memset(address_taken as ptr[u8], 0 as u8, graph_size)
+
+    mut scan_idx := 0 as i64
+    while scan_idx < insts_len:
+        let inst = &insts[scan_idx]
+        if inst.op == MACH_IDIV and inst.src1.kind == OPND_VREG:
+            let v = inst.src1.vreg
+            if v < graph_size as u32:
+                forbid_rax_rdx[v] = true
+        
+        if (inst.op == MACH_SHL or inst.op == MACH_SAR or inst.op == MACH_SHR) and inst.dst.kind == OPND_VREG:
+            let v = inst.dst.vreg
+            if v < graph_size as u32:
+                forbid_rcx[v] = true
+        
+        // Tag virtual registers that are loaded into parameter registers for calls/syscalls
+        if inst.op == MACH_MOV or inst.op == MACH_STORE:
+            if inst.dst.kind == OPND_PHYS:
+                if reg_is_parameter_reg(abi, inst.dst.phys):
+                    if inst.src1.kind == OPND_VREG:
+                        let v = inst.src1.vreg
+                        if v < graph_size as u32:
+                            is_arg_vreg[v] = true
+        elif inst.op == MACH_LEA:
+            if inst.src1.kind == OPND_VREG:
+                let v = inst.src1.vreg
+                if v < graph_size as u32:
+                    address_taken[v] = true
+        scan_idx = scan_idx + 1
+
     mut iv_idx := 0 as i64
     while iv_idx < intervals.len:
         let vreg = intervals.data[iv_idx].vreg
@@ -284,7 +339,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         adj[vi] = new_u32_vec()
         vi = vi + 1
 
-    i = 0 as i64
+    mut i := 0 as i64
     while i < intervals.len:
         let iv1 = &intervals.data[i]
         mut j := i + 1
@@ -400,6 +455,20 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                     forbidden[r] = true
                 r = r + 1
 
+        if is_arg_vreg[vreg]:
+            mut r := 0 as i64
+            while r < 256:
+                if reg_is_parameter_reg(abi, r as u8):
+                    forbidden[r] = true
+                r = r + 1
+
+        if forbid_rax_rdx[vreg]:
+            forbidden[REG_RAX as i64] = true
+            forbidden[REG_RDX as i64] = true
+
+        if forbid_rcx[vreg]:
+            forbidden[REG_RCX as i64] = true
+
         mut colored := false
         mut c_idx := 0 as i64
         while c_idx < avail_regs_len:
@@ -413,9 +482,18 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
 
         @free(forbidden as ptr[u8])
 
-        if not colored:
+        if regalloc_is_16byte(vreg, fn_ptr, table, symbols):
+            allocs[vreg] = RegAllocation(vreg: vreg, phys: REG_NONE, spilled: true, spill_idx: spill_count)
+            spill_count = spill_count + 2
+            assigned_colors[vreg] = REG_NONE
+        elif address_taken[vreg]:
             allocs[vreg] = RegAllocation(vreg: vreg, phys: REG_NONE, spilled: true, spill_idx: spill_count)
             spill_count = spill_count + 1
+            assigned_colors[vreg] = REG_NONE
+        elif not colored:
+            allocs[vreg] = RegAllocation(vreg: vreg, phys: REG_NONE, spilled: true, spill_idx: spill_count)
+            spill_count = spill_count + 1
+            assigned_colors[vreg] = REG_NONE
 
         st_idx = st_idx - 1
 
@@ -423,7 +501,11 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(degrees as ptr[u8])
     @free(assigned_colors)
     @free(spans_call as ptr[u8])
+    @free(forbid_rax_rdx as ptr[u8])
+    @free(forbid_rcx as ptr[u8])
+    @free(is_arg_vreg as ptr[u8])
     @free(param_idx_of_vreg as ptr[u8])
+    @free(address_taken as ptr[u8])
     if stack.data != null as ptr[u32]:
         @free(stack.data as ptr[u8])
 
@@ -532,16 +614,43 @@ pub const DST_READ_WRITE: u8 = 2
 pub const DST_READ_ONLY: u8 = 3
 
 pub fn get_dst_behavior(op: u16) -> u8:
-    if op == MACH_MOV or op == MACH_MOV_IMM or op == MACH_XOR_ZERO or op == MACH_SETCC or op == MACH_MOVZX_B or op == MACH_POP or op == MACH_LOAD:
+    if op == MACH_MOV or op == MACH_MOV_IMM or op == MACH_XOR_ZERO or op == MACH_SETCC or op == MACH_MOVZX_B or op == MACH_POP or op == MACH_LOAD or op == MACH_LEA:
         return DST_WRITE_ONLY
-    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_NEG or op == MACH_NOT or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR:
+    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_NEG or op == MACH_NOT or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR:
         return DST_READ_WRITE
     if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
         return DST_READ_ONLY
     return DST_UNUSED
 
-pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame]) -> MachInstVec:
+pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> MachInstVec:
     mut result := new_mach_inst_vec()
+
+    if insts_len > 300 as i64:
+        ax_printf_local("[Debug] insert_spill_code for function sym_id=%d, len=%d:\n", fn_ptr.sym_id as i64, insts_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        mut max_v := 0 as u32
+        mut j := 0 as i64
+        while j < insts_len:
+            let inst = insts[j]
+            ax_printf_local("  inst %d: op=%d, dst.kind=%d, dst.vreg=%d, src1.kind=%d, src1.vreg=%d\n", j, inst.op as i64, inst.dst.kind as i64, inst.dst.vreg as i64, inst.src1.kind as i64, inst.src1.vreg as i64, 0 as i64, 0 as i64)
+            if inst.dst.kind == 1 as u8 and inst.dst.vreg > max_v:
+                max_v = inst.dst.vreg
+            if inst.src1.kind == 1 as u8 and inst.src1.vreg > max_v:
+                max_v = inst.src1.vreg
+            if inst.src2.kind == 1 as u8 and inst.src2.vreg > max_v:
+                max_v = inst.src2.vreg
+            j = j + 1
+
+        mut k := 0 as i32
+        while k <= max_v as i32:
+            let alloc = allocs[k]
+            if alloc.spilled:
+                let is_16 = regalloc_is_16byte(k as u32, fn_ptr, table, symbols)
+                ax_printf_local("  vreg %d: spilled=true, spill_idx=%d, is_16=%d\n", k as i64, alloc.spill_idx as i64, is_16 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            k = k + 1
+
+
+
+
 
     mut i := 0 as i64
     while i < insts_len:
@@ -551,17 +660,31 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             let v = inst.src1.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let offset = -((frame.callee_saved_len + 1 + alloc.spill_idx as i64) * 8)
-                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
-                inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                let is_16 = regalloc_is_16byte(v, fn_ptr, table, symbols)
+                mut add_mult := 1 as i64
+                if is_16:
+                    add_mult = 2 as i64
+                let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
+                if inst.op == MACH_LEA and is_16:
+                    mut disp := 0 as i64
+                    if inst.src2.kind == OPND_IMM:
+                        disp = inst.src2.imm
+                    inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                    inst.src2 = MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset + disp)
+                else:
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
 
         if inst.src2.kind == OPND_VREG:
             let v = inst.src2.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let offset = -((frame.callee_saved_len + 1 + alloc.spill_idx as i64) * 8)
-                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
-                inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                mut add_mult := 1 as i64
+                if regalloc_is_16byte(v, fn_ptr, table, symbols):
+                    add_mult = 2 as i64
+                let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
+                result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
 
         mut dst_spilled := false
         mut dst_alloc = RegAllocation(vreg: 0 as u32, phys: 0 as u8, spilled: false, spill_idx: 0 as i32)
@@ -574,7 +697,10 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
 
         if dst_spilled:
             let behavior = get_dst_behavior(inst.op)
-            let offset = -((frame.callee_saved_len + 1 + dst_alloc.spill_idx as i64) * 8)
+            mut add_mult := 1 as i64
+            if regalloc_is_16byte(dst_alloc.vreg, fn_ptr, table, symbols):
+                add_mult = 2 as i64
+            let offset = -((frame.callee_saved_len + add_mult + dst_alloc.spill_idx as i64) * 8)
 
             if behavior == DST_READ_ONLY:
                 result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
@@ -596,3 +722,103 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
 
         i = i + 1
     return result
+
+pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32) -> bool:
+    if vreg == 0 as u32:
+        return false
+    mut i := 0 as i64
+    while i < fn_ptr.insts.len:
+        let inst = &fn_ptr.insts.data[i]
+        if inst.dest == vreg:
+            let t_id = inst.type_id
+            return t_id == 9 as u32 or t_id == 10 as u32
+        i = i + 1
+    return false
+
+pub fn get_allocatable_xmms(out_len: ptr[i64]) -> ptr[u8]:
+    let arr = @alloc(8) as ptr[u8]
+    arr[0] = REG_XMM8
+    arr[1] = REG_XMM9
+    arr[2] = REG_XMM10
+    arr[3] = REG_XMM11
+    arr[4] = REG_XMM12
+    arr[5] = REG_XMM13
+    arr[6] = REG_XMM14
+    arr[7] = REG_XMM15
+    out_len[0] = 8
+    return arr
+
+pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[MachInst], insts_len: i64, abi: str, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> RegAllocResult:
+    mut max_vreg := 0 as u32
+    mut scan_v := 0 as i64
+    while scan_v < insts_len:
+        let inst = &insts[scan_v]
+        if inst.dst.kind == OPND_VREG and inst.dst.vreg > max_vreg:
+            max_vreg = inst.dst.vreg
+        if inst.src1.kind == OPND_VREG and inst.src1.vreg > max_vreg:
+            max_vreg = inst.src1.vreg
+        if inst.src2.kind == OPND_VREG and inst.src2.vreg > max_vreg:
+            max_vreg = inst.src2.vreg
+        scan_v = scan_v + 1
+
+    let graph_size = (max_vreg + 1 as u32) as i64
+
+    mut gpr_intervals := new_live_interval_vec()
+    mut xmm_intervals := new_live_interval_vec()
+
+    mut i := 0 as i64
+    while i < intervals.len:
+        let iv = intervals.data[i]
+        if is_float_vreg(fn_ptr, iv.vreg):
+            xmm_intervals.push(iv)
+        else:
+            gpr_intervals.push(iv)
+        i = i + 1
+
+    mut gpr_len := 0 as i64
+    let avail_gprs = get_allocatable_gprs(&gpr_len)
+
+    mut xmm_len := 0 as i64
+    let avail_xmms = get_allocatable_xmms(&xmm_len)
+
+    let gpr_alloc = graph_coloring_alloc(gpr_intervals, avail_gprs, gpr_len, insts, insts_len, abi, fn_ptr, table, symbols)
+    let xmm_alloc = graph_coloring_alloc(xmm_intervals, avail_xmms, xmm_len, insts, insts_len, abi, fn_ptr, table, symbols)
+
+    let allocs = @alloc(graph_size * 12) as ptr[RegAllocation]
+    @memset(allocs as ptr[u8], 0 as u8, graph_size * 12)
+
+    mut v := 0 as i64
+    while v < graph_size:
+        allocs[v] = RegAllocation(vreg: v as u32, phys: REG_NONE, spilled: false, spill_idx: 0 as i32)
+        v = v + 1
+
+    if gpr_alloc.allocs != null as ptr[RegAllocation]:
+        mut idx := 0 as i64
+        while idx <= gpr_alloc.max_vreg as i64:
+            let al = gpr_alloc.allocs[idx]
+            if al.vreg < graph_size as u32:
+                allocs[al.vreg] = al
+            idx = idx + 1
+        @free(gpr_alloc.allocs as ptr[u8])
+
+    if xmm_alloc.allocs != null as ptr[RegAllocation]:
+        mut idx := 0 as i64
+        while idx <= xmm_alloc.max_vreg as i64:
+            mut al := xmm_alloc.allocs[idx]
+            if al.vreg < graph_size as u32:
+                if al.spilled:
+                    al.spill_idx = al.spill_idx + gpr_alloc.spill_count
+                allocs[al.vreg] = al
+            idx = idx + 1
+        @free(xmm_alloc.allocs as ptr[u8])
+
+    let spill_total = gpr_alloc.spill_count + xmm_alloc.spill_count
+
+    if gpr_intervals.data != null as ptr[LiveInterval]:
+        @free(gpr_intervals.data as ptr[u8])
+    if xmm_intervals.data != null as ptr[LiveInterval]:
+        @free(xmm_intervals.data as ptr[u8])
+    @free(avail_gprs)
+    @free(avail_xmms)
+
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_total)

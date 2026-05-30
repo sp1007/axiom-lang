@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/diagnostics"
@@ -26,28 +27,56 @@ func NewLazyResolver(st *SymbolTable, tt *types.TypeTable, loader ModuleLoader) 
 		// Default no-op loader if none provided
 		loader = func(m *ModuleInfo, st *SymbolTable, tt *types.TypeTable) error { return nil }
 	}
-	return &LazyResolver{
+	lr := &LazyResolver{
 		modules:  make(map[uint32]*ModuleInfo),
 		symtable: st,
 		types:    tt,
 		loader:   loader,
 	}
+	st.LazyResolver = lr
+	return lr
+}
+
+// GetModules returns the map of registered ModuleInfo structures.
+func (lr *LazyResolver) GetModules() map[uint32]*ModuleInfo {
+	return lr.modules
+}
+
+// FindModuleOfSymbol returns the NameID of the module that exported the symbol.
+func (lr *LazyResolver) FindModuleOfSymbol(symIdx uint32) uint32 {
+	for nameID, mod := range lr.modules {
+		for _, idx := range mod.Exports {
+			if idx == symIdx {
+				return nameID
+			}
+		}
+	}
+	return 0
 }
 
 // RegisterImport registers an imported module in the current scope without loading its contents.
 func (lr *LazyResolver) RegisterImport(nameID uint32, filePath string, astRoot uint32, declNode uint32) (uint32, *diagnostics.Diagnostic) {
+	// If the module is already defined in scope, reuse the symbol
+	if symIdx, found := lr.symtable.Resolve(nameID); found {
+		if lr.symtable.SymbolAt(symIdx).Kind == SymModule {
+			return symIdx, nil
+		}
+	}
+
 	// Define the module symbol in the current scope
 	symIdx, diag := lr.symtable.Define(nameID, SymModule, 0, declNode)
 	if diag != nil {
 		return 0, diag
 	}
 
-	lr.modules[nameID] = &ModuleInfo{
-		NameID:   nameID,
-		Status:   ModuleUnloaded,
-		FilePath: filePath,
-		Exports:  make(map[uint32]uint32),
-		AstRoot:  astRoot,
+	if _, ok := lr.modules[nameID]; !ok {
+		lr.modules[nameID] = &ModuleInfo{
+			NameID:   nameID,
+			Status:   ModuleUnloaded,
+			FilePath: filePath,
+			Exports:  make(map[uint32]uint32),
+			AstRoot:  astRoot,
+		}
 	}
 
 	return symIdx, nil
@@ -68,13 +97,29 @@ func (lr *LazyResolver) ResolveField(moduleNameID uint32, fieldNameID uint32, po
 
 	// Cycle detection
 	if mod.Status == ModuleLoading {
-		// In a real compiler we'd want the name as string, but we only have ID here.
-		// The caller can format it better.
+		moduleName := ""
+		if lr.symtable != nil && lr.symtable.intern != nil {
+			moduleName = lr.symtable.intern.Get(moduleNameID)
+		}
+		var loading []string
+		if lr.symtable != nil && lr.symtable.intern != nil {
+			for nameID, m := range lr.modules {
+				if m.Status == ModuleLoading {
+					loading = append(loading, lr.symtable.intern.Get(nameID))
+				}
+			}
+		}
+		debug.PrintStack()
+		fmt.Printf("[CIRCULAR IMPORT TRACE] Active resolution stack: %v\n", loading)
+		fmt.Printf("[ALL REGISTERED MODULES]:\n")
+		for id, m := range lr.modules {
+			fmt.Printf("  - %s: status=%v\n", lr.symtable.intern.Get(id), m.Status)
+		}
 		return 0, &diagnostics.Diagnostic{
 			Severity: diagnostics.SeverityError,
 			Code:     2003, // circular import
 			Pos:      pos,
-			Message:  "circular import detected: module is already being resolved",
+			Message:  fmt.Sprintf("circular import detected: module '%s' is already being resolved", moduleName),
 		}
 	}
 
@@ -82,6 +127,7 @@ func (lr *LazyResolver) ResolveField(moduleNameID uint32, fieldNameID uint32, po
 		mod.Status = ModuleLoading
 		err := lr.loader(mod, lr.symtable, lr.types)
 		if err != nil {
+			mod.Status = ModuleUnloaded
 			return 0, &diagnostics.Diagnostic{
 				Severity: diagnostics.SeverityError,
 				Code:     2004, // module load error
@@ -95,6 +141,11 @@ func (lr *LazyResolver) ResolveField(moduleNameID uint32, fieldNameID uint32, po
 	// Lookup field
 	symIdx, found := mod.Exports[fieldNameID]
 	if !found {
+		fmt.Printf("[DEBUG RESOLVE FIELD FAILED] moduleNameID=%d fieldNameID=%d Name=%s Status=%d\n", moduleNameID, fieldNameID, lr.symtable.intern.Get(fieldNameID), mod.Status)
+		fmt.Printf("Exports in module %s (ID=%d):\n", lr.symtable.intern.Get(moduleNameID), moduleNameID)
+		for k, v := range mod.Exports {
+			fmt.Printf("  k=%d Name=%s v=%d\n", k, lr.symtable.intern.Get(k), v)
+		}
 		return 0, &diagnostics.Diagnostic{
 			Severity: diagnostics.SeverityError,
 			Code:     2005, // undefined field
@@ -111,6 +162,25 @@ func (lr *LazyResolver) ResolveField(moduleNameID uint32, fieldNameID uint32, po
 
 	return symIdx, nil
 }
+
+// PreloadModule loads a module immediately on demand.
+func (lr *LazyResolver) PreloadModule(nameID uint32) error {
+	mod, ok := lr.modules[nameID]
+	if !ok {
+		return fmt.Errorf("module not registered")
+	}
+	if mod.Status == ModuleUnloaded {
+		mod.Status = ModuleLoading
+		err := lr.loader(mod, lr.symtable, lr.types)
+		if err != nil {
+			mod.Status = ModuleUnloaded
+			return err
+		}
+		mod.Status = ModuleLoaded
+	}
+	return nil
+}
+
 
 // CheckUnusedImports returns diagnostics for all modules that were imported but never accessed.
 func (lr *LazyResolver) CheckUnusedImports(intern *ast.InternPool) []diagnostics.Diagnostic {

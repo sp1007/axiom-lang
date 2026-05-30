@@ -2,6 +2,7 @@ package sema
 
 import (
 	"github.com/axiom-lang/axiom/compiler/ast"
+	"github.com/axiom-lang/axiom/compiler/types"
 )
 
 // CTGCPass implements Compile-Time Garbage Collection by injecting
@@ -11,6 +12,7 @@ type CTGCPass struct {
 	ast   *ast.AstTree
 	st    *SymbolTable
 	moved map[uint32]bool // set of moved symbol IDs
+	Types *types.TypeTable
 }
 
 // NewCTGCPass creates a new CTGC pass.
@@ -97,6 +99,16 @@ func (ctgc *CTGCPass) needsDestroy(symID uint32, nodeIdx uint32) bool {
 		sym := ctgc.st.SymbolAt(symID)
 		if ctgc.isPrimitiveType(sym.TypeID) {
 			return false
+		}
+		if sym.TypeID != 0 && ctgc.Types != nil {
+			typeID := types.TypeID(sym.TypeID)
+			if int(typeID) < ctgc.Types.Count() {
+				entry := ctgc.Types.Entry(typeID)
+				switch entry.Kind {
+				case types.KindPointer, types.KindRef, types.KindFunction:
+					return false
+				}
+			}
 		}
 	}
 

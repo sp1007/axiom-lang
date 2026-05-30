@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -148,7 +149,7 @@ func hasErrorsIgnoringAt(diags []diagnostics.Diagnostic) bool {
 }
 
 // compileCBackendIgnoringAtDiagnostics compiles AXIOM source to an executable via C Backend, ignoring unexpected character '@' diagnostics from reference lexer.
-func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath string) error {
+func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath string, filename string) error {
 	fmt.Fprintln(os.Stderr, "[COMPILER] Lexing...")
 	// Lex
 	tokens, _, lexDiags := lexer.Lex(source)
@@ -169,7 +170,120 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 	symbols := sema.NewSymbolTable(intern)
 	table := types.NewTypeTable()
 
-	resolver := sema.NewNameResolver(tree, intern, symbols, table, nil)
+	// Setup LazyResolver with native module loader if filename is provided (modular compilation)
+	var lr *sema.LazyResolver
+	if filename != "" {
+		cwd, _ := filepath.Abs("../..") // repo root is 2 levels up from tests/codegen
+		loadedModules := make(map[string]bool)
+		loader := func(m *sema.ModuleInfo, st *sema.SymbolTable, tt *types.TypeTable) (err error) {
+			modulePath := intern.Get(m.NameID)
+			fmt.Printf("[DEBUG LOADER] Loading module '%s', alreadyLoaded=%v\n", modulePath, loadedModules[modulePath])
+			if modulePath == "std.io" {
+				debug.PrintStack()
+			}
+			if loadedModules[modulePath] {
+				return nil
+			}
+			loadedModules[modulePath] = true
+			defer func() {
+				if err != nil {
+					loadedModules[modulePath] = false
+				}
+			}()
+
+			// Find the file path for the module
+			var path string
+			if strings.HasPrefix(modulePath, "std.") || strings.Contains(modulePath, ".") {
+				rel := strings.Replace(modulePath, ".", "/", -1) + ".ax"
+				path = filepath.Join(cwd, rel)
+			} else {
+				path = filepath.Join(filepath.Dir(filename), modulePath+".ax")
+			}
+
+			// Read module file
+			sourceBytes, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("cannot read imported module %s: %v", modulePath, err)
+			}
+
+			// Parse the module file
+			tokens, _, _ := lexer.Lex(sourceBytes)
+			modTree, _ := parser.Parse(tokens, sourceBytes, intern)
+			m.AstTree = modTree
+
+			// Save the current scope stack and temporarily set it to only contain the global scope (0)
+			savedStack := st.GetStack()
+			st.SetStack([]uint32{0})
+			defer st.SetStack(savedStack)
+
+			// Create a separate resolver for the module to resolve its names
+			modResolver := sema.NewNameResolver(modTree, intern, st, tt, lr)
+			resolveErrs := modResolver.Resolve()
+			
+			var modDiags []diagnostics.Diagnostic
+			modDiags = append(modDiags, resolveErrs...)
+
+			// Run type inference on the module so that all functions and symbols have their types populated
+			modInfer := sema.NewInferenceEngine(modTree, st, tt, nil)
+			inferErrs := modInfer.Infer()
+			modDiags = append(modDiags, inferErrs...)
+
+			// Run type checking on the module so that all structs and sum types are registered in the TypeTable
+			modTC := sema.NewTypeChecker(modTree, intern, st, tt, modInfer)
+			tcErrs := modTC.Check()
+			modDiags = append(modDiags, tcErrs...)
+
+			hasErrors := false
+			for _, d := range modDiags {
+				if d.Severity == diagnostics.SeverityError {
+					hasErrors = true
+				}
+			}
+			if hasErrors {
+				opts := diagnostics.DefaultFormatOptions()
+				for _, d := range modDiags {
+					fmt.Fprint(os.Stderr, diagnostics.FormatDiagnostic(d, sourceBytes, path, opts))
+				}
+				return fmt.Errorf("compilation errors in module %s", modulePath)
+			}
+
+			// Export all public symbols defined in this module
+			root := modTree.Node(0)
+			child := root.FirstChild
+			fmt.Printf("[DEBUG LOADER EXPORT] Exporting module '%s'\n", modulePath)
+			for child != ast.NullIdx {
+				childNode := modTree.Node(child)
+				fmt.Printf("  - child=%d kind=%v flags=%d payload=%d\n", child, childNode.Kind, childNode.Flags, childNode.Payload)
+				if childNode.Kind == ast.NodeFuncDecl || childNode.Kind == ast.NodeStructDecl || childNode.Kind == ast.NodeConstDecl || childNode.Kind == ast.NodeTypeAliasDecl || childNode.Kind == ast.NodeInterfaceDecl {
+					if childNode.Flags&uint16(ast.FlagIsPub) != 0 || childNode.Flags&uint16(ast.FlagIsExtern) != 0 {
+						symIdx := childNode.Payload
+						if symIdx != 0 {
+							sym := st.SymbolAt(symIdx)
+							m.Exports[sym.NameID] = symIdx
+							fmt.Printf("    => EXPORTED nameID=%d (%s) symIdx=%d\n", sym.NameID, intern.Get(sym.NameID), symIdx)
+						}
+					}
+				}
+				child = childNode.NextSibling
+			}
+
+			return nil
+		}
+
+		lr = sema.NewLazyResolver(symbols, table, loader)
+
+		// Preload std.result as prelude
+		preludeModules := []string{"std.result"}
+		for _, pm := range preludeModules {
+			pmID := intern.InternString(pm)
+			lr.RegisterImport(pmID, "", 0, 0)
+			if err := lr.PreloadModule(pmID); err != nil {
+				fmt.Printf("Error preloading prelude module %s: %v\n", pm, err)
+			}
+		}
+	}
+
+	resolver := sema.NewNameResolver(tree, intern, symbols, table, lr)
 	if errs := resolver.Resolve(); hasErrors(errs) {
 		opts := diagnostics.DefaultFormatOptions()
 		opts.UseColor = false
@@ -284,6 +398,25 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 		return err
 	}
 	cFile.Close()
+
+	// Append linker stubs for standalone resolver/typecheck testing
+	if filename == "" {
+		fStubs, err := os.OpenFile(cSrcPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err == nil {
+			fmt.Fprintln(fStubs, "\n// Linker stubs for standalone bootstrap tests")
+			if !bytes.Contains(source, []byte("fn ax_driver_load_module")) {
+				fmt.Fprintln(fStubs, "ax_i32 ax_ax_driver_load_module(void* mod, struct ax_SymbolTable* st, void* tt) { return 0; }")
+			}
+			fmt.Fprintln(fStubs, "ax_bool ax_std_string_starts_with(ax_string s, ax_string prefix) { return 0; }")
+			fmt.Fprintln(fStubs, "ax_bool ax_std_string_ends_with(ax_string s, ax_string suffix) { return 0; }")
+			fmt.Fprintln(fStubs, "ax_bool ax_std_string_contains(ax_string s, ax_string sub) { return 0; }")
+			fmt.Fprintln(fStubs, "ax_i64 ax_std_string_char_count(ax_string s) { return 0; }")
+			fmt.Fprintln(fStubs, "ax_string ax_std_string_trim(ax_string s) { return s; }")
+			fmt.Fprintln(fStubs, "ax_string ax_std_string_to_upper(ax_string s) { return s; }")
+			fmt.Fprintln(fStubs, "ax_string ax_std_string_to_lower(ax_string s) { return s; }")
+			fStubs.Close()
+		}
+	}
 
 	fmt.Fprintln(os.Stderr, "[COMPILER] Compiling C source...")
 	// Compile C
@@ -642,17 +775,22 @@ fn main() -> i32:
 }
 
 func TestDiffFloat(t *testing.T) {
-	// Floating point is not supported in the native backend yet,
-	// so we use an integer math program as per "Use integer-only tests initially"
 	runDiffTest(t, DiffTest{
 		Name: "TestDiffFloat",
 		Source: `
 fn main() -> i32:
-    let x: i32 = 15
-    return x * 2
+    let x: f64 = 15.0
+    let y: f64 = 3.0
+    let z: f64 = x * y + 4.0
+    if z > 40.0:
+        return 1
+    else:
+        return 0
 `,
 	})
 }
+
+
 
 func TestDiffStructHeap(t *testing.T) {
 	runDiffTest(t, DiffTest{

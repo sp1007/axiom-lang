@@ -7,27 +7,27 @@ import std.string
 // extern "C" fn puts(s: str) -> i32
 
 pub struct CtgcInjector:
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
     pub active_vars: U32Vec // Stack of active sym_idx's
     pub active_var_decls: U32Vec // Stack of AST node decl indices
 
-pub fn new_ctgc_injector(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> CtgcInjector:
-    return CtgcInjector(
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-        active_vars: new_u32_vec(),
-        active_var_decls: new_u32_vec(),
-    )
+pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[CtgcInjector]:
+    let ci = @alloc(@compiler_intrinsic("size_of")[CtgcInjector]()) as ptr[CtgcInjector]
+    ci.tree = tree
+    ci.pool = pool
+    ci.symtable = symtable
+    ci.typetable = typetable
+    ci.active_vars = new_u32_vec()
+    ci.active_var_decls = new_u32_vec()
+    return ci
 
-pub fn run(mut self: CtgcInjector):
+pub fn run(mut self: ptr[CtgcInjector]):
     self.traverse_and_inject(0 as u32, 0 as u32)
 
-pub fn traverse_and_inject(mut self: CtgcInjector, node_idx: u32, parent_idx: u32):
+pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
@@ -51,7 +51,7 @@ pub fn traverse_and_inject(mut self: CtgcInjector, node_idx: u32, parent_idx: u3
                         let type_id = sym.type_id
                         if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
                             let entry = self.typetable.entries.data[type_id]
-                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_POINTER:
+                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM:
                                 is_heap = true
                         
                         if is_heap:
@@ -98,7 +98,7 @@ pub fn traverse_and_inject(mut self: CtgcInjector, node_idx: u32, parent_idx: u3
             self.traverse_and_inject(child_idx, node_idx)
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-pub fn append_child_node(mut self: CtgcInjector, parent: u32, child: u32):
+pub fn append_child_node(mut self: ptr[CtgcInjector], parent: u32, child: u32):
     if self.tree.nodes.data[parent].first_child == 0 as u32:
         self.tree.nodes.data[parent].first_child = child
         return
@@ -107,7 +107,7 @@ pub fn append_child_node(mut self: CtgcInjector, parent: u32, child: u32):
         cur = self.tree.nodes.data[cur].next_sibling
     self.tree.nodes.data[cur].next_sibling = child
 
-pub fn insert_before(mut self: CtgcInjector, parent: u32, target: u32, new_node: u32):
+pub fn insert_before(mut self: ptr[CtgcInjector], parent: u32, target: u32, new_node: u32):
     if self.tree.nodes.data[parent].first_child == target:
         self.tree.nodes.data[new_node].next_sibling = target
         self.tree.nodes.data[parent].first_child = new_node

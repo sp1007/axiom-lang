@@ -2,6 +2,7 @@ package sema
 
 import (
 	"fmt"
+
 	"github.com/axiom-lang/axiom/compiler/ast"
 	"github.com/axiom-lang/axiom/compiler/diagnostics"
 	"github.com/axiom-lang/axiom/compiler/types"
@@ -21,13 +22,23 @@ type NameResolver struct {
 // NewNameResolver creates a new NameResolver.
 func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable, tt *types.TypeTable, lr *LazyResolver) *NameResolver {
 	if lr == nil {
-		lr = NewLazyResolver(st, tt, func(m *ModuleInfo, st *SymbolTable, tt *types.TypeTable) error {
+		if st.LazyResolver != nil {
+			lr = st.LazyResolver
+		} else {
+			lr = NewLazyResolver(st, tt, func(m *ModuleInfo, st *SymbolTable, tt *types.TypeTable) error {
 			moduleName := intern.Get(m.NameID)
 			if moduleName == "std.string" {
 				lenID := intern.Intern([]byte("len"))
 				sliceID := intern.Intern([]byte("slice"))
 				concatID := intern.Intern([]byte("concat"))
 				replaceID := intern.Intern([]byte("replace"))
+				startsWithID := intern.Intern([]byte("starts_with"))
+				endsWithID := intern.Intern([]byte("ends_with"))
+				containsID := intern.Intern([]byte("contains"))
+				charCountID := intern.Intern([]byte("char_count"))
+				trimID := intern.Intern([]byte("trim"))
+				toUpperID := intern.Intern([]byte("to_upper"))
+				toLowerID := intern.Intern([]byte("to_lower"))
 
 				// Define std.string.len
 				// fn len(s: str) -> i64
@@ -56,9 +67,59 @@ func NewNameResolver(tree *ast.AstTree, intern *ast.InternPool, st *SymbolTable,
 				replaceTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString, types.TypeString}, types.TypeString, nil)
 				st.SymbolAt(replaceSymIdx).TypeID = uint32(replaceTypeID)
 				m.Exports[replaceID] = replaceSymIdx
+
+				// Define std.string.starts_with
+				// fn starts_with(s: str, prefix: str) -> bool
+				startsWithSymIdx, _ := st.Define(startsWithID, SymFunc, 0, 0)
+				startsWithTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString}, types.TypeBool, nil)
+				st.SymbolAt(startsWithSymIdx).TypeID = uint32(startsWithTypeID)
+				m.Exports[startsWithID] = startsWithSymIdx
+
+				// Define std.string.ends_with
+				// fn ends_with(s: str, suffix: str) -> bool
+				endsWithSymIdx, _ := st.Define(endsWithID, SymFunc, 0, 0)
+				endsWithTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString}, types.TypeBool, nil)
+				st.SymbolAt(endsWithSymIdx).TypeID = uint32(endsWithTypeID)
+				m.Exports[endsWithID] = endsWithSymIdx
+
+				// Define std.string.contains
+				// fn contains(s: str, sub: str) -> bool
+				containsIDSymIdx, _ := st.Define(containsID, SymFunc, 0, 0)
+				containsTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString, types.TypeString}, types.TypeBool, nil)
+				st.SymbolAt(containsIDSymIdx).TypeID = uint32(containsTypeID)
+				m.Exports[containsID] = containsIDSymIdx
+
+				// Define std.string.char_count
+				// fn char_count(s: str) -> i64
+				charCountSymIdx, _ := st.Define(charCountID, SymFunc, 0, 0)
+				charCountTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString}, types.TypeI64, nil)
+				st.SymbolAt(charCountSymIdx).TypeID = uint32(charCountTypeID)
+				m.Exports[charCountID] = charCountSymIdx
+
+				// Define std.string.trim
+				// fn trim(s: str) -> str
+				trimSymIdx, _ := st.Define(trimID, SymFunc, 0, 0)
+				trimTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString}, types.TypeString, nil)
+				st.SymbolAt(trimSymIdx).TypeID = uint32(trimTypeID)
+				m.Exports[trimID] = trimSymIdx
+
+				// Define std.string.to_upper
+				// fn to_upper(s: str) -> str
+				toUpperSymIdx, _ := st.Define(toUpperID, SymFunc, 0, 0)
+				toUpperTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString}, types.TypeString, nil)
+				st.SymbolAt(toUpperSymIdx).TypeID = uint32(toUpperTypeID)
+				m.Exports[toUpperID] = toUpperSymIdx
+
+				// Define std.string.to_lower
+				// fn to_lower(s: str) -> str
+				toLowerSymIdx, _ := st.Define(toLowerID, SymFunc, 0, 0)
+				toLowerTypeID := tt.RegisterFunction([]types.TypeID{types.TypeString}, types.TypeString, nil)
+				st.SymbolAt(toLowerSymIdx).TypeID = uint32(toLowerTypeID)
+				m.Exports[toLowerID] = toLowerSymIdx
 			}
 			return nil
 		})
+		}
 	}
 	return &NameResolver{
 		ast:      tree,
@@ -89,7 +150,53 @@ func (nr *NameResolver) Resolve() []diagnostics.Diagnostic {
 		return nr.errors
 	}
 
-	// Start at root
+	// Pass 1: Define all top-level symbols first to support forward references
+	root := &nr.ast.Nodes[0]
+	child := root.FirstChild
+	for child != ast.NullIdx {
+		childNode := &nr.ast.Nodes[child]
+		if childNode.Kind == ast.NodeFuncDecl || childNode.Kind == ast.NodeStructDecl || childNode.Kind == ast.NodeInterfaceDecl || childNode.Kind == ast.NodeConstDecl || childNode.Kind == ast.NodeTypeAliasDecl {
+			nameID := childNode.Payload
+			var kind SymKind
+			var flags SymFlags
+			if childNode.Kind == ast.NodeFuncDecl {
+				kind = SymFunc
+				if childNode.Flags&uint16(ast.FlagIsPub) != 0 {
+					flags |= SymFlagPub
+				}
+				if childNode.Flags&uint16(ast.FlagIsExtern) != 0 {
+					flags |= SymFlagExtern
+				}
+				if childNode.Flags&uint16(ast.FlagIsAsync) != 0 {
+					flags |= SymFlagAsync
+				}
+			} else if childNode.Kind == ast.NodeStructDecl {
+				kind = SymStruct
+				if childNode.Flags&uint16(ast.FlagIsPub) != 0 {
+					flags |= SymFlagPub
+				}
+			} else if childNode.Kind == ast.NodeInterfaceDecl {
+				kind = SymInterface
+				if childNode.Flags&uint16(ast.FlagIsPub) != 0 {
+					flags |= SymFlagPub
+				}
+			} else if childNode.Kind == ast.NodeConstDecl {
+				kind = SymConst
+				if childNode.Flags&uint16(ast.FlagIsPub) != 0 {
+					flags |= SymFlagPub
+				}
+			} else if childNode.Kind == ast.NodeTypeAliasDecl {
+				kind = SymTypeAlias
+				if childNode.Flags&uint16(ast.FlagIsPub) != 0 {
+					flags |= SymFlagPub
+				}
+			}
+			nr.defineSymbol(nameID, kind, flags, child)
+		}
+		child = childNode.NextSibling
+	}
+
+	// Pass 2: Normal AST Walk to resolve bodies and expressions
 	nr.resolveNode(0)
 
 	// Check unused imports
@@ -166,14 +273,26 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		node.Payload = nr.defineSymbol(nameID, SymField, 0, nodeIdx)
 		nr.resolveChildren(nodeIdx)
 
+	case ast.NodeMethodSig:
+		nr.symtable.PushScope(ScopeFunction)
+		nr.resolveChildren(nodeIdx)
+		nr.symtable.PopScope()
+
 	case ast.NodeInterfaceDecl:
 		nameID := node.Payload
-		node.Payload = nr.defineSymbol(nameID, SymInterface, 0, nodeIdx)
+		symIdx := nr.defineSymbol(nameID, SymInterface, 0, nodeIdx)
+		node.Payload = symIdx
+		
+		// Register in TypeTable early so that generic constraints can reference its TypeID
+		typeID := nr.types.RegisterInterface(nameID, nil)
+		nr.symtable.SymbolAt(symIdx).TypeID = uint32(typeID)
+
 		nr.symtable.PushScope(ScopeBlock)
 		// Define `Self` as an implicit type alias within the interface scope.
 		// This allows method signatures like `fn compare(self: Self, other: Self)`.
 		selfNameID := nr.intern.Intern([]byte("Self"))
-		nr.defineSymbol(selfNameID, SymTypeAlias, 0, nodeIdx)
+		selfSymIdx := nr.defineSymbol(selfNameID, SymTypeAlias, 0, nodeIdx)
+		nr.symtable.SymbolAt(selfSymIdx).TypeID = uint32(typeID)
 		nr.resolveChildren(nodeIdx)
 		nr.symtable.PopScope()
 
@@ -203,6 +322,10 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 				nr.errors = append(nr.errors, *diag)
 			} else {
 				node.Payload = symIdx
+				err := nr.lazy.PreloadModule(nameID)
+				if err != nil {
+					fmt.Printf("[PRELOAD ERROR] Failed to preload module %s: %v\n", nr.intern.Get(nameID), err)
+				}
 			}
 		}
 
@@ -223,7 +346,7 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		
 		currScopeIdx := nr.symtable.CurrentScope()
 		nr.symtable.PopScope()
-		parentScopeIdx := nr.symtable.CurrentScope()
+		parentScopeIdx := uint32(0)
 		
 		currScope := &nr.symtable.Scopes[currScopeIdx]
 		parentScope := &nr.symtable.Scopes[parentScopeIdx]
@@ -279,15 +402,6 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 			break
 		}
 		symIdx, found := nr.symtable.Resolve(nameID)
-		if name == "free" {
-			fmt.Printf("[DEBUG-RESOLVE-FREE] Resolve free: found=%t symIdx=%d\n", found, symIdx)
-			for idx, sym := range nr.symtable.Symbols {
-				symName := nr.intern.Get(sym.NameID)
-				if symName == "free" {
-					fmt.Printf("[DEBUG-RESOLVE-FREE]   Symbol idx=%d kind=%v flags=%v scopeID=%d declNode=%d\n", idx, sym.Kind, sym.Flags, sym.ScopeID, sym.DeclNode)
-				}
-			}
-		}
 		if !found {
 			nr.errorf(nodeIdx, 2010, "undefined: '%s'", name)
 		} else {
@@ -299,6 +413,13 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 		nr.resolveChildren(nodeIdx)
 
 	case ast.NodeFieldExpr:
+		// Check if the entire path LHS.RHS resolves to a module import first
+		if symIdx, ok := nr.tryResolveModulePath(nodeIdx); ok {
+			node.Payload = symIdx
+			nr.resolved[nodeIdx] = true
+			break
+		}
+
 		// FieldExpr is `lhs.rhs`.
 		// Resolving this fully requires type checking if `lhs` is a struct, but for lazy module imports,
 		// we can resolve it if `lhs` is a SymModule.
@@ -328,23 +449,41 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 				
 				// After resolving LHS, if it's an Ident or FieldExpr that resolved to a SymModule:
 				lhsNode = &nr.ast.Nodes[lhsIdx]
+				var symIdx uint32 = 0
 				if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
 					if nr.resolved[lhsIdx] {
-						symIdx := lhsNode.Payload
-						if symIdx != 0 && int(symIdx) < len(nr.symtable.Symbols) {
-							sym := nr.symtable.SymbolAt(symIdx)
-							if sym.Kind == SymModule && nr.lazy != nil {
-								// RHS is the field name. In AST it's usually stored in Payload of NodeFieldExpr,
-								// or as a child NodeIdent. Let's assume Payload has the string ID.
-								fieldNameID := node.Payload
-								
-								resolvedIdx, diag := nr.lazy.ResolveField(sym.NameID, fieldNameID, diagnostics.Pos{})
-								if diag != nil {
-									nr.errors = append(nr.errors, *diag)
-								} else {
-									node.Payload = resolvedIdx
-									nr.resolved[nodeIdx] = true
-								}
+						symIdx = lhsNode.Payload
+					}
+				} else if lhsNode.Kind == ast.NodeIndexExpr {
+					colIdx := lhsNode.FirstChild
+					if colIdx != 0 {
+						fmt.Printf("[RESOLVE-DEBUG] lhsNode is NodeIndexExpr, colIdx=%d, resolved=%v, payload=%d\n", colIdx, nr.resolved[colIdx], nr.ast.Nodes[colIdx].Payload)
+					}
+					if colIdx != 0 && nr.resolved[colIdx] {
+						symIdx = nr.ast.Nodes[colIdx].Payload
+					}
+				}
+
+				if symIdx != 0 && int(symIdx) < len(nr.symtable.Symbols) {
+					sym := nr.symtable.SymbolAt(symIdx)
+					if sym.Kind == SymModule && nr.lazy != nil {
+						fieldNameID := node.Payload
+						
+						resolvedIdx, diag := nr.lazy.ResolveField(sym.NameID, fieldNameID, diagnostics.Pos{})
+						if diag != nil {
+							nr.errors = append(nr.errors, *diag)
+						} else {
+							node.Payload = resolvedIdx
+							nr.resolved[nodeIdx] = true
+						}
+					} else if sym.Kind == SymStruct && nr.lazy != nil {
+						fieldNameID := node.Payload
+						modNameID := nr.lazy.FindModuleOfSymbol(symIdx)
+						if modNameID != 0 {
+							resolvedIdx, diag := nr.lazy.ResolveField(modNameID, fieldNameID, diagnostics.Pos{})
+							if diag == nil {
+								node.Payload = resolvedIdx
+								nr.resolved[nodeIdx] = true
 							}
 						}
 					}
@@ -362,8 +501,12 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 			} else {
 				node.Payload = symIdx
 				nr.symtable.MarkUsed(symIdx)
+
 			}
 		}
+		nr.resolveChildren(nodeIdx)
+
+	case ast.NodeGenericType:
 		nr.resolveChildren(nodeIdx)
 
 	case ast.NodeBindingPat:
@@ -410,6 +553,16 @@ func (nr *NameResolver) resolveChildren(nodeIdx uint32) {
 }
 
 func (nr *NameResolver) defineSymbol(nameID uint32, kind SymKind, flags SymFlags, declNode uint32) uint32 {
+	if symIdx, found := nr.symtable.ResolveInScope(nameID, nr.symtable.CurrentScope()); found {
+		curr := symIdx
+		for curr != 0 {
+			sym := nr.symtable.SymbolAt(curr)
+			if sym.DeclNode == declNode {
+				return curr
+			}
+			curr = sym.NextOverload
+		}
+	}
 	idx, diag := nr.symtable.Define(nameID, kind, flags, declNode)
 	if diag != nil {
 		name := nr.intern.Get(nameID)
@@ -439,6 +592,7 @@ func (nr *NameResolver) registerGenericTemplate(nodeIdx uint32, symID uint32) {
 	}
 
 	var params []types.GenericParam
+	var paramTypeIDs []types.TypeID
 	gpChild := nr.ast.Nodes[gpNodeIdx].FirstChild
 	for gpChild != 0 {
 		gpNode := &nr.ast.Nodes[gpChild]
@@ -450,14 +604,22 @@ func (nr *NameResolver) registerGenericTemplate(nodeIdx uint32, symID uint32) {
 			constraintChild := gpNode.FirstChild
 			if constraintChild != 0 {
 				if nr.ast.Nodes[constraintChild].Kind == ast.NodeTypeExpr {
-					// We'll leave constraintID = 0 for now since we resolve lazily, 
-					// or we can resolve the name to a TypeID if already defined.
-					_ = nr.ast.Nodes[constraintChild].Payload
+					constraintNameID := nr.ast.Nodes[constraintChild].Payload
+					if symIdx, found := nr.resolveType(constraintNameID); found {
+						sym := nr.symtable.SymbolAt(symIdx)
+						if sym.Kind == SymInterface {
+							constraintID = sym.TypeID
+						}
+					}
 				}
 			}
 
 			// Register generic type parameter
 			typeID := nr.types.RegisterGenericType(gpNameID)
+			if constraintID != 0 {
+				nr.types.SetGenericConstraint(typeID, types.TypeID(constraintID))
+			}
+			paramTypeIDs = append(paramTypeIDs, typeID)
 			
 			// Define in current scope (which is the function/struct scope)
 			symIdx, diag := nr.symtable.Define(gpNameID, SymGenericParam, 0, gpChild)
@@ -466,6 +628,7 @@ func (nr *NameResolver) registerGenericTemplate(nodeIdx uint32, symID uint32) {
 			} else {
 				sym := nr.symtable.SymbolAt(symIdx)
 				sym.TypeID = uint32(typeID)
+				gpNode.Payload = symIdx
 			}
 			
 			params = append(params, types.GenericParam{
@@ -476,20 +639,111 @@ func (nr *NameResolver) registerGenericTemplate(nodeIdx uint32, symID uint32) {
 		gpChild = nr.ast.Nodes[gpChild].NextSibling
 	}
 
-	tmpl := types.NewGenericTemplate(symID, nodeIdx, params)
+	tmpl := types.NewGenericTemplate(symID, nodeIdx, params, paramTypeIDs, nr.ast)
 	nr.types.RegisterGenericTemplate(tmpl)
 }
 
 func (nr *NameResolver) resolveType(nameID uint32) (uint32, bool) {
+	name := nr.intern.Get(nameID)
+	tblNameID := nr.symtable.intern.InternString(name)
+
+	// Search from top of stack (innermost) to bottom (global)
 	stack := nr.symtable.GetStack()
 	for i := len(stack) - 1; i >= 0; i-- {
 		scopeIdx := stack[i]
-		if symIdx, found := nr.symtable.Scopes[scopeIdx].get(nameID); found {
+		if symIdx, found := nr.symtable.Scopes[scopeIdx].get(tblNameID); found {
 			sym := nr.symtable.SymbolAt(symIdx)
 			if sym.Kind == SymStruct || sym.Kind == SymInterface || sym.Kind == SymTypeAlias || sym.Kind == SymBuiltinType || sym.Kind == SymGenericParam {
 				return symIdx, true
 			}
 		}
 	}
+
+	// Fallback to global scope search in case the scope stack doesn't have the global scope for some reason
+	if symIdx, found := nr.symtable.ResolveGlobal(tblNameID); found {
+		sym := nr.symtable.SymbolAt(symIdx)
+		if sym.Kind == SymStruct || sym.Kind == SymInterface || sym.Kind == SymTypeAlias || sym.Kind == SymBuiltinType || sym.Kind == SymGenericParam {
+			return symIdx, true
+		}
+	}
+
 	return 0, false
+}
+
+func (nr *NameResolver) tryResolveModulePath(nodeIdx uint32) (uint32, bool) {
+	node := &nr.ast.Nodes[nodeIdx]
+	if nr.resolved[nodeIdx] && node.Payload != 0 && int(node.Payload) < len(nr.symtable.Symbols) {
+		sym := nr.symtable.SymbolAt(node.Payload)
+		if sym.Kind == SymModule {
+			return node.Payload, true
+		}
+	}
+	if node.Kind == ast.NodeIdent {
+		fullName := nr.intern.Get(node.Payload)
+		fullNameID := nr.intern.InternString(fullName)
+		if symIdx, found := nr.symtable.Resolve(fullNameID); found {
+			sym := nr.symtable.SymbolAt(symIdx)
+			if sym.Kind == SymModule {
+				return symIdx, true
+			}
+		}
+	}
+	if node.Kind == ast.NodeFieldExpr {
+		lhsIdx := node.FirstChild
+		if lhsIdx == 0 {
+			return 0, false
+		}
+		lhsName, ok := nr.reconstructPath(lhsIdx)
+		if !ok {
+			return 0, false
+		}
+		payload := node.Payload
+		if nr.resolved[nodeIdx] && payload != 0 && int(payload) < len(nr.symtable.Symbols) {
+			payload = nr.symtable.SymbolAt(payload).NameID
+		}
+		rhsName := nr.intern.Get(payload)
+		fullName := lhsName + "." + rhsName
+		fullNameID := nr.intern.InternString(fullName)
+		if symIdx, found := nr.symtable.Resolve(fullNameID); found {
+			sym := nr.symtable.SymbolAt(symIdx)
+			if sym.Kind == SymModule {
+				return symIdx, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (nr *NameResolver) reconstructPath(nodeIdx uint32) (string, bool) {
+	node := &nr.ast.Nodes[nodeIdx]
+	if nr.resolved[nodeIdx] && node.Payload != 0 && int(node.Payload) < len(nr.symtable.Symbols) {
+		sym := nr.symtable.SymbolAt(node.Payload)
+		if sym.Kind == SymModule {
+			return nr.intern.Get(sym.NameID), true
+		}
+	}
+	if node.Kind == ast.NodeIdent {
+		nameID := node.Payload
+		if nr.resolved[nodeIdx] && nameID != 0 && int(nameID) < len(nr.symtable.Symbols) {
+			nameID = nr.symtable.SymbolAt(nameID).NameID
+		}
+		return nr.intern.Get(nameID), true
+	}
+	if node.Kind == ast.NodeFieldExpr {
+		lhsIdx := node.FirstChild
+		if lhsIdx == 0 {
+			return "", false
+		}
+		lhsName, ok := nr.reconstructPath(lhsIdx)
+		if !ok {
+			return "", false
+		}
+		nameID := node.Payload
+		if nr.resolved[nodeIdx] && nameID != 0 && int(nameID) < len(nr.symtable.Symbols) {
+			nameID = nr.symtable.SymbolAt(nameID).NameID
+		}
+		rhsName := nr.intern.Get(nameID)
+		return lhsName + "." + rhsName, true
+	}
+	return "", false
 }

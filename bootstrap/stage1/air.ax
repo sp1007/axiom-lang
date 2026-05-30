@@ -77,10 +77,11 @@ pub const OP_SIMD_FMA: u16 = 0x0405
 // Comptime class (0x05xx)
 pub const OP_COMPTIME: u16 = 0x0501
 
-// AirInst struct. Layout is FROZEN at 16 bytes.
+// AirInst struct. Layout is FROZEN at 20 bytes.
 pub struct AirInst:
     pub opcode: u16
-    pub type_id: u16
+    pub padding: u16
+    pub type_id: u32
     pub dest: u32
     pub src1: u32
     pub src2: u32
@@ -99,9 +100,10 @@ pub fn push(mut self: AirInstVec, inst: AirInst) -> u32:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 16) as ptr[AirInst]
+        let inst_size = @compiler_intrinsic("size_of")[AirInst]() as i64
+        let new_data = @alloc(new_cap * inst_size) as ptr[AirInst]
         if self.data != null as ptr[AirInst]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * inst_size)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -191,9 +193,9 @@ pub fn push(mut self: AirFuncVec, f: AirFunc) -> u32:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 192) as ptr[AirFunc]
+        let new_data = @alloc(new_cap * (@compiler_intrinsic("size_of")[AirFunc]() as i64)) as ptr[AirFunc]
         if self.data != null as ptr[AirFunc]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 192)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * (@compiler_intrinsic("size_of")[AirFunc]() as i64))
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -226,25 +228,24 @@ pub struct AirFuncBuilder:
     pub block_succs: U32Vec
     pub block_preds: U32Vec
 
-pub fn new_air_func_builder(name: u32, ret_type: u32) -> AirFuncBuilder:
-    mut builder := AirFuncBuilder(
-        name: name,
-        ret_type: ret_type,
-        blocks: new_basic_block_vec(),
-        insts: new_air_inst_vec(),
-        extras: new_u32_vec(),
-        cur_block: -1 as i32,
-        next_reg: 1 as u32, // register 0 is NoValue
-        block_instrs: new_u32_vec(),
-        block_succs: new_u32_vec(),
-        block_preds: new_u32_vec(),
-    )
+pub fn new_air_func_builder(name: u32, ret_type: u32) -> ptr[AirFuncBuilder]:
+    let builder = @alloc(@compiler_intrinsic("size_of")[AirFuncBuilder]()) as ptr[AirFuncBuilder]
+    builder.name = name
+    builder.ret_type = ret_type
+    builder.blocks = new_basic_block_vec()
+    builder.insts = new_air_inst_vec()
+    builder.extras = new_u32_vec()
+    builder.cur_block = -1 as i32
+    builder.next_reg = 1 as u32
+    builder.block_instrs = new_u32_vec()
+    builder.block_succs = new_u32_vec()
+    builder.block_preds = new_u32_vec()
     let entry_id = builder.new_block()
     builder.blocks.data[entry_id].is_entry = true
     builder.switch_to(entry_id)
     return builder
 
-pub fn new_block(mut self: AirFuncBuilder) -> u32:
+pub fn new_block(mut self: ptr[AirFuncBuilder]) -> u32:
     let id = self.blocks.len as u32
     self.blocks.push(BasicBlock(
         id: id,
@@ -260,15 +261,15 @@ pub fn new_block(mut self: AirFuncBuilder) -> u32:
     ))
     return id
 
-pub fn switch_to(mut self: AirFuncBuilder, block_id: u32):
+pub fn switch_to(mut self: ptr[AirFuncBuilder], block_id: u32):
     self.cur_block = block_id as i32
 
-pub fn current_block(self: AirFuncBuilder) -> u32:
+pub fn current_block(self: ptr[AirFuncBuilder]) -> u32:
     if self.cur_block < 0:
         return 0xffffffff as u32
     return self.cur_block as u32
 
-pub fn emit(mut self: AirFuncBuilder, inst: AirInst) -> u32:
+pub fn emit(mut self: ptr[AirFuncBuilder], inst: AirInst) -> u32:
     let idx = self.insts.push(inst)
     if self.cur_block >= 0 and (self.cur_block as i64) < self.blocks.len:
         mut bb := &self.blocks.data[self.cur_block]
@@ -278,19 +279,19 @@ pub fn emit(mut self: AirFuncBuilder, inst: AirInst) -> u32:
         bb.instrs_len = bb.instrs_len + 1 as u32
     return idx
 
-pub fn emit_extra(mut self: AirFuncBuilder, val: u32) -> u32:
+pub fn emit_extra(mut self: ptr[AirFuncBuilder], val: u32) -> u32:
     return self.extras.push(val)
 
-pub fn set_extra(mut self: AirFuncBuilder, idx: u32, val: u32):
+pub fn set_extra(mut self: ptr[AirFuncBuilder], idx: u32, val: u32):
     if (idx as i64) < self.extras.len:
         self.extras.data[idx] = val
 
-pub fn fresh_reg(mut self: AirFuncBuilder) -> u32:
+pub fn fresh_reg(mut self: ptr[AirFuncBuilder]) -> u32:
     let r = self.next_reg
     self.next_reg = self.next_reg + 1 as u32
     return r
 
-pub fn add_edge(mut self: AirFuncBuilder, src: u32, dst: u32):
+pub fn add_edge(mut self: ptr[AirFuncBuilder], src: u32, dst: u32):
     if (src as i64) < self.blocks.len and (dst as i64) < self.blocks.len:
         mut src_bb := &self.blocks.data[src]
         if src_bb.succs_len == 0:
@@ -322,7 +323,7 @@ pub fn add_edge(mut self: AirFuncBuilder, src: u32, dst: u32):
             self.block_preds.push(src)
             dst_bb.preds_len = dst_bb.preds_len + 1 as u32
 
-pub fn build_func(mut self: AirFuncBuilder) -> AirFunc:
+pub fn build_func(mut self: ptr[AirFuncBuilder]) -> AirFunc:
     // Mark exit blocks
     mut i := 0 as i64
     while i < self.blocks.len:

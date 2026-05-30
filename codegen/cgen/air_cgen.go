@@ -225,7 +225,11 @@ func (g *AirCGen) emitInst(inst *air.AirInst) {
 	case air.OpNeg:
 		fmt.Fprintf(&g.buf, "  r_%d = -r_%d;\n", inst.Dest, inst.Src1)
 	case air.OpNot:
-		fmt.Fprintf(&g.buf, "  r_%d = !r_%d;\n", inst.Dest, inst.Src1)
+		if inst.TypeID == uint16(types.TypeBool) {
+			fmt.Fprintf(&g.buf, "  r_%d = !r_%d;\n", inst.Dest, inst.Src1)
+		} else {
+			fmt.Fprintf(&g.buf, "  r_%d = ~r_%d;\n", inst.Dest, inst.Src1)
+		}
 
 	// Memory
 	case air.OpAlloc:

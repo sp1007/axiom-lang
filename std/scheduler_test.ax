@@ -5,14 +5,14 @@
 import std.string
 
 extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
-extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
 fn test_print_str(s: str):
     if @compiler_intrinsic("is_windows"):
         let h = GetStdHandle(0xFFFFFFF5 as u32)
         mut written := 0 as u32
-        WriteFile(h, s as ptr[u8], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
+        WriteFile(h, s as ptr[void], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
     else:
         syscall(1 as u64, 1 as u64, s as ptr[u8] as u64, std.string.len(s) as u64, 0 as u64, 0 as u64, 0 as u64)
 

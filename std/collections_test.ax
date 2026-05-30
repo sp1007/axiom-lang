@@ -1,0 +1,155 @@
+// AXIOM Standard Library — std.collections_test
+//
+// Standalone unit tests for AXIOM-native generic collections: Vec, HashMap, HashSet.
+
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+fn test_print_str(s: str):
+    if @compiler_intrinsic("is_windows"):
+        let h = GetStdHandle(0xFFFFFFF5 as u32)
+        mut written := 0 as u32
+        WriteFile(h, s as ptr[void], std.string.len(s) as u32, (&written) as ptr[void], null as ptr[void])
+    else:
+        syscall(1 as u64, 1 as u64, s as ptr[u8] as u64, std.string.len(s) as u64, 0 as u64, 0 as u64, 0 as u64)
+
+fn test_vec():
+    mut v := new_vec[i64]()
+    assert(v.len == 0)
+    assert(v.cap == 0)
+
+    v.push(10 as i64)
+    v.push(20 as i64)
+    v.push(30 as i64)
+    assert(v.len == 3)
+    assert(v.cap >= 3)
+
+    match v.get(0):
+        Some(val): assert(val == 10)
+        None: assert(false)
+
+    match v.get(2):
+        Some(val): assert(val == 30)
+        None: assert(false)
+
+    match v.get(3):
+        Some(_): assert(false)
+        None: assert(true)
+
+    match v.pop():
+        Some(val): assert(val == 30)
+        None: assert(false)
+
+    assert(v.len == 2)
+    v.clear()
+    assert(v.len == 0)
+    v.destroy()
+    test_print_str("  PASS: test_vec\n")
+
+fn test_hashmap():
+    mut m := new_hashmap[str, i64]()
+    assert(m.len() == 0)
+
+    // Basic insertion and lookup
+    m.insert("apple", 100 as i64)
+    m.insert("banana", 200 as i64)
+    m.insert("orange", 300 as i64)
+    assert(m.len() == 3)
+
+    match m.get("apple"):
+        Some(val): assert(val == 100)
+        None: assert(false)
+
+    match m.get("banana"):
+        Some(val): assert(val == 200)
+        None: assert(false)
+
+    match m.get("orange"):
+        Some(val): assert(val == 300)
+        None: assert(false)
+
+    match m.get("pear"):
+        Some(_): assert(false)
+        None: assert(true)
+
+    // Robin Hood collision and swap test
+    // "apple" and another key that maps near it will probe.
+    // Insert many keys to trigger resizing and verify collision resolution.
+    mut k := 0 as i64
+    while k < 50:
+        // Use single-character keys as a test of FNV hashing on str
+        mut key_buf := @alloc(2) as ptr[u8]
+        key_buf[0] = ('A' as u8 + (k % 26 as i64) as u8)
+        key_buf[1] = 0 as u8
+        let key_str = key_buf as str
+        m.insert(key_str, k)
+        k = k + 1
+
+    // Verify all keys inserted are retrievable
+    k = 0
+    while k < 50:
+        mut key_buf := @alloc(2) as ptr[u8]
+        key_buf[0] = ('A' as u8 + (k % 26 as i64) as u8)
+        key_buf[1] = 0 as u8
+        let key_str = key_buf as str
+        match m.get(key_str):
+            Some(val): assert(true)
+            None: assert(false)
+        @free(key_buf)
+        k = k + 1
+
+    // Test backward shift deletion
+    let ok1 = m.remove("apple")
+    assert(ok1 == true)
+    match m.get("apple"):
+        Some(_): assert(false)
+        None: assert(true)
+
+    let ok2 = m.remove("banana")
+    assert(ok2 == true)
+    match m.get("banana"):
+        Some(_): assert(false)
+        None: assert(true)
+
+    let ok3 = m.remove("pear") // non-existent
+    assert(ok3 == false)
+
+    m.destroy()
+    test_print_str("  PASS: test_hashmap\n")
+
+fn test_hashset():
+    mut s := new_hashset[i64]()
+    assert(s.len() == 0)
+
+    let ins1 = s.insert(10 as i64)
+    assert(ins1 == true)
+    let ins2 = s.insert(20 as i64)
+    assert(ins2 == true)
+    let ins3 = s.insert(10 as i64) // duplicate
+    assert(ins3 == false)
+
+    assert(s.len() == 2)
+    assert(s.contains(10 as i64) == true)
+    assert(s.contains(20 as i64) == true)
+    assert(s.contains(30 as i64) == false)
+
+    let rem1 = s.remove(10 as i64)
+    assert(rem1 == true)
+    assert(s.contains(10 as i64) == false)
+    assert(s.len() == 1)
+
+    let rem2 = s.remove(30 as i64) // non-existent
+    assert(rem2 == false)
+
+    s.destroy()
+    test_print_str("  PASS: test_hashset\n")
+
+pub fn main():
+    test_print_str("Running AXIOM-native collections unit tests (Robin Hood Hashing)...\n")
+    test_vec()
+    test_hashmap()
+    test_hashset()
+    test_print_str("All AXIOM-native collections tests passed!\n")

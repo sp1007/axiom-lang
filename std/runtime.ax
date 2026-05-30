@@ -6,20 +6,23 @@ import std.string
 import std.scheduler
 
 extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
-extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[u8], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[u32], lpOverlapped: ptr[void]) -> i32
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn ExitProcess(uExitCode: u32)
-extern "C" fn puts(s: ptr[u8]) -> i32
-extern "C" fn fflush(stream: ptr[void]) -> i32
+
 
 pub fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64:
     return 0 as i64
 
-// Core Panic, Assert & Bounds checking routines
 pub fn ax_panic(msg: str):
     if @compiler_intrinsic("is_windows"):
-        puts("AXIOM RUNTIME PANIC: " as ptr[u8])
-        puts(msg as ptr[u8])
-        fflush(null as ptr[void])
+        let h_err = GetStdHandle(0xFFFFFFF4 as u32)
+        let state = get_state()
+        let p_written = (state as i64 + 64 as i64) as ptr[u32]
+        p_written.* = 0 as u32
+        let prefix = "AXIOM RUNTIME PANIC: "
+        WriteFile(h_err, prefix as ptr[void], std.string.len(prefix) as u32, p_written as ptr[void], null as ptr[void])
+        WriteFile(h_err, msg as ptr[void], std.string.len(msg) as u32, p_written as ptr[void], null as ptr[void])
+        WriteFile(h_err, "\n" as ptr[void], 1 as u32, p_written as ptr[void], null as ptr[void])
         ExitProcess(1 as u32)
     else:
         let prefix = "AXIOM RUNTIME PANIC: "
@@ -42,33 +45,89 @@ fn get_state() -> ptr[AxGlobalState]:
 
 pub fn __ax_runtime_init():
     let state = get_state()
-    if state.is_rt_initialized:
+    let p_is_rt_initialized = state as ptr[bool]
+    if p_is_rt_initialized.*:
         return
     ax_segment_manager_init()
-    state.global_heap = ax_actor_heap_create(1 as u64)
+    let p_global_heap = (state as i64 + 40 as i64) as ptr[ptr[ActorHeap]]
+    p_global_heap.* = ax_actor_heap_create(1 as u64)
     ax_actor_system_init()
-    state.is_rt_initialized = true
+    p_is_rt_initialized.* = true
 
 pub fn __ax_runtime_shutdown():
     let state = get_state()
-    if not state.is_rt_initialized:
+    let p_is_rt_initialized = state as ptr[bool]
+    if not p_is_rt_initialized.*:
         return
-    if state.g_sched_initialized:
-        let sched = state.g_sched as ptr[scheduler]
+    let p_g_sched_initialized = (state as i64 + 1 as i64) as ptr[bool]
+    if p_g_sched_initialized.*:
+        let p_g_sched = (state as i64 + 56 as i64) as ptr[ptr[void]]
+        let sched = p_g_sched.* as ptr[scheduler]
         sched.run()
         sched.shutdown()
-    if state.global_heap != null as ptr[ActorHeap]:
-        ax_actor_heap_destroy(state.global_heap)
+    let p_global_heap = (state as i64 + 40 as i64) as ptr[ptr[ActorHeap]]
+    if p_global_heap.* != null as ptr[ActorHeap]:
+        ax_actor_heap_destroy(p_global_heap.*)
     ax_segment_manager_shutdown()
-    state.is_rt_initialized = false
+    p_is_rt_initialized.* = false
+
+fn print_debug_msg_format(val: u64):
+    if @compiler_intrinsic("is_windows"):
+        let h_err = GetStdHandle(0xFFFFFFF4 as u32)
+        let state = get_state()
+        let p_written = (state as i64 + 64 as i64) as ptr[u32]
+        let p_digit = (state as i64 + 68 as i64) as ptr[u8]
+        if val == 0 as u64:
+            p_digit.* = '0' as u8
+            WriteFile(h_err, p_digit as ptr[void], 1 as u32, p_written as ptr[void], null as ptr[void])
+            p_digit.* = '\n' as u8
+            WriteFile(h_err, p_digit as ptr[void], 1 as u32, p_written as ptr[void], null as ptr[void])
+            return
+            
+        mut digits := 0 as i64
+        mut temp := val
+        while temp > 0 as u64:
+            digits = digits + 1 as i64
+            temp = temp / 10 as u64
+            
+        mut i := digits - 1 as i64
+        while i >= 0 as i64:
+            mut divisor := 1 as u64
+            mut j := 0 as i64
+            while j < i:
+                divisor = divisor * 10 as u64
+                j = j + 1 as i64
+            p_digit.* = ((val / divisor) % 10 as u64) as u8 + '0' as u8
+            WriteFile(h_err, p_digit as ptr[void], 1 as u32, p_written as ptr[void], null as ptr[void])
+            i = i - 1 as i64
+        p_digit.* = '\n' as u8
+        WriteFile(h_err, p_digit as ptr[void], 1 as u32, p_written as ptr[void], null as ptr[void])
+
+fn print_debug_msg(msg: str, val: u64):
+    if @compiler_intrinsic("is_windows"):
+        let h_err = GetStdHandle(0xFFFFFFF4 as u32)
+        let state = get_state()
+        let p_written = (state as i64 + 64 as i64) as ptr[u32]
+        p_written.* = 0 as u32
+        WriteFile(h_err, msg as ptr[void], std.string.len(msg) as u32, p_written as ptr[void], null as ptr[void])
+        print_debug_msg_format(val)
+
+fn print_num_OOM(mut val: u64):
+    print_debug_msg("OOM size requested: ", val)
 
 // Export standard malloc and free signatures matching system ABI
 pub fn malloc(size: u64) -> ptr[void]:
+    mut sz := size
+    if sz == 0 as u64:
+        sz = 1 as u64
     let state = get_state()
-    if not state.is_rt_initialized:
+    let p_is_rt_initialized = state as ptr[bool]
+    if not p_is_rt_initialized.*:
         __ax_runtime_init()
-    let p = ax_actor_alloc(state.global_heap, size as i64)
+    let p_global_heap = (state as i64 + 40 as i64) as ptr[ptr[ActorHeap]]
+    let p = ax_actor_alloc(p_global_heap.*, sz as i64)
     if p == null as ptr[u8]:
+        print_num_OOM(sz)
         ax_panic("Out of memory")
     return p as ptr[void]
 
@@ -76,8 +135,10 @@ pub fn free(p: ptr[void]):
     if p == null as ptr[void]:
         return
     let state = get_state()
-    if state.is_rt_initialized and state.global_heap != null as ptr[ActorHeap]:
-        ax_actor_free(state.global_heap, p as ptr[u8])
+    let p_is_rt_initialized = state as ptr[bool]
+    let p_global_heap = (state as i64 + 40 as i64) as ptr[ptr[ActorHeap]]
+    if p_is_rt_initialized.* and p_global_heap.* != null as ptr[ActorHeap]:
+        ax_actor_free(p_global_heap.*, p as ptr[u8])
 
 // Stub for program name registry
 pub fn ax_set_program_name(name: ptr[u8]):

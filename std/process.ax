@@ -1,94 +1,192 @@
-// AXIOM Standard Library — std::process
+// AXIOM Standard Library — std.process
 //
 // Process spawning, environment, CLI args.
 
-pub struct Command {
-    program: str,
-    args: Vec[str],
-    env: HashMap[str, str],
-    cwd: Option[str],
-}
+import std.os
+import std.os.linux_sys
+import std.collections
 
-impl Command {
-    pub fn new(program: str) -> Command {
-        Command {
-            program: program,
-            args: Vec.new(),
-            env: HashMap.new(),
-            cwd: None,
-        }
-    }
+extern "C" fn CreateProcessA(lpApplicationName: ptr[void], lpCommandLine: ptr[void], lpProcessAttributes: ptr[void], lpThreadAttributes: ptr[void], bInheritHandles: i32, dwCreationFlags: u32, lpEnvironment: ptr[void], lpCurrentDirectory: ptr[void], lpStartupInfo: ptr[void], lpProcessInformation: ptr[void]) -> i32
+extern "C" fn WaitForSingleObject(hHandle: ptr[void], dwMilliseconds: u32) -> u32
+extern "C" fn GetExitCodeProcess(hProcess: ptr[void], lpExitCode: ptr[void]) -> i32
+extern "C" fn CloseHandle(hObject: ptr[void]) -> i32
+extern "C" fn TerminateProcess(hProcess: ptr[void], dwExitCode: u32) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
-    pub fn arg(mut self, arg: str) -> Command {
-        self.args.push(arg)
-        self
-    }
+pub struct Command:
+    program: str
+    args: Vec[str]
+    env: HashMap[str, str]
+    cwd: Option[str]
 
-    pub fn env(mut self, key: str, value: str) -> Command {
-        self.env.insert(key, value)
-        self
-    }
+pub fn new_command(program: str) -> Command:
+    return Command(
+        program: program,
+        args: new_vec[str](),
+        env: new_hashmap[str, str](),
+        cwd: None,
+    )
 
-    pub fn cwd(mut self, dir: str) -> Command {
-        self.cwd = Some(dir)
-        self
-    }
+pub fn arg(mut self: Command, arg: str):
+    self.args.push(arg)
 
-    pub fn spawn(self) -> Result[Child, str] {
-        @compiler_intrinsic("process_spawn")
-    }
+pub fn env(mut self: Command, key: str, value: str):
+    self.env.insert(key, value)
 
-    pub fn output(self) -> Result[Output, str] {
-        @compiler_intrinsic("process_output")
-    }
-}
+pub fn cwd(mut self: Command, dir: str):
+    self.cwd = Some(dir)
 
-pub struct Child {
-    pid: i64,
-}
+pub fn spawn_process(self: Command) -> Result[Child, str]:
+    if @compiler_intrinsic("is_windows"):
+        let si = @alloc(104) as ptr[void]
+        @memset(si as ptr[u8], 0 as u8, 104 as i64)
+        (si as ptr[u32])[0] = 104 as u32
 
-impl Child {
-    pub fn wait(self) -> Result[ExitStatus, str] {
-        @compiler_intrinsic("process_wait")
-    }
-    pub fn kill(self) -> Result[void, str] {
-        @compiler_intrinsic("process_kill")
-    }
-}
+        let pi = @alloc(24) as ptr[void]
+        @memset(pi as ptr[u8], 0 as u8, 24 as i64)
 
-pub struct ExitStatus {
-    code: i32,
-}
+        // Construct command line
+        mut cmdline := self.program
+        mut i := 0 as i64
+        while i < self.args.len:
+            let arg = self.args.get(i).unwrap()
+            cmdline = std.string.concat(cmdline, std.string.concat(" ", arg))
+            i = i + 1
 
-impl ExitStatus {
-    pub fn success(self) -> bool { self.code == 0 }
-    pub fn code(self) -> i32 { self.code }
-}
+        let cmdline_nt = @alloc(std.string.len(cmdline) + 1) as ptr[u8]
+        @memcpy(cmdline_nt, cmdline as ptr[u8], std.string.len(cmdline))
+        cmdline_nt[std.string.len(cmdline)] = 0 as u8
 
-pub struct Output {
-    status: ExitStatus,
-    stdout: str,
-    stderr: str,
-}
+        let res = CreateProcessA(
+            null as ptr[void],
+            cmdline_nt as ptr[void],
+            null as ptr[void],
+            null as ptr[void],
+            1 as i32,
+            0 as u32,
+            null as ptr[void],
+            null as ptr[void],
+            si,
+            pi
+        )
+
+        @free(cmdline_nt)
+        @free(si as ptr[u8])
+
+        if res == 0:
+            @free(pi as ptr[u8])
+            return Err("failed to spawn child process via CreateProcessA")
+
+        let hProcess = (pi as ptr[ptr[void]])[0]
+        let hThread = (pi as ptr[ptr[void]])[1]
+        CloseHandle(hThread)
+        @free(pi as ptr[u8])
+
+        return Ok(Child(pid: hProcess as i64))
+    else:
+        let pid = syscall(57 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        if pid < 0:
+            return Err("fork failed")
+        if pid == 0:
+            // Child: execve
+            let prog_nt = @alloc(std.string.len(self.program) + 1) as ptr[u8]
+            @memcpy(prog_nt, self.program as ptr[u8], std.string.len(self.program))
+            prog_nt[std.string.len(self.program)] = 0 as u8
+
+            let argv = @alloc((self.args.len + 2) * 8) as ptr[ptr[u8]]
+            argv[0] = prog_nt
+
+            mut idx := 0 as i64
+            while idx < self.args.len:
+                let arg = self.args.get(idx).unwrap()
+                let arg_nt = @alloc(std.string.len(arg) + 1) as ptr[u8]
+                @memcpy(arg_nt, arg as ptr[u8], std.string.len(arg))
+                arg_nt[std.string.len(arg)] = 0 as u8
+                argv[idx + 1] = arg_nt
+                idx = idx + 1
+            argv[self.args.len + 1] = null as ptr[u8]
+
+            syscall(59 as u64, prog_nt as u64, argv as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+            syscall(60 as u64, 127 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        return Ok(Child(pid: pid))
+
+pub fn output(self: Command) -> Result[Output, str]:
+    match self.spawn_process():
+        Ok(child):
+            mut c := child
+            match c.wait():
+                Ok(status):
+                    return Ok(Output(
+                        status: status,
+                        stdout_str: "",
+                        stderr_str: "",
+                    ))
+                Err(e):
+                    return Err(e)
+        Err(e):
+            return Err(e)
+
+pub struct Child:
+    pid: i64
+
+pub fn wait(mut self: Child) -> Result[ExitStatus, str]:
+    if @compiler_intrinsic("is_windows"):
+        let hProcess = self.pid as ptr[void]
+        let wait_res = WaitForSingleObject(hProcess, 0xFFFFFFFF as u32)
+        mut exit_code := 0 as u32
+        let ok = GetExitCodeProcess(hProcess, (&exit_code) as ptr[void])
+        CloseHandle(hProcess)
+        if ok == 0:
+            return Err("failed to get child exit code")
+        return Ok(ExitStatus(code: exit_code as i32))
+    else:
+        mut status := 0 as i32
+        let res = syscall(61 as u64, self.pid as u64, (&status) as i64 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        if res < 0:
+            return Err("waitpid failed")
+        let exit_code = (status >> 8) & 0xFF
+        return Ok(ExitStatus(code: exit_code))
+
+pub fn kill(self: Child) -> Result[void, str]:
+    if @compiler_intrinsic("is_windows"):
+        let hProcess = self.pid as ptr[void]
+        let ok = TerminateProcess(hProcess, 1 as u32)
+        CloseHandle(hProcess)
+        if ok == 0:
+            return Err("failed to terminate process")
+        return Ok(void)
+    else:
+        let res = syscall(62 as u64, self.pid as u64, 9 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        if res < 0:
+            return Err("failed to kill process")
+        return Ok(void)
+
+pub struct ExitStatus:
+    code: i32
+
+pub fn success(self: ExitStatus) -> bool:
+    return self.code == 0
+
+pub fn code(self: ExitStatus) -> i32:
+    return self.code
+
+pub struct Output:
+    status: ExitStatus
+    stdout_str: str
+    stderr_str: str
 
 /// Exit the current process.
-pub fn exit(code: i32) {
-    @compiler_intrinsic("process_exit")
-}
+pub fn exit(code: i32):
+    if @compiler_intrinsic("is_windows"):
+        ExitProcess(code as u32)
+    else:
+        syscall(60 as u64, code as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
 
 /// Abort the current process.
-pub fn abort() {
-    @compiler_intrinsic("process_abort")
-}
-
-import std.os
-
-/// Get environment variable.
-pub fn env_var(key: str) -> Option[str] {
-    std.os.env(key)
-}
-
-/// Get command line arguments.
-pub fn args() -> Vec[str] {
-    std.os.args()
-}
+pub fn abort():
+    if @compiler_intrinsic("is_windows"):
+        ExitProcess(101 as u32)
+    else:
+        let pid = syscall(39 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        syscall(62 as u64, pid as u64, 6 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)

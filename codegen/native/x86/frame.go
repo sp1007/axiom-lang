@@ -137,13 +137,29 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 		if inst.Src1.Kind == OpndVReg {
 			if alloc, ok := allocs[inst.Src1.VReg]; ok && alloc.Spilled {
 				offset := frame.SpillOffset(alloc.SpillIdx)
-				result = append(result, MachInst{
-					Op:   MachLoad,
-					Dst:  Phys(R10), // scratch register for Src1
-					Src1: Phys(RBP),
-					Src2: Imm(int64(offset)),
-				})
-				inst.Src1 = Phys(R10)
+				if alloc.Is16 {
+					offset -= 8
+				}
+				if inst.Op == MachLea && alloc.Is16 {
+					var disp int64
+					if inst.Src2.Kind == OpndImm {
+						disp = inst.Src2.Imm
+					}
+					inst.Src1 = Phys(RBP)
+					inst.Src2 = Imm(int64(offset) + disp)
+				} else {
+					op := MachLoad
+					if alloc.Is16 {
+						op = MachLea
+					}
+					result = append(result, MachInst{
+						Op:   op,
+						Dst:  Phys(R10), // scratch register for Src1
+						Src1: Phys(RBP),
+						Src2: Imm(int64(offset)),
+					})
+					inst.Src1 = Phys(R10)
+				}
 			}
 		}
 
@@ -151,13 +167,20 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 		if inst.Src2.Kind == OpndVReg {
 			if alloc, ok := allocs[inst.Src2.VReg]; ok && alloc.Spilled {
 				offset := frame.SpillOffset(alloc.SpillIdx)
+				if alloc.Is16 {
+					offset -= 8
+				}
+				op := MachLoad
+				if alloc.Is16 {
+					op = MachLea
+				}
 				result = append(result, MachInst{
-					Op:   MachLoad,
-					Dst:  Phys(R10), // fallback scratch
+					Op:   op,
+					Dst:  Phys(R11), // fallback scratch (use R11 to avoid conflict with R10 used for Src1)
 					Src1: Phys(RBP),
 					Src2: Imm(int64(offset)),
 				})
-				inst.Src2 = Phys(R10)
+				inst.Src2 = Phys(R11)
 			}
 		}
 
@@ -174,12 +197,19 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 		if dstSpilled {
 			behavior := getDstBehavior(inst.Op)
 			offset := frame.SpillOffset(dstAlloc.SpillIdx)
+			if dstAlloc.Is16 {
+				offset -= 8
+			}
 
 			switch behavior {
 			case dstReadOnly:
 				// Load Dst into scratch register R11 before instruction
+				op := MachLoad
+				if dstAlloc.Is16 {
+					op = MachLea
+				}
 				result = append(result, MachInst{
-					Op:   MachLoad,
+					Op:   op,
 					Dst:  Phys(R11), // scratch register for Dst
 					Src1: Phys(RBP),
 					Src2: Imm(int64(offset)),
@@ -190,8 +220,12 @@ func InsertSpillCode(insts []MachInst, allocs map[uint32]RegAllocation, frame *S
 
 			case dstReadWrite:
 				// Load Dst into scratch register R11 before instruction
+				op := MachLoad
+				if dstAlloc.Is16 {
+					op = MachLea
+				}
 				result = append(result, MachInst{
-					Op:   MachLoad,
+					Op:   op,
 					Dst:  Phys(R11),
 					Src1: Phys(RBP),
 					Src2: Imm(int64(offset)),

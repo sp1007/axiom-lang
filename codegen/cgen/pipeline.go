@@ -88,33 +88,63 @@ func (p *Pipeline) GenerateC(w io.Writer) error {
 		}
 	}
 
+	// Emit bridge allocator functions for C runtime integration if ActorHeap is defined in the program
+	hasActorHeap := false
+	for idx := 0; idx < p.table.Count(); idx++ {
+		entry := p.table.Entry(types.TypeID(idx))
+		if entry.Kind == types.KindStruct && entry.NameID != 0 && p.intern.Get(entry.NameID) == "ActorHeap" {
+			hasActorHeap = true
+			break
+		}
+	}
+
+	if hasActorHeap {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "/* Bridge allocator functions for C runtime integration */")
+		fmt.Fprintln(w, "struct ax_ActorHeap;")
+		fmt.Fprintln(w, "struct ax_ActorHeap* ax_ax_actor_heap_create(ax_u64 actor_id);")
+		fmt.Fprintln(w, "void ax_ActorHeap_ax_actor_heap_destroy(struct ax_ActorHeap* heap);")
+		fmt.Fprintln(w, "ax_u8* ax_ActorHeap_ax_actor_alloc(struct ax_ActorHeap* heap, ax_i64 user_size);")
+		fmt.Fprintln(w, "void ax_ActorHeap_ax_actor_free(struct ax_ActorHeap* heap, ax_u8* user_ptr);")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "void* ax_actor_heap_create(unsigned long long actor_id) {")
+		fmt.Fprintln(w, "    return (void*)ax_ax_actor_heap_create((ax_u64)actor_id);")
+		fmt.Fprintln(w, "}")
+		fmt.Fprintln(w, "void ax_actor_heap_destroy(void* heap) {")
+		fmt.Fprintln(w, "    ax_ActorHeap_ax_actor_heap_destroy((struct ax_ActorHeap*)heap);")
+		fmt.Fprintln(w, "}")
+		fmt.Fprintln(w, "void* ax_actor_alloc(void* heap, size_t user_size) {")
+		fmt.Fprintln(w, "    return (void*)ax_ActorHeap_ax_actor_alloc((struct ax_ActorHeap*)heap, (ax_i64)user_size);")
+		fmt.Fprintln(w, "}")
+		fmt.Fprintln(w, "void ax_actor_free(void* heap, void* user_ptr) {")
+		fmt.Fprintln(w, "    ax_ActorHeap_ax_actor_free((struct ax_ActorHeap*)heap, (ax_u8*)user_ptr);")
+		fmt.Fprintln(w, "}")
+	}
+
 	return nil
 }
 
 // emitFuncDefs walks all top-level function declarations in the AST and emits
 // their C function definitions with bodies.
 func (p *Pipeline) emitFuncDefs(w io.Writer) {
-	root := p.tree.Node(0) // NodeProgram
-	child := root.FirstChild
-	for child != ast.NullIdx {
-		node := p.tree.Node(child)
-		if node.Kind == ast.NodeFuncDecl {
-			if node.Flags&ast.FlagIsExtern == 0 {
-				p.emitFuncDef(w, child, node)
-			}
-		} else if node.Kind == ast.NodeStructDecl {
-			sChild := node.FirstChild
-			for sChild != ast.NullIdx {
-				sNode := p.tree.Node(sChild)
-				if sNode.Kind == ast.NodeFuncDecl {
-					if sNode.Flags&ast.FlagIsExtern == 0 {
-						p.emitFuncDef(w, sChild, sNode)
-					}
-				}
-				sChild = sNode.NextSibling
+	// 1. Process main tree
+	p.emitTreeFuncDefs(w, p.tree)
+
+	// 2. Process all loaded module trees
+	if p.symbols != nil && p.symbols.LazyResolver != nil {
+		var modKeys []uint32
+		for k := range p.symbols.LazyResolver.GetModules() {
+			modKeys = append(modKeys, k)
+		}
+		sort.Slice(modKeys, func(i, j int) bool {
+			return modKeys[i] < modKeys[j]
+		})
+		for _, k := range modKeys {
+			mod := p.symbols.LazyResolver.GetModules()[k]
+			if mod.AstTree != nil {
+				p.emitTreeFuncDefs(w, mod.AstTree)
 			}
 		}
-		child = node.NextSibling
 	}
 
 	// Process all instantiated generic functions/methods
@@ -133,6 +163,9 @@ func (p *Pipeline) emitFuncDefs(w io.Writer) {
 			declNode := p.tree.Node(sym.DeclNode)
 			if declNode.Kind == ast.NodeFuncDecl {
 				if declNode.Flags&ast.FlagIsExtern == 0 {
+					if sym.TypeID != 0 && isGeneric(p.table, types.TypeID(sym.TypeID), make(map[types.TypeID]bool)) {
+						continue
+					}
 					p.emitFuncDef(w, sym.DeclNode, declNode)
 				}
 			}
@@ -147,7 +180,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 	symIdx := node.Payload
 	if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
 		sym := p.symbols.SymbolAt(symIdx)
-		if sym.Flags&sema.SymFlagGeneric != 0 {
+		if sym.Flags&sema.SymFlagGeneric != 0 || (sym.TypeID != 0 && isGeneric(p.table, types.TypeID(sym.TypeID), make(map[types.TypeID]bool))) {
 			return
 		}
 		nameText = p.intern.Get(sym.NameID)
@@ -175,6 +208,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 				// Collect parameter names and flags from AST children
 				var paramNames []string
 				var paramFlags []uint16
+				var paramIsFuncType []bool
 				c := node.FirstChild
 				for c != ast.NullIdx {
 					cn := p.tree.Node(c)
@@ -191,6 +225,19 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 						}
 						paramNames = append(paramNames, pName)
 						paramFlags = append(paramFlags, cn.Flags)
+
+						// Check if this parameter has a function type in AST
+						isFuncType := false
+						cc := cn.FirstChild
+						for cc != ast.NullIdx {
+							ccn := p.tree.Node(cc)
+							if ccn.Kind == ast.NodeFuncType {
+								isFuncType = true
+								break
+							}
+							cc = ccn.NextSibling
+						}
+						paramIsFuncType = append(paramIsFuncType, isFuncType)
 					}
 					c = cn.NextSibling
 				}
@@ -202,6 +249,9 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 					if i < len(paramNames) {
 						pname = paramNames[i]
 						flags = paramFlags[i]
+						if paramIsFuncType[i] {
+							pt = p.table.RegisterFunction(nil, types.TypeVoid, nil)
+						}
 					}
 					paramStrs = append(paramStrs, EmitParamDecl(pname, pt, flags, p.table, p.intern, queue))
 				}
@@ -237,6 +287,7 @@ func (p *Pipeline) emitFuncDef(w io.Writer, idx uint32, node *ast.AstNode) {
 		queue := NewTypeDeclQueue()
 		sg := NewStmtGen(iw, p.table, p.intern, p.symbols, p.tree, queue)
 		sg.ExprGen.ReturnType = returnTypeID
+		sg.ExprGen.FuncNode = idx
 		sg.EmitFuncBody(bodyIdx)
 		if nameText == "main" {
 			iw.Line("return 0;")
@@ -384,6 +435,10 @@ func buildGCCClangArgs(outputPath, cSrcPath string, opts CompileOptions) []strin
 
 	args = append(args, opts.ExtraSrcs...)
 
+	if runtime.GOOS == "windows" {
+		args = append(args, "-Wl,--no-insert-timestamp")
+	}
+
 	return args
 }
 
@@ -432,4 +487,55 @@ func OutputBinaryName(inputPath string) string {
 		}
 	}
 	return name
+}
+
+func (p *Pipeline) emitTreeFuncDefs(w io.Writer, tree *ast.AstTree) {
+	oldTree := p.tree
+	p.tree = tree
+	defer func() { p.tree = oldTree }()
+
+	root := tree.Node(0) // NodeProgram
+	child := root.FirstChild
+	for child != ast.NullIdx {
+		node := tree.Node(child)
+		if node.Kind == ast.NodeFuncDecl {
+			symIdx := node.Payload
+			name := ""
+			if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
+				sym := p.symbols.SymbolAt(symIdx)
+				name = p.intern.Get(sym.NameID)
+				fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s: flagIsGeneric=%t, symFlagGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, sym.Flags&sema.SymFlagGeneric != 0, node.Flags)
+			} else {
+				name = string(p.tree.TokenText(node.TokenIdx))
+				fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s (no sym): flagIsGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, node.Flags)
+			}
+			if node.Flags&ast.FlagIsGeneric != 0 {
+				child = node.NextSibling
+				continue
+			}
+			if node.Flags&ast.FlagIsExtern == 0 {
+				p.emitFuncDef(w, child, node)
+			}
+		} else if node.Kind == ast.NodeStructDecl {
+			if node.Flags&ast.FlagIsGeneric != 0 {
+				child = node.NextSibling
+				continue
+			}
+			sChild := node.FirstChild
+			for sChild != ast.NullIdx {
+				sNode := tree.Node(sChild)
+				if sNode.Kind == ast.NodeFuncDecl {
+					if sNode.Flags&ast.FlagIsGeneric != 0 {
+						sChild = sNode.NextSibling
+						continue
+					}
+					if sNode.Flags&ast.FlagIsExtern == 0 {
+						p.emitFuncDef(w, sChild, sNode)
+					}
+				}
+				sChild = sNode.NextSibling
+			}
+		}
+		child = node.NextSibling
+	}
 }

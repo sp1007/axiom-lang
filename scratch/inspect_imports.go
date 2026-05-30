@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\valid_actor_spawn.exe")
+	file, err := pe.Open("d:\\projects\\compiler\\Axiom\\scratch\\test_simple.exe")
 	if err != nil {
 		log.Fatalf("Error opening PE: %v", err)
 	}

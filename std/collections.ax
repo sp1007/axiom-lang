@@ -1,265 +1,297 @@
-// AXIOM Standard Library — std::collections
+// AXIOM Standard Library — std.collections
 //
 // Dynamic array (Vec), HashMap, HashSet.
 
-// --------------------------------------------------------------------------
-// Vec[T] — Dynamic Array
-// --------------------------------------------------------------------------
+import std.result
 
-/// A growable, heap-allocated array.
-pub struct Vec[T] {
-    data: ptr[T],     // pointer to heap allocation
-    len: i64,         // number of elements
-    cap: i64,         // allocated capacity
-}
+pub struct Vec[T]:
+    data: ptr[T]     // pointer to heap allocation
+    len: i64         // number of elements
+    cap: i64         // allocated capacity
 
-impl[T] Vec[T] {
-    /// Creates a new empty Vec.
-    pub fn new() -> Vec[T] {
-        Vec { data: null, len: 0, cap: 0 }
-    }
+pub fn new_vec[T]() -> Vec[T]:
+    return Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
 
-    /// Creates a Vec with pre-allocated capacity.
-    pub fn with_capacity(cap: i64) -> Vec[T] {
-        let data = @alloc(cap * @size_of[T]()) as ptr[T]
-        Vec { data: data, len: 0, cap: cap }
-    }
+pub fn with_capacity[T](capacity: i64) -> Vec[T]:
+    if capacity <= 0:
+        return new_vec[T]()
+    let data = @alloc(capacity * (@compiler_intrinsic("size_of")[T]() as i64)) as ptr[T]
+    return Vec[T](data: data, len: 0 as i64, cap: capacity)
 
-    /// Returns the number of elements.
-    pub fn len(self) -> i64 { self.len }
-
-    /// Returns true if the Vec is empty.
-    pub fn is_empty(self) -> bool { self.len == 0 }
-
-    /// Returns the allocated capacity.
-    pub fn capacity(self) -> i64 { self.cap }
-
-    /// Appends an element to the end.
-    pub fn push(mut self, item: T) {
-        if self.len == self.cap {
-            self.grow()
-        }
-        self.data[self.len] = item
-        self.len = self.len + 1
-    }
-
-    /// Removes and returns the last element, or None.
-    pub fn pop(mut self) -> Option[T] {
-        if self.len == 0 {
-            None
-        } else {
-            self.len = self.len - 1
-            Some(self.data[self.len])
-        }
-    }
-
-    /// Returns a reference to the element at index.
-    pub fn get(self, index: i64) -> Option[T] {
-        if index < 0 || index >= self.len {
-            None
-        } else {
-            Some(self.data[index])
-        }
-    }
-
-    /// Sets the element at index.
-    pub fn set(mut self, index: i64, value: T) {
-        assert(index >= 0 && index < self.len, "index out of bounds")
-        self.data[index] = value
-    }
-
-    /// Removes all elements.
-    pub fn clear(mut self) {
-        self.len = 0
-    }
-
-    /// Destroys the Vec, freeing its heap memory.
-    pub fn destroy(mut self) {
-        if self.data != null {
-            @free(self.data)
-            self.data = null
-        }
-        self.len = 0
-        self.cap = 0
-    }
-
-    /// Returns the first element, or None.
-    pub fn first(self) -> Option[T] {
-        self.get(0)
-    }
-
-    /// Returns the last element, or None.
-    pub fn last(self) -> Option[T] {
-        if self.len == 0 { None } else { self.get(self.len - 1) }
-    }
-
-    /// Double capacity when full.
-    fn grow(mut self) {
-        let new_cap = if self.cap == 0 { 8 } else { self.cap * 2 }
-        let new_data = @alloc(new_cap * @size_of[T]()) as ptr[T]
-        @memcpy(new_data, self.data, self.len * @size_of[T]())
-        if self.data != null {
-            @free(self.data)
-        }
+pub fn push[T](mut self: Vec[T], item: T):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let item_size = @compiler_intrinsic("size_of")[T]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[T]
+        if self.data != null as ptr[T]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
+            @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
-    }
-}
+    self.data[self.len] = item
+    self.len = self.len + 1
 
-// --------------------------------------------------------------------------
-// HashMap[K, V] — Hash Map (Robin Hood Open Addressing)
-// --------------------------------------------------------------------------
+pub fn pop[T](mut self: Vec[T]) -> Option[T]:
+    if self.len == 0:
+        return None
+    self.len = self.len - 1
+    return Some(self.data[self.len])
 
-/// A hash map with Robin Hood open addressing.
-pub struct HashMap[K: Hash + Eq, V] {
-    keys:    ptr[K],
-    values:  ptr[V],
-    hashes:  ptr[u64],
-    occupied: ptr[bool],
-    len:     i64,
-    cap:     i64,
-}
+pub fn get[T](self: Vec[T], index: i64) -> Option[T]:
+    if index < 0 or index >= self.len:
+        return None
+    return Some(self.data[index])
 
-impl[K: Hash + Eq, V] HashMap[K, V] {
-    /// Creates a new empty HashMap.
-    pub fn new() -> HashMap[K, V] {
-        HashMap.with_capacity(16)
-    }
+pub fn clear[T](mut self: Vec[T]):
+    self.len = 0
 
-    /// Creates a HashMap with pre-allocated capacity.
-    pub fn with_capacity(cap: i64) -> HashMap[K, V] {
-        let keys     = @alloc(cap * @size_of[K]()) as ptr[K]
-        let values   = @alloc(cap * @size_of[V]()) as ptr[V]
-        let hashes   = @alloc(cap * 8) as ptr[u64]
-        let occupied = @alloc(cap) as ptr[bool]
-        @memset(occupied, 0, cap)
-        HashMap { keys: keys, values: values, hashes: hashes,
-                  occupied: occupied, len: 0, cap: cap }
-    }
+pub fn destroy[T](mut self: Vec[T]):
+    if self.data != null as ptr[T]:
+        @free(self.data as ptr[u8])
+        self.data = null as ptr[T]
+    self.len = 0
+    self.cap = 0
 
-    /// Returns the number of entries.
-    pub fn len(self) -> i64 { self.len }
+// Hash helper supporting all types generically by FNV-1a hashing their bytes.
+// Specialized for 'str' key types by checking size == 16 (since strings contain a ptr + len).
+fn hash_key[K](key: K) -> u64:
+    let ptr = &key as ptr[u8]
+    let size = @compiler_intrinsic("size_of")[K]()
+    if size == 16:
+        // Treat as string key
+        let s = (ptr as ptr[str]).*
+        mut h := 14695981039346656037 as u64
+        mut i := 0 as i64
+        while i < s.len:
+            h = h ^ (s.ptr[i] as u64)
+            h = h * 1099511628211 as u64
+            i = i + 1
+        return h
+    else:
+        // Hash raw bytes
+        mut h := 14695981039346656037 as u64
+        mut i := 0 as i64
+        while i < size:
+            h = h ^ (ptr[i] as u64)
+            h = h * 1099511628211 as u64
+            i = i + 1
+        return h
 
-    /// Returns true if the map is empty.
-    pub fn is_empty(self) -> bool { self.len == 0 }
+pub struct HashMap[K, V]:
+    keys:    ptr[K]
+    values:  ptr[V]
+    hashes:  ptr[u64]
+    occupied: ptr[bool]
+    size:     i64
+    cap:     i64
 
-    /// Insert or update a key-value pair.
-    pub fn insert(mut self, key: K, value: V) {
-        if self.len * 4 >= self.cap * 3 { // 75% load factor
-            self.grow()
-        }
-        let h = hash(key)
-        let mut idx = (h as i64) % self.cap
-        while self.occupied[idx] {
-            if self.keys[idx] == key {
-                self.values[idx] = value // update
-                return
-            }
-            idx = (idx + 1) % self.cap
-        }
-        self.keys[idx] = key
-        self.values[idx] = value
-        self.hashes[idx] = h
-        self.occupied[idx] = true
-        self.len = self.len + 1
-    }
+pub fn new_hashmap[K, V]() -> HashMap[K, V]:
+    return HashMap[K, V](
+        keys: null as ptr[K],
+        values: null as ptr[V],
+        hashes: null as ptr[u64],
+        occupied: null as ptr[bool],
+        size: 0 as i64,
+        cap: 0 as i64
+    )
 
-    /// Get a value by key, or None.
-    pub fn get(self, key: K) -> Option[V] {
-        let h = hash(key)
-        let mut idx = (h as i64) % self.cap
-        while self.occupied[idx] {
-            if self.hashes[idx] == h && self.keys[idx] == key {
-                return Some(self.values[idx])
-            }
-            idx = (idx + 1) % self.cap
-        }
-        None
-    }
+pub fn len[K, V](self: HashMap[K, V]) -> i64:
+    return self.size
 
-    /// Check if a key exists.
-    pub fn contains_key(self, key: K) -> bool {
-        self.get(key).is_some()
-    }
+pub fn insert[K, V](mut self: HashMap[K, V], key: K, value: V):
+    if self.cap == 0:
+        // Initialize capacity to 16
+        self.cap = 16
+        self.keys = @alloc(self.cap * (@compiler_intrinsic("size_of")[K]() as i64)) as ptr[K]
+        self.values = @alloc(self.cap * (@compiler_intrinsic("size_of")[V]() as i64)) as ptr[V]
+        self.hashes = @alloc(self.cap * 8) as ptr[u64]
+        self.occupied = @alloc(self.cap * 1) as ptr[bool]
+        mut i := 0 as i64
+        while i < self.cap:
+            self.occupied[i] = false
+            i = i + 1
 
-    /// Destroys the HashMap, freeing its heap memory.
-    pub fn destroy(mut self) {
-        if self.keys != null {
-            @free(self.keys)
-            self.keys = null
-        }
-        if self.values != null {
-            @free(self.values)
-            self.values = null
-        }
-        if self.hashes != null {
-            @free(self.hashes)
-            self.hashes = null
-        }
-        if self.occupied != null {
-            @free(self.occupied)
-            self.occupied = null
-        }
-        self.len = 0
-        self.cap = 0
-    }
-
-    fn grow(mut self) {
-        // Rehash into doubled table
+    if self.size * 2 >= self.cap:
+        // Resize to double capacity
+        let old_cap = self.cap
         let old_keys = self.keys
         let old_values = self.values
         let old_hashes = self.hashes
         let old_occupied = self.occupied
-        let old_cap = self.cap
 
         self.cap = old_cap * 2
-        self.keys     = @alloc(self.cap * @size_of[K]()) as ptr[K]
-        self.values   = @alloc(self.cap * @size_of[V]()) as ptr[V]
-        self.hashes   = @alloc(self.cap * 8) as ptr[u64]
-        self.occupied = @alloc(self.cap) as ptr[bool]
-        @memset(self.occupied, 0, self.cap)
-        self.len = 0
+        self.keys = @alloc(self.cap * (@compiler_intrinsic("size_of")[K]() as i64)) as ptr[K]
+        self.values = @alloc(self.cap * (@compiler_intrinsic("size_of")[V]() as i64)) as ptr[V]
+        self.hashes = @alloc(self.cap * 8) as ptr[u64]
+        self.occupied = @alloc(self.cap * 1) as ptr[bool]
+        mut i := 0 as i64
+        while i < self.cap:
+            self.occupied[i] = false
+            i = i + 1
 
-        for i in 0..old_cap {
-            if old_occupied[i] {
-                self.insert(old_keys[i], old_values[i])
-            }
-        }
+        self.size = 0
+        mut j := 0 as i64
+        while j < old_cap:
+            if old_occupied[j]:
+                self.insert(old_keys[j], old_values[j])
+            j = j + 1
 
-        @free(old_keys)
-        @free(old_values)
-        @free(old_hashes)
-        @free(old_occupied)
-    }
-}
+        if old_keys != null as ptr[K]:
+            @free(old_keys as ptr[u8])
+            @free(old_values as ptr[u8])
+            @free(old_hashes as ptr[u8])
+            @free(old_occupied as ptr[u8])
 
-// --------------------------------------------------------------------------
-// HashSet[T] — Hash Set (wrapper around HashMap)
-// --------------------------------------------------------------------------
+    mut curr_h := hash_key[K](key)
+    mut curr_key := key
+    mut curr_value := value
+    mut idx := (curr_h % (self.cap as u64)) as i64
+    mut current_dib := 0 as i64
+    mut loop := true
 
-/// A set of unique values.
-pub struct HashSet[T: Hash + Eq] {
-    map: HashMap[T, bool],
-}
+    while loop:
+        if not self.occupied[idx]:
+            self.keys[idx] = curr_key
+            self.values[idx] = curr_value
+            self.hashes[idx] = curr_h
+            self.occupied[idx] = true
+            self.size = self.size + 1
+            loop = false
+        elif self.hashes[idx] == curr_h and self.keys[idx] == curr_key:
+            self.values[idx] = curr_value
+            loop = false
+        else:
+            let resident_h = self.hashes[idx]
+            let resident_dib = (idx - (resident_h % (self.cap as u64)) as i64 + self.cap) % self.cap
+            if current_dib > resident_dib:
+                let tmp_key = self.keys[idx]
+                let tmp_value = self.values[idx]
+                let tmp_h = resident_h
 
-impl[T: Hash + Eq] HashSet[T] {
-    pub fn new() -> HashSet[T] {
-        HashSet { map: HashMap.new() }
-    }
+                self.keys[idx] = curr_key
+                self.values[idx] = curr_value
+                self.hashes[idx] = curr_h
 
-    pub fn len(self) -> i64 { self.map.len() }
-    pub fn is_empty(self) -> bool { self.map.is_empty() }
+                curr_key = tmp_key
+                curr_value = tmp_value
+                curr_h = tmp_h
+                current_dib = resident_dib
 
-    pub fn insert(mut self, value: T) {
-        self.map.insert(value, true)
-    }
+            idx = (idx + 1) % self.cap
+            current_dib = current_dib + 1
 
-    pub fn contains(self, value: T) -> bool {
-        self.map.contains_key(value)
-    }
+pub fn get[K, V](self: HashMap[K, V], key: K) -> Option[V]:
+    if self.cap == 0:
+        return None
+    let h = hash_key[K](key)
+    mut idx := (h % (self.cap as u64)) as i64
+    mut current_dib := 0 as i64
+    mut loop := true
 
-    /// Destroys the HashSet, freeing its heap memory.
-    pub fn destroy(mut self) {
-        self.map.destroy()
-    }
-}
+    while loop:
+        if not self.occupied[idx]:
+            return None
+        elif self.hashes[idx] == h and self.keys[idx] == key:
+            return Some(self.values[idx])
+        else:
+            let resident_h = self.hashes[idx]
+            let resident_dib = (idx - (resident_h % (self.cap as u64)) as i64 + self.cap) % self.cap
+            if current_dib > resident_dib:
+                return None
+            idx = (idx + 1) % self.cap
+            current_dib = current_dib + 1
+            if current_dib >= self.cap:
+                return None
+
+pub fn remove[K, V](mut self: HashMap[K, V], key: K) -> bool:
+    if self.cap == 0:
+        return false
+    let h = hash_key[K](key)
+    mut idx := (h % (self.cap as u64)) as i64
+    mut current_dib := 0 as i64
+    mut found := false
+
+    mut loop := true
+    while loop:
+        if not self.occupied[idx]:
+            return false
+        elif self.hashes[idx] == h and self.keys[idx] == key:
+            found = true
+            loop = false
+        else:
+            let resident_h = self.hashes[idx]
+            let resident_dib = (idx - (resident_h % (self.cap as u64)) as i64 + self.cap) % self.cap
+            if current_dib > resident_dib:
+                return false
+            idx = (idx + 1) % self.cap
+            current_dib = current_dib + 1
+            if current_dib >= self.cap:
+                return false
+
+    if not found:
+        return false
+
+    // Found it! Shift subsequent elements backward
+    self.size = self.size - 1
+    mut curr := idx
+    mut next := (idx + 1) % self.cap
+    mut shift_loop := true
+
+    while shift_loop:
+        if not self.occupied[next]:
+            self.occupied[curr] = false
+            shift_loop = false
+        else:
+            let next_h = self.hashes[next]
+            let next_dib = (next - (next_h % (self.cap as u64)) as i64 + self.cap) % self.cap
+            if next_dib == 0 as i64:
+                self.occupied[curr] = false
+                shift_loop = false
+            else:
+                self.keys[curr] = self.keys[next]
+                self.values[curr] = self.values[next]
+                self.hashes[curr] = next_h
+                self.occupied[curr] = true
+                curr = next
+                next = (next + 1) % self.cap
+    return true
+
+pub fn destroy[K, V](mut self: HashMap[K, V]):
+    if self.keys != null as ptr[K]:
+        @free(self.keys as ptr[u8])
+        @free(self.values as ptr[u8])
+        @free(self.hashes as ptr[u8])
+        @free(self.occupied as ptr[u8])
+        self.keys = null as ptr[K]
+        self.values = null as ptr[V]
+        self.hashes = null as ptr[u64]
+        self.occupied = null as ptr[bool]
+    self.size = 0
+    self.cap = 0
+
+pub struct HashSet[T]:
+    map: HashMap[T, bool]
+
+pub fn new_hashset[T]() -> HashSet[T]:
+    return HashSet[T](map: new_hashmap[T, bool]())
+
+pub fn len[T](self: HashSet[T]) -> i64:
+    return self.map.len()
+
+pub fn contains[T](self: HashSet[T], item: T) -> bool:
+    match self.map.get(item):
+        Some(_): true
+        None: false
+
+pub fn insert[T](mut self: HashSet[T], item: T) -> bool:
+    let exists = self.contains(item)
+    self.map.insert(item, true)
+    return not exists
+
+pub fn remove[T](mut self: HashSet[T], item: T) -> bool:
+    return self.map.remove(item)
+
+pub fn destroy[T](mut self: HashSet[T]):
+    self.map.destroy()

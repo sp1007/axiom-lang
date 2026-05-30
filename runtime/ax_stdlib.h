@@ -19,20 +19,42 @@ extern "C" {
  * String Operations (std::string)
  * ================================================================ */
 
-ax_i64    ax_str_len(ax_string s);
-ax_i64    ax_str_char_count(ax_string s);
+#ifdef AX_NATIVE_LINK
+ax_string* ax_str_concat(ax_string* a, ax_string* b);
+ax_string* ax_str_slice(ax_string* s, ax_i64 start, ax_i64 end);
+ax_string* ax_str_trim(ax_string* s);
+ax_string* ax_str_replace(ax_string* s, ax_string* old, ax_string* new_val);
+ax_string* ax_i64_to_str(ax_i64 value);
+ax_string* ax_f64_to_str(ax_f64 value);
+ax_string* ax_bool_to_str(ax_bool value);
+#else
 ax_string ax_str_concat(ax_string a, ax_string b);
 ax_string ax_str_slice(ax_string s, ax_i64 start, ax_i64 end);
-ax_bool   ax_str_contains(ax_string s, ax_string sub);
-ax_bool   ax_str_starts_with(ax_string s, ax_string prefix);
-ax_bool   ax_str_ends_with(ax_string s, ax_string suffix);
-ax_i64    ax_str_index_of(ax_string s, ax_string sub);
 ax_string ax_str_trim(ax_string s);
-ax_bool   ax_str_eq(ax_string a, ax_string b);
 ax_string ax_str_replace(ax_string s, ax_string old, ax_string new_val);
 ax_string ax_i64_to_str(ax_i64 value);
 ax_string ax_f64_to_str(ax_f64 value);
 ax_string ax_bool_to_str(ax_bool value);
+#endif
+
+ax_i64    ax_str_len(ax_string s);
+ax_i64    ax_str_char_count(ax_string s);
+ax_bool   ax_str_contains(ax_string s, ax_string sub);
+ax_bool   ax_str_starts_with(ax_string s, ax_string prefix);
+ax_bool   ax_str_ends_with(ax_string s, ax_string suffix);
+ax_i64    ax_str_index_of(ax_string s, ax_string sub);
+ax_bool   ax_str_eq(ax_string a, ax_string b);
+ax_string ax_str_to_upper(ax_string s);
+ax_string ax_str_to_lower(ax_string s);
+ax_string ax_str_repeat(ax_string s, ax_i64 count);
+ax_bool   ax_str_parse_i64(const char* s, ax_i64* out_val);
+ax_bool   ax_str_parse_f64(const char* s, ax_f64* out_val);
+ax_bool   ax_str_is_valid_utf8(ax_string s);
+void*     ax_str_split(ax_string s, ax_string sep);
+ax_u8* ax_string_get_char_ptr(void* s);
+ax_u8* ax_string_get_ptr(ax_string s);
+struct ax_AxiomString;
+ax_u8* ax_string_get_ptr_val(struct ax_AxiomString s);
 
 /* ================================================================
  * Print / Format (std::fmt) — type-dispatched by codegen

@@ -20,6 +20,11 @@ pub const SYM_BUILTIN_TYPE: u8 = 10
 pub const SYM_ENUM_VARIANT: u8 = 11
 pub const SYM_CONST: u8 = 12
 
+// Module loading status constants
+pub const MODULE_UNLOADED: u8 = 0
+pub const MODULE_LOADING: u8 = 1
+pub const MODULE_LOADED: u8 = 2
+
 // SymFlags constants
 pub const SYM_FLAG_PUB: u16 = 1
 pub const SYM_FLAG_MUT: u16 = 2
@@ -67,7 +72,7 @@ pub struct Scope:
     count: u32
     capacity: u32
 
-pub fn init_scope(mut self: Scope, kind: u8, parent_id: u32, depth: u32, capacity: u32):
+pub fn init_scope(mut self: ptr[Scope], kind: u8, parent_id: u32, depth: u32, capacity: u32):
     self.kind = kind
     self.parent_id = parent_id
     self.depth = depth
@@ -92,23 +97,27 @@ fn hash_fnv1a(v: u32) -> u32:
     hash = hash * 16777619 as u32
     return hash
 
-pub fn scope_put(mut self: Scope, name_id: u32, symbol_idx: u32):
+pub fn scope_put(mut self: ptr[Scope], name_id: u32, symbol_idx: u32):
     if self.count * 4 as u32 > self.capacity * 3 as u32:
         self.scope_grow()
-    self.scope_insert(name_id, symbol_idx)
-    self.count = self.count + 1 as u32
+    let is_new = self.scope_insert(name_id, symbol_idx)
+    if is_new:
+        self.count = self.count + 1 as u32
 
-fn scope_insert(self: Scope, name_id: u32, symbol_idx: u32):
+fn scope_insert(self: ptr[Scope], name_id: u32, symbol_idx: u32) -> bool:
     let mask = self.capacity - 1 as u32
     mut idx = hash_fnv1a(name_id) & mask
     while true:
+        if self.entries[idx].name_id == name_id:
+            self.entries[idx].symbol_idx = symbol_idx
+            return false
         if self.entries[idx].name_id == 0 as u32:
             self.entries[idx].name_id = name_id
             self.entries[idx].symbol_idx = symbol_idx
-            return
+            return true
         idx = (idx + 1 as u32) & mask
 
-pub fn scope_get(self: Scope, name_id: u32) -> ScopeEntry:
+pub fn scope_get(self: ptr[Scope], name_id: u32) -> ScopeEntry:
     if self.capacity == 0 as u32:
         return ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
     let mask = self.capacity - 1 as u32
@@ -125,7 +134,7 @@ pub fn scope_get(self: Scope, name_id: u32) -> ScopeEntry:
             break
     return ScopeEntry(name_id: 0 as u32, symbol_idx: 0 as u32)
 
-fn scope_grow(mut self: Scope):
+fn scope_grow(mut self: ptr[Scope]):
     let old_entries = self.entries
     let old_capacity = self.capacity
     let new_cap = old_capacity * 2 as u32
@@ -153,7 +162,7 @@ pub struct SymbolVec:
 pub fn new_symbol_vec() -> SymbolVec:
     return SymbolVec(data: null as ptr[Symbol], len: 0, cap: 0)
 
-pub fn push(mut self: SymbolVec, sym: Symbol) -> u32:
+pub fn push(mut self: ptr[SymbolVec], sym: Symbol) -> u32:
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
@@ -177,7 +186,7 @@ pub struct ScopeVec:
 pub fn new_scope_vec() -> ScopeVec:
     return ScopeVec(data: null as ptr[Scope], len: 0, cap: 0)
 
-pub fn push(mut self: ScopeVec, scope: Scope) -> u32:
+pub fn push(mut self: ptr[ScopeVec], scope: Scope) -> u32:
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
@@ -201,7 +210,7 @@ pub struct U32Vec:
 pub fn new_u32_vec() -> U32Vec:
     return U32Vec(data: null as ptr[u32], len: 0, cap: 0)
 
-pub fn push(mut self: U32Vec, val: u32) -> u32:
+pub fn push(mut self: ptr[U32Vec], val: u32) -> u32:
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
@@ -217,13 +226,13 @@ pub fn push(mut self: U32Vec, val: u32) -> u32:
     self.len = self.len + 1
     return idx
 
-pub fn pop(mut self: U32Vec) -> u32:
+pub fn pop(mut self: ptr[U32Vec]) -> u32:
     if self.len == 0:
         return 0 as u32
     self.len = self.len - 1
     return self.data[self.len]
 
-pub fn append_unique(mut self: U32Vec, val: u32) -> u32:
+pub fn append_unique(mut self: ptr[U32Vec], val: u32) -> u32:
     mut i := 0 as i64
     while i < self.len:
         if self.data[i] == val:
@@ -231,21 +240,131 @@ pub fn append_unique(mut self: U32Vec, val: u32) -> u32:
         i = i + 1
     return self.push(val)
 
+pub struct ModuleExport:
+    name_id: u32
+    symbol_idx: u32
+
+pub struct ModuleExportVec:
+    pub data: ptr[ModuleExport]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_module_export_vec() -> ModuleExportVec:
+    return ModuleExportVec(data: null as ptr[ModuleExport], len: 0, cap: 0)
+
+pub fn push(mut self: ptr[ModuleExportVec], val: ModuleExport) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 8) as ptr[ModuleExport] // ModuleExport is 8 bytes
+        if self.data != null as ptr[ModuleExport]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = val
+    self.len = self.len + 1
+    return idx
+
+pub struct ModuleInfo:
+    name_id: u32
+    status: u8
+    padding1: u8
+    padding2: u16
+    exports: ModuleExportVec
+    ast_tree: ptr[AstTree]
+    file_path: str
+    node_types: ptr[void]
+    src_buffer: ptr[void]
+    tokens_data: ptr[void]
+    src_leak: str
+    tokens_leak: TokenVec
+
+pub struct ModuleInfoPtrVec:
+    pub data: ptr[ptr[ModuleInfo]]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_module_info_ptr_vec() -> ModuleInfoPtrVec:
+    return ModuleInfoPtrVec(data: null as ptr[ptr[ModuleInfo]], len: 0, cap: 0)
+
+pub fn push(mut self: ptr[ModuleInfoPtrVec], val: ptr[ModuleInfo]) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 8) as ptr[ptr[ModuleInfo]] // pointer is 8 bytes
+        if self.data != null as ptr[ptr[ModuleInfo]]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = val
+    self.len = self.len + 1
+    return idx
+
+pub struct LazyResolver:
+    modules: ModuleInfoPtrVec
+    symtable: ptr[SymbolTable]
+    typetable: ptr[void]
+    intern: ptr[void]
+
+pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[LazyResolver]:
+    let lr = @alloc(@compiler_intrinsic("size_of")[LazyResolver]()) as ptr[LazyResolver]
+    lr.modules = new_module_info_ptr_vec()
+    lr.symtable = symtable
+    lr.typetable = null as ptr[void]
+    lr.intern = intern
+    return lr
+
+pub struct AstTreePtrVec:
+    pub data: ptr[ptr[AstTree]]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_ast_tree_ptr_vec() -> AstTreePtrVec:
+    return AstTreePtrVec(data: null as ptr[ptr[AstTree]], len: 0, cap: 0)
+
+pub fn push(mut self: ptr[AstTreePtrVec], val: ptr[AstTree]) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 8) as ptr[ptr[AstTree]]
+        if self.data != null as ptr[ptr[AstTree]]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = val
+    self.len = self.len + 1
+    return idx
+
 pub struct SymbolTable:
     symbols: SymbolVec
     scopes: ScopeVec
     stack: U32Vec
+    lazy_resolver: ptr[void]
+    pub current_tree: ptr[AstTree]
+    pub symbol_trees: AstTreePtrVec
 
-pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
-    mut st := SymbolTable(
-        symbols: new_symbol_vec(),
-        scopes: new_scope_vec(),
-        stack: new_u32_vec(),
-    )
+pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
+    let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
+    st.symbols = new_symbol_vec()
+    st.scopes = new_scope_vec()
+    st.stack = new_u32_vec()
+    st.lazy_resolver = null as ptr[void]
+    st.current_tree = null as ptr[AstTree]
+    st.symbol_trees = new_ast_tree_ptr_vec()
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
-    global_scope.init_scope(SCOPE_GLOBAL, 0 as u32, 0 as u32, 64 as u32)
+    let p_global = &global_scope
+    p_global.init_scope(SCOPE_GLOBAL, 0 as u32, 0 as u32, 64 as u32)
     st.scopes.push(global_scope)
     st.stack.push(0 as u32)
 
@@ -286,96 +405,127 @@ pub fn new_symbol_table(mut intern: InternPool) -> SymbolTable:
     st.define_builtin("syscall4", 0, intern)
     st.define_builtin("syscall5", 0, intern)
     st.define_builtin("syscall6", 0, intern)
+    st.define_builtin("Result", 0, intern)
+    st.define_builtin("Option", 0, intern)
+    st.define_builtin("Vec", 0, intern)
 
     return st
 
-pub fn define_builtin(mut self: SymbolTable, name: str, type_id: u32, mut intern: InternPool):
+pub fn define_builtin(mut self: ptr[SymbolTable], name: str, type_id: u32, mut intern: ptr[InternPool]):
     let name_id = intern.intern_string(name)
     let sym_idx = self.symbols.len as u32
-    self.symbols.push(Symbol(
+    (&self.symbols).push(Symbol(
         name_id: name_id,
         kind: SYM_BUILTIN_TYPE,
+        padding: 0 as u8,
         flags: SYM_FLAG_PUB,
         type_id: type_id,
         decl_node: 0 as u32,
         scope_id: 0 as u32,
         next_overload: 0 as u32,
     ))
-    self.scopes.data[0].scope_put(name_id, sym_idx)
+    (&self.symbol_trees).push(null as ptr[AstTree])
+    let scope = &self.scopes.data[0]
+    scope.scope_put(name_id, sym_idx)
 
-pub fn push_scope(mut self: SymbolTable, kind: u8) -> u32:
+pub fn push_scope(mut self: ptr[SymbolTable], kind: u8) -> u32:
     let parent_id = self.current_scope()
     let depth = self.current_depth() + 1 as u32
     mut new_scope := Scope(kind: kind, padding1: 0 as u8, padding2: 0 as u16, parent_id: parent_id, depth: depth, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
-    new_scope.init_scope(kind, parent_id, depth, 16 as u32)
-    let idx = self.scopes.push(new_scope)
-    self.stack.push(idx)
+    (&new_scope).init_scope(kind, parent_id, depth, 16 as u32)
+    let idx = (&self.scopes).push(new_scope)
+    (&self.stack).push(idx)
     return idx
 
-pub fn pop_scope(mut self: SymbolTable):
-    self.stack.pop()
+pub fn pop_scope(mut self: ptr[SymbolTable]):
+    (&self.stack).pop()
 
-pub fn current_scope(self: SymbolTable) -> u32:
+pub fn current_scope(self: ptr[SymbolTable]) -> u32:
     return self.stack.data[self.stack.len - 1]
 
-pub fn current_depth(self: SymbolTable) -> u32:
+pub fn current_depth(self: ptr[SymbolTable]) -> u32:
     return (self.stack.len - 1) as u32
 
-pub fn define(mut self: SymbolTable, name_id: u32, kind: u8, flags: u16, decl_node: u32) -> u32:
+pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, decl_node: u32) -> u32:
     let scope_idx = self.current_scope()
-    // printf("[DEBUG-RESOLVER-DEFINE] name_id=%d, kind=%d, scope_idx=%d, len=%d\n", name_id as i64, kind as i64, scope_idx as i64, self.symbols.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     // Check duplicate in current scope
-    let prev = self.scopes.data[scope_idx].scope_get(name_id)
+    let scope = &self.scopes.data[scope_idx]
+    let prev = scope.scope_get(name_id)
     if prev.name_id != 0 as u32:
-        // printf("  [COLLISION] prev.name_id=%d, prev.symbol_idx=%d\n", prev.name_id as i64, prev.symbol_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        // Support function overloading
-        if self.symbols.data[prev.symbol_idx].kind == SYM_FUNC and kind == SYM_FUNC:
-            mut curr_idx := prev.symbol_idx
-            while true:
-                if self.symbols.data[curr_idx].next_overload == 0 as u32:
-                    break
-                curr_idx = self.symbols.data[curr_idx].next_overload
+        if self.symbols.data[prev.symbol_idx].kind == SYM_BUILTIN_TYPE:
             let sym_idx = self.symbols.len as u32
-            self.symbols.push(Symbol(
+            (&self.symbols).push(Symbol(
                 name_id: name_id,
                 kind: kind,
+                padding: 0 as u8,
                 flags: flags,
                 type_id: 0 as u32,
                 decl_node: decl_node,
                 scope_id: scope_idx,
                 next_overload: 0 as u32,
             ))
+            (&self.symbol_trees).push(self.current_tree)
+            let scope3 = &self.scopes.data[scope_idx]
+            scope3.scope_put(name_id, sym_idx)
+            return sym_idx
+        // printf("  [COLLISION] prev.name_id=%d, prev.symbol_idx=%d\n", prev.name_id as i64, prev.symbol_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // Support function overloading
+        if self.symbols.data[prev.symbol_idx].kind == SYM_FUNC and kind == SYM_FUNC:
+            mut curr_idx := prev.symbol_idx
+            while true:
+                if self.symbols.data[curr_idx].decl_node == decl_node:
+                    return curr_idx
+                if self.symbols.data[curr_idx].next_overload == 0 as u32:
+                    break
+                curr_idx = self.symbols.data[curr_idx].next_overload
+            let sym_idx = self.symbols.len as u32
+            (&self.symbols).push(Symbol(
+                name_id: name_id,
+                kind: kind,
+                padding: 0 as u8,
+                flags: flags,
+                type_id: 0 as u32,
+                decl_node: decl_node,
+                scope_id: scope_idx,
+                next_overload: 0 as u32,
+            ))
+            (&self.symbol_trees).push(self.current_tree)
             self.symbols.data[curr_idx].next_overload = sym_idx
             return sym_idx
         return prev.symbol_idx // Already defined, return previous
     let sym_idx = self.symbols.len as u32
-    self.symbols.push(Symbol(
+    (&self.symbols).push(Symbol(
         name_id: name_id,
         kind: kind,
+        padding: 0 as u8,
         flags: flags,
         type_id: 0 as u32,
         decl_node: decl_node,
         scope_id: scope_idx,
         next_overload: 0 as u32,
     ))
-    self.scopes.data[scope_idx].scope_put(name_id, sym_idx)
+    (&self.symbol_trees).push(self.current_tree)
+    let scope2 = &self.scopes.data[scope_idx]
+    scope2.scope_put(name_id, sym_idx)
     return sym_idx
 
-pub fn resolve(self: SymbolTable, name_id: u32) -> u32:
+pub fn resolve(self: ptr[SymbolTable], name_id: u32) -> u32:
     mut i := self.stack.len - 1
     while i >= 0:
         let scope_idx = self.stack.data[i]
-        let entry = self.scopes.data[scope_idx].scope_get(name_id)
+        let scope = &self.scopes.data[scope_idx]
+        let entry = scope.scope_get(name_id)
         if entry.name_id != 0 as u32:
             return entry.symbol_idx
         i = i - 1
     return 0 as u32
 
-pub fn resolve_type(self: SymbolTable, name_id: u32) -> u32:
+pub fn resolve_type(self: ptr[SymbolTable], name_id: u32) -> u32:
     mut i := self.stack.len - 1
     while i >= 0:
         let scope_idx = self.stack.data[i]
-        let entry = self.scopes.data[scope_idx].scope_get(name_id)
+        let scope = &self.scopes.data[scope_idx]
+        let entry = scope.scope_get(name_id)
         if entry.name_id != 0 as u32:
             let sym_idx = entry.symbol_idx
             let sym = self.symbols.data[sym_idx]
@@ -385,26 +535,84 @@ pub fn resolve_type(self: SymbolTable, name_id: u32) -> u32:
     return 0 as u32
 
 pub struct NameResolver:
-    tree: AstTree
-    intern: InternPool
-    symtable: SymbolTable
+    tree: ptr[AstTree]
+    intern: ptr[InternPool]
+    symtable: ptr[SymbolTable]
+    lazy: ptr[LazyResolver]
 
-pub fn new_name_resolver(tree: AstTree, intern: InternPool, symtable: SymbolTable) -> NameResolver:
-    return NameResolver(tree: tree, intern: intern, symtable: symtable)
+pub fn new_name_resolver(tree: ptr[AstTree], intern: ptr[InternPool], symtable: ptr[SymbolTable]) -> ptr[NameResolver]:
+    let nr = @alloc(@compiler_intrinsic("size_of")[NameResolver]()) as ptr[NameResolver]
+    nr.tree = tree
+    nr.intern = intern
+    nr.symtable = symtable
+    nr.lazy = symtable.lazy_resolver as ptr[LazyResolver]
+    symtable.current_tree = tree
+    return nr
 
-pub fn resolve(mut self: NameResolver):
+pub fn pre_define_top_levels(mut self: ptr[NameResolver]):
     if self.tree.nodes.len == 0:
         return
+    let root = &self.tree.nodes.data[0]
+    mut child := root.first_child
+    while child != 0 as u32:
+        let child_node = &self.tree.nodes.data[child]
+        let kind = child_node.kind
+        let flags = child_node.flags
+        if kind == NODE_FUNC_DECL:
+            let name_id = child_node.payload
+            mut sym_flags := 0 as u16
+            if (flags & FLAG_IS_PUB) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_PUB
+            if (flags & FLAG_IS_EXTERN) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_EXTERN
+            if (flags & FLAG_IS_ASYNC) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_ASYNC
+            if (flags & FLAG_IS_GENERIC) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_GENERIC
+            self.symtable.define(name_id, SYM_FUNC, sym_flags, child)
+        elif kind == NODE_STRUCT_DECL:
+            let name_id = child_node.payload
+            mut sym_flags := 0 as u16
+            if (flags & FLAG_IS_PUB) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_PUB
+            if (flags & FLAG_IS_GENERIC) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_GENERIC
+            self.symtable.define(name_id, SYM_STRUCT, sym_flags, child)
+        elif kind == NODE_INTERFACE_DECL:
+            let name_id = child_node.payload
+            mut sym_flags := 0 as u16
+            if (flags & FLAG_IS_PUB) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_PUB
+            self.symtable.define(name_id, SYM_INTERFACE, sym_flags, child)
+        elif kind == NODE_CONST_DECL:
+            let name_id = child_node.payload
+            mut sym_flags := 0 as u16
+            if (flags & FLAG_IS_PUB) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_PUB
+            self.symtable.define(name_id, SYM_CONST, sym_flags, child)
+        elif kind == NODE_TYPE_ALIAS_DECL:
+            let name_id = child_node.payload
+            mut sym_flags := 0 as u16
+            if (flags & FLAG_IS_PUB) != 0 as u16:
+                sym_flags = sym_flags | SYM_FLAG_PUB
+            self.symtable.define(name_id, SYM_TYPE_ALIAS, sym_flags, child)
+        child = child_node.next_sibling
+
+pub fn resolve(mut self: ptr[NameResolver]):
+    if self.tree.nodes.len == 0:
+        return
+    self.symtable.current_tree = self.tree
+    self.pre_define_top_levels()
     self.resolve_node(0 as u32)
 
-pub fn resolve_children(mut self: NameResolver, node_idx: u32):
+pub fn resolve_children(mut self: ptr[NameResolver], node_idx: u32):
     let node = self.tree.nodes.data[node_idx]
     mut child := node.first_child
     while child != 0 as u32:
         self.resolve_node(child)
         child = self.tree.nodes.data[child].next_sibling
 
-pub fn resolve_node(mut self: NameResolver, node_idx: u32):
+pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
     let kind = self.tree.nodes.data[node_idx].kind
     let flags = self.tree.nodes.data[node_idx].flags
 
@@ -413,24 +621,42 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
 
     elif kind == NODE_IMPORT_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
-        let sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, node_idx)
-        self.tree.nodes.data[node_idx].payload = sym_idx
+        mut sym_idx := 0 as u32
         
-        let name = self.intern.get(name_id)
-        if name == "std.string":
-            let len_name = self.intern.intern_string("std.string.len")
-            self.symtable.define(len_name, SYM_FUNC, 0 as u16, node_idx)
-            let slice_name = self.intern.intern_string("std.string.slice")
-            self.symtable.define(slice_name, SYM_FUNC, 0 as u16, node_idx)
-            let concat_name = self.intern.intern_string("std.string.concat")
-            self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
-            let replace_name = self.intern.intern_string("std.string.replace")
-            self.symtable.define(replace_name, SYM_FUNC, 0 as u16, node_idx)
-        elif name == "std.os":
-            let args_name = self.intern.intern_string("std.os.args")
-            self.symtable.define(args_name, SYM_FUNC, 0 as u16, node_idx)
-            let env_name = self.intern.intern_string("std.os.env")
-            self.symtable.define(env_name, SYM_FUNC, 0 as u16, node_idx)
+        if self.lazy != null as ptr[LazyResolver]:
+            let mod_name = self.intern.get(name_id)
+            mut file_path := ""
+            if std.string.starts_with(mod_name, "std."):
+                let rel_path = std.string.replace(mod_name, ".", "/")
+                file_path = std.string.concat(rel_path, ".ax")
+                @free(get_str_ptr(rel_path))
+            else:
+                file_path = std.string.concat(mod_name, ".ax")
+            
+            sym_idx = self.lazy.lazy_resolver_register_import(name_id, file_path, node_idx)
+            let _ = self.lazy.lazy_resolver_preload_module(name_id)
+            @free(get_str_ptr(mod_name))
+        else:
+            sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, node_idx)
+            
+            let name = self.intern.get(name_id)
+            if name == "std.string":
+                let len_name = self.intern.intern_string("std.string.len")
+                self.symtable.define(len_name, SYM_FUNC, 0 as u16, node_idx)
+                let slice_name = self.intern.intern_string("std.string.slice")
+                self.symtable.define(slice_name, SYM_FUNC, 0 as u16, node_idx)
+                let concat_name = self.intern.intern_string("std.string.concat")
+                self.symtable.define(concat_name, SYM_FUNC, 0 as u16, node_idx)
+                let replace_name = self.intern.intern_string("std.string.replace")
+                self.symtable.define(replace_name, SYM_FUNC, 0 as u16, node_idx)
+            elif name == "std.os":
+                let args_name = self.intern.intern_string("std.os.args")
+                self.symtable.define(args_name, SYM_FUNC, 0 as u16, node_idx)
+                let env_name = self.intern.intern_string("std.os.env")
+                self.symtable.define(env_name, SYM_FUNC, 0 as u16, node_idx)
+            @free(get_str_ptr(name))
+            
+        self.tree.nodes.data[node_idx].payload = sym_idx
 
     elif kind == NODE_FIELD_EXPR:
         let lhs_idx = self.tree.nodes.data[node_idx].first_child
@@ -443,12 +669,31 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
                 let rhs_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
                 let full_name = std.string.concat(lhs_name, std.string.concat(".", rhs_name))
                 let full_name_id = self.intern.intern_string(full_name)
-                let sym_idx = self.symtable.resolve(full_name_id)
-                if sym_idx != 0 as u32:
-                    let sym = self.symtable.symbols.data[sym_idx]
-                    if sym.kind == SYM_MODULE:
-                        self.tree.nodes.data[node_idx].payload = sym_idx
-                        is_module_import = true
+                
+                if self.lazy != null as ptr[LazyResolver]:
+                    let lhs_sym_idx = self.symtable.resolve(lhs_node.payload)
+                    if lhs_sym_idx != 0 as u32:
+                        let lhs_sym = self.symtable.symbols.data[lhs_sym_idx]
+                        if lhs_sym.kind == SYM_MODULE:
+                            let rhs_name_id = self.tree.nodes.data[node_idx].payload
+                            let resolved_idx = self.lazy.lazy_resolver_resolve_field(lhs_sym.name_id, rhs_name_id)
+                            if resolved_idx != 0 as u32:
+                                self.tree.nodes.data[node_idx].payload = resolved_idx
+                                self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | 2048 as u16
+                                self.symtable.symbols.data[resolved_idx].flags = self.symtable.symbols.data[resolved_idx].flags | SYM_FLAG_USED
+                                is_module_import = true
+                
+                if not is_module_import:
+                    let sym_idx = self.symtable.resolve(full_name_id)
+                    if sym_idx != 0 as u32:
+                        let sym = self.symtable.symbols.data[sym_idx]
+                        if sym.kind == SYM_MODULE:
+                            self.tree.nodes.data[node_idx].payload = sym_idx
+                            self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | 2048 as u16
+                            is_module_import = true
+                @free(get_str_ptr(full_name))
+                @free(get_str_ptr(lhs_name))
+                @free(get_str_ptr(rhs_name))
                         
             if not is_module_import:
                 self.resolve_node(lhs_idx)
@@ -458,13 +703,25 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
                     if sym_idx != 0 as u32:
                         let sym = self.symtable.symbols.data[sym_idx]
                         if sym.kind == SYM_MODULE:
-                            let field_name = self.intern.get(self.tree.nodes.data[node_idx].payload)
-                            let module_name = self.intern.get(sym.name_id)
-                            let full_name = std.string.concat(module_name, std.string.concat(".", field_name))
-                            let full_name_id = self.intern.intern_string(full_name)
-                            let resolved_idx = self.symtable.resolve(full_name_id)
+                            let field_name_id = self.tree.nodes.data[node_idx].payload
+                            
+                            mut resolved_idx := 0 as u32
+                            if self.lazy != null as ptr[LazyResolver]:
+                                resolved_idx = self.lazy.lazy_resolver_resolve_field(sym.name_id, field_name_id)
+                                
+                            if resolved_idx == 0 as u32:
+                                let field_name = self.intern.get(field_name_id)
+                                let module_name = self.intern.get(sym.name_id)
+                                let full_name = std.string.concat(module_name, std.string.concat(".", field_name))
+                                let full_name_id = self.intern.intern_string(full_name)
+                                resolved_idx = self.symtable.resolve(full_name_id)
+                                @free(get_str_ptr(full_name))
+                                @free(get_str_ptr(field_name))
+                                @free(get_str_ptr(module_name))
+                                
                             if resolved_idx != 0 as u32:
                                 self.tree.nodes.data[node_idx].payload = resolved_idx
+                                self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | 2048 as u16
                                 self.symtable.symbols.data[resolved_idx].flags = self.symtable.symbols.data[resolved_idx].flags | SYM_FLAG_USED
 
     elif kind == NODE_FUNC_DECL:
@@ -476,6 +733,8 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
             sym_flags = sym_flags | SYM_FLAG_EXTERN
         if (flags & FLAG_IS_ASYNC) != 0 as u16:
             sym_flags = sym_flags | SYM_FLAG_ASYNC
+        if (flags & FLAG_IS_GENERIC) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_GENERIC
 
         let sym_idx = self.symtable.define(name_id, SYM_FUNC, sym_flags, node_idx)
         self.tree.nodes.data[node_idx].payload = sym_idx
@@ -514,6 +773,11 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
         self.resolve_children(node_idx)
         self.symtable.pop_scope()
 
+    elif kind == NODE_METHOD_SIG:
+        self.symtable.push_scope(SCOPE_FUNCTION)
+        self.resolve_children(node_idx)
+        self.symtable.pop_scope()
+
     elif kind == NODE_VAR_DECL:
         self.resolve_children(node_idx)
         let name_id = self.tree.nodes.data[node_idx].payload
@@ -538,7 +802,7 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
         
         let curr_scope_idx = self.symtable.current_scope()
         self.symtable.pop_scope()
-        let parent_scope_idx = self.symtable.current_scope()
+        let parent_scope_idx = 0 as u32
         
         // Elevate variant symbols to parent scope
         let curr_scope = self.symtable.scopes.data[curr_scope_idx]
@@ -548,8 +812,16 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
             if entry.name_id != 0 as u32:
                 let sym = self.symtable.symbols.data[entry.symbol_idx]
                 if sym.kind == SYM_VARIANT:
-                    self.symtable.scopes.data[parent_scope_idx].scope_put(entry.name_id, entry.symbol_idx)
+                    let parent_entry = (&self.symtable.scopes.data[parent_scope_idx]).scope_get(entry.name_id)
+                    mut skip_elevate := false
+                    if parent_entry.name_id != 0 as u32:
+                        let existing_sym = self.symtable.symbols.data[parent_entry.symbol_idx]
+                        if existing_sym.kind == SYM_VARIANT:
+                            skip_elevate = true
+                    if not skip_elevate:
+                        (&self.symtable.scopes.data[parent_scope_idx]).scope_put(entry.name_id, entry.symbol_idx)
             i = i + 1
+
 
     elif kind == NODE_VARIANT_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
@@ -584,6 +856,7 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
                 self.tree.nodes.data[node_idx].payload = sym_idx
                 self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
         self.resolve_children(node_idx)
+        @free(get_str_ptr(name))
 
     elif kind == NODE_TYPE_EXPR:
         if self.tree.nodes.data[node_idx].payload != 0 as u32:
@@ -616,10 +889,134 @@ pub fn resolve_node(mut self: NameResolver, node_idx: u32):
     else:
         self.resolve_children(node_idx)
 
-pub fn free_symtable(mut self: SymbolTable):
+extern "C" fn ax_ax_driver_load_module(mod: ptr[void], st: ptr[SymbolTable], tt: ptr[void]) -> i32
+
+pub fn lazy_resolver_register_import(mut self: ptr[LazyResolver], name_id: u32, file_path: str, decl_node: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.modules.len:
+        let mod = self.modules.data[i]
+        if mod.name_id == name_id:
+            let sym_idx = self.symtable.resolve(name_id)
+            return sym_idx
+        i = i + 1
+
+    let sym_idx = self.symtable.define(name_id, SYM_MODULE, 0 as u16, decl_node)
+    
+    let mod = @alloc(@compiler_intrinsic("size_of")[ModuleInfo]()) as ptr[ModuleInfo]
+    mod.name_id = name_id
+    mod.status = MODULE_UNLOADED
+    mod.file_path = file_path
+    mod.exports = new_module_export_vec()
+    mod.ast_tree = null as ptr[AstTree]
+    mod.node_types = null as ptr[void]
+    mod.src_buffer = null as ptr[void]
+    mod.tokens_data = null as ptr[void]
+    (&self.modules).push(mod)
+
+    return sym_idx
+
+pub fn lazy_resolver_resolve_field(mut self: ptr[LazyResolver], module_name_id: u32, field_name_id: u32) -> u32:
+    mut mod := null as ptr[ModuleInfo]
+    mut i := 0 as i64
+    while i < self.modules.len:
+        let m = self.modules.data[i]
+        if m.name_id == module_name_id:
+            mod = m
+            break
+        i = i + 1
+
+    if mod == null as ptr[ModuleInfo]:
+        return 0 as u32
+
+    if mod.status == MODULE_UNLOADED:
+        mod.status = MODULE_LOADING
+        let saved_data = self.symtable.stack.data
+        let saved_len = self.symtable.stack.len
+        let saved_cap = self.symtable.stack.cap
+        
+        mut temp_stack := new_u32_vec()
+        temp_stack.push(0 as u32)
+        self.symtable.stack = temp_stack
+        
+        let err_code = ax_ax_driver_load_module(mod as ptr[void], self.symtable, self.typetable)
+        
+        @free(self.symtable.stack.data as ptr[u8])
+        self.symtable.stack.data = saved_data
+        self.symtable.stack.len = saved_len
+        self.symtable.stack.cap = saved_cap
+        
+        if err_code != 0:
+            mod.status = MODULE_UNLOADED
+            return 0 as u32
+        mod.status = MODULE_LOADED
+
+    i = 0
+    while i < mod.exports.len:
+        let exp = &mod.exports.data[i]
+        if exp.name_id == field_name_id:
+            return exp.symbol_idx
+        i = i + 1
+
+    return 0 as u32
+
+pub fn lazy_resolver_find_module_of_symbol(self: ptr[LazyResolver], sym_idx: u32) -> ptr[ModuleInfo]:
+    if self == null as ptr[LazyResolver]:
+        return null as ptr[ModuleInfo]
+    mut i := 0 as i64
+    while i < self.modules.len:
+        let mod = self.modules.data[i]
+        if mod != null as ptr[ModuleInfo]:
+            if mod.exports.data != null as ptr[ModuleExport]:
+                mut j := 0 as i64
+                while j < mod.exports.len:
+                    let exp = mod.exports.data[j]
+                    if exp.symbol_idx == sym_idx:
+                        return mod
+                    j = j + 1 as i64
+        i = i + 1 as i64
+    return null as ptr[ModuleInfo]
+
+pub fn lazy_resolver_preload_module(mut self: ptr[LazyResolver], name_id: u32) -> bool:
+    mut mod := null as ptr[ModuleInfo]
+    mut i := 0 as i64
+    while i < self.modules.len:
+        let m = self.modules.data[i]
+        if m.name_id == name_id:
+            mod = m
+            break
+        i = i + 1
+
+    if mod == null as ptr[ModuleInfo]:
+        return false
+
+    if mod.status == MODULE_UNLOADED:
+        mod.status = MODULE_LOADING
+        let saved_data = self.symtable.stack.data
+        let saved_len = self.symtable.stack.len
+        let saved_cap = self.symtable.stack.cap
+        
+        mut temp_stack := new_u32_vec()
+        temp_stack.push(0 as u32)
+        self.symtable.stack = temp_stack
+        
+        let err_code = ax_ax_driver_load_module(mod as ptr[void], self.symtable, self.typetable)
+        
+        @free(self.symtable.stack.data as ptr[u8])
+        self.symtable.stack.data = saved_data
+        self.symtable.stack.len = saved_len
+        self.symtable.stack.cap = saved_cap
+        
+        if err_code != 0:
+            mod.status = MODULE_UNLOADED
+            return false
+        mod.status = MODULE_LOADED
+
+    return true
+
+pub fn free_symtable(mut self: ptr[SymbolTable]):
     mut i := 0 as i64
     while i < self.scopes.len:
-        let scope = self.scopes.data[i]
+        let scope = &self.scopes.data[i]
         if scope.entries != null as ptr[ScopeEntry]:
             @free(scope.entries as ptr[u8])
         i = i + 1
@@ -629,3 +1026,30 @@ pub fn free_symtable(mut self: SymbolTable):
         @free(self.scopes.data as ptr[u8])
     if self.stack.data != null as ptr[u32]:
         @free(self.stack.data as ptr[u8])
+
+pub fn free_lazy_resolver(mut self: ptr[LazyResolver]):
+    if self == null as ptr[LazyResolver]:
+        return
+    mut i := 0 as i64
+    while i < self.modules.len:
+        let mod = self.modules.data[i]
+        if mod != null as ptr[ModuleInfo]:
+            if mod.exports.data != null as ptr[ModuleExport]:
+                @free(mod.exports.data as ptr[u8])
+            if mod.node_types != null as ptr[void]:
+                @free(mod.node_types as ptr[u8])
+            if mod.src_buffer != null as ptr[void]:
+                @free(mod.src_buffer as ptr[u8])
+            if mod.tokens_data != null as ptr[void]:
+                @free(mod.tokens_data as ptr[u8])
+            if mod.ast_tree != null as ptr[AstTree]:
+                if mod.ast_tree.nodes.data != null as ptr[AstNode]:
+                    @free(mod.ast_tree.nodes.data as ptr[u8])
+                if mod.ast_tree.extras.data != null as ptr[i32]:
+                    @free(mod.ast_tree.extras.data as ptr[u8])
+                @free(mod.ast_tree as ptr[u8])
+            @free(mod as ptr[u8])
+        i = i + 1
+    if self.modules.data != null as ptr[ptr[ModuleInfo]]:
+        @free(self.modules.data as ptr[u8])
+    @free(self as ptr[u8])

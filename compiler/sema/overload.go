@@ -129,12 +129,11 @@ func (or *OverloadResolver) scoreCandidate(sym *Symbol, argTypes []types.TypeID)
 		
 		if paramType == argType {
 			totalScore += 4
-		} else if or.isCoercible(argType, paramType) {
+		} else if or.tt.IsAssignableTo(argType, paramType) {
 			totalScore += 3
+		} else if or.isCoercible(argType, paramType) {
+			totalScore += 2
 		} else {
-			// Interface and Generic generic type parameter match (Score 2 and 1)
-			// would go here. We mock it for now.
-			
 			// No match
 			return -1
 		}

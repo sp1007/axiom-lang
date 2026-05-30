@@ -13,6 +13,7 @@ type SymbolTable struct {
 	stack                      []uint32 // active scope stack (indices into Scopes)
 	intern                     *ast.InternPool
 	InstantiatedToOriginalName map[uint32]uint32
+	LazyResolver               *LazyResolver
 }
 
 // builtinType represents a built-in type to pre-populate in the global scope.
@@ -47,6 +48,9 @@ var builtins = []builtinType{
 	{"syscall4", 0},
 	{"syscall5", 0},
 	{"syscall6", 0},
+	{"Result", 0},
+	{"Option", 0},
+	{"Vec", 0},
 }
 
 // NewSymbolTable creates a SymbolTable with the global scope pre-populated
@@ -166,6 +170,11 @@ func (st *SymbolTable) Define(nameID uint32, kind SymKind, flags SymFlags, declN
 
 		// If both the previous symbol and the new symbol are functions, allow overloading.
 		if st.Symbols[prevIdx].Kind == SymFunc && kind == SymFunc {
+			// If they are both extern functions, reuse the existing symbol to preserve type inference across modules
+			if (st.Symbols[prevIdx].Flags & SymFlagExtern) != 0 && (flags & SymFlagExtern) != 0 {
+				return prevIdx, nil
+			}
+
 			// Traverse the NextOverload chain to find the last overloaded function
 			currIdx := prevIdx
 			for {
@@ -260,4 +269,13 @@ func (st *SymbolTable) IsMoved(idx uint32) bool {
 // MarkUsed sets the SymFlagUsed flag on a symbol.
 func (st *SymbolTable) MarkUsed(idx uint32) {
 	st.Symbols[idx].Flags |= SymFlagUsed
+}
+
+func (st *SymbolTable) DumpSymbols() string {
+	var res string
+	for i, sym := range st.Symbols {
+		name := st.intern.Get(sym.NameID)
+		res += fmt.Sprintf("Symbol %d: Name=%s Kind=%s TypeID=%d DeclNode=%d ScopeID=%d\n", i, name, sym.Kind.String(), sym.TypeID, sym.DeclNode, sym.ScopeID)
+	}
+	return res
 }

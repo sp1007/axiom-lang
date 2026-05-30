@@ -4,74 +4,57 @@ import (
 	"debug/pe"
 	"fmt"
 	"log"
-	"os"
-	"strconv"
+	"sort"
 )
 
+type FuncSym struct {
+	Name   string
+	Offset uint32
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Usage: go run disasm_stage2_offset.go <offset_or_rva>")
-	}
-	
-	valStr := os.Args[1]
-	var val uint64
-	var err error
-	if len(valStr) > 2 && valStr[:2] == "0x" {
-		val, err = strconv.ParseUint(valStr[2:], 16, 64)
-	} else {
-		val, err = strconv.ParseUint(valStr, 10, 64)
-	}
+	file, err := pe.Open("axiom_temp.obj")
 	if err != nil {
-		log.Fatalf("Invalid number: %v", err)
+		log.Fatalf("Error opening axiom_temp.obj: %v", err)
+	}
+	defer file.Close()
+
+	var textSec *pe.Section
+	for _, sec := range file.Sections {
+		if sec.Name == ".text" {
+			textSec = sec
+			break
+		}
 	}
 
-	exePath := "axiom_temp.obj"
-	f, err := pe.Open(exePath)
+	if textSec == nil {
+		log.Fatal(".text section not found in axiom_temp.obj")
+	}
+
+	data, err := textSec.Data()
 	if err != nil {
-		log.Fatalf("Error opening PE: %v", err)
+		log.Fatalf("Error reading .text: %v", err)
 	}
-	defer f.Close()
 
-	// Assume val is offset directly
-	offset := uint32(val)
-	rva := offset + 0x1000
+	fmt.Printf(".text section size in object: %d bytes (0x%X)\n", len(data), len(data))
 
-	fmt.Printf("Searching for RVA 0x%X (Offset in .text: 0x%X):\n", rva, offset)
-
-	type FuncSym struct {
-		Name   string
-		Offset uint32
-	}
 	var fns []FuncSym
-	for _, sym := range f.COFFSymbols {
-		name, err := sym.FullName(f.StringTable)
+	for _, sym := range file.COFFSymbols {
+		name, err := sym.FullName(file.StringTable)
 		if err != nil {
 			name = string(sym.Name[:])
 		}
-		if sym.SectionNumber > 0 && sym.Type == 0x20 {
+		if sym.SectionNumber == 1 && sym.Type == 0x20 {
 			fns = append(fns, FuncSym{Name: name, Offset: sym.Value})
 		}
 	}
 
-	var bestFunc FuncSym
-	found := false
-	bestDiff := uint32(0xFFFFFFFF)
+	sort.Slice(fns, func(i, j int) bool {
+		return fns[i].Offset < fns[j].Offset
+	})
 
-	for _, fn := range fns {
-		if fn.Offset <= offset {
-			diff := offset - fn.Offset
-			if diff < bestDiff {
-				bestDiff = diff
-				bestFunc = fn
-				found = true
-			}
-		}
-	}
-
-	if found {
-		fmt.Printf(">>> Found inside function: %s (starts at Offset 0x%X, RVA 0x%X)\n", bestFunc.Name, bestFunc.Offset, bestFunc.Offset+0x1000)
-		fmt.Printf(">>> Relative offset: %d bytes (0x%X)\n", bestDiff, bestDiff)
-	} else {
-		fmt.Println(">>> RVA is before any function symbol")
+	fmt.Println("Functions sorted by offset:")
+	for i, fn := range fns {
+		fmt.Printf("  [%3d] %-40s Offset: 0x%X\n", i, fn.Name, fn.Offset)
 	}
 }

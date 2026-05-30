@@ -1,115 +1,182 @@
-// AXIOM Standard Library — std::option / std::result
+// AXIOM Standard Library — std.option / std.result
 //
 // Core error-handling sum types.
 
 pub type Option[T] = Some(T) | None
 pub type Result[T, E] = Ok(T) | Err(E)
 
+
+
+extern "C" fn ax_sum_layout_is_pointer() -> bool
+
 // --------------------------------------------------------------------------
-// Option[T] Methods
+// Option[T] Methods (Match-Free, Layout-Aware)
 // --------------------------------------------------------------------------
 
 pub fn is_some[T](self: Option[T]) -> bool:
-    match self:
-        Some(_): true
-        None: false
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        return raw[0] != 0 as u64
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        let raw = (&self) as ptr[u64]
+        return raw[0] != 0 as u64
+    let raw = (&self) as ptr[u32]
+    return raw[0] == 0 as u32
 
 pub fn is_none[T](self: Option[T]) -> bool:
-    return not self.is_some()
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        return raw[0] == 0 as u64
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        let raw = (&self) as ptr[u64]
+        return raw[0] == 0 as u64
+    let raw = (&self) as ptr[u32]
+    return raw[0] == 1 as u32
 
 pub fn unwrap[T](self: Option[T]) -> T:
-    match self:
-        Some(v): v
-        None: panic("called unwrap() on a None value")
+    if not self.is_some():
+        panic("called Option.unwrap() on a None value")
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[T]
+        return raw.*
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        let raw = (&self) as ptr[u8]
+        let typed = raw as ptr[T]
+        return typed.*
+    let raw = (&self) as ptr[u8]
+    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[T]
+    return payload_ptr.*
 
 pub fn unwrap_or[T](self: Option[T], default: T) -> T:
-    match self:
-        Some(v): v
-        None: default
+    if self.is_some():
+        return self.unwrap()
+    return default
 
 pub fn expect[T](self: Option[T], message: str) -> T:
-    match self:
-        Some(v): v
-        None: panic(message)
+    if self.is_some():
+        return self.unwrap()
+    panic(message)
 
 pub fn map[T, U](self: Option[T], f: fn(T) -> U) -> Option[U]:
-    match self:
-        Some(v): Some(f(v))
-        None: None
+    if self.is_some():
+        return Some(f(self.unwrap()))
+    return None
 
 pub fn flat_map[T, U](self: Option[T], f: fn(T) -> Option[U]) -> Option[U]:
-    match self:
-        Some(v): f(v)
-        None: None
+    if self.is_some():
+        return f(self.unwrap())
+    return None
 
 pub fn ok_or[T, E](self: Option[T], err: E) -> Result[T, E]:
-    match self:
-        Some(v): Ok(v)
-        None: Err(err)
+    if self.is_some():
+        return Ok(self.unwrap())
+    return Err(err)
 
 pub fn filter[T](self: Option[T], pred: fn(T) -> bool) -> Option[T]:
-    match self:
-        Some(v):
-            if pred(v):
-                return Some(v)
-            else:
-                return None
-        None: None
+    if self.is_some():
+        let v = self.unwrap()
+        if pred(v):
+            return self
+    return None
 
 pub fn or_other[T](self: Option[T], other: Option[T]) -> Option[T]:
-    match self:
-        Some(_): self
-        None: other
+    if self.is_some():
+        return self
+    return other
 
 
 // --------------------------------------------------------------------------
-// Result[T, E] Methods
+// Result[T, E] Methods (Match-Free, Layout-Aware)
 // --------------------------------------------------------------------------
 
 pub fn is_ok[T, E](self: Result[T, E]) -> bool:
-    match self:
-        Ok(_): true
-        Err(_): false
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        return (raw[0] & 1 as u64) == 0 as u64
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        return true
+    let raw = (&self) as ptr[u32]
+    return raw[0] == 0 as u32
 
 pub fn is_err[T, E](self: Result[T, E]) -> bool:
-    return not self.is_ok()
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        return (raw[0] & 1 as u64) == 1 as u64
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        return false
+    let raw = (&self) as ptr[u32]
+    return raw[0] == 1 as u32
 
 pub fn unwrap[T, E](self: Result[T, E]) -> T:
-    match self:
-        Ok(v): v
-        Err(_): panic("called unwrap() on an Err value")
+    if not self.is_ok():
+        panic("called Result.unwrap() on an Err value")
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        let masked = raw[0] & (0xfffffffffffffffe as u64)
+        let typed = (&masked) as ptr[T]
+        return typed.*
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        let raw = (&self) as ptr[u8]
+        let typed = raw as ptr[T]
+        return typed.*
+    let raw = (&self) as ptr[u8]
+    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[T]
+    return payload_ptr.*
+
+pub fn unwrap_err[T, E](self: Result[T, E]) -> E:
+    if not self.is_err():
+        panic("called Result.unwrap_err() on an Ok value")
+    if ax_sum_layout_is_pointer():
+        let raw = (&self) as ptr[u64]
+        let masked = raw[0] & (0xfffffffffffffffe as u64)
+        let typed = (&masked) as ptr[E]
+        return typed.*
+    let size = @compiler_intrinsic("size_of")[ptr[u8]]() * 2
+    if size <= 8:
+        let raw = (&self) as ptr[u8]
+        let typed = raw as ptr[E]
+        return typed.*
+    let raw = (&self) as ptr[u8]
+    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[E]
+    return payload_ptr.*
 
 pub fn unwrap_or[T, E](self: Result[T, E], default: T) -> T:
-    match self:
-        Ok(v): v
-        Err(_): default
+    if self.is_ok():
+        return self.unwrap()
+    return default
 
 pub fn expect[T, E](self: Result[T, E], message: str) -> T:
-    match self:
-        Ok(v): v
-        Err(_): panic(message)
+    if self.is_ok():
+        return self.unwrap()
+    panic(message)
 
 pub fn map[T, E, U](self: Result[T, E], f: fn(T) -> U) -> Result[U, E]:
-    match self:
-        Ok(v): Ok(f(v))
-        Err(e): Err(e)
+    if self.is_ok():
+        return Ok(f(self.unwrap()))
+    return Err(self.unwrap_err())
 
 pub fn map_err[T, E, F](self: Result[T, E], f: fn(E) -> F) -> Result[T, F]:
-    match self:
-        Ok(v): Ok(v)
-        Err(e): Err(f(e))
+    if self.is_err():
+        return Err(f(self.unwrap_err()))
+    return Ok(self.unwrap())
 
 pub fn flat_map[T, E, U](self: Result[T, E], f: fn(T) -> Result[U, E]) -> Result[U, E]:
-    match self:
-        Ok(v): f(v)
-        Err(e): Err(e)
+    if self.is_ok():
+        return f(self.unwrap())
+    return Err(self.unwrap_err())
 
 pub fn ok[T, E](self: Result[T, E]) -> Option[T]:
-    match self:
-        Ok(v): Some(v)
-        Err(_): None
+    if self.is_ok():
+        return Some(self.unwrap())
+    return None
 
 pub fn err[T, E](self: Result[T, E]) -> Option[E]:
-    match self:
-        Ok(_): None
-        Err(e): Some(e)
+    if self.is_err():
+        return Some(self.unwrap_err())
+    return None

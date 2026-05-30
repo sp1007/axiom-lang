@@ -255,3 +255,163 @@ void ax_eprintln_str(ax_string s) {
 
 #endif
 
+/* ================================================================
+ * Freestanding C-Independent File I/O Implementations
+ * ================================================================ */
+
+#if defined(_WIN32)
+
+void* ax_fopen(const char* filename, const char* mode) {
+    DWORD access = 0;
+    DWORD creation = 0;
+    
+    if (strchr(mode, 'w')) {
+        access = GENERIC_WRITE;
+        creation = CREATE_ALWAYS;
+    } else if (strchr(mode, 'r')) {
+        access = GENERIC_READ;
+        creation = OPEN_EXISTING;
+    } else if (strchr(mode, 'a')) {
+        access = GENERIC_WRITE;
+        creation = OPEN_ALWAYS;
+    } else {
+        access = GENERIC_READ;
+        creation = OPEN_EXISTING;
+    }
+    
+    HANDLE h = CreateFileA(filename, access, FILE_SHARE_READ, NULL, creation, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return NULL;
+    }
+    return (void*)h;
+}
+
+int ax_fclose(void* stream) {
+    if (!stream) return -1;
+    return CloseHandle((HANDLE)stream) ? 0 : -1;
+}
+
+size_t ax_fread(void* buffer, size_t size, size_t count, void* stream) {
+    if (!stream || !buffer || size == 0 || count == 0) return 0;
+    size_t bytes_to_read = size * count;
+    DWORD read_bytes = 0;
+    if (ReadFile((HANDLE)stream, buffer, (DWORD)bytes_to_read, &read_bytes, NULL)) {
+        return (size_t)read_bytes / size;
+    }
+    return 0;
+}
+
+size_t ax_fwrite(const void* buffer, size_t size, size_t count, void* stream) {
+    if (!stream || !buffer || size == 0 || count == 0) return 0;
+    size_t bytes_to_write = size * count;
+    DWORD written = 0;
+    if (WriteFile((HANDLE)stream, buffer, (DWORD)bytes_to_write, &written, NULL)) {
+        return (size_t)written / size;
+    }
+    return 0;
+}
+
+int ax_fputs_custom(const char* s, void* stream) {
+    if (!s || !stream) return -1;
+    size_t len = strlen(s);
+    size_t written = ax_fwrite(s, 1, len, stream);
+    return written == len ? 0 : -1;
+}
+
+int ax_fseek(void* stream, long offset, int origin) {
+    if (!stream) return -1;
+    DWORD method = 0;
+    if (origin == 0) method = FILE_BEGIN;      // SEEK_SET = 0
+    else if (origin == 1) method = FILE_CURRENT; // SEEK_CUR = 1
+    else if (origin == 2) method = FILE_END;     // SEEK_END = 2
+    
+    DWORD res = SetFilePointer((HANDLE)stream, (LONG)offset, NULL, method);
+    if (res == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+        return -1;
+    }
+    return 0;
+}
+
+long ax_ftell(void* stream) {
+    if (!stream) return -1;
+    DWORD res = SetFilePointer((HANDLE)stream, 0, NULL, FILE_CURRENT);
+    if (res == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+        return -1;
+    }
+    return (long)res;
+}
+
+void ax_rewind(void* stream) {
+    ax_fseek(stream, 0, 0); // SEEK_SET = 0
+}
+
+#else
+
+/* Linux Freestanding Syscall Implementations */
+#include <fcntl.h>
+
+void* ax_fopen(const char* filename, const char* mode) {
+    int flags = 0;
+    if (strchr(mode, 'w')) {
+        flags = O_WRONLY | O_CREAT | O_TRUNC;
+    } else if (strchr(mode, 'r')) {
+        flags = O_RDONLY;
+    } else if (strchr(mode, 'a')) {
+        flags = O_WRONLY | O_CREAT | O_APPEND;
+    } else {
+        flags = O_RDONLY;
+    }
+    
+    long fd = syscall(SYS_open, filename, flags, 0666);
+    if (fd < 0) {
+        return NULL;
+    }
+    return (void*)fd;
+}
+
+int ax_fclose(void* stream) {
+    if (!stream) return -1;
+    return syscall(SYS_close, (long)stream) == 0 ? 0 : -1;
+}
+
+size_t ax_fread(void* buffer, size_t size, size_t count, void* stream) {
+    if (!stream || !buffer || size == 0 || count == 0) return 0;
+    size_t bytes_to_read = size * count;
+    long n = syscall(SYS_read, (long)stream, buffer, bytes_to_read);
+    if (n < 0) return 0;
+    return (size_t)n / size;
+}
+
+size_t ax_fwrite(const void* buffer, size_t size, size_t count, void* stream) {
+    if (!stream || !buffer || size == 0 || count == 0) return 0;
+    size_t bytes_to_write = size * count;
+    long n = syscall(SYS_write, (long)stream, buffer, bytes_to_write);
+    if (n < 0) return 0;
+    return (size_t)n / size;
+}
+
+int ax_fputs_custom(const char* s, void* stream) {
+    if (!s || !stream) return -1;
+    size_t len = strlen(s);
+    size_t written = ax_fwrite(s, 1, len, stream);
+    return written == len ? 0 : -1;
+}
+
+int ax_fseek(void* stream, long offset, int origin) {
+    if (!stream) return -1;
+    long res = syscall(SYS_lseek, (long)stream, offset, origin);
+    return res < 0 ? -1 : 0;
+}
+
+long ax_ftell(void* stream) {
+    if (!stream) return -1;
+    return (long)syscall(SYS_lseek, (long)stream, 0, 1); // SEEK_CUR = 1
+}
+
+void ax_rewind(void* stream) {
+    ax_fseek(stream, 0, 0); // SEEK_SET = 0
+}
+
+#endif
+
+

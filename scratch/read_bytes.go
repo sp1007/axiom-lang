@@ -1,50 +1,23 @@
 package main
 
 import (
-	"debug/pe"
 	"fmt"
-	"log"
+	"os"
 )
 
 func main() {
-	file, err := pe.Open("bin/axc_stage2.exe")
+	data, err := os.ReadFile("scratch/stage2_preprocessed.ax")
 	if err != nil {
-		log.Fatalf("Error opening PE: %v", err)
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
-	defer file.Close()
+	fmt.Printf("File size: %d bytes\n", len(data))
 
-	var textSec *pe.Section
-	for _, sec := range file.Sections {
-		if sec.Name == ".text" {
-			textSec = sec
-			break
-		}
-	}
-
-	if textSec == nil {
-		log.Fatal(".text section not found")
-	}
-
-	crashRVA := uint32(0x90B3B)
-	if crashRVA < textSec.VirtualAddress || crashRVA >= textSec.VirtualAddress+textSec.VirtualSize {
-		log.Fatalf("RVA 0x%X is outside .text section", crashRVA)
-	}
-
-	offset := crashRVA - textSec.VirtualAddress
-	data, err := textSec.Data()
-	if err != nil {
-		log.Fatalf("Error reading .text data: %v", err)
-	}
-
-	fmt.Printf("Bytes at RVA 0x%X (Offset inside .text 0x%X):\n", crashRVA, offset)
-	for i := -48; i < 16; i++ {
-		idx := int(offset) + i
-		if idx >= 0 && idx < len(data) {
-			if i == 0 {
-				fmt.Printf("  -> %02X (crashing instruction start)\n", data[idx])
-			} else {
-				fmt.Printf("     %02X\n", data[idx])
-			}
-		}
+	start := 2600
+	end := 2800
+	for i := start; i < end; i++ {
+		b := data[i]
+		fmt.Printf("%d: 0x%02X (%q)\n", i, b, string(b))
 	}
 }
+

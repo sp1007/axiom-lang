@@ -18,6 +18,7 @@ import (
 func TestStage1ParserCorpus(t *testing.T) {
 	// 1. Concatenate all self-hosted compiler frontend files
 	workspaceDir := "../.." // relative to tests/codegen
+	printHelpersPath := filepath.Join(workspaceDir, "bootstrap/stage1/print_helpers.ax")
 	tokenPath := filepath.Join(workspaceDir, "bootstrap/stage1/token.ax")
 	lexerPath := filepath.Join(workspaceDir, "bootstrap/stage1/lexer.ax")
 	astPath := filepath.Join(workspaceDir, "bootstrap/stage1/ast.ax")
@@ -25,7 +26,7 @@ func TestStage1ParserCorpus(t *testing.T) {
 	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_parser.ax")
 
-	sourceBytes, err := concatenateAxiomFiles(tokenPath, lexerPath, astPath, internPath, parserPath, mainPath)
+	sourceBytes, err := concatenateAxiomFiles(printHelpersPath, tokenPath, lexerPath, astPath, internPath, parserPath, mainPath)
 	if err != nil {
 		t.Fatalf("failed to concatenate parser files: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestStage1ParserCorpus(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, ""); err != nil {
 		t.Fatalf("failed to compile self-hosted parser: %v", err)
 	}
 

@@ -27,6 +27,8 @@ func runEmitC(args []string) int {
 	// Parse flags
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "-O0", "-O1", "-O2", "-O3", "-O", "--opt":
+			// Accept optimization flags but ignore them for direct C transpilation
 		case "--output", "-o":
 			if i+1 < len(args) {
 				outputPath = args[i+1]

@@ -215,6 +215,13 @@ pub fn x86_encode_sar_cl(reg: u8, buf: ptr[ByteVec]):
     push_byte(buf, 0xD3 as u8)
     push_byte(buf, modrm)
 
+pub fn x86_encode_shr_cl(reg: u8, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(reg))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | reg_hw_reg(reg)
+    push_byte(buf, rex)
+    push_byte(buf, 0xD3 as u8)
+    push_byte(buf, modrm)
+
 pub fn x86_encode_xor_zero(reg: u8, buf: ptr[ByteVec]):
     let modrm = (MOD_REG_DIRECT << 6 as u8) | (reg_hw_reg(reg) << 3 as u8) | reg_hw_reg(reg)
     if reg_needs_rex(reg):
@@ -371,6 +378,14 @@ pub fn x86_encode_sar_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
     push_byte(buf, modrm)
     push_byte(buf, imm)
 
+pub fn x86_encode_shr_imm(reg: u8, imm: u8, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(reg))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (5 as u8 << 3 as u8) | reg_hw_reg(reg)
+    push_byte(buf, rex)
+    push_byte(buf, 0xC1 as u8)
+    push_byte(buf, modrm)
+    push_byte(buf, imm)
+
 pub fn x86_encode_mov_load_sized(dst: u8, base: u8, disp: i32, size: u8, buf: ptr[ByteVec]):
     mut w_bit := true
     mut op_byte1 := 0x8B as u8
@@ -471,5 +486,191 @@ pub fn x86_encode_mov_store_sized(base: u8, disp: i32, src: u8, size: u8, buf: p
         
     if temp_buf.data != null as ptr[u8]:
         @free(temp_buf.data)
+
+pub fn x86_encode_movsd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x10 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_movdq(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x6E as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_movqd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(src, dst, &modrm, &rex, &need_rex)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x7E as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_movsd_load(dst: u8, base: u8, disp: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(false, reg_needs_rex(dst), false, reg_needs_rex(base))
+    mut temp_buf := new_byte_vec()
+    x86_encode_modrm_rm(dst, base, disp, &temp_buf)
+    
+    mut final_rex := rex
+    mut start_idx := 0 as i64
+    let has_rex := reg_needs_rex(dst) or reg_needs_rex(base)
+    if has_rex and temp_buf.len > 0 as i64:
+        let first_byte = temp_buf.data[0]
+        if (first_byte & 0xF0 as u8) == 0x40 as u8:
+            final_rex = final_rex | (first_byte & 0x0F as u8)
+            start_idx = 1
+            
+    push_byte(buf, 0xF2 as u8)
+    if final_rex != 0 as u8:
+        push_byte(buf, final_rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x10 as u8)
+    
+    mut i := start_idx
+    while i < temp_buf.len:
+        push_byte(buf, temp_buf.data[i])
+        i = i + 1
+        
+    if temp_buf.data != null as ptr[u8]:
+        @free(temp_buf.data)
+
+pub fn x86_encode_movsd_store(base: u8, disp: i32, src: u8, buf: ptr[ByteVec]):
+    let rex = encode_rex(false, reg_needs_rex(src), false, reg_needs_rex(base))
+    mut temp_buf := new_byte_vec()
+    x86_encode_modrm_rm(src, base, disp, &temp_buf)
+    
+    mut final_rex := rex
+    mut start_idx := 0 as i64
+    let has_rex := reg_needs_rex(src) or reg_needs_rex(base)
+    if has_rex and temp_buf.len > 0 as i64:
+        let first_byte = temp_buf.data[0]
+        if (first_byte & 0xF0 as u8) == 0x40 as u8:
+            final_rex = final_rex | (first_byte & 0x0F as u8)
+            start_idx = 1
+            
+    push_byte(buf, 0xF2 as u8)
+    if final_rex != 0 as u8:
+        push_byte(buf, final_rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x11 as u8)
+    
+    mut i := start_idx
+    while i < temp_buf.len:
+        push_byte(buf, temp_buf.data[i])
+        i = i + 1
+        
+    if temp_buf.data != null as ptr[u8]:
+        @free(temp_buf.data)
+
+pub fn x86_encode_addsd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x58 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_subsd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5C as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_mulsd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x59 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_divsd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5E as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_comisd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0x66 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2F as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvtsi2sd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2A as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvttsd2si(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2C as u8)
+    push_byte(buf, modrm)
 
 

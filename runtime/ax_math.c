@@ -69,3 +69,11 @@ ax_i64 ax_lcm(ax_i64 a, ax_i64 b) {
 ax_f64 ax_pow(ax_f64 base, ax_f64 exp) {
     return pow(base, exp);
 }
+
+ax_bool ax_sum_layout_is_pointer(void) {
+#ifdef AXIOM_SUMLAYOUT_POINTER
+    return AX_TRUE;
+#else
+    return AX_FALSE;
+#endif
+}

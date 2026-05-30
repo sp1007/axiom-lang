@@ -140,6 +140,11 @@ func (b *AirFuncBuilder) AddEdge(src, dst uint32) {
 	}
 }
 
+// Insts returns the instructions emitted so far.
+func (b *AirFuncBuilder) Insts() []AirInst {
+	return b.insts
+}
+
 // Build finalizes the builder and returns the completed AirFunc.
 // After Build, the builder should not be reused.
 func (b *AirFuncBuilder) Build() *AirFunc {

@@ -93,7 +93,14 @@ void ax_actor_free(ActorHeap* heap, void* user_ptr) {
     hdr->gen_id = 0; /* invalidate */
 
     if (sc == SIZE_CLASS_LARGE || sc >= NUM_SIZE_CLASSES) {
-        /* Large allocs cannot be recycled into free list */
+        /* Large allocs cannot be recycled into free list. Free directly back to OS! */
+        char* os_block = (char*)block - 8;
+        size_t total = *(size_t*)os_block;
+        size_t user_size = total - 16;
+        heap->total_freed += user_size;
+        heap->free_count++;
+
+        ax_large_free(user_ptr, 0);
         return;
     }
 

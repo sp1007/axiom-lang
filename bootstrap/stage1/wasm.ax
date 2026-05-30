@@ -14,7 +14,7 @@ fn is_type_unsigned(type_id: u32) -> bool:
         return true
     return false
 
-fn map_wasm_type(typetable: TypeTable, type_id: u32) -> str:
+fn map_wasm_type(typetable: ptr[TypeTable], type_id: u32) -> str:
     if type_id == 4 as u32 or type_id == 8 as u32: // i64, u64
         return "i64"
     if type_id == 9 as u32: // f32
@@ -29,7 +29,7 @@ fn map_wasm_type(typetable: TypeTable, type_id: u32) -> str:
 fn wasm_opcode_defines_dest(op: u16) -> bool:
     if op == 0 as u16: // OP_NOP
         return false
-    if op == 0x0102 as u16: // OP_FREE
+    if op == 0x0102 as u32: // OP_FREE
         return false
     if op == 0x010B as u16: // OP_DESTROY
         return false
@@ -47,25 +47,25 @@ fn wasm_opcode_defines_dest(op: u16) -> bool:
 
 pub struct WasmGenerator:
     pub module: AirModule
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
     pub file: ptr[void]
     pub reg_types: ptr[u32]
 
-pub fn new_wasm_generator(mod: AirModule, tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> WasmGenerator:
-    return WasmGenerator(
-        module: mod,
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-        file: null as ptr[void],
-        reg_types: null as ptr[u32],
-    )
+pub fn new_wasm_generator(mod: AirModule, tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[WasmGenerator]:
+    let wg = @alloc(@compiler_intrinsic("size_of")[WasmGenerator]()) as ptr[WasmGenerator]
+    wg.module = mod
+    wg.tree = tree
+    wg.pool = pool
+    wg.symtable = symtable
+    wg.typetable = typetable
+    wg.file = null as ptr[void]
+    wg.reg_types = null as ptr[u32]
+    return wg
 
-pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
+pub fn resolve_sym_name(self: ptr[WasmGenerator], sym_id: u32, name_id: u32) -> str:
     if sym_id == 0 as u32:
         return "main"
     if sym_id == 4294967295 as u32:
@@ -90,7 +90,7 @@ pub fn resolve_sym_name(self: WasmGenerator, sym_id: u32, name_id: u32) -> str:
         return buf as str
     
     let buf = @alloc(32) as ptr[u8]
-    ax_snprintf_local(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as ptr[void], null as ptr[void])
+    ax_snprintf_local(buf as ptr[void], 32, "_AX_f%d" as ptr[u8], sym_id as u64 as ptr[void], null as ptr[void])
     return buf as str
 
 fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
@@ -100,7 +100,7 @@ fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
     buf[len] = 0 as u8
     return buf
 
-pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
+pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
     let filename_nt = wasm_str_to_null_terminated(out_filename)
     self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
     @free(filename_nt)
@@ -165,7 +165,7 @@ pub fn generate(mut self: WasmGenerator, out_filename: str) -> bool:
     fclose(self.file)
     return true
 
-pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
+pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
     let mangled_name = self.resolve_sym_name(f.sym_id, f.name)
     ax_fprintf_local(self.file, "  (func $%s (export \"%s\")", (mangled_name as ptr[u8]) as i64, (mangled_name as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     @free(mangled_name as ptr[u8])
@@ -312,7 +312,7 @@ pub fn compile_func(mut self: WasmGenerator, f: AirFunc):
         @free(self.reg_types as ptr[u8])
         self.reg_types = null as ptr[u32]
 
-pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
+pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
     let op = inst.opcode
     if op == OP_NOP:
         return
@@ -448,7 +448,7 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
         mut size := 8 as u32
-        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+        if inst.type_id != 0 as u32 and (inst.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[inst.type_id]
             if entry.size != 0 as u32:
                 size = entry.size
@@ -484,7 +484,7 @@ pub fn lower_inst(mut self: WasmGenerator, f: AirFunc, inst: AirInst):
         ax_fprintf_local(self.file, "        %s.store\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_GEP:
         mut elem_size := 8 as u32
-        if inst.type_id != 0 as u16 and (inst.type_id as i64) < self.typetable.entries.len:
+        if inst.type_id != 0 as u32 and (inst.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[inst.type_id]
             if entry.size != 0 as u32:
                 elem_size = entry.size

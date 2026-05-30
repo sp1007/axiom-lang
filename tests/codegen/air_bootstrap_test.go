@@ -15,11 +15,13 @@ import (
 	"github.com/axiom-lang/axiom/compiler/types"
 	"github.com/axiom-lang/axiom/ir/air"
 	"github.com/axiom-lang/axiom/ir/builder"
+	"github.com/axiom-lang/axiom/ir/opt"
 )
 
 func TestStage1AirCorpus(t *testing.T) {
 	// 1. Concatenate all self-hosted compiler frontend files including air and air_builder
 	workspaceDir := "../.." // relative to tests/codegen
+	printHelpersPath := filepath.Join(workspaceDir, "bootstrap/stage1/print_helpers.ax")
 	tokenPath := filepath.Join(workspaceDir, "bootstrap/stage1/token.ax")
 	lexerPath := filepath.Join(workspaceDir, "bootstrap/stage1/lexer.ax")
 	astPath := filepath.Join(workspaceDir, "bootstrap/stage1/ast.ax")
@@ -53,7 +55,7 @@ func TestStage1AirCorpus(t *testing.T) {
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
 
 	sourceBytes, err := concatenateAxiomFiles(
-		tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath,
+		printHelpersPath, tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath,
 		connectionGraphPath, ownershipPath, escapePath, ctgcPath, aliasReusePath,
 		airPath, airBuilderPath, ssaOptPath, cgenPath, wasmPath,
 		x86RegsPath, x86SelectorPath, x86RegallocPath, x86AsmEmitterPath,
@@ -76,7 +78,7 @@ func TestStage1AirCorpus(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, mainPath); err != nil {
 		t.Fatalf("failed to compile self-hosted air generator: %v", err)
 	}
 
@@ -92,7 +94,7 @@ func TestStage1AirCorpus(t *testing.T) {
 			}
 			base := filepath.Base(path)
 			// Only select files that are valid simple programs
-			if strings.HasPrefix(base, "00") || base == "valid_assign.ax" || base == "valid_fibonacci.ax" || base == "valid_shadow.ax" || base == "valid_hello.ax" {
+			if strings.HasPrefix(base, "00") || base == "valid_assign.ax" || base == "valid_fibonacci.ax" || base == "valid_shadow.ax" || base == "valid_hello.ax" || base == "opt_test.ax" {
 				axFiles = append(axFiles, path)
 			}
 		}
@@ -144,12 +146,16 @@ func TestStage1AirCorpus(t *testing.T) {
 			mb := builder.NewModuleBuilder(goTree, goSymbols, goTypes, goIntern)
 			goMod := mb.Build()
 
+			// Run O1 Optimization Pipeline
+			pipeline := opt.DefaultPipeline(opt.O1, true)
+			pipeline.Run(goMod)
+
 			var goBuf bytes.Buffer
 			air.PrintModule(&goBuf, goMod)
 			goOutput := strings.TrimSpace(goBuf.String())
 
 			// Get self-hosted Axiom AIR generator output by running the compiled binary
-			cmd := exec.Command(binPath, axPath)
+			cmd := exec.Command(binPath, axPath, "-O1")
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr

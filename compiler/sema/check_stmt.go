@@ -21,6 +21,7 @@ type TypeChecker struct {
 	insideLoop            bool
 	currentMatchScrutinee types.TypeID
 	inAsyncFn             bool
+	parents               []uint32
 }
 
 // Errors returns the list of diagnostic errors found during type checking.
@@ -65,12 +66,30 @@ func (tc *TypeChecker) Check() []diagnostics.Diagnostic {
 	if tc.ast == nil || tc.ast.NodeCount() == 0 {
 		return tc.errors
 	}
+	tc.parents = make([]uint32, len(tc.ast.Nodes))
+	for i := 0; i < len(tc.ast.Nodes); i++ {
+		child := tc.ast.Nodes[i].FirstChild
+		for child != 0 {
+			tc.parents[child] = uint32(i)
+			child = tc.ast.Nodes[child].NextSibling
+		}
+	}
 	tc.checkStmt(0)
 	return tc.errors
 }
 
 // CheckNode performs type checking starting from a specific node.
 func (tc *TypeChecker) CheckNode(nodeIdx uint32) {
+	if tc.parents == nil {
+		tc.parents = make([]uint32, len(tc.ast.Nodes))
+		for i := 0; i < len(tc.ast.Nodes); i++ {
+			child := tc.ast.Nodes[i].FirstChild
+			for child != 0 {
+				tc.parents[child] = uint32(i)
+				child = tc.ast.Nodes[child].NextSibling
+			}
+		}
+	}
 	tc.checkStmt(nodeIdx)
 }
 
@@ -197,10 +216,13 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 			}
 		}
 
-		child := node.FirstChild
-		for child != 0 {
-			tc.checkStmt(child)
-			child = tc.ast.Nodes[child].NextSibling
+		// Only typecheck body if not generic
+		if node.Flags&uint16(ast.FlagIsGeneric) == 0 {
+			child := node.FirstChild
+			for child != 0 {
+				tc.checkStmt(child)
+				child = tc.ast.Nodes[child].NextSibling
+			}
 		}
 		
 		tc.currentFuncReturnType = prevReturn
@@ -240,7 +262,7 @@ func (tc *TypeChecker) checkStmt(nodeIdx uint32) {
 			
 			// Check assignability
 			lhsType := tc.infer.TypeOf(lhs)
-			rhsType := tc.infer.TypeOf(rhs)
+			rhsType := tc.infer.inferNode(rhs, lhsType)
 			if lhsType != types.TypeUnknown && rhsType != types.TypeUnknown {
 				if !tc.isAssignableTo(rhsType, lhsType) {
 					tc.errorf(nodeIdx, 3001, "cannot assign type %d to %d", rhsType, lhsType)

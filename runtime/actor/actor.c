@@ -8,6 +8,7 @@
 #include "actor.h"
 #include <stdlib.h>
 #include <string.h>
+#include "../axalloc/actor_heap.h"
 
 /* --------------------------------------------------------------------------
  * Global Actor Table
@@ -25,15 +26,21 @@ void ax_actor_table_init(void) {
 
 void ax_actor_table_destroy(void) {
     for (uint32_t i = 0; i < AX_MAX_ACTORS; i++) {
-        if (g_actors[i].state != AX_ACTOR_DEAD && g_actors[i].id != 0) {
+        if (g_actors[i].id != 0) {
             /* Drain mailbox */
             AxMessage* msg;
             while ((msg = ax_msgq_pop(&g_actors[i].mailbox)) != NULL) {
                 free(msg);
             }
-            if (g_actors[i].state_data && g_actors[i].state_size > 0) {
+            /* Destroy isolated heap or free state data */
+            if (g_actors[i].heap) {
+                ax_actor_heap_destroy((ActorHeap*)g_actors[i].heap);
+                g_actors[i].heap = NULL;
+            } else if (g_actors[i].state_data) {
                 free(g_actors[i].state_data);
             }
+            g_actors[i].state_data = NULL;
+            g_actors[i].state_size = 0;
             g_actors[i].state = AX_ACTOR_DEAD;
             g_actors[i].id = 0;
         }
@@ -127,9 +134,13 @@ AxActorID ax_actor_spawn(AxHandlerFn handler, void* init_data,
     actor->handler = handler;
     ax_msgq_init(&actor->mailbox);
 
+    /* Create actor heap */
+    ActorHeap* heap = ax_actor_heap_create(id);
+    actor->heap = heap;
+
     /* Copy init data if provided */
     if (init_data && data_size > 0) {
-        actor->state_data = malloc(data_size);
+        actor->state_data = ax_actor_alloc(heap, data_size);
         if (actor->state_data) {
             memcpy(actor->state_data, init_data, data_size);
             actor->state_size = data_size;
@@ -193,7 +204,8 @@ int ax_actor_send(AxActorID target, AxActorID sender,
  * Step (process one message)
  * -------------------------------------------------------------------------- */
 
-int ax_actor_step(AxActor* actor) {
+int ax_actor_step(void* actor_ptr) {
+    AxActor* actor = (AxActor*)actor_ptr;
     if (!actor || actor->state != AX_ACTOR_RUNNING) return 0;
 
     AxMessage* msg = ax_msgq_pop(&actor->mailbox);
@@ -205,7 +217,25 @@ int ax_actor_step(AxActor* actor) {
         if (actor->stop_fn) {
             actor->stop_fn(actor);
         }
+
+        /* Drain mailbox */
+        AxMessage* m;
+        while ((m = ax_msgq_pop(&actor->mailbox)) != NULL) {
+            free(m);
+        }
+
+        /* Destroy isolated heap or free state data */
+        if (actor->heap) {
+            ax_actor_heap_destroy((ActorHeap*)actor->heap);
+            actor->heap = NULL;
+        } else if (actor->state_data) {
+            free(actor->state_data);
+        }
+        actor->state_data = NULL;
+        actor->state_size = 0;
+
         actor->state = AX_ACTOR_DEAD;
+        actor->id = 0; /* Fully free slot */
         g_actor_count--;
         free(msg);
         return 1;
@@ -227,11 +257,43 @@ void ax_actor_stop(AxActorID id) {
     ax_actor_send(id, AX_ACTOR_ID_NONE, AX_MSG_STOP, NULL, 0);
 }
 
-int ax_actor_is_running(AxActor* actor) {
+int ax_actor_is_running(void* actor_ptr) {
+    AxActor* actor = (AxActor*)actor_ptr;
     return actor && actor->state == AX_ACTOR_RUNNING;
 }
 
-int ax_actor_has_messages(AxActor* actor) {
+int ax_actor_has_messages(void* actor_ptr) {
+    AxActor* actor = (AxActor*)actor_ptr;
     return actor && actor->mailbox.head != NULL;
 }
+
+/* ==========================================================================
+ * Weak Actor Heap Stubs (Overridden by AXIOM generated code if present)
+ * ========================================================================== */
+#if defined(_MSC_VER)
+#pragma comment(linker, "/alternatename:ax_actor_heap_create=ax_actor_heap_create_stub")
+#pragma comment(linker, "/alternatename:ax_actor_heap_destroy=ax_actor_heap_destroy_stub")
+#pragma comment(linker, "/alternatename:ax_actor_alloc=ax_actor_alloc_stub")
+#pragma comment(linker, "/alternatename:ax_actor_free=ax_actor_free_stub")
+ActorHeap* ax_actor_heap_create_stub(unsigned long long actor_id) { (void)actor_id; return (ActorHeap*)1; }
+void ax_actor_heap_destroy_stub(ActorHeap* heap) { (void)heap; }
+void* ax_actor_alloc_stub(ActorHeap* heap, size_t user_size) { (void)heap; return malloc(user_size); }
+void ax_actor_free_stub(ActorHeap* heap, void* user_ptr) { (void)heap; free(user_ptr); }
+#else
+__attribute__((weak)) ActorHeap* ax_actor_heap_create(unsigned long long actor_id) {
+    (void)actor_id;
+    return (ActorHeap*)1;
+}
+__attribute__((weak)) void ax_actor_heap_destroy(ActorHeap* heap) {
+    (void)heap;
+}
+__attribute__((weak)) void* ax_actor_alloc(ActorHeap* heap, size_t user_size) {
+    (void)heap;
+    return malloc(user_size);
+}
+__attribute__((weak)) void ax_actor_free(ActorHeap* heap, void* user_ptr) {
+    (void)heap;
+    free(user_ptr);
+}
+#endif
 

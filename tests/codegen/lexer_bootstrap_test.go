@@ -40,7 +40,7 @@ func TestStage1LexerCorpus(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, ""); err != nil {
 		t.Fatalf("failed to compile self-hosted lexer: %v", err)
 	}
 
@@ -179,7 +179,9 @@ func concatenateAxiomFiles(paths ...string) ([]byte, error) {
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "import ") {
-				imports = append(imports, line)
+				if strings.HasPrefix(trimmed, "import std.") {
+					imports = append(imports, line)
+				}
 			} else {
 				body = append(body, line)
 			}

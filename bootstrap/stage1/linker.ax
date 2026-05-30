@@ -223,8 +223,9 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             mut name_str := ""
             if name_offset < strtab_size:
                 let str_ptr = (data as i64 + strtab_off + name_offset) as ptr[u8]
+                let max_len = strtab_size - name_offset
                 mut char_len := 0 as i64
-                while str_ptr[char_len] != 0 as u8:
+                while char_len < max_len and str_ptr[char_len] != 0 as u8:
                     char_len = char_len + 1
                 name_str = x86_slice_to_str(str_ptr, char_len)
             push_linker_str(&sym_names, name_str)
@@ -344,8 +345,9 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             let str_off = read_u32_le(data, off + 4) as i64
             if str_off < strtab_size:
                 let str_ptr = (data as i64 + strtab_off + str_off) as ptr[u8]
+                let max_len = strtab_size - str_off
                 mut char_len := 0 as i64
-                while str_ptr[char_len] != 0 as u8:
+                while char_len < max_len and str_ptr[char_len] != 0 as u8:
                     char_len = char_len + 1
                 name_str = x86_slice_to_str(str_ptr, char_len)
         else:
@@ -359,12 +361,18 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
         let sec_num = read_u16_le(data, off + 12) as i16
         let aux_count = data[off + 17]
         
+        let is_def_sym = sec_num > 0 as i16
+        if name_str == "ax_pathbuf_new" or name_str == "ax_parse_proc_cmdline" or name_str == "ax_Ok" or name_str == "ax_Err" or name_str == "ax_Some" or name_str == "ax_get_global_state_internal" or name_str == "ax_SEGMENT_SIZE" or name_str == "ax_pathbuf_new" or name_str == "ax_parse_proc_cmdline":
+            let name_nt = x86_str_to_null_terminated(name_str)
+            ax_printf_local("[Debug Linker Parse Symbol] name=%s, sec_num=%d, offset=%d, defined=%d\n", name_nt as i64, sec_num as i64, val as i64, is_def_sym as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            @free(name_nt)
+
         push_linker_str(&sym_names, name_str)
         push_linker_symbol(&symbols, LinkerSymbol(
             name: name_str,
             section: sec_num as i64,
             offset: val as u64,
-            defined: sec_num > 0 as i16
+            defined: is_def_sym
         ))
         
         sym_i = sym_i + 1
@@ -430,11 +438,54 @@ pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
     while vec.len % alignment != 0:
         push_byte(vec, 0 as u8)
 
+pub fn is_valid_symbol_name(name: str) -> bool:
+    let len = std.string.len(name)
+    if len == 0:
+        return false
+    let ptr = get_str_ptr(name)
+    mut idx := 0 as i64
+    while idx < len:
+        let c = ptr[idx]
+        if c <= 32 as u8 or c >= 127 as u8:
+            return false
+        idx = idx + 1
+    return true
+
+pub fn is_valid_runtime_dll_symbol(name: str) -> bool:
+    if (name == "__ax_runtime_init" or name == "__ax_runtime_shutdown" or
+        name == "ax___ax_runtime_init" or name == "ax___ax_runtime_shutdown" or
+        name == "ax_actor_spawn" or name == "ax_actor_step" or
+        name == "ax_actor_is_running" or name == "ax_actor_has_messages" or
+        name == "ax_str_eq" or name == "ax_str_len" or
+        name == "ax_str_concat" or name == "ax_str_replace" or
+        name == "ax_str_slice" or name == "ax_str_char_count" or
+        name == "ax_str_contains" or name == "ax_str_ends_with" or
+        name == "ax_str_index_of" or name == "ax_str_starts_with" or
+        name == "ax_str_trim" or name == "ax_free" or
+        name == "ax_alloc" or name == "ax_realloc" or
+        name == "ax_println_str" or name == "ax_println_i64" or
+        name == "ax_println_f64" or name == "ax_println_bool" or
+        name == "ax_print_str" or name == "ax_print_i64" or
+        name == "ax_print_f64" or name == "ax_print_bool" or
+        name == "ax_assert_axiom" or name == "ax_panic" or
+        name == "ax_time_now_ns" or name == "ax_timer_after" or
+        name == "ax_scheduler_stats" or name == "ax_scheduler_submit" or
+        name == "ax_scheduler_init" or name == "ax_scheduler_run" or
+        name == "ax_scheduler_shutdown" or name == "ax_compiler_intrinsic" or
+        name == "ax_get_global_state_internal"):
+        return true
+    return false
+
 pub fn get_dll_for_symbol(name: str) -> str:
     if (name == "steals_attempted" or name == "steals_succeeded" or name == "tasks_executed" or
         name == "running" or name == "head" or name == "total_executed" or
         name == "worker_count" or name == "total_submitted" or name == "total_steals" or
-        name == "alloc" or name == "q" or name == "msg" or name == "actor" or name == "SEGMENT_MAGIC"):
+        name == "alloc" or name == "q" or name == "msg" or name == "actor" or name == "SEGMENT_MAGIC" or
+        name == "ax_steals_attempted" or name == "ax_steals_succeeded" or name == "ax_tasks_executed" or
+        name == "ax_running" or name == "ax_head" or name == "ax_total_executed" or
+        name == "ax_worker_count" or name == "ax_total_submitted" or name == "ax_total_steals" or
+        name == "ax_q" or name == "ax_msg" or name == "ax_actor" or name == "ax_total_executed" or name == "ax_SEGMENT_MAGIC" or
+        name == "syscall"):
         return "none"
 
     if (name == "VirtualAlloc" or name == "VirtualFree" or name == "ExitProcess" or name == "TerminateProcess" or 
@@ -449,9 +500,13 @@ pub fn get_dll_for_symbol(name: str) -> str:
     let ptr = get_str_ptr(name)
     let len = std.string.len(name)
     if len >= 3 and ptr[0] == 'a' as u8 and ptr[1] == 'x' as u8 and ptr[2] == '_' as u8:
-        return "ax_runtime.dll"
+        if is_valid_runtime_dll_symbol(name):
+            return "ax_runtime.dll"
+        return "none"
     if len >= 5 and ptr[0] == '_' as u8 and ptr[1] == '_' as u8 and ptr[2] == 'a' as u8 and ptr[3] == 'x' as u8 and ptr[4] == '_' as u8:
-        return "ax_runtime.dll"
+        if is_valid_runtime_dll_symbol(name):
+            return "ax_runtime.dll"
+        return "none"
         
     return "ucrtbase.dll"
 
@@ -791,7 +846,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             let r = &obj.relocs.data[r_i]
             if r.sym_idx < obj.sym_names.len as u32:
                 let target_name = obj.sym_names.data[r.sym_idx]
-                if target_name != "" and target_name != "main" and target_name != "_AX_main_main_v_v":
+                if target_name != "" and target_name != "main" and target_name != "_AX_main_main_v_v" and is_valid_symbol_name(target_name):
                     mut is_defined := false
                     mut search := 0 as i64
                     while search < func_names.len:
@@ -802,6 +857,9 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                     
                     if not is_defined:
                         let dll = get_dll_for_symbol(target_name)
+                        let name_nt = x86_str_to_null_terminated(target_name)
+                        ax_printf_local("[Debug Linker Import] DLL=%s, symbol=%s\n", get_str_ptr(dll) as i64, name_nt as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        @free(name_nt)
                         if dll == "kernel32.dll":
                             add_unique_import(&kernel32_imports, target_name)
                         elif dll == "ax_runtime.dll":
@@ -811,6 +869,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                             is_defined = true
                         else:
                             add_unique_import(&ucrtbase_imports, target_name)
+
             r_i = r_i + 1
         i = i + 1
         
@@ -1491,6 +1550,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         @free(dyn_libs.data as ptr[u8])
 
     // 3. Resolve & Apply Relocations
+    mut has_reloc_error := false
     i = 0
     while i < objects.len:
         let obj = objects.data[i]
@@ -1512,6 +1572,14 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 search = search + 1
                 
             mut target_va := 0 as u64
+            if target_offset == -1 as i64 and target_name == "syscall":
+                mut search_ax := 0 as i64
+                while search_ax < func_names.len:
+                    if func_names.data[search_ax] == "ax_syscall":
+                        target_offset = func_offsets.data[search_ax].offset
+                        break
+                    search_ax = search_ax + 1
+
             if target_offset != -1 as i64:
                 target_va = base_addr + target_offset as u64
             else:
@@ -1526,7 +1594,9 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                     dyn_search = dyn_search + 1
                     
                 if not found_dyn:
-                    target_va = 0x500000 as u64
+                    ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    has_reloc_error = true
+                    target_va = 0 as u64
                 
             let rel_offset = (obj.va - base_addr) as i64 + r.offset
             if rel_offset + 4 as i64 > merged_code.len:
@@ -1660,4 +1730,6 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     @free(objects.data as ptr[u8])
     @free(func_names.data as ptr[u8])
     @free(func_offsets.data as ptr[u8])
+    if has_reloc_error:
+        return false
     return true

@@ -66,8 +66,11 @@ func Verify(fn *AirFunc) []VerifyError {
 		}
 	}
 
-	// SSA def tracking: register → (blockID, instIdx within block)
-	defs := make(map[uint32]struct{})
+	type DefLoc struct {
+		block uint32
+		inst  uint32
+	}
+	defs := make(map[uint32]DefLoc)
 
 	for bi := uint32(0); bi < numBlocks; bi++ {
 		blk := &fn.Blocks[bi]
@@ -99,10 +102,10 @@ func Verify(fn *AirFunc) []VerifyError {
 			// Check 1: SSA — each Dest defined at most once
 			// ---------------------------------------------------------------
 			if inst.Dest != 0 && !isDestUsedAsOperand(inst.Opcode) {
-				if _, ok := defs[inst.Dest]; ok && inst.Opcode != OpCopy {
-					add(bi, uint32(ii), fmt.Sprintf("SSA violation: register %d defined more than once", inst.Dest))
+				if first, ok := defs[inst.Dest]; ok && inst.Opcode != OpCopy {
+					add(bi, uint32(ii), fmt.Sprintf("SSA violation: register %d defined more than once by opcode %s (first in block_%d[%d])", inst.Dest, inst.Opcode.Mnemonic(), first.block, first.inst))
 				}
-				defs[inst.Dest] = struct{}{}
+				defs[inst.Dest] = DefLoc{block: bi, inst: uint32(ii)}
 			}
 
 			// ---------------------------------------------------------------

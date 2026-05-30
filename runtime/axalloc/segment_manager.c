@@ -90,7 +90,8 @@ void ax_segment_release(Segment* seg) {
 }
 
 Segment* ax_segment_get_active(SegmentList* list, SizeClass sc) {
-    if (list->active && list->active->bump < list->active->limit) {
+    size_t block_size = SIZE_CLASS_SIZES[sc];
+    if (list->active && (size_t)(list->active->limit - list->active->bump) >= block_size) {
         return list->active;
     }
 

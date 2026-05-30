@@ -33,7 +33,7 @@ func TestAxiomSync(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	compErr := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath)
+	compErr := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, "")
 	// Copy generated C file for debugging
 	if cBytes, err := os.ReadFile(binPath + ".c"); err == nil {
 		_ = os.WriteFile("../../sync_test_debug.c", cBytes, 0644)

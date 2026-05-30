@@ -3,26 +3,29 @@
 #include "ax_stdlib.h"
 
 /* Forward declarations */
-struct ax_AxHeader;
-struct ax_FreeSlot;
-struct ax_FreeList;
+struct ax_AxGlobalState;
 struct ax_Segment;
 struct ax_SegmentList;
+struct ax_FreeList;
 struct ax_ActorHeap;
-struct ax_AxGlobalState;
+struct ax_FreeSlot;
+struct ax_AxHeader;
 
 /* Type definitions */
-struct ax_AxHeader {
-    ax_u32 gen_id;
-    ax_u32 flags;
+struct ax_AxGlobalState {
+    ax_bool is_rt_initialized;
+    ax_bool g_sched_initialized;
+    ax_i64 padding;
+    ax_i64 g_slab_used;
+    struct ax_Segment* g_free_pool;
+    struct ax_Segment* g_slab;
+    struct ax_ActorHeap* global_heap;
+    void* g_actor_table;
+    void* g_sched;
+    ax_u32 oom_written;
+    ax_u8 oom_digit;
 };
-struct ax_FreeSlot {
-    struct ax_FreeSlot* next;
-};
-struct ax_FreeList {
-    struct ax_FreeSlot* head;
-    ax_i64 count;
-};
+
 struct ax_Segment {
     ax_u8* base;
     ax_u8* bump;
@@ -31,11 +34,18 @@ struct ax_Segment {
     struct ax_Segment* next;
     ax_u32 magic;
 };
+
 struct ax_SegmentList {
     struct ax_Segment* active;
     struct ax_Segment* retired;
     ax_i64 count;
 };
+
+struct ax_FreeList {
+    struct ax_FreeSlot* head;
+    ax_i64 count;
+};
+
 struct ax_ActorHeap {
     ax_u64 actor_id;
     ax_u32 magic;
@@ -65,17 +75,16 @@ struct ax_ActorHeap {
     ax_u64 alloc_count;
     ax_u64 free_count;
 };
-struct ax_AxGlobalState {
-    ax_bool is_rt_initialized;
-    ax_bool g_sched_initialized;
-    ax_i64 padding;
-    ax_i64 g_slab_used;
-    struct ax_Segment* g_free_pool;
-    struct ax_Segment* g_slab;
-    struct ax_ActorHeap* global_heap;
-    void* g_actor_table;
-    void* g_sched;
+
+struct ax_FreeSlot {
+    struct ax_FreeSlot* next;
 };
+
+struct ax_AxHeader {
+    ax_u32 gen_id;
+    ax_u32 flags;
+};
+
 
 /* Global variables */
 extern const ax_i64 ax_SEGMENT_SIZE;
@@ -89,8 +98,11 @@ const ax_u32 ax_ACTOR_HEAP_MAGIC = 0xAC704EA0;
 
 /* Function prototypes */
 ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
+void* ax_get_global_state_internal(void);
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset);
 ax_i32 ax_munmap(void* addr, ax_u64 length);
+static void ax_print_hex_digit(ax_u8 digit);
+static void ax_print_hex_freestanding(ax_u32 val);
 struct ax_AxGlobalState* ax_get_global_state(void);
 ax_i64* ax_std_mem_alloc_get_slab_used(void);
 struct ax_Segment** ax_std_mem_alloc_get_free_pool(void);
@@ -101,6 +113,7 @@ struct ax_SegmentList* ax_ActorHeap_ax_get_segment_list(struct ax_ActorHeap* hea
 struct ax_FreeList* ax_ActorHeap_ax_get_free_list(struct ax_ActorHeap* heap, ax_i32 sc);
 void ax_FreeList_ax_free_list_push(struct ax_FreeList* list, ax_u8* block);
 ax_u8* ax_FreeList_ax_free_list_pop(struct ax_FreeList* list);
+static void ax_ax_os_alloc_report_error(ax_u32 err);
 void* ax_ax_os_alloc(ax_i64 size);
 void ax_ax_os_free(void* ptr, ax_i64 size);
 void ax_ax_segment_manager_init(void);
@@ -126,6 +139,8 @@ static void ax_test_free_list_push_pop(void);
 static void ax_test_segment_bump_alloc(void);
 static void ax_test_actor_heap_lifecycle_and_alloc(void);
 ax_i32 ax_main_usr(void);
+ax_i64 ax_std_string_len(ax_string p0);
+ax_string ax_std_string_slice(ax_string p0, ax_i64 p1, ax_i64 p2);
 
 
 void* ax_mmap(void* addr, ax_u64 length, ax_i32 prot, ax_i32 flags, ax_i32 fd, ax_i64 offset) {
@@ -138,21 +153,34 @@ ax_i32 ax_munmap(void* addr, ax_u64 length) {
     return ((ax_i32)(res));
 }
 
-struct ax_AxGlobalState* ax_get_global_state(void) {
-    void* addr = ((void*)(0x50000000));
-    struct ax_AxGlobalState* state = ((struct ax_AxGlobalState*)(NULL));
-    if (1) {
-        state = ((struct ax_AxGlobalState*)(VirtualAlloc(addr, ((ax_u64)(4096)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
+static void ax_print_hex_digit(ax_u8 digit) {
+    void* h_err = GetStdHandle(((ax_u32)(0xFFFFFFF4)));
+    ax_u8 c = ((ax_u8)('0'));
+    if ((digit < ((ax_u8)(10)))) {
+        c = (digit + ((ax_u8)('0')));
     } else {
         {
-            state = ((struct ax_AxGlobalState*)(ax_mmap(addr, ((ax_u64)(4096)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
+            c = ((digit - ((ax_u8)(10))) + ((ax_u8)('A')));
         }
     }
-    if ((state == ((struct ax_AxGlobalState*)(NULL)))) {
-        return ((struct ax_AxGlobalState*)(0x50000000));
-    }
-    return state;
-    ax_free(state);
+    ax_u32 written = ((ax_u32)(0));
+    WriteFile(h_err, ((void*)(&(c))), ((ax_u32)(1)), ((void*)(((ax_u32*)(&(written))))), ((void*)(NULL)));
+}
+
+static void ax_print_hex_freestanding(ax_u32 val) {
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(28))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(24))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(20))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(16))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(12))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(8))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)(((val >> ((ax_u32)(4))) & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)((val & ((ax_u32)(15))))));
+    ax_print_hex_digit(((ax_u8)('\n')));
+}
+
+struct ax_AxGlobalState* ax_get_global_state(void) {
+    return ((struct ax_AxGlobalState*)(ax_get_global_state_internal()));
 }
 
 ax_i64* ax_std_mem_alloc_get_slab_used(void) {
@@ -167,16 +195,13 @@ struct ax_Segment** ax_std_mem_alloc_get_free_pool(void) {
 
 struct ax_Segment* ax_std_mem_alloc_get_slab(void) {
     struct ax_AxGlobalState* state = ax_get_global_state();
-    if ((state->g_slab == ((struct ax_Segment*)(NULL)))) {
+    struct ax_Segment** p_g_slab = ((struct ax_Segment**)((((ax_i64)(state)) + ((ax_i64)(32)))));
+    if (((*((struct ax_Segment**)(p_g_slab))) == ((struct ax_Segment*)(NULL)))) {
         if (1) {
-            state->g_slab = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), ((ax_u64)(196608)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
-        } else {
-            {
-                state->g_slab = ((struct ax_Segment*)(ax_mmap(((void*)(NULL)), ((ax_u64)(196608)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)))));
-            }
+            (*((struct ax_Segment**)(p_g_slab))) = ((struct ax_Segment*)(VirtualAlloc(((void*)(NULL)), ((ax_u64)(196608)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)))));
         }
     }
-    return state->g_slab;
+    return (*((struct ax_Segment**)(p_g_slab)));
 }
 
 ax_i64 ax_ax_size_class_size(ax_i32 sc) {
@@ -334,12 +359,25 @@ ax_u8* ax_FreeList_ax_free_list_pop(struct ax_FreeList* list) {
     return ((ax_u8*)((((ax_i64)(slot)) - 8)));
 }
 
+static void ax_ax_os_alloc_report_error(ax_u32 err) {
+    void* h_err = GetStdHandle(((ax_u32)(0xFFFFFFF4)));
+    ax_string msg = (ax_string){.ptr=(const ax_u8*)"ax_os_alloc FAILED! Error code: ", .len=32};
+    ax_u32 written = ((ax_u32)(0));
+    WriteFile(h_err, ((void*)(msg.ptr)), ((ax_u32)(ax_str_len(msg))), ((void*)(((ax_u32*)(&(written))))), ((void*)(NULL)));
+    ax_print_hex_freestanding(err);
+}
+
 void* ax_ax_os_alloc(ax_i64 size) {
     if (1) {
-        return VirtualAlloc(((void*)(NULL)), ((ax_u64)(size)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)));
+        void* res = VirtualAlloc(((void*)(NULL)), ((ax_u64)(size)), ((ax_u32)(0x3000)), ((ax_u32)(0x04)));
+        if ((res == ((void*)(NULL)))) {
+            ax_ax_os_alloc_report_error(GetLastError());
+        }
+        return res;
+        ax_free(res);
     } else {
         {
-            return ax_mmap(((void*)(NULL)), ((ax_u64)(size)), ((ax_i32)(3)), ((ax_i32)(0x22)), (-((ax_i32)(1))), ((ax_i64)(0)));
+            return ax_mmap(((void*)(NULL)), ((ax_u64)(size)), ((ax_i32)(3)), ((ax_i32)(0x22)), ((ax_i32)((-1))), ((ax_i64)(0)));
         }
     }
 }
@@ -359,9 +397,9 @@ void ax_ax_os_free(void* ptr, ax_i64 size) {
 
 void ax_ax_segment_manager_init(void) {
     ax_i64* slab_used_ptr = ax_std_mem_alloc_get_slab_used();
-    (*(slab_used_ptr)) = 0;
+    (*((ax_i64*)(slab_used_ptr))) = 0;
     struct ax_Segment** free_pool_ptr = ax_std_mem_alloc_get_free_pool();
-    (*(free_pool_ptr)) = ((struct ax_Segment*)(NULL));
+    (*((struct ax_Segment**)(free_pool_ptr))) = ((struct ax_Segment*)(NULL));
     struct ax_Segment* slab_ptr = ax_std_mem_alloc_get_slab();
     memset(((ax_u8*)(slab_ptr)), ((ax_u8)(0)), ((ax_i64)(196608)));
 }
@@ -370,7 +408,7 @@ void ax_ax_segment_manager_shutdown(void) {
     ax_i64* slab_used_ptr = ax_std_mem_alloc_get_slab_used();
     struct ax_Segment* slab_ptr = ax_std_mem_alloc_get_slab();
     ax_i64 i = ((ax_i64)(0));
-    while ((i < (*(slab_used_ptr)))) {
+    while ((i < (*((ax_i64*)(slab_used_ptr))))) {
         struct ax_Segment* seg = ((struct ax_Segment*)((((ax_i64)(slab_ptr)) + (i * ((ax_i64)(sizeof(struct ax_Segment)))))));
         if ((seg->magic == ax_SEGMENT_MAGIC)) {
             ax_ax_os_free(((void*)(seg->base)), ax_SEGMENT_SIZE);
@@ -378,26 +416,26 @@ void ax_ax_segment_manager_shutdown(void) {
         }
         i = (i + 1);
     }
-    (*(slab_used_ptr)) = 0;
+    (*((ax_i64*)(slab_used_ptr))) = 0;
     struct ax_Segment** free_pool_ptr = ax_std_mem_alloc_get_free_pool();
-    (*(free_pool_ptr)) = ((struct ax_Segment*)(NULL));
+    (*((struct ax_Segment**)(free_pool_ptr))) = ((struct ax_Segment*)(NULL));
 }
 
 static struct ax_Segment* ax_alloc_segment_meta(void) {
     struct ax_Segment** free_pool_ptr = ax_std_mem_alloc_get_free_pool();
-    if (((*(free_pool_ptr)) != ((struct ax_Segment*)(NULL)))) {
-        struct ax_Segment* seg = (*(free_pool_ptr));
-        (*(free_pool_ptr)) = seg->next;
+    if (((*((struct ax_Segment**)(free_pool_ptr))) != ((struct ax_Segment*)(NULL)))) {
+        struct ax_Segment* seg = (*((struct ax_Segment**)(free_pool_ptr)));
+        (*((struct ax_Segment**)(free_pool_ptr))) = seg->next;
         return seg;
         ax_free(seg);
     }
     ax_i64* slab_used_ptr = ax_std_mem_alloc_get_slab_used();
-    if (((*(slab_used_ptr)) >= ((ax_i64)(4096)))) {
+    if (((*((ax_i64*)(slab_used_ptr))) >= ((ax_i64)(4096)))) {
         return ((struct ax_Segment*)(NULL));
     }
     struct ax_Segment* slab_ptr = ax_std_mem_alloc_get_slab();
-    struct ax_Segment* seg = ((struct ax_Segment*)((((ax_i64)(slab_ptr)) + ((*(slab_used_ptr)) * ((ax_i64)(sizeof(struct ax_Segment)))))));
-    (*(slab_used_ptr)) = ((*(slab_used_ptr)) + 1);
+    struct ax_Segment* seg = ((struct ax_Segment*)((((ax_i64)(slab_ptr)) + ((*((ax_i64*)(slab_used_ptr))) * ((ax_i64)(sizeof(struct ax_Segment)))))));
+    (*((ax_i64*)(slab_used_ptr))) = ((*((ax_i64*)(slab_used_ptr))) + 1);
     return seg;
     ax_free(seg);
 }
@@ -405,8 +443,8 @@ static struct ax_Segment* ax_alloc_segment_meta(void) {
 static void ax_Segment_free_segment_meta(struct ax_Segment* seg) {
     memset(((ax_u8*)(seg)), ((ax_u8)(0)), sizeof(struct ax_Segment));
     struct ax_Segment** free_pool_ptr = ax_std_mem_alloc_get_free_pool();
-    seg->next = (*(free_pool_ptr));
-    (*(free_pool_ptr)) = seg;
+    seg->next = (*((struct ax_Segment**)(free_pool_ptr)));
+    (*((struct ax_Segment**)(free_pool_ptr))) = seg;
 }
 
 struct ax_Segment* ax_ax_segment_acquire(ax_i32 sc) {
@@ -430,7 +468,10 @@ struct ax_Segment* ax_ax_segment_acquire(ax_i32 sc) {
 }
 
 void ax_Segment_ax_segment_release(struct ax_Segment* seg) {
-    if (((seg == ((struct ax_Segment*)(NULL))) || (seg->magic != ax_SEGMENT_MAGIC))) {
+    if ((seg == ((struct ax_Segment*)(NULL)))) {
+        return;
+    }
+    if ((seg->magic != ax_SEGMENT_MAGIC)) {
         return;
     }
     ax_ax_os_free(((void*)(seg->base)), ax_SEGMENT_SIZE);
@@ -439,8 +480,11 @@ void ax_Segment_ax_segment_release(struct ax_Segment* seg) {
 }
 
 struct ax_Segment* ax_SegmentList_ax_segment_get_active(struct ax_SegmentList* list, ax_i32 sc) {
-    if (((list->active != ((struct ax_Segment*)(NULL))) && (list->active->bump < list->active->limit))) {
-        return list->active;
+    ax_i64 block_size = ax_ax_size_class_size(sc);
+    if ((list->active != ((struct ax_Segment*)(NULL)))) {
+        if (((((ax_i64)(list->active->limit)) - ((ax_i64)(list->active->bump))) >= block_size)) {
+            return list->active;
+        }
     }
     if ((list->active != ((struct ax_Segment*)(NULL)))) {
         list->active->next = list->retired;
@@ -469,7 +513,10 @@ void ax_SegmentList_ax_segment_list_release_all(struct ax_SegmentList* list) {
 }
 
 ax_u8* ax_Segment_ax_segment_bump_alloc(struct ax_Segment* seg, ax_i32 sc) {
-    if (((seg == ((struct ax_Segment*)(NULL))) || (sc >= 10))) {
+    if ((seg == ((struct ax_Segment*)(NULL)))) {
+        return ((ax_u8*)(NULL));
+    }
+    if ((sc >= 10)) {
         return ((ax_u8*)(NULL));
     }
     ax_i64 block_size = ax_ax_size_class_size(sc);
@@ -483,26 +530,28 @@ ax_u8* ax_Segment_ax_segment_bump_alloc(struct ax_Segment* seg, ax_i32 sc) {
 }
 
 ax_u8* ax_ax_large_alloc(ax_i64 user_size) {
-    ax_i64 total = (8 + user_size);
+    ax_i64 total = (16 + user_size);
     ax_i64 page_aligned = (((total + 4095) / 4096) * 4096);
     ax_u8* block = ((ax_u8*)(ax_ax_os_alloc(page_aligned)));
     if ((block == ((ax_u8*)(NULL)))) {
         return ((ax_u8*)(NULL));
     }
-    struct ax_AxHeader* hdr = ((struct ax_AxHeader*)(block));
+    ax_u64* p_total = ((ax_u64*)(block));
+    (*((ax_u64*)(p_total))) = ((ax_u64)(page_aligned));
+    struct ax_AxHeader* hdr = ((struct ax_AxHeader*)((((ax_i64)(block)) + 8)));
     hdr->gen_id = ((ax_u32)(1));
     hdr->flags = ((ax_u32)(10));
-    return ((ax_u8*)((((ax_i64)(block)) + 8)));
+    return ((ax_u8*)((((ax_i64)(block)) + 16)));
 }
 
 void ax_ax_large_free(ax_u8* user_ptr, ax_i64 user_size) {
     if ((user_ptr == ((ax_u8*)(NULL)))) {
         return;
     }
-    ax_u8* block = ((ax_u8*)((((ax_i64)(user_ptr)) - 8)));
-    ax_i64 total = (8 + user_size);
-    ax_i64 page_aligned = (((total + 4095) / 4096) * 4096);
-    ax_ax_os_free(((void*)(block)), page_aligned);
+    void* block = ((void*)((((ax_i64)(user_ptr)) - 16)));
+    ax_u64* p_total = ((ax_u64*)((((ax_i64)(user_ptr)) - 16)));
+    ax_i64 total = ((ax_i64)((*((ax_u64*)(p_total)))));
+    ax_ax_os_free(block, total);
 }
 
 struct ax_ActorHeap* ax_ax_actor_heap_create(ax_u64 actor_id) {
@@ -512,7 +561,6 @@ struct ax_ActorHeap* ax_ax_actor_heap_create(ax_u64 actor_id) {
     if ((heap == ((struct ax_ActorHeap*)(NULL)))) {
         return ((struct ax_ActorHeap*)(NULL));
     }
-    memset(((ax_u8*)(heap)), ((ax_u8)(0)), page_aligned);
     heap->actor_id = actor_id;
     heap->magic = ax_ACTOR_HEAP_MAGIC;
     return heap;
@@ -520,7 +568,7 @@ struct ax_ActorHeap* ax_ax_actor_heap_create(ax_u64 actor_id) {
 }
 
 void ax_ActorHeap_ax_actor_heap_destroy(struct ax_ActorHeap* heap) {
-    if (((heap == ((struct ax_ActorHeap*)(NULL))) || (heap->magic != ax_ACTOR_HEAP_MAGIC))) {
+    if ((heap == ((struct ax_ActorHeap*)(NULL)))) {
         return;
     }
     ax_i32 sc = 0;
@@ -529,21 +577,24 @@ void ax_ActorHeap_ax_actor_heap_destroy(struct ax_ActorHeap* heap) {
         ax_SegmentList_ax_segment_list_release_all(list);
         sc = (sc + 1);
     }
-    heap->magic = ((ax_u32)(0));
     ax_i64 size = ((ax_i64)(sizeof(struct ax_ActorHeap)));
     ax_i64 page_aligned = (((size + 4095) / 4096) * 4096);
     ax_ax_os_free(((void*)(heap)), page_aligned);
 }
 
 ax_u8* ax_ActorHeap_ax_actor_alloc(struct ax_ActorHeap* heap, ax_i64 user_size) {
-    if (((heap == ((struct ax_ActorHeap*)(NULL))) || (heap->magic != ax_ACTOR_HEAP_MAGIC))) {
+    ax_i64 sz = user_size;
+    if ((sz < ((ax_i64)(1)))) {
+        sz = ((ax_i64)(1));
+    }
+    if ((heap == ((struct ax_ActorHeap*)(NULL)))) {
         return ((ax_u8*)(NULL));
     }
-    ax_i32 sc = ax_ax_size_class_for(user_size);
+    ax_i32 sc = ax_ax_size_class_for(sz);
     if ((sc == 10)) {
-        ax_u8* ptr_val = ax_ax_large_alloc(user_size);
+        ax_u8* ptr_val = ax_ax_large_alloc(sz);
         if ((ptr_val != ((ax_u8*)(NULL)))) {
-            heap->total_allocated = (heap->total_allocated + ((ax_u64)(user_size)));
+            heap->total_allocated = (heap->total_allocated + ((ax_u64)(sz)));
             heap->alloc_count = (heap->alloc_count + ((ax_u64)(1)));
         }
         return ptr_val;
@@ -579,7 +630,10 @@ ax_u8* ax_ActorHeap_ax_actor_alloc(struct ax_ActorHeap* heap, ax_i64 user_size) 
 }
 
 void ax_ActorHeap_ax_actor_free(struct ax_ActorHeap* heap, ax_u8* user_ptr) {
-    if ((((heap == ((struct ax_ActorHeap*)(NULL))) || (user_ptr == ((ax_u8*)(NULL)))) || (heap->magic != ax_ACTOR_HEAP_MAGIC))) {
+    if ((heap == ((struct ax_ActorHeap*)(NULL)))) {
+        return;
+    }
+    if ((user_ptr == ((ax_u8*)(NULL)))) {
         return;
     }
     ax_u8* block = ((ax_u8*)((((ax_i64)(user_ptr)) - 8)));
@@ -587,6 +641,11 @@ void ax_ActorHeap_ax_actor_free(struct ax_ActorHeap* heap, ax_u8* user_ptr) {
     ax_i32 sc = ((ax_i32)((hdr->flags & ((ax_u32)(15)))));
     hdr->gen_id = ((ax_u32)(0));
     if (((sc == 10) || (sc >= 10))) {
+        ax_u64* p_total = ((ax_u64*)((((ax_i64)(user_ptr)) - 16)));
+        ax_u64 user_size = ((*((ax_u64*)(p_total))) - ((ax_u64)(16)));
+        heap->total_freed = (heap->total_freed + user_size);
+        heap->free_count = (heap->free_count + ((ax_u64)(1)));
+        ax_ax_large_free(user_ptr, ((ax_i64)(0)));
         return;
     }
     ax_i64 block_size = ax_ax_size_class_size(sc);
@@ -604,7 +663,7 @@ static void ax_test_print_str(ax_string s) {
     if (1) {
         void* h = GetStdHandle(((ax_u32)(0xFFFFFFF5)));
         ax_u32 written = ((ax_u32)(0));
-        WriteFile(h, ((ax_u8*)(s.ptr)), ((ax_u32)(ax_str_len(s))), ((void*)(&(written))), ((void*)(NULL)));
+        WriteFile(h, ((void*)(s.ptr)), ((ax_u32)(ax_str_len(s))), ((void*)(&(written))), ((void*)(NULL)));
     } else {
         {
             syscall(((ax_u64)(1)), ((ax_u64)(1)), ((ax_u64)(((ax_u8*)(s.ptr)))), ((ax_u64)(ax_str_len(s))), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
@@ -702,3 +761,33 @@ ax_i32 ax_main_usr(void) {
 ax_i32 ax_main(void) {
     return ax_main_usr();
 }
+
+/* Bridge allocator functions for C runtime integration */
+struct ax_ActorHeap;
+struct ax_ActorHeap* ax_ax_actor_heap_create(ax_u64 actor_id);
+void ax_ActorHeap_ax_actor_heap_destroy(struct ax_ActorHeap* heap);
+ax_u8* ax_ActorHeap_ax_actor_alloc(struct ax_ActorHeap* heap, ax_i64 user_size);
+void ax_ActorHeap_ax_actor_free(struct ax_ActorHeap* heap, ax_u8* user_ptr);
+
+void* ax_actor_heap_create(unsigned long long actor_id) {
+    return (void*)ax_ax_actor_heap_create((ax_u64)actor_id);
+}
+void ax_actor_heap_destroy(void* heap) {
+    ax_ActorHeap_ax_actor_heap_destroy((struct ax_ActorHeap*)heap);
+}
+void* ax_actor_alloc(void* heap, size_t user_size) {
+    return (void*)ax_ActorHeap_ax_actor_alloc((struct ax_ActorHeap*)heap, (ax_i64)user_size);
+}
+void ax_actor_free(void* heap, void* user_ptr) {
+    ax_ActorHeap_ax_actor_free((struct ax_ActorHeap*)heap, (ax_u8*)user_ptr);
+}
+
+// Linker stubs for standalone bootstrap tests
+ax_i32 ax_ax_driver_load_module(void* mod, struct ax_SymbolTable* st, void* tt) { return 0; }
+ax_bool ax_std_string_starts_with(ax_string s, ax_string prefix) { return 0; }
+ax_bool ax_std_string_ends_with(ax_string s, ax_string suffix) { return 0; }
+ax_bool ax_std_string_contains(ax_string s, ax_string sub) { return 0; }
+ax_i64 ax_std_string_char_count(ax_string s) { return 0; }
+ax_string ax_std_string_trim(ax_string s) { return s; }
+ax_string ax_std_string_to_upper(ax_string s) { return s; }
+ax_string ax_std_string_to_lower(ax_string s) { return s; }

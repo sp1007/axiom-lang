@@ -18,15 +18,17 @@ import (
 func TestStage1ResolverCorpus(t *testing.T) {
 	// 1. Concatenate all self-hosted compiler frontend files including resolver
 	workspaceDir := "../.." // relative to tests/codegen
+	printHelpersPath := filepath.Join(workspaceDir, "bootstrap/stage1/print_helpers.ax")
 	tokenPath := filepath.Join(workspaceDir, "bootstrap/stage1/token.ax")
 	lexerPath := filepath.Join(workspaceDir, "bootstrap/stage1/lexer.ax")
 	astPath := filepath.Join(workspaceDir, "bootstrap/stage1/ast.ax")
 	internPath := filepath.Join(workspaceDir, "bootstrap/stage1/intern.ax")
 	parserPath := filepath.Join(workspaceDir, "bootstrap/stage1/parser.ax")
 	resolverPath := filepath.Join(workspaceDir, "bootstrap/stage1/resolver.ax")
+	typetablePath := filepath.Join(workspaceDir, "bootstrap/stage1/typetable.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_resolver.ax")
 
-	sourceBytes, err := concatenateAxiomFiles(tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, mainPath)
+	sourceBytes, err := concatenateAxiomFiles(printHelpersPath, tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, mainPath)
 	if err != nil {
 		t.Fatalf("failed to concatenate resolver files: %v", err)
 	}
@@ -44,7 +46,7 @@ func TestStage1ResolverCorpus(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, ""); err != nil {
 		t.Fatalf("failed to compile self-hosted resolver: %v", err)
 	}
 

@@ -132,25 +132,30 @@ void ax_size_class_free(FreeList* free_lists, void* user_ptr) {
  * -------------------------------------------------------------------------- */
 
 void* ax_large_alloc(size_t user_size) {
-    size_t total = AX_HEADER_SIZE + user_size;
+    size_t total = 16 + user_size;  /* 8 bytes for total size, 8 bytes for AxHeader */
     total = (total + AX_PAGE_SIZE - 1) & ~(AX_PAGE_SIZE - 1);  /* page-align */
 
     void* block = ax_os_alloc(total);
     if (!block) return NULL;
 
-    AxHeader* hdr = (AxHeader*)block;
+    /* Store total allocated size at the start of OS block */
+    *(size_t*)block = total;
+
+    /* AxHeader is located exactly 8 bytes into OS block */
+    AxHeader* hdr = (AxHeader*)((char*)block + 8);
     hdr->gen_id = 1;
     hdr->flags  = SIZE_CLASS_LARGE;
 
-    return ax_block_to_user(block);
+    return ax_block_to_user(hdr);
 }
 
 void ax_large_free(void* user_ptr, size_t user_size) {
+    (void)user_size;
     if (!user_ptr) return;
 
     void* block = ax_user_to_block(user_ptr);
-    size_t total = AX_HEADER_SIZE + user_size;
-    total = (total + AX_PAGE_SIZE - 1) & ~(AX_PAGE_SIZE - 1);
+    char* os_block = (char*)block - 8;
+    size_t total = *(size_t*)os_block;
 
-    ax_os_free(block, total);
+    ax_os_free(os_block, total);
 }

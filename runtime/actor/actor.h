@@ -129,6 +129,7 @@ typedef struct AxActor {
     AxStopFn        stop_fn;
     void*           state_data;        /* user-defined state */
     size_t          state_size;
+    void*           heap;              /* isolated allocator heap */
     AxActorID       supervisor_id;     /* supervising actor */
     AxRestartConfig restart;
     uint64_t        msgs_processed;
@@ -164,7 +165,7 @@ void ax_actor_stop(AxActorID id);
  * Process one message from the actor's mailbox.
  * Returns 1 if a message was processed, 0 if mailbox empty.
  */
-int ax_actor_step(AxActor* actor);
+int ax_actor_step(void* actor);
 
 /**
  * Look up an actor by ID. Returns NULL if not found.
@@ -189,12 +190,12 @@ uint32_t ax_actor_count(void);
 /**
  * Check if the actor is in AX_ACTOR_RUNNING state.
  */
-int ax_actor_is_running(AxActor* actor);
+int ax_actor_is_running(void* actor);
 
 /**
  * Check if the actor has pending messages.
  */
-int ax_actor_has_messages(AxActor* actor);
+int ax_actor_has_messages(void* actor);
 
 #ifdef __cplusplus
 }

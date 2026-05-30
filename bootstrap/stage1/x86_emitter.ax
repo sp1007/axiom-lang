@@ -140,7 +140,7 @@ pub fn emitter_resolve_reg(op: MachOperand, allocs: ptr[RegAllocation]) -> u8:
         return alloc.phys
     return REG_NONE
 
-pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation], pool: InternPool, frame: ptr[StackFrame], mut str_lit_counter: ptr[i32]):
+pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAllocation], pool: ptr[InternPool], frame: ptr[StackFrame], mut str_lit_counter: ptr[i32]):
     let op = inst.op
     let buf = &e.code
     
@@ -154,7 +154,14 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
         if dst != REG_NONE and src != REG_NONE:
-            x86_encode_mov_rr(dst, src, buf)
+            if reg_is_xmm(dst) and reg_is_xmm(src):
+                x86_encode_movsd(dst, src, buf)
+            elif reg_is_xmm(dst) and reg_is_gpr(src):
+                x86_encode_movdq(dst, src, buf)
+            elif reg_is_gpr(dst) and reg_is_xmm(src):
+                x86_encode_movqd(dst, src, buf)
+            else:
+                x86_encode_mov_rr(dst, src, buf)
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let imm = inst.src1.imm
@@ -174,7 +181,8 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                 x86_encode_mov_ri64(dst, 0 as i64, buf)
             elif inst.src1.vreg == 2 as u32: // String literal!
                 let offset = buf.len + 3 as i64
-                let sym_val = 0xE0000000 as i64 + imm
+                let base: i64 = 3758096384
+                let sym_val = base + imm
                 push_reloc(&e.relocs, Relocation(
                     offset: offset,
                     kind: RELOC_PC32,
@@ -185,8 +193,10 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                 ))
                 x86_encode_lea_rip(dst, 0 as i32, buf)
                 
-                let text = pool.get(imm as u32)
+                let raw_text = pool.get(imm as u32)
+                let text = unescape_string_literal(raw_text)
                 let len = std.string.len(text)
+                @free(get_str_ptr(text))
                 
                 let struct_offset = (frame.callee_saved_len * 8) + (frame.spill_slots * 8) + 16 + str_lit_counter[0] * 16
                 let len_offset = struct_offset - 8
@@ -217,7 +227,18 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     elif op == MACH_SUB:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         if inst.src1.kind == OPND_IMM:
-            x86_encode_sub_ri(dst, inst.src1.imm as i32, buf)
+            if dst == REG_RSP and inst.src1.imm > 4096 as i64:
+                mut remaining := inst.src1.imm
+                while remaining > 4096 as i64:
+                    x86_encode_sub_ri(REG_RSP, 4096 as i32, buf)
+                    push_byte(buf, 0x85 as u8)
+                    push_byte(buf, 0x04 as u8)
+                    push_byte(buf, 0x24 as u8)
+                    remaining = remaining - 4096 as i64
+                if remaining > 0 as i64:
+                    x86_encode_sub_ri(REG_RSP, remaining as i32, buf)
+            else:
+                x86_encode_sub_ri(dst, inst.src1.imm as i32, buf)
         else:
             let src = emitter_resolve_reg(inst.src1, allocs)
             x86_encode_sub_rr(dst, src, buf)
@@ -260,6 +281,12 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             x86_encode_sar_imm(dst, inst.src1.imm as u8, buf)
         else:
             x86_encode_sar_cl(dst, buf)
+    elif op == MACH_SHR:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_shr_imm(dst, inst.src1.imm as u8, buf)
+        else:
+            x86_encode_shr_cl(dst, buf)
     elif op == MACH_CMP:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         if inst.src1.kind == OPND_IMM:
@@ -298,59 +325,127 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             // Recursive call to current function (starts at 0)
             disp = -(buf.len + 5) as i32
         else:
-            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5))
+            if inst.src1.imm > 0 as i64:
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: (inst.src1.imm as u32) | 0x80000000 as u32, inst_size: 5))
+            else:
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5))
         x86_encode_call_rel32(disp, buf)
     elif op == MACH_SYSCALL:
         x86_encode_syscall(buf)
+    elif op == MACH_LEA:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let base = emitter_resolve_reg(inst.src1, allocs)
+        mut disp := 0 as i32
+        if inst.src2.kind == OPND_IMM:
+            disp = inst.src2.imm as i32
+        x86_encode_lea(dst, base, disp, buf)
     elif op == MACH_LOAD:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let base = emitter_resolve_reg(inst.src1, allocs)
         mut disp := 0 as i32
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
-        mut size := inst.padding
-        if size == 0 as u8:
-            size = 8 as u8
-        x86_encode_mov_load_sized(dst, base, disp, size, buf)
+        if reg_is_xmm(dst):
+            x86_encode_movsd_load(dst, base, disp, buf)
+        else:
+            mut size := inst.padding
+            if size == 0 as u8:
+                size = 8 as u8
+            x86_encode_mov_load_sized(dst, base, disp, size, buf)
     elif op == MACH_STORE:
         let base = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
         mut disp := 0 as i32
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
-        mut size := inst.padding
-        if size == 0 as u8:
-            size = 8 as u8
-        x86_encode_mov_store_sized(base, disp, src, size, buf)
+        if reg_is_xmm(src):
+            x86_encode_movsd_store(base, disp, src, buf)
+        else:
+            mut size := inst.padding
+            if size == 0 as u8:
+                size = 8 as u8
+            x86_encode_mov_store_sized(base, disp, src, size, buf)
+    elif op == MACH_FADD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_addsd(dst, src, buf)
+    elif op == MACH_FSUB:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_subsd(dst, src, buf)
+    elif op == MACH_FMUL:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_mulsd(dst, src, buf)
+    elif op == MACH_FDIV:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_divsd(dst, src, buf)
+    elif op == MACH_FCMP:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_comisd(dst, src, buf)
+    elif op == MACH_ITOF:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvtsi2sd(dst, src, buf)
+    elif op == MACH_FTOI:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvttsd2si(dst, src, buf)
+    elif op == MACH_MOVDQ:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_movdq(dst, src, buf)
+    elif op == MACH_MOVQD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_movqd(dst, src, buf)
 
 pub fn emitter_resolve_fixups(mut e: ptr[MachEmitter]):
     mut i := 0 as i64
     while i < e.fixups.len:
         let fix = e.fixups.data[i]
-        mut target := 0 as i64
-        let found = label_map_get(&e.labels, fix.label_id, &target)
-        if not found:
-            // External symbol — needs linker relocation
+        let limit_80: u64 = 2147483648
+        let limit_F0: u64 = 4026531840
+        let fix_id = fix.label_id as u64
+        if fix_id >= limit_80:
+            mut sym_idx := fix.label_id
+            if fix_id < limit_F0:
+                sym_idx = fix.label_id & 2147483647 as u32
             push_reloc(&e.relocs, Relocation(
                 offset: fix.offset,
                 kind: RELOC_PC32,
                 padding1: 0 as u8,
                 padding2: 0 as u16,
-                sym_name: fix.label_id,
+                sym_name: sym_idx,
                 addend: -4 as i64
             ))
         else:
-            // Compute PC-relative offset
-            let rel = (target - (fix.offset + 4 as i64)) as i32
-            
-            // Patch rel32 field in code
-            e.code.data[fix.offset + 0] = (rel & 0xFF as i32) as u8
-            e.code.data[fix.offset + 1] = ((rel >> 8) & 0xFF as i32) as u8
-            e.code.data[fix.offset + 2] = ((rel >> 16) & 0xFF as i32) as u8
-            e.code.data[fix.offset + 3] = ((rel >> 24) & 0xFF as i32) as u8
+            mut target := 0 as i64
+            let found = label_map_get(&e.labels, fix.label_id, &target)
+            if not found:
+                // External symbol — needs linker relocation
+                push_reloc(&e.relocs, Relocation(
+                    offset: fix.offset,
+                    kind: RELOC_PC32,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: fix.label_id,
+                    addend: -4 as i64
+                ))
+            else:
+                // Compute PC-relative offset
+                let rel = (target - (fix.offset + 4 as i64)) as i32
+                
+                // Patch rel32 field in code
+                e.code.data[fix.offset + 0] = (rel & 0xFF as i32) as u8
+                e.code.data[fix.offset + 1] = ((rel >> 8) & 0xFF as i32) as u8
+                e.code.data[fix.offset + 2] = ((rel >> 16) & 0xFF as i32) as u8
+                e.code.data[fix.offset + 3] = ((rel >> 24) & 0xFF as i32) as u8
         i = i + 1
 
-pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], is_windows: bool, pool: InternPool, mut str_lit_counter: ptr[i32], self_link: bool):
+pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], is_windows: bool, pool: ptr[InternPool], mut str_lit_counter: ptr[i32], self_link: bool):
     mut prologue := new_mach_inst_vec()
     emit_prologue(frame, &prologue)
     mut i := 0 as i64

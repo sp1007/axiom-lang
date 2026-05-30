@@ -12,6 +12,7 @@ import (
 	"github.com/axiom-lang/axiom/compiler/types"
 	"github.com/axiom-lang/axiom/ir/air"
 	"github.com/axiom-lang/axiom/ir/builder"
+	"github.com/axiom-lang/axiom/ir/opt"
 )
 
 // runDumpAIR compiles an AXIOM source file and prints its AIR representation.
@@ -19,12 +20,13 @@ import (
 // Pipeline: source -> lex -> parse -> (sema) -> build AIR -> verify -> print
 func runDumpAIR(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: axc dump-air <file.ax> [--verify] [--no-verify]")
+		fmt.Fprintln(os.Stderr, "usage: axc dump-air <file.ax> [--verify] [--no-verify] [-O1] [--opt]")
 		return 1
 	}
 
 	filename := args[0]
 	verify := true
+	optimize := false
 
 	for _, arg := range args[1:] {
 		switch arg {
@@ -32,6 +34,8 @@ func runDumpAIR(args []string) int {
 			verify = true
 		case "--no-verify":
 			verify = false
+		case "-O1", "--opt":
+			optimize = true
 		default:
 			fmt.Fprintf(os.Stderr, "axc: unknown flag %q\n", arg)
 			return 1
@@ -103,6 +107,11 @@ func runDumpAIR(args []string) int {
 	// Build AIR
 	mb := builder.NewModuleBuilder(tree, symbols, table, intern)
 	mod := mb.Build()
+
+	if optimize {
+		pipeline := opt.DefaultPipeline(opt.O1, verify)
+		pipeline.Run(mod)
+	}
 
 	// Verify (optional)
 	if verify {

@@ -7,15 +7,67 @@ extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
 extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
 
+pub struct AxiomString:
+    pub ptr: ptr[u8]
+    pub len: i64
+
+extern "C" fn ax_string_get_ptr_val(s: AxiomString) -> ptr[u8]
+
 pub fn get_str_ptr(s: str) -> ptr[u8]:
-    return ((&s) as ptr[ptr[u8]]).*
+    return s as ptr[u8]
+
+
+pub fn unescape_string_literal(s: str) -> str:
+    let s_len = std.string.len(s)
+    if s_len < 2:
+        let res = @alloc(1) as ptr[u8]
+        res[0] = 0 as u8
+        return res as str
+
+    let s_ptr = s as ptr[u8]
+    mut start := 0 as i64
+    mut end := s_len
+    if s_ptr[0] == '"' as u8 and s_ptr[s_len - 1] == '"' as u8:
+        start = 1
+        end = s_len - 1
+
+    let res_buf = @alloc(end - start + 1) as ptr[u8]
+    mut res_len := 0 as i64
+    mut i := start
+    while i < end:
+        let ch = s_ptr[i]
+        if ch == '\\' as u8 and i + 1 < end:
+            let next_ch = s_ptr[i + 1]
+            if next_ch == 'n' as u8:
+                res_buf[res_len] = 10 as u8
+            elif next_ch == 't' as u8:
+                res_buf[res_len] = 9 as u8
+            elif next_ch == 'r' as u8:
+                res_buf[res_len] = 13 as u8
+            elif next_ch == '"' as u8:
+                res_buf[res_len] = 34 as u8
+            elif next_ch == '\\' as u8:
+                res_buf[res_len] = 92 as u8
+            else:
+                res_buf[res_len] = next_ch
+            res_len = res_len + 1
+            i = i + 2
+        else:
+            res_buf[res_len] = ch
+            res_len = res_len + 1
+            i = i + 1
+
+    res_buf[res_len] = 0 as u8
+    return res_buf as str
+
 
 fn print_raw(s: str):
-    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
-    mut written := 0 as u32
-    let s_ptr = s as ptr[void]
-    let s_len = std.string.len(s) as u32
-    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
+    print(s)
+
+fn print_raw_ptr(c_ptr: ptr[u8], len: i64):
+    let s = AxiomString(ptr: c_ptr, len: len)
+    let s_str = (&s as ptr[str])[0]
+    print(s_str)
 
 pub fn ax_puts_local(s: str) -> i32:
     print_raw(s)
@@ -55,13 +107,11 @@ fn print_i64_raw(val: i64):
         
     buf[len] = 0 as u8
     
-    // Convert to str and print
-    let s = std.string.slice(buf as str, 0, len as i64)
-    print_raw(s)
+    print_raw_ptr(buf, len as i64)
     @free(buf)
 
 pub fn ax_printf_local(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
-    let s_ptr = fmt as ptr[u8]
+    let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0
     mut i := 0 as i64
@@ -122,7 +172,7 @@ pub fn ax_printf_local(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6
                         mut len := 0 as i64
                         while c_ptr[len] != 0 as u8:
                             len = len + 1
-                        print_raw(std.string.slice(c_ptr as str, 0, len))
+                        print_raw_ptr(c_ptr, len)
                     arg_idx = arg_idx + 1
                     i = i + 1
                 start = i + 1
@@ -164,7 +214,15 @@ pub fn ax_snprintf_local(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[voi
     return dest_idx as i32
 
 fn print_to_file(stream: ptr[void], s: str):
-    fputs(get_str_ptr(s), stream)
+    let s_ptr = get_str_ptr(s)
+    let s_len = std.string.len(s)
+    if s_len <= 0:
+        return
+    let buf = @alloc(s_len + 1) as ptr[u8]
+    @memcpy(buf, s_ptr, s_len)
+    buf[s_len] = 0 as u8
+    fputs(buf, stream)
+    @free(buf)
 
 fn print_i64_to_file(stream: ptr[void], val: i64):
     if val == 0:
@@ -199,13 +257,11 @@ fn print_i64_to_file(stream: ptr[void], val: i64):
         
     buf[len] = 0 as u8
     
-    // Convert to str and print
-    let s = std.string.slice(buf as str, 0, len as i64)
-    print_to_file(stream, s)
+    fputs(buf, stream)
     @free(buf)
 
 pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
-    let s_ptr = fmt as ptr[u8]
+    let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0
     mut i := 0 as i64
@@ -263,10 +319,7 @@ pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, 
                     
                     if val_ptr_raw != 0:
                         let c_ptr = val_ptr_raw as ptr[u8]
-                        mut len := 0 as i64
-                        while c_ptr[len] != 0 as u8:
-                            len = len + 1
-                        print_to_file(stream, std.string.slice(c_ptr as str, 0, len))
+                        fputs(c_ptr, stream)
                     arg_idx = arg_idx + 1
                     i = i + 1
                 start = i + 1

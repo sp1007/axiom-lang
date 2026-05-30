@@ -1,5 +1,7 @@
 package types
 
+import "fmt"
+
 // TypeTable is the central registry of all types in a compilation unit.
 // It assigns a unique TypeID to every structural type and stores their metadata.
 type TypeTable struct {
@@ -142,6 +144,11 @@ func (tt *TypeTable) FindGenericTemplate(symID uint32) (*GenericTemplate, bool) 
 			return &tt.templates[i], true
 		}
 	}
+	var registered []uint32
+	for _, t := range tt.templates {
+		registered = append(registered, t.SymID)
+	}
+	fmt.Printf("[DEBUG-FIND-TEMPLATE-FAILED] symID=%d registeredSymIDs=%v\n", symID, registered)
 	return nil, false
 }
 
@@ -256,9 +263,61 @@ func (tt *TypeTable) FindByName(nameID uint32) (TypeID, bool) {
 	return TypeUnknown, false
 }
 
+// AreTypesCompatible checks if two types are compatible, considering matching generic parameter names.
+func (tt *TypeTable) AreTypesCompatible(from, to TypeID) bool {
+	if from == to {
+		return true
+	}
+
+	fromEntry := tt.Entry(from)
+	toEntry := tt.Entry(to)
+
+	if fromEntry.Kind == KindGeneric && toEntry.Kind == KindGeneric {
+		return fromEntry.NameID == toEntry.NameID
+	}
+
+	if fromEntry.Kind == KindPointer && toEntry.Kind == KindPointer {
+		return tt.AreTypesCompatible(TypeID(fromEntry.Extra), TypeID(toEntry.Extra))
+	}
+
+	if fromEntry.Kind == KindSlice && toEntry.Kind == KindSlice {
+		return tt.AreTypesCompatible(TypeID(fromEntry.Extra), TypeID(toEntry.Extra))
+	}
+
+	if fromEntry.Kind == KindArray && toEntry.Kind == KindArray {
+		fromArr := tt.arrays[fromEntry.Extra]
+		toArr := tt.arrays[toEntry.Extra]
+		return fromArr.Length == toArr.Length && tt.AreTypesCompatible(fromArr.ElemType, toArr.ElemType)
+	}
+
+	if fromEntry.Kind == KindGenericInst && toEntry.Kind == KindGenericInst {
+		fmt.Printf("[DEBUG-COMPAT-GEN] from=%d to=%d NameID=%d vs %d Extra=%d vs %d\n", from, to, fromEntry.NameID, toEntry.NameID, fromEntry.Extra, toEntry.Extra)
+		if fromEntry.NameID != toEntry.NameID {
+			return false
+		}
+		fromArgs := tt.genericInsts[fromEntry.Extra].TypeArgs
+		toArgs := tt.genericInsts[toEntry.Extra].TypeArgs
+		fmt.Printf("[DEBUG-COMPAT-GEN] args len=%d vs %d args=%v vs %v\n", len(fromArgs), len(toArgs), fromArgs, toArgs)
+		if len(fromArgs) != len(toArgs) {
+			return false
+		}
+		for i := range fromArgs {
+			if !tt.AreTypesCompatible(fromArgs[i], toArgs[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	return false
+}
+
 // IsAssignableTo checks if a value of type 'from' can be assigned to a variable of type 'to'.
 func (tt *TypeTable) IsAssignableTo(from, to TypeID) bool {
 	if from == to {
+		return true
+	}
+	if tt.AreTypesCompatible(from, to) {
 		return true
 	}
 	return tt.CanImplicitCast(from, to)
@@ -501,15 +560,33 @@ func (tt *TypeTable) SubstituteGenericType(t TypeID, params []uint32, args []Typ
 	if t == 0 || t == TypeUnknown {
 		return t
 	}
+	if t == 155 || t == 157 || t == 150 || t == 152 {
+		fmt.Printf("[DEBUG-SUB-INST] t=%d params=%v args=%v\n", t, params, args)
+	}
+	if t == 147 || t == 148 || t == 55 || t == 56 {
+		fmt.Printf("[DEBUG-SUB-ENTER] t=%d params=%v args=%v\n", t, params, args)
+	}
 	for i, param := range params {
 		if t == TypeID(param) {
+			if t == 55 || t == 56 {
+				fmt.Printf("[DEBUG-SUB-MATCH] matched t=%d to arg=%d\n", t, args[i])
+			}
 			return args[i]
 		}
 	}
 	entry := tt.Entry(t)
+	if t == 147 || t == 148 {
+		fmt.Printf("[DEBUG-SUB-KIND] t=%d entry.Kind=%d\n", t, entry.Kind)
+	}
 	if entry.Kind == KindPointer {
 		elem := tt.PointerElem(t)
+		if t == 147 || t == 148 {
+			fmt.Printf("[DEBUG-SUB-PTR] t=%d elem=%d\n", t, elem)
+		}
 		newElem := tt.SubstituteGenericType(elem, params, args)
+		if t == 147 || t == 148 {
+			fmt.Printf("[DEBUG-SUB-PTR-RES] t=%d elem=%d newElem=%d\n", t, elem, newElem)
+		}
 		if newElem != elem {
 			return tt.RegisterPointer(newElem)
 		}
@@ -581,5 +658,57 @@ func (tt *TypeTable) SubstituteGenericType(t TypeID, params []uint32, args []Typ
 		}
 	}
 	return t
+}
+
+func (tt *TypeTable) SetGenericConstraint(id TypeID, constraint TypeID) {
+	if int(id) < len(tt.entries) {
+		tt.entries[id].Extra = uint32(constraint)
+	}
+}
+
+func (tt *TypeTable) GenericConstraint(id TypeID) TypeID {
+	if int(id) < len(tt.entries) && tt.entries[id].Kind == KindGeneric {
+		return TypeID(tt.entries[id].Extra)
+	}
+	return 0
+}
+
+func (tt *TypeTable) UpdateInterface(id TypeID, methods []MethodSig) {
+	entry := tt.Entry(id)
+	if entry.Kind == KindInterface {
+		tt.interfaces[entry.Extra].Methods = methods
+	}
+}
+
+func (tt *TypeTable) DumpTypes() string {
+	var res string
+	for i, entry := range tt.entries {
+		var extraStr string
+		switch entry.Kind {
+		case KindPointer:
+			extraStr = fmt.Sprintf("ptr to %d", entry.Extra)
+		case KindSlice:
+			extraStr = fmt.Sprintf("slice of %d", entry.Extra)
+		case KindArray:
+			extraStr = fmt.Sprintf("array length %d", entry.Extra)
+		case KindGeneric:
+			extraStr = fmt.Sprintf("generic param NameID=%d", entry.NameID)
+		case KindGenericInst:
+			extraStr = fmt.Sprintf("inst of NameID=%d args=%v", entry.NameID, tt.GenericInstArgs(TypeID(i)))
+		case KindStruct:
+			if entry.Extra < uint32(len(tt.structs)) {
+				sInfo := tt.StructInfo(TypeID(i))
+				var fields []string
+				for _, f := range sInfo.Fields {
+					fields = append(fields, fmt.Sprintf("%d:%d", f.NameID, f.TypeID))
+				}
+				extraStr = fmt.Sprintf("struct fields=%v params=%v", fields, sInfo.GenericParams)
+			} else {
+				extraStr = "struct (built-in/opaque)"
+			}
+		}
+		res += fmt.Sprintf("TypeID %d: Kind=%d Extra=%d NameID=%d %s\n", i, entry.Kind, entry.Extra, entry.NameID, extraStr)
+	}
+	return res
 }
 

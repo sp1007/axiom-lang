@@ -70,6 +70,8 @@ struct AxScheduler* ax_get_global_scheduler(void);
  */
 void __ax_runtime_init(void);
 void __ax_runtime_shutdown(void);
+void ax___ax_runtime_init(void);
+void ax___ax_runtime_shutdown(void);
 
 #ifdef __cplusplus
 }

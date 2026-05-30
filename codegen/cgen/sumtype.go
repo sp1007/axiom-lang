@@ -41,10 +41,10 @@ func EmitSumTypeDecl(
 	fmt.Fprintf(&b, "struct %s {\n", cname)
 	fmt.Fprintf(&b, "    enum ax_%s_tag tag;\n", baseName)
 
-	// Check if any variant has a payload
+	// Check if any variant has a payload (excluding TypeVoid and TypeUnknown)
 	hasPayload := false
 	for _, v := range info.Variants {
-		if v.PayloadType != types.TypeUnknown {
+		if v.PayloadType != types.TypeUnknown && v.PayloadType != types.TypeVoid {
 			hasPayload = true
 			break
 		}
@@ -53,7 +53,7 @@ func EmitSumTypeDecl(
 	if hasPayload {
 		b.WriteString("    union {\n")
 		for _, v := range info.Variants {
-			if v.PayloadType != types.TypeUnknown {
+			if v.PayloadType != types.TypeUnknown && v.PayloadType != types.TypeVoid {
 				vname := resolveName(v.NameID, intern)
 				payloadC := CTypeName(v.PayloadType, table, intern, queue)
 				fmt.Fprintf(&b, "        %s %s;\n", payloadC, vname)
@@ -83,8 +83,8 @@ func EmitSumTypeConstructor(
 
 	var b strings.Builder
 
-	if variant.PayloadType == types.TypeUnknown {
-		// No payload: constructor takes no args
+	if variant.PayloadType == types.TypeUnknown || variant.PayloadType == types.TypeVoid {
+		// No payload (or void payload): constructor takes no args
 		fmt.Fprintf(&b, "static inline %s ax_%s_%s(void) {\n",
 			structName, baseName, strings.ToLower(vname))
 		fmt.Fprintf(&b, "    %s _result;\n", structName)

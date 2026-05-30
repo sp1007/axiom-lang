@@ -132,3 +132,13 @@ func AllocatableGPRs() []PhysReg {
 		R8, R9, R12, R13, R14, R15,
 	}
 }
+
+// AllocatableXMMs returns the XMM registers available for register allocation.
+// We use XMM8-XMM15 as allocatable float registers.
+func AllocatableXMMs() []PhysReg {
+	return []PhysReg{
+		XMM8, XMM9, XMM10, XMM11,
+		XMM12, XMM13, XMM14, XMM15,
+	}
+}
+

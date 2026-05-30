@@ -32,7 +32,7 @@ func TestAxiomAllocator(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, ""); err != nil {
 		t.Fatalf("failed to compile AXIOM allocator: %v", err)
 	}
 

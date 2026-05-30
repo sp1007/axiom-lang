@@ -1,5 +1,7 @@
 package sema
 
+import "github.com/axiom-lang/axiom/compiler/ast"
+
 // ModuleStatus indicates the lazy loading state of a module.
 type ModuleStatus uint8
 
@@ -16,4 +18,5 @@ type ModuleInfo struct {
 	FilePath string            // source file path (for multi-file projects)
 	Exports  map[uint32]uint32 // nameID -> symbolIdx of exported symbols
 	AstRoot  uint32            // root AST node index of the module's file
+	AstTree  *ast.AstTree      // AST tree of the module's file
 }

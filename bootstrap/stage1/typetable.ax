@@ -41,16 +41,21 @@ pub struct ComptimeValue:
     bool_val: bool
     str_val: str
 
-// TypeKind enum matching compiler/types/types.go Kind constants
+// TypeKind enum matching compiler/types/types.go Kind constants exactly
 pub const TYPE_KIND_PRIMITIVE: u8 = 0
 pub const TYPE_KIND_STRUCT: u8 = 1
 pub const TYPE_KIND_FUNC: u8 = 2
-pub const TYPE_KIND_GENERIC: u8 = 3
-pub const TYPE_KIND_INTERFACE: u8 = 4
-pub const TYPE_KIND_SUM: u8 = 5
-pub const TYPE_KIND_POINTER: u8 = 6
-pub const TYPE_KIND_SLICE: u8 = 7
-pub const TYPE_KIND_ARRAY: u8 = 8
+pub const TYPE_KIND_ARRAY: u8 = 3
+pub const TYPE_KIND_SLICE: u8 = 4
+pub const TYPE_KIND_TUPLE: u8 = 5
+pub const TYPE_KIND_SUM: u8 = 6
+pub const TYPE_KIND_GENERIC: u8 = 7
+pub const TYPE_KIND_GENERIC_INST: u8 = 8
+pub const TYPE_KIND_POINTER: u8 = 9
+pub const TYPE_KIND_REF: u8 = 10
+pub const TYPE_KIND_OPTION: u8 = 11
+pub const TYPE_KIND_RESULT: u8 = 12
+pub const TYPE_KIND_INTERFACE: u8 = 13
 
 pub struct TypeEntry:
     kind: u8
@@ -70,14 +75,15 @@ pub struct StructFieldVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: StructFieldVec, sf: StructField):
+pub fn push(self: ptr[StructFieldVec], sf: StructField):
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 8) as ptr[StructField]
+        let item_size = @compiler_intrinsic("size_of")[StructField]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[StructField]
         if self.data != null as ptr[StructField]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 8)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -92,14 +98,14 @@ pub struct StructInfoVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: StructInfoVec, si: StructInfo):
+pub fn push(self: ptr[StructInfoVec], si: StructInfo):
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 24) as ptr[StructInfo]
+        let new_data = @alloc(new_cap * (@compiler_intrinsic("size_of")[StructInfo]() as i64)) as ptr[StructInfo]
         if self.data != null as ptr[StructInfo]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * (@compiler_intrinsic("size_of")[StructInfo]() as i64))
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -118,14 +124,15 @@ pub struct VariantInfoVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: VariantInfoVec, vi: VariantInfo):
+pub fn push(self: ptr[VariantInfoVec], vi: VariantInfo):
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 16) as ptr[VariantInfo]
+        let item_size = @compiler_intrinsic("size_of")[VariantInfo]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[VariantInfo]
         if self.data != null as ptr[VariantInfo]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -140,14 +147,14 @@ pub struct SumInfoVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: SumInfoVec, si: SumInfo):
+pub fn push(self: ptr[SumInfoVec], si: SumInfo):
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 24) as ptr[SumInfo]
+        let new_data = @alloc(new_cap * (@compiler_intrinsic("size_of")[SumInfo]() as i64)) as ptr[SumInfo]
         if self.data != null as ptr[SumInfo]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * (@compiler_intrinsic("size_of")[SumInfo]() as i64))
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -164,14 +171,14 @@ pub struct FuncInfoVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: FuncInfoVec, fi: FuncInfo):
+pub fn push(self: ptr[FuncInfoVec], fi: FuncInfo):
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 32) as ptr[FuncInfo]
+        let new_data = @alloc(new_cap * (@compiler_intrinsic("size_of")[FuncInfo]() as i64)) as ptr[FuncInfo]
         if self.data != null as ptr[FuncInfo]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * (@compiler_intrinsic("size_of")[FuncInfo]() as i64))
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -183,14 +190,15 @@ pub struct TypeEntryVec:
     len: i64
     cap: i64
 
-pub fn push(mut self: TypeEntryVec, te: TypeEntry) -> u32:
+pub fn push(self: ptr[TypeEntryVec], te: TypeEntry) -> u32:
     if self.len == self.cap:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 20) as ptr[TypeEntry]
+        let item_size = @compiler_intrinsic("size_of")[TypeEntry]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[TypeEntry]
         if self.data != null as ptr[TypeEntry]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 20)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -211,50 +219,49 @@ pub struct TypeTable:
     funcs: FuncInfoVec
     sumtypes: SumInfoVec
 
-pub fn new_type_table() -> TypeTable:
-    mut tt := TypeTable(
-        entries: TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0),
-        structs: StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0),
-        funcs: FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0),
-        sumtypes: SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0),
-    )
+pub fn new_type_table() -> ptr[TypeTable]:
+    let tt = @alloc(96) as ptr[TypeTable]
+    tt.entries = TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0)
+    tt.structs = StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0)
+    tt.funcs = FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0)
+    tt.sumtypes = SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
     
     // 0: Unknown sentinel
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
     
     // 1-16: Primitives
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // i8
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 2 as u32, align: 2 as u32, extra: 0 as u32)) // i16
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // i32
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // i64
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // u8
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 2 as u32, align: 2 as u32, extra: 0 as u32)) // u16
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // u32
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // u64
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // f32
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // f64
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // bool
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // string
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // char8
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32)) // void
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // isize
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // usize
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // i8
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 2 as u32, align: 2 as u32, extra: 0 as u32)) // i16
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // i32
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // i64
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // u8
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 2 as u32, align: 2 as u32, extra: 0 as u32)) // u16
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // u32
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // u64
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 4 as u32, align: 4 as u32, extra: 0 as u32)) // f32
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // f64
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // bool
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 16 as u32, align: 8 as u32, extra: 0 as u32)) // string
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 1 as u32, align: 1 as u32, extra: 0 as u32)) // char8
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32)) // void
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // isize
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32)) // usize
 
     // 17-20: Built-in interfaces
     mut i := 0
     while i < 4:
-        tt.entries.push(TypeEntry(kind: TYPE_KIND_INTERFACE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 16 as u32, align: 8 as u32, extra: 0 as u32))
+        (&tt.entries).push(TypeEntry(kind: TYPE_KIND_INTERFACE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 16 as u32, align: 8 as u32, extra: 0 as u32))
         i = i + 1
 
     // 21: ActorRef
-    tt.entries.push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
 
     return tt
 
-pub fn register_sum_type(mut self: TypeTable, name_id: u32, variants: VariantInfoVec) -> u32:
+pub fn register_sum_type(self: ptr[TypeTable], name_id: u32, variants: VariantInfoVec) -> u32:
     let s_idx = self.sumtypes.len as u32
-    self.sumtypes.push(SumInfo(variants: variants))
-    return self.entries.push(TypeEntry(
+    (&self.sumtypes).push(SumInfo(variants: variants))
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_SUM,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -264,10 +271,10 @@ pub fn register_sum_type(mut self: TypeTable, name_id: u32, variants: VariantInf
         extra: s_idx,
     ))
 
-pub fn register_struct(mut self: TypeTable, name_id: u32, fields: StructFieldVec) -> u32:
+pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
-    self.structs.push(StructInfo(fields: fields))
-    return self.entries.push(TypeEntry(
+    (&self.structs).push(StructInfo(fields: fields))
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_STRUCT,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -277,10 +284,10 @@ pub fn register_struct(mut self: TypeTable, name_id: u32, fields: StructFieldVec
         extra: s_idx,
     ))
 
-pub fn register_function(mut self: TypeTable, params: U32Vec, ret: u32) -> u32:
+pub fn register_function(self: ptr[TypeTable], params: U32Vec, ret: u32) -> u32:
     let f_idx = self.funcs.len as u32
-    self.funcs.push(FuncInfo(params: params, ret: ret, dummy: 0 as u32))
-    return self.entries.push(TypeEntry(
+    (&self.funcs).push(FuncInfo(params: params, ret: ret, dummy: 0 as u32))
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_FUNC,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -290,7 +297,7 @@ pub fn register_function(mut self: TypeTable, params: U32Vec, ret: u32) -> u32:
         extra: f_idx,
     ))
 
-pub fn register_pointer(mut self: TypeTable, inner_id: u32) -> u32:
+pub fn register_pointer(self: ptr[TypeTable], inner_id: u32) -> u32:
     mut i := 0 as i64
     while i < self.entries.len:
         let entry = self.entries.data[i]
@@ -298,7 +305,7 @@ pub fn register_pointer(mut self: TypeTable, inner_id: u32) -> u32:
             return i as u32
         i = i + 1
     
-    return self.entries.push(TypeEntry(
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_POINTER,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -308,7 +315,7 @@ pub fn register_pointer(mut self: TypeTable, inner_id: u32) -> u32:
         extra: inner_id,
     ))
 
-pub fn register_slice(mut self: TypeTable, elem_id: u32) -> u32:
+pub fn register_slice(self: ptr[TypeTable], elem_id: u32) -> u32:
     mut i := 0 as i64
     while i < self.entries.len:
         let entry = self.entries.data[i]
@@ -316,7 +323,7 @@ pub fn register_slice(mut self: TypeTable, elem_id: u32) -> u32:
             return i as u32
         i = i + 1
     
-    return self.entries.push(TypeEntry(
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_SLICE,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -326,7 +333,7 @@ pub fn register_slice(mut self: TypeTable, elem_id: u32) -> u32:
         extra: elem_id,
     ))
 
-pub fn register_array(mut self: TypeTable, elem_id: u32, length: u32) -> u32:
+pub fn register_array(self: ptr[TypeTable], elem_id: u32, length: u32) -> u32:
     mut i := 0 as i64
     while i < self.entries.len:
         let entry = self.entries.data[i]
@@ -334,7 +341,7 @@ pub fn register_array(mut self: TypeTable, elem_id: u32, length: u32) -> u32:
             return i as u32
         i = i + 1
     
-    return self.entries.push(TypeEntry(
+    return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_ARRAY,
         padding: 0 as u8,
         flags: 0 as u16,
@@ -344,7 +351,7 @@ pub fn register_array(mut self: TypeTable, elem_id: u32, length: u32) -> u32:
         extra: elem_id,
     ))
 
-pub fn free_typetable(mut self: TypeTable):
+pub fn free_typetable(self: ptr[TypeTable]):
     mut i := 0 as i64
     while i < self.structs.len:
         let s = self.structs.data[i]
@@ -371,3 +378,4 @@ pub fn free_typetable(mut self: TypeTable):
         @free(self.structs.data as ptr[u8])
     if self.funcs.data != null as ptr[FuncInfo]:
         @free(self.funcs.data as ptr[u8])
+    @free(self as ptr[u8])

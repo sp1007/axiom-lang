@@ -47,6 +47,15 @@ const (
 	MachLoad
 	MachStore
 	MachXorZero
+	MachFAdd
+	MachFSub
+	MachFMul
+	MachFDiv
+	MachFCmp
+	MachItof
+	MachFtoi
+	MachMovDQ
+	MachMovQD
 	MachLabel
 )
 
@@ -105,15 +114,134 @@ type instructionSelector struct {
 	abi               ABI
 	table             *types.TypeTable
 	paramIdxProcessed int
+	maxVReg           uint32
+}
+
+func (sel *instructionSelector) nextVReg() uint32 {
+	sel.maxVReg++
+	return sel.maxVReg
+}
+
+func (sel *instructionSelector) is16Byte(reg uint32) bool {
+	if reg == 0 {
+		return false
+	}
+	t := sel.getRegisterType(reg)
+	if t == 0 {
+		if reg >= 1 && reg <= uint32(len(sel.fn.Params)) {
+			t = uint16(sel.fn.Params[reg-1])
+		}
+	}
+	if t != 0 && sel.table != nil {
+		size, _ := sel.typeSizeAndAlign(t)
+		return size == 16
+	}
+	return false
+}
+
+func (sel *instructionSelector) emitBlockCopyExt(dstReg uint32, dstDisp uint32, srcReg uint32, srcDisp uint32, size uint32) []MachInst {
+	var insts []MachInst
+	offset := uint32(0)
+	remaining := size
+	for remaining >= 8 {
+		tmpVal := sel.nextVReg()
+		insts = append(insts, MachInst{
+			Op:   MachLoad,
+			Dst:  VReg(tmpVal),
+			Src1: VReg(srcReg),
+			Src2: Imm(int64(srcDisp + offset)),
+		})
+		insts = append(insts, MachInst{
+			Op:   MachStore,
+			Dst:  VReg(dstReg),
+			Src1: VReg(tmpVal),
+			Src2: Imm(int64(dstDisp + offset)),
+		})
+		offset += 8
+		remaining -= 8
+	}
+	if remaining >= 4 {
+		tmpVal := sel.nextVReg()
+		insts = append(insts, MachInst{
+			Op:   MachLoad,
+			Dst:  VReg(tmpVal),
+			Src1: VReg(srcReg),
+			Src2: Imm(int64(srcDisp + offset)),
+		})
+		insts = append(insts, MachInst{
+			Op:   MachStore,
+			Dst:  VReg(dstReg),
+			Src1: VReg(tmpVal),
+			Src2: Imm(int64(dstDisp + offset)),
+		})
+		offset += 4
+		remaining -= 4
+	}
+	if remaining >= 2 {
+		tmpVal := sel.nextVReg()
+		insts = append(insts, MachInst{
+			Op:   MachLoad,
+			Dst:  VReg(tmpVal),
+			Src1: VReg(srcReg),
+			Src2: Imm(int64(srcDisp + offset)),
+		})
+		insts = append(insts, MachInst{
+			Op:   MachStore,
+			Dst:  VReg(dstReg),
+			Src1: VReg(tmpVal),
+			Src2: Imm(int64(dstDisp + offset)),
+		})
+		offset += 2
+		remaining -= 2
+	}
+	if remaining >= 1 {
+		tmpVal := sel.nextVReg()
+		insts = append(insts, MachInst{
+			Op:   MachLoad,
+			Dst:  VReg(tmpVal),
+			Src1: VReg(srcReg),
+			Src2: Imm(int64(srcDisp + offset)),
+		})
+		insts = append(insts, MachInst{
+			Op:   MachStore,
+			Dst:  VReg(dstReg),
+			Src1: VReg(tmpVal),
+			Src2: Imm(int64(dstDisp + offset)),
+		})
+	}
+	return insts
+}
+
+func (sel *instructionSelector) emitBlockCopy(dstReg uint32, dstDisp uint32, srcReg uint32, size uint32) []MachInst {
+	finalSrcReg := srcReg
+	var insts []MachInst
+	if sel.is16Byte(srcReg) {
+		finalSrcReg = sel.nextVReg()
+		insts = append(insts, MachInst{
+			Op:   MachLea,
+			Dst:  VReg(finalSrcReg),
+			Src1: VReg(srcReg),
+		})
+	}
+	insts = append(insts, sel.emitBlockCopyExt(dstReg, dstDisp, finalSrcReg, 0, size)...)
+	return insts
 }
 
 // Select translates an AirFunc into a list of MachInst per basic block.
 // Virtual registers map 1:1 to AIR registers.
 func Select(fn *air.AirFunc, abi ABI, table *types.TypeTable) []MachInst {
+	maxVReg := uint32(len(fn.Params))
+	for i := range fn.Insts {
+		if fn.Insts[i].Dest > maxVReg {
+			maxVReg = fn.Insts[i].Dest
+		}
+	}
+
 	sel := &instructionSelector{
-		fn:    fn,
-		abi:   abi,
-		table: table,
+		fn:      fn,
+		abi:     abi,
+		table:   table,
+		maxVReg: maxVReg,
 	}
 	var result []MachInst
 
@@ -154,6 +282,31 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 		return nil
 
 	case air.OpIConst:
+		tID := inst.TypeID
+		isStr := (tID == 12)
+		if tID != 0 && sel.table != nil {
+			size, _ := sel.typeSizeAndAlign(tID)
+			if size == 16 {
+				isStr = true
+			}
+		}
+		if isStr {
+			tmpStructAddr := sel.nextVReg()
+			tmpDestAddr := sel.nextVReg()
+			var insts []MachInst
+			insts = append(insts, MachInst{
+				Op:   MachMovImm,
+				Dst:  VReg(tmpStructAddr),
+				Src1: MachOperand{Kind: OpndImm, VReg: 2, Imm: int64(inst.Src1)},
+			})
+			insts = append(insts, MachInst{
+				Op:   MachLea,
+				Dst:  VReg(tmpDestAddr),
+				Src1: VReg(inst.Dest),
+			})
+			insts = append(insts, sel.emitBlockCopy(tmpDestAddr, 0, tmpStructAddr, 16)...)
+			return insts
+		}
 		if inst.Src1 == 0 {
 			// XOR-zeroing idiom
 			return []MachInst{{Op: MachXorZero, Dst: VReg(inst.Dest)}}
@@ -161,11 +314,16 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 		return []MachInst{{Op: MachMovImm, Dst: VReg(inst.Dest), Src1: Imm(int64(int32(inst.Src1)))}}
 
 	case air.OpFConst:
-		return []MachInst{{Op: MachMovImm, Dst: VReg(inst.Dest), Src1: Imm(int64(inst.Src1))}}
+		// Convert integer constant Src1 to double in Dest
+		tmpGPR := inst.Dest + 50000
+		return []MachInst{
+			{Op: MachMovImm, Dst: VReg(tmpGPR), Src1: Imm(int64(inst.Src1))},
+			{Op: MachItof, Dst: VReg(inst.Dest), Src1: VReg(tmpGPR)},
+		}
 
 	case air.OpCopy, air.OpMove:
 		// Check if this is the initial parameter copy instruction
-		if sel.paramIdxProcessed < len(sel.fn.Params) && inst.Src1 == uint32(sel.paramIdxProcessed + 1) {
+		if sel.paramIdxProcessed < len(sel.fn.Params) && inst.Src1 == uint32(sel.paramIdxProcessed+1) {
 			paramIdx := sel.paramIdxProcessed
 			sel.paramIdxProcessed++
 
@@ -181,8 +339,43 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 			}
 
 			if phys != RegNone {
-				return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(phys)}}
+				destType := sel.getRegisterType(inst.Dest)
+				destSize := uint32(8)
+				if destType != 0 && sel.table != nil {
+					destSize, _ = sel.typeSizeAndAlign(destType)
+				}
+				if destSize == 16 {
+					tmpVal1 := sel.nextVReg()
+					tmpVal2 := sel.nextVReg()
+					tmpDestAddr := sel.nextVReg()
+					return []MachInst{
+						{Op: MachLoad, Dst: VReg(tmpVal1), Src1: Phys(phys)},
+						{Op: MachLoad, Dst: VReg(tmpVal2), Src1: Phys(phys), Src2: Imm(8)},
+						{Op: MachLea, Dst: VReg(tmpDestAddr), Src1: VReg(inst.Dest)},
+						{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal1)},
+						{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal2), Src2: Imm(8)},
+					}
+				} else {
+					return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(phys)}}
+				}
+			} else {
+				var offset int64
+				if sel.abi.Name() == "win64" {
+					offset = 48 + int64(paramIdx-4)*8
+				} else {
+					offset = 16 + int64(paramIdx-6)*8
+				}
+				return []MachInst{{Op: MachLoad, Dst: VReg(inst.Dest), Src1: Phys(RBP), Src2: Imm(offset)}}
 			}
+		}
+		if sel.is16Byte(inst.Dest) {
+			tmpDestAddr := sel.nextVReg()
+			tmpSrcAddr := sel.nextVReg()
+			var insts []MachInst
+			insts = append(insts, MachInst{Op: MachLea, Dst: VReg(tmpDestAddr), Src1: VReg(inst.Dest)})
+			insts = append(insts, MachInst{Op: MachLea, Dst: VReg(tmpSrcAddr), Src1: VReg(inst.Src1)})
+			insts = append(insts, sel.emitBlockCopy(tmpDestAddr, 0, tmpSrcAddr, 16)...)
+			return insts
 		}
 		return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
 
@@ -222,7 +415,46 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 			{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(RDX)},
 		}
 
+	case air.OpFAdd:
+		return []MachInst{
+			{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
+			{Op: MachFAdd, Dst: VReg(inst.Dest), Src1: VReg(inst.Src2)},
+		}
+
+	case air.OpFSub:
+		return []MachInst{
+			{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
+			{Op: MachFSub, Dst: VReg(inst.Dest), Src1: VReg(inst.Src2)},
+		}
+
+	case air.OpFMul:
+		return []MachInst{
+			{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
+			{Op: MachFMul, Dst: VReg(inst.Dest), Src1: VReg(inst.Src2)},
+		}
+
+	case air.OpFDiv:
+		return []MachInst{
+			{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
+			{Op: MachFDiv, Dst: VReg(inst.Dest), Src1: VReg(inst.Src2)},
+		}
+
+	case air.OpIToF:
+		return []MachInst{{Op: MachItof, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
+
+	case air.OpFToI:
+		return []MachInst{{Op: MachFtoi, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
+
 	case air.OpNeg:
+		t := sel.getRegisterType(inst.Src1)
+		if types.TypeID(t).IsFloat() {
+			tmpSign := inst.Dest + 60000
+			return []MachInst{
+				{Op: MachMovImm, Dst: VReg(tmpSign), Src1: Imm(int64(-1 << 63))},
+				{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
+				{Op: MachXor, Dst: VReg(inst.Dest), Src1: VReg(tmpSign)},
+			}
+		}
 		return []MachInst{
 			{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)},
 			{Op: MachNeg, Dst: VReg(inst.Dest)},
@@ -237,17 +469,17 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 		}
 
 	case air.OpEq:
-		return selectCmp(inst, CCE)
+		return sel.selectComparison(inst, CCE, CCE)
 	case air.OpNe:
-		return selectCmp(inst, CCNE)
+		return sel.selectComparison(inst, CCNE, CCNE)
 	case air.OpLt:
-		return selectCmp(inst, CCL)
+		return sel.selectComparison(inst, CCL, CCB)
 	case air.OpLe:
-		return selectCmp(inst, CCLE)
+		return sel.selectComparison(inst, CCLE, CCBE)
 	case air.OpGt:
-		return selectCmp(inst, CCG)
+		return sel.selectComparison(inst, CCG, CCA)
 	case air.OpGe:
-		return selectCmp(inst, CCGE)
+		return sel.selectComparison(inst, CCGE, CCAE)
 
 	case air.OpAnd:
 		return []MachInst{
@@ -284,8 +516,12 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 
 	case air.OpReturn:
 		if inst.Src1 != 0 {
+			var retReg PhysReg = RAX
+			if types.TypeID(sel.fn.RetType).IsFloat() {
+				retReg = XMM0
+			}
 			return []MachInst{
-				{Op: MachMov, Dst: Phys(RAX), Src1: VReg(inst.Src1)},
+				{Op: MachMov, Dst: Phys(retReg), Src1: VReg(inst.Src1)},
 				{Op: MachRet},
 			}
 		}
@@ -320,12 +556,19 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 			})
 		}
 
-		// Copy arguments to GPR physical registers based on ABI
+		// Copy arguments to physical registers based on ABI (float -> XMM, int -> GPR)
 		for i := uint32(0); i < argCount; i++ {
 			argReg := sel.fn.Extras[argStart+1+i]
+			argType := sel.getRegisterType(argReg)
 			var phys PhysReg = RegNone
-			if i < uint32(len(sel.abi.IntArgRegs())) {
-				phys = sel.abi.IntArgRegs()[i]
+			if types.TypeID(argType).IsFloat() {
+				if i < uint32(len(sel.abi.FloatArgRegs())) {
+					phys = sel.abi.FloatArgRegs()[i]
+				}
+			} else {
+				if i < uint32(len(sel.abi.IntArgRegs())) {
+					phys = sel.abi.IntArgRegs()[i]
+				}
 			}
 			if phys != RegNone {
 				insts = append(insts, MachInst{
@@ -353,10 +596,14 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 
 		// Copy return value if needed
 		if inst.Dest != 0 {
+			var retReg PhysReg = sel.abi.ReturnReg()
+			if types.TypeID(inst.TypeID).IsFloat() {
+				retReg = XMM0
+			}
 			insts = append(insts, MachInst{
 				Op:   MachMov,
 				Dst:  VReg(inst.Dest),
-				Src1: Phys(sel.abi.ReturnReg()),
+				Src1: Phys(retReg),
 			})
 		}
 
@@ -408,6 +655,169 @@ func (sel *instructionSelector) selectInst(inst *air.AirInst) []MachInst {
 			},
 		}
 
+	case air.OpCast:
+		tID := inst.TypeID
+		isStr := (tID == 12)
+		if tID != 0 && sel.table != nil {
+			size, _ := sel.typeSizeAndAlign(tID)
+			if size == 16 {
+				isStr = true
+			}
+		}
+		if isStr {
+			tmpLen := sel.nextVReg()
+			arg0 := sel.abi.IntArgRegs()[0]
+			var insts []MachInst
+			if sel.abi.Name() == "win64" {
+				insts = append(insts, MachInst{
+					Op:   MachSub,
+					Dst:  Phys(RSP),
+					Src1: Imm(32),
+				})
+			}
+			insts = append(insts, MachInst{
+				Op:   MachMov,
+				Dst:  Phys(arg0),
+				Src1: VReg(inst.Src1),
+			})
+			insts = append(insts, MachInst{
+				Op:   MachCall,
+				Src1: Imm(-21),
+			})
+			if sel.abi.Name() == "win64" {
+				insts = append(insts, MachInst{
+					Op:   MachAdd,
+					Dst:  Phys(RSP),
+					Src1: Imm(32),
+				})
+			}
+			insts = append(insts, MachInst{
+				Op:   MachMov,
+				Dst:  VReg(tmpLen),
+				Src1: Phys(RAX),
+			})
+			tmpDestAddr := sel.nextVReg()
+			insts = append(insts, MachInst{
+				Op:   MachLea,
+				Dst:  VReg(tmpDestAddr),
+				Src1: VReg(inst.Dest),
+			})
+			insts = append(insts, MachInst{
+				Op:   MachStore,
+				Dst:  VReg(tmpDestAddr),
+				Src1: VReg(inst.Src1),
+			})
+			insts = append(insts, MachInst{
+				Op:   MachStore,
+				Dst:  VReg(tmpDestAddr),
+				Src1: VReg(tmpLen),
+				Src2: Imm(8),
+			})
+			return insts
+		} else {
+			srcType := sel.getRegisterType(inst.Src1)
+			is16Byte := (srcType == 12)
+			if srcType != 0 && sel.table != nil {
+				size, _ := sel.typeSizeAndAlign(srcType)
+				if size == 16 {
+					is16Byte = true
+				}
+			}
+			if is16Byte {
+				if sel.paramIdxProcessed < len(sel.fn.Params) && inst.Src1 == uint32(sel.paramIdxProcessed+1) {
+					paramIdx := sel.paramIdxProcessed
+					sel.paramIdxProcessed++
+					phys := RegNone
+					if paramIdx < len(sel.abi.IntArgRegs()) {
+						phys = sel.abi.IntArgRegs()[paramIdx]
+					}
+					destType := sel.getRegisterType(inst.Dest)
+					destSize := uint32(8)
+					if destType != 0 && sel.table != nil {
+						destSize, _ = sel.typeSizeAndAlign(destType)
+					}
+					if phys != RegNone {
+						if destSize == 16 {
+							tmpVal1 := sel.nextVReg()
+							tmpVal2 := sel.nextVReg()
+							tmpDestAddr := sel.nextVReg()
+							return []MachInst{
+								{Op: MachLoad, Dst: VReg(tmpVal1), Src1: Phys(phys)},
+								{Op: MachLoad, Dst: VReg(tmpVal2), Src1: Phys(phys), Src2: Imm(8)},
+								{Op: MachLea, Dst: VReg(tmpDestAddr), Src1: VReg(inst.Dest)},
+								{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal1)},
+								{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal2), Src2: Imm(8)},
+							}
+						} else {
+							return []MachInst{
+								{Op: MachLoad, Dst: VReg(inst.Dest), Src1: Phys(phys)},
+							}
+						}
+					} else {
+						var offset int64
+						if sel.abi.Name() == "win64" {
+							offset = 48 + int64(paramIdx-4)*8
+						} else {
+							offset = 16 + int64(paramIdx-6)*8
+						}
+						tmpAddr := sel.nextVReg()
+						var insts []MachInst
+						insts = append(insts, MachInst{
+							Op:   MachLoad,
+							Dst:  VReg(tmpAddr),
+							Src1: Phys(RBP),
+							Src2: Imm(offset),
+						})
+						if destSize == 16 {
+							tmpVal1 := sel.nextVReg()
+							tmpVal2 := sel.nextVReg()
+							tmpDestAddr := sel.nextVReg()
+							insts = append(insts, MachInst{Op: MachLoad, Dst: VReg(tmpVal1), Src1: VReg(tmpAddr)})
+							insts = append(insts, MachInst{Op: MachLoad, Dst: VReg(tmpVal2), Src1: VReg(tmpAddr), Src2: Imm(8)})
+							insts = append(insts, MachInst{Op: MachLea, Dst: VReg(tmpDestAddr), Src1: VReg(inst.Dest)})
+							insts = append(insts, MachInst{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal1)})
+							insts = append(insts, MachInst{Op: MachStore, Dst: VReg(tmpDestAddr), Src1: VReg(tmpVal2), Src2: Imm(8)})
+						} else {
+							insts = append(insts, MachInst{Op: MachLoad, Dst: VReg(inst.Dest), Src1: VReg(tmpAddr)})
+						}
+						return insts
+					}
+				} else {
+					destType := sel.getRegisterType(inst.Dest)
+					destSize := uint32(8)
+					if destType != 0 && sel.table != nil {
+						destSize, _ = sel.typeSizeAndAlign(destType)
+					}
+					if destSize == 16 {
+						return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
+					} else {
+						return []MachInst{{Op: MachLoad, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
+					}
+				}
+			} else {
+				if sel.paramIdxProcessed < len(sel.fn.Params) && inst.Src1 == uint32(sel.paramIdxProcessed+1) {
+					paramIdx := sel.paramIdxProcessed
+					sel.paramIdxProcessed++
+					phys := RegNone
+					if paramIdx < len(sel.abi.IntArgRegs()) {
+						phys = sel.abi.IntArgRegs()[paramIdx]
+					}
+					if phys != RegNone {
+						return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: Phys(phys)}}
+					} else {
+						var offset int64
+						if sel.abi.Name() == "win64" {
+							offset = 48 + int64(paramIdx-4)*8
+						} else {
+							offset = 16 + int64(paramIdx-6)*8
+						}
+						return []MachInst{{Op: MachLoad, Dst: VReg(inst.Dest), Src1: Phys(RBP), Src2: Imm(offset)}}
+					}
+				}
+				return []MachInst{{Op: MachMov, Dst: VReg(inst.Dest), Src1: VReg(inst.Src1)}}
+			}
+		}
+
 	default:
 		return []MachInst{{Op: MachNop}}
 	}
@@ -429,8 +839,16 @@ func (sel *instructionSelector) getRegisterType(reg uint32) uint16 {
 	for i := range sel.fn.Insts {
 		inst := &sel.fn.Insts[i]
 		if inst.Dest == reg {
+			if inst.TypeID == 0 {
+				println("[DEBUG-TYPE] getRegisterType found defining inst for reg", reg, "but TypeID is 0! Inst opcode:", inst.Opcode.Mnemonic(), "in function NameID=", sel.fn.Name)
+			}
 			return inst.TypeID
 		}
+	}
+	println("[DEBUG-TYPE] getRegisterType COULD NOT FIND defining inst for reg", reg, "in function NameID=", sel.fn.Name, "Total instructions:", len(sel.fn.Insts))
+	for i := range sel.fn.Insts {
+		inst := &sel.fn.Insts[i]
+		println("  inst", i, "opcode:", inst.Opcode.Mnemonic(), "dest:", inst.Dest, "src1:", inst.Src1, "src2:", inst.Src2, "typeID:", inst.TypeID)
 	}
 	return 0
 }
@@ -505,3 +923,20 @@ func (sel *instructionSelector) fieldOffset(structTypeID uint16, fieldIdx uint32
 	}
 	return fieldIdx * 8 // fallback
 }
+
+func (sel *instructionSelector) selectComparison(inst *air.AirInst, intCC, floatCC CondCode) []MachInst {
+	t := sel.getRegisterType(inst.Src1)
+	if types.TypeID(t).IsFloat() {
+		return []MachInst{
+			{Op: MachFCmp, Dst: VReg(inst.Src1), Src1: VReg(inst.Src2)},
+			{Op: MachSetCC, CC: floatCC, Dst: VReg(inst.Dest)},
+			{Op: MachMovzxB, Dst: VReg(inst.Dest), Src1: VReg(inst.Dest)},
+		}
+	}
+	return []MachInst{
+		{Op: MachCmp, Dst: VReg(inst.Src1), Src1: VReg(inst.Src2)},
+		{Op: MachSetCC, CC: intCC, Dst: VReg(inst.Dest)},
+		{Op: MachMovzxB, Dst: VReg(inst.Dest), Src1: VReg(inst.Dest)},
+	}
+}
+

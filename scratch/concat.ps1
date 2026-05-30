@@ -1,13 +1,24 @@
 $paths = @(
+    "bootstrap/stage1/print_helpers.ax",
     "bootstrap/stage1/token.ax",
     "bootstrap/stage1/lexer.ax",
     "bootstrap/stage1/ast.ax",
     "bootstrap/stage1/intern.ax",
     "bootstrap/stage1/parser.ax",
     "bootstrap/stage1/resolver.ax",
+    "bootstrap/stage1/typetable.ax",
+    "bootstrap/stage1/mono.ax",
     "bootstrap/stage1/typecheck.ax",
+    "bootstrap/stage1/connection_graph.ax",
+    "bootstrap/stage1/ownership.ax",
+    "bootstrap/stage1/escape.ax",
+    "bootstrap/stage1/ctgc.ax",
+    "bootstrap/stage1/alias_reuse.ax",
     "bootstrap/stage1/air.ax",
     "bootstrap/stage1/air_builder.ax",
+    "bootstrap/stage1/ssa_opt.ax",
+    "bootstrap/stage1/cgen.ax",
+    "bootstrap/stage1/wasm.ax",
     "bootstrap/stage1/x86_regs.ax",
     "bootstrap/stage1/x86_selector.ax",
     "bootstrap/stage1/x86_regalloc.ax",
@@ -18,6 +29,7 @@ $paths = @(
     "bootstrap/stage1/x86_elf64.ax",
     "bootstrap/stage1/x86_coff.ax",
     "bootstrap/stage1/linker.ax",
+    "bootstrap/stage1/fmt.ax",
     "bootstrap/stage1/main_air.ax"
 )
 $imports = @()
@@ -28,6 +40,9 @@ foreach ($p in $paths) {
     foreach ($line in $lines) {
         $trimmed = $line.Trim()
         if ($trimmed.StartsWith("import ")) {
+            if ($trimmed -like "import bootstrap.stage1.*") {
+                continue
+            }
             $imports += $line
         } else {
             $body += $line

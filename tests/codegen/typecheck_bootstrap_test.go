@@ -20,6 +20,7 @@ import (
 func TestStage1TypecheckCorpus(t *testing.T) {
 	// 1. Concatenate all self-hosted compiler frontend files including typecheck
 	workspaceDir := "../.." // relative to tests/codegen
+	printHelpersPath := filepath.Join(workspaceDir, "bootstrap/stage1/print_helpers.ax")
 	tokenPath := filepath.Join(workspaceDir, "bootstrap/stage1/token.ax")
 	lexerPath := filepath.Join(workspaceDir, "bootstrap/stage1/lexer.ax")
 	astPath := filepath.Join(workspaceDir, "bootstrap/stage1/ast.ax")
@@ -31,7 +32,7 @@ func TestStage1TypecheckCorpus(t *testing.T) {
 	typecheckPath := filepath.Join(workspaceDir, "bootstrap/stage1/typecheck.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_typecheck.ax")
 
-	sourceBytes, err := concatenateAxiomFiles(tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath, mainPath)
+	sourceBytes, err := concatenateAxiomFiles(printHelpersPath, tokenPath, lexerPath, astPath, internPath, parserPath, resolverPath, typetablePath, monoPath, typecheckPath, mainPath)
 	if err != nil {
 		t.Fatalf("failed to concatenate typechecker files: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestStage1TypecheckCorpus(t *testing.T) {
 		binPath += ".exe"
 	}
 
-	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath); err != nil {
+	if err := compileCBackendIgnoringAtDiagnostics(t, sourceBytes, binPath, ""); err != nil {
 		t.Fatalf("failed to compile self-hosted typechecker: %v", err)
 	}
 

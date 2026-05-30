@@ -25,7 +25,7 @@ func TestPrimitiveSizes(t *testing.T) {
 	if types.TypeI8.SizeOf() != 1 { t.Error("i8 size != 1") }
 	if types.TypeI32.SizeOf() != 4 { t.Error("i32 size != 4") }
 	if types.TypeF64.SizeOf() != 8 { t.Error("f64 size != 8") }
-	if types.TypeString.SizeOf() != 8 { t.Error("string size != 8") }
+	if types.TypeString.SizeOf() != 16 { t.Error("string size != 16") }
 	if types.TypeVoid.SizeOf() != 0 { t.Error("void size != 0") }
 }
 

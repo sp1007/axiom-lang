@@ -2,22 +2,49 @@
 // Test harness entry point for AXIOM self-hosted compiler & driver
 
 import std.string
+import std.io
+import bootstrap.stage1.print_helpers
+import bootstrap.stage1.token
+import bootstrap.stage1.lexer
+import bootstrap.stage1.ast
+import bootstrap.stage1.intern
+import bootstrap.stage1.parser
+import bootstrap.stage1.resolver
+import bootstrap.stage1.typetable
+import bootstrap.stage1.mono
+import bootstrap.stage1.typecheck
+import bootstrap.stage1.connection_graph
+import bootstrap.stage1.ownership
+import bootstrap.stage1.escape
+import bootstrap.stage1.ctgc
+import bootstrap.stage1.alias_reuse
+import bootstrap.stage1.air
+import bootstrap.stage1.air_builder
+import bootstrap.stage1.ssa_opt
+import bootstrap.stage1.cgen
+import bootstrap.stage1.wasm
+import bootstrap.stage1.x86_regs
+import bootstrap.stage1.x86_selector
+import bootstrap.stage1.x86_regalloc
+import bootstrap.stage1.x86_asm_emitter
+import bootstrap.stage1.x86_modrm
+import bootstrap.stage1.x86_encoding
+import bootstrap.stage1.x86_emitter
+import bootstrap.stage1.x86_elf64
+import bootstrap.stage1.x86_coff
+import bootstrap.stage1.linker
+import bootstrap.stage1.fmt
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
-extern "C" fn ftell(stream: ptr[void]) -> i64
-extern "C" fn rewind(stream: ptr[void])
-extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 // extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-// extern "C" fn puts(s: str) -> i32
+extern "C" fn puts(s: ptr[u8]) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
 // extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
 
-fn print_inst(inst: AirInst):
+
+fn print_inst(mut inst: AirInst, call_count_ptr: ptr[u32]):
     let op = inst.opcode
     if op == OP_NOP:
         return
@@ -61,7 +88,7 @@ fn print_inst(inst: AirInst):
         else:
             ax_puts_local("")
 
-fn print_block(f: AirFunc, mut bb: BasicBlock):
+fn print_block(f: AirFunc, mut bb: BasicBlock, call_count_ptr: ptr[u32]):
     ax_printf_local("  block_%d:", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     if bb.is_entry and bb.is_exit:
         ax_puts_local("  ; entry exit")
@@ -77,7 +104,7 @@ fn print_block(f: AirFunc, mut bb: BasicBlock):
         let inst_idx = f.block_instrs.data[bb.instrs_start as i64 + i]
         if inst_idx < f.insts.len as u32:
             let inst = f.insts.data[inst_idx as i64]
-            print_inst(inst)
+            print_inst(inst, call_count_ptr)
         i = i + 1
 
 fn print_func(f: AirFunc):
@@ -93,10 +120,12 @@ fn print_func(f: AirFunc):
         ax_printf_local(" -> t%d", f.ret_type as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     ax_puts_local(":")
 
+    mut call_count := 0 as u32
+
     mut bi := 0 as i64
     while bi < f.blocks.len:
         let bb = f.blocks.data[bi]
-        print_block(f, bb)
+        print_block(f, bb, &call_count)
         bi = bi + 1
 
 fn print_module(mod: AirModule):
@@ -108,27 +137,27 @@ fn print_module(mod: AirModule):
         i = i + 1
 
 fn read_file_content(path: str) -> str:
-    let file = fopen(path as ptr[void], get_str_ptr("rb"))
-    if file == null as ptr[void]:
-        return ""
-    fseek(file, 0, 2)
-    let size = ftell(file)
-    rewind(file)
-    if size <= 0:
-        fclose(file)
-        return ""
-    let buffer = @alloc(size + 1) as ptr[u8]
-    if buffer == null as ptr[u8]:
-        fclose(file)
-        return ""
-    let bytes_read = fread(buffer as ptr[void], 1, size, file)
-    fclose(file)
-    buffer[bytes_read] = 0 as u8
-    return buffer as str
+    let r = std.io.open(path)
+    if r.is_ok():
+        let file = r.unwrap()
+        let r2 = file.read_all()
+        if r2.is_ok():
+            let content = r2.unwrap()
+            return content
+    return ""
+
+fn write_file_content(path: str, content: str) -> bool:
+    let r = std.io.create(path)
+    if r.is_ok():
+        let file = r.unwrap()
+        let r2 = file.write_all(content)
+        if r2.is_ok():
+            return true
+    return false
 
 fn match_prefix(s: str, i: i64, prefix: str) -> bool:
-    let s_ptr = s as ptr[u8]
-    let p_ptr = prefix as ptr[u8]
+    let s_ptr = get_str_ptr(s)
+    let p_ptr = get_str_ptr(prefix)
     let s_len = std.string.len(s)
     let p_len = std.string.len(prefix)
     if i + p_len > s_len:
@@ -141,8 +170,10 @@ fn match_prefix(s: str, i: i64, prefix: str) -> bool:
     return true
 
 fn strip_imports(s: str) -> str:
-    let s_ptr = s as ptr[u8]
     let s_len = std.string.len(s)
+    ax_printf_local("[Debug strip_imports] Entering, len=%d\n", s_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    let s_ptr = get_str_ptr(s)
     let out_buf = @alloc(s_len + 1 as i64) as ptr[u8]
     mut out_idx := 0 as i64
     mut i := 0 as i64
@@ -156,11 +187,7 @@ fn strip_imports(s: str) -> str:
             
         mut skip_line := false
         if is_line_start:
-            if match_prefix(s, i, "import std.mem.alloc"):
-                skip_line = true
-            elif match_prefix(s, i, "import std.scheduler"):
-                skip_line = true
-            elif match_prefix(s, i, "import std.runtime"):
+            if match_prefix(s, i, "import std"):
                 skip_line = true
                 
         if skip_line:
@@ -174,22 +201,30 @@ fn strip_imports(s: str) -> str:
             i = i + 1 as i64
             
     out_buf[out_idx] = 0 as u8
-    return out_buf as str
+    ax_puts_local("[Debug strip_imports] Finished loop")
+    fflush(null as ptr[void])
+    let res = out_buf as str
+    ax_puts_local("[Debug strip_imports] Cast finished")
+    fflush(null as ptr[void])
+    return res
 
 fn strip_package_prefixes(s: str) -> str:
-    let r1 = std.string.replace(s, "std.mem.alloc.", "")
+    let r0 = std.string.replace(s, "::", ".")
+    let r1 = std.string.replace(r0, "std.mem.alloc.", "")
     let r2 = std.string.replace(r1, "std.scheduler.", "")
-    let r3 = std.string.replace(r2, "std.os.", "")
-    if r1 as ptr[u8] != s as ptr[u8] and r1 as ptr[u8] != r2 as ptr[u8]:
-        @free(r1 as ptr[u8])
-    if r2 as ptr[u8] != r1 as ptr[u8] and r2 as ptr[u8] != r3 as ptr[u8]:
-        @free(r2 as ptr[u8])
-    return r3
+    let r3 = std.string.replace(r2, "std.os.win32.", "")
+    let r4 = std.string.replace(r3, "std.os.linux_sys.", "")
+    let r5 = std.string.replace(r4, "std.os.", "")
+    let r6 = std.string.replace(r5, "std.string.", "")
+    let r7 = std.string.replace(r6, "std.io.", "")
+    let r8 = std.string.replace(r7, "std.net.", "")
+    return r8
+
 
 
 extern "C" fn GetCommandLineW() -> ptr[u16]
 
-fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
+fn local_wslice_to_ptr(data: ptr[u16], len: i64) -> ptr[u8]:
     let res = @alloc(len + 1) as ptr[u8]
     mut i := 0 as i64
     while i < len:
@@ -197,7 +232,39 @@ fn local_wslice_to_str(data: ptr[u16], len: i64) -> str:
         res[i] = val as u8
         i = i + 1
     res[len] = 0 as u8
-    return res as str
+    return res
+
+fn populate_str_in_place(s_ptr: ptr[u8], s_len: i64, dest: ptr[str]):
+    let out_bytes = dest as ptr[u8]
+    let ptr_val = s_ptr as i64
+    out_bytes[0] = (ptr_val & 0xFF) as u8
+    out_bytes[1] = ((ptr_val >> 8) & 0xFF) as u8
+    out_bytes[2] = ((ptr_val >> 16) & 0xFF) as u8
+    out_bytes[3] = ((ptr_val >> 24) & 0xFF) as u8
+    out_bytes[4] = ((ptr_val >> 32) & 0xFF) as u8
+    out_bytes[5] = ((ptr_val >> 40) & 0xFF) as u8
+    out_bytes[6] = ((ptr_val >> 48) & 0xFF) as u8
+    out_bytes[7] = ((ptr_val >> 56) & 0xFF) as u8
+
+    out_bytes[8] = (s_len & 0xFF) as u8
+    out_bytes[9] = ((s_len >> 8) & 0xFF) as u8
+    out_bytes[10] = ((s_len >> 16) & 0xFF) as u8
+    out_bytes[11] = ((s_len >> 24) & 0xFF) as u8
+    out_bytes[12] = ((s_len >> 32) & 0xFF) as u8
+    out_bytes[13] = ((s_len >> 40) & 0xFF) as u8
+    out_bytes[14] = ((s_len >> 48) & 0xFF) as u8
+    out_bytes[15] = ((s_len >> 56) & 0xFF) as u8
+
+fn is_space(c: u16) -> bool:
+    if c == ' ' as u16:
+        return true
+    if c == '\t' as u16:
+        return true
+    if c == '\r' as u16:
+        return true
+    if c == '\n' as u16:
+        return true
+    return false
 
 fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
     let args = @alloc(64 * 16) as ptr[str]
@@ -207,7 +274,7 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
         if cmdline != null as ptr[u16]:
             mut i := 0 as i64
             while cmdline[i] != 0 as u16 and count < 64:
-                while cmdline[i] == ' ' as u16 or cmdline[i] == '\t' as u16 or cmdline[i] == '\r' as u16 or cmdline[i] == '\n' as u16:
+                while is_space(cmdline[i]):
                     i = i + 1
                 if cmdline[i] == 0 as u16:
                     break
@@ -217,52 +284,240 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
                     let ch = cmdline[i]
                     if ch == '"' as u16:
                         in_quotes = not in_quotes
-                    elif (ch == ' ' as u16 or ch == '\t' as u16) and not in_quotes:
-                        break
+                    else:
+                        if not in_quotes:
+                            if is_space(ch):
+                                break
                     i = i + 1
                 let arg_len = i - start
                 mut final_ptr := ((cmdline as i64) + start * 2) as ptr[u16]
                 mut final_len := arg_len
-                if arg_len >= 2 and cmdline[start] == '"' as u16 and cmdline[i - 1] == '"' as u16:
+                
+                mut is_quoted := false
+                if arg_len >= 2:
+                    if cmdline[start] == '"' as u16:
+                        if cmdline[i - 1] == '"' as u16:
+                            is_quoted = true
+                if is_quoted:
                     final_ptr = ((cmdline as i64) + (start + 1) * 2) as ptr[u16]
                     final_len = arg_len - 2
-                args[count] = local_wslice_to_str(final_ptr, final_len)
+                let s_ptr = local_wslice_to_ptr(final_ptr, final_len)
+                populate_str_in_place(s_ptr, final_len, ((args as i64) + count * 16) as ptr[str])
                 count = count + 1
     else:
-        let file = fopen("/proc/self/cmdline" as ptr[void], get_str_ptr("rb"))
-        if file != null as ptr[void]:
-            let buf = @alloc(8192) as ptr[u8]
-            let n = fread(buf as ptr[void], 1, 8192, file)
-            fclose(file)
-            mut start := 0 as i64
-            mut i := 0 as i64
-            while i < n and count < 64:
-                if buf[i] == 0 as u8:
-                    if i > start:
-                        let arg_len = i - start
-                        let s_ptr = @alloc(arg_len + 1) as ptr[u8]
-                        @memcpy(s_ptr, ((buf as i64) + start) as ptr[u8], arg_len)
-                        s_ptr[arg_len] = 0 as u8
-                        args[count] = s_ptr as str
-                        count = count + 1
-                    start = i + 1
-                i = i + 1
-            @free(buf)
+        let dummy = 0
     out_argc[0] = count as i32
     return args
 
 
 
 
+fn concatenate_stdlib(src: str) -> str:
+    ax_puts_local("[Debug] Reading result.ax...")
+    fflush(null as ptr[void])
+    let raw_res = read_file_content("std/result.ax")
+    ax_puts_local("[Debug] Reading alloc.ax...")
+    fflush(null as ptr[void])
+    let raw_alloc = read_file_content("std/mem/alloc.ax")
+    ax_puts_local("[Debug] Reading scheduler.ax...")
+    fflush(null as ptr[void])
+    let raw_sched = read_file_content("std/scheduler.ax")
+    ax_puts_local("[Debug] Reading runtime.ax...")
+    fflush(null as ptr[void])
+    let raw_rt = read_file_content("std/runtime.ax")
+    ax_puts_local("[Debug] Reading os.ax...")
+    fflush(null as ptr[void])
+    let raw_os = read_file_content("std/os.ax")
+    ax_puts_local("[Debug] Reading string.ax...")
+    fflush(null as ptr[void])
+    let raw_str = read_file_content("std/string.ax")
+    ax_puts_local("[Debug] Reading io.ax...")
+    fflush(null as ptr[void])
+    let raw_io = read_file_content("std/io.ax")
+    
+    ax_puts_local("[Debug] Stripping imports from result.ax...")
+    let res_src_raw = strip_imports(raw_res)
+    let res_src = strip_package_prefixes(res_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from alloc.ax...")
+    fflush(null as ptr[void])
+    let alloc_src_raw = strip_imports(raw_alloc)
+    let alloc_src = strip_package_prefixes(alloc_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from scheduler.ax...")
+    fflush(null as ptr[void])
+    let sched_src_raw = strip_imports(raw_sched)
+    let sched_src = strip_package_prefixes(sched_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from runtime.ax...")
+    fflush(null as ptr[void])
+    let rt_src_raw = strip_imports(raw_rt)
+    let rt_src = strip_package_prefixes(rt_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from os.ax...")
+    fflush(null as ptr[void])
+    let os_src_raw = strip_imports(raw_os)
+    let os_src = strip_package_prefixes(os_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from string.ax...")
+    fflush(null as ptr[void])
+    let str_src_raw = strip_imports(raw_str)
+    let str_src = strip_package_prefixes(str_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from io.ax...")
+    fflush(null as ptr[void])
+    let io_src_raw = strip_imports(raw_io)
+    let io_src = strip_package_prefixes(io_src_raw)
+
+    ax_puts_local("[Debug] Stripping imports from src...")
+    fflush(null as ptr[void])
+    let clean_src_raw = strip_imports(src)
+    let clean_src = strip_package_prefixes(clean_src_raw)
+    
+    ax_puts_local("[Debug] Concatenating buffers...")
+    fflush(null as ptr[void])
+    let len_src = std.string.len(clean_src)
+    let len_res = std.string.len(res_src)
+    let len_alloc = std.string.len(alloc_src)
+    let len_sched = std.string.len(sched_src)
+    let len_rt = std.string.len(rt_src)
+    let len_os = std.string.len(os_src)
+    let len_str = std.string.len(str_src)
+    let len_io = std.string.len(io_src)
+    
+    let total_len = len_res + 1 as i64 + len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_str + 1 as i64 + len_io + 1 as i64 + len_src
+    ax_printf_local("[Debug] len_res=%d, len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_str=%d, len_io=%d, len_src=%d, ", len_res, len_alloc, len_sched, len_rt, len_os, len_str, len_io, len_src)
+    ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
+    
+    @memcpy(new_buf, res_src as ptr[u8], len_res)
+    new_buf[len_res] = 10 as u8
+ 
+    let off_alloc = len_res + 1 as i64
+    @memcpy(((new_buf as i64) + off_alloc) as ptr[u8], alloc_src as ptr[u8], len_alloc)
+    new_buf[off_alloc + len_alloc] = 10 as u8
+    
+    let off_sched = off_alloc + len_alloc + 1 as i64
+    @memcpy(((new_buf as i64) + off_sched) as ptr[u8], sched_src as ptr[u8], len_sched)
+    new_buf[off_sched + len_sched] = 10 as u8
+    
+    let off_rt = off_sched + len_sched + 1 as i64
+    @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
+    new_buf[off_rt + len_rt] = 10 as u8
+    
+    let off_os = off_rt + len_rt + 1 as i64
+    @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
+    new_buf[off_os + len_os] = 10 as u8
+ 
+    let off_str = off_os + len_os + 1 as i64
+    @memcpy(((new_buf as i64) + off_str) as ptr[u8], str_src as ptr[u8], len_str)
+    new_buf[off_str + len_str] = 10 as u8
+
+    let off_io = off_str + len_str + 1 as i64
+    @memcpy(((new_buf as i64) + off_io) as ptr[u8], io_src as ptr[u8], len_io)
+    new_buf[off_io + len_io] = 10 as u8
+    
+    let off_src = off_io + len_io + 1 as i64
+    @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
+    new_buf[total_len] = 0 as u8
+    
+    let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
+    
+    ax_puts_local("[Debug] Cleaning up...")
+    fflush(null as ptr[void])
+    if std.string.len(raw_res) > 0 as i64:
+        @free(raw_res as ptr[u8])
+    if std.string.len(raw_alloc) > 0 as i64:
+        @free(raw_alloc as ptr[u8])
+    if std.string.len(raw_sched) > 0 as i64:
+        @free(raw_sched as ptr[u8])
+    if std.string.len(raw_rt) > 0 as i64:
+        @free(raw_rt as ptr[u8])
+    if std.string.len(raw_os) > 0 as i64:
+        @free(raw_os as ptr[u8])
+    if std.string.len(raw_str) > 0 as i64:
+        @free(raw_str as ptr[u8])
+    if std.string.len(raw_io) > 0 as i64:
+        @free(raw_io as ptr[u8])
+        
+    if res_src as ptr[u8] != res_src_raw as ptr[u8]:
+        @free(res_src as ptr[u8])
+    @free(res_src_raw as ptr[u8])
+
+    if alloc_src as ptr[u8] != alloc_src_raw as ptr[u8]:
+        @free(alloc_src as ptr[u8])
+    @free(alloc_src_raw as ptr[u8])
+    
+    if sched_src as ptr[u8] != sched_src_raw as ptr[u8]:
+        @free(sched_src as ptr[u8])
+    @free(sched_src_raw as ptr[u8])
+    
+    if rt_src as ptr[u8] != rt_src_raw as ptr[u8]:
+        @free(rt_src as ptr[u8])
+    @free(rt_src_raw as ptr[u8])
+
+    if os_src as ptr[u8] != os_src_raw as ptr[u8]:
+        @free(os_src as ptr[u8])
+    @free(os_src_raw as ptr[u8])
+
+    if str_src as ptr[u8] != str_src_raw as ptr[u8]:
+        @free(str_src as ptr[u8])
+    @free(str_src_raw as ptr[u8])
+
+    if io_src as ptr[u8] != io_src_raw as ptr[u8]:
+        @free(io_src as ptr[u8])
+    @free(io_src_raw as ptr[u8])
+    
+    if clean_src as ptr[u8] != clean_src_raw as ptr[u8]:
+        @free(clean_src as ptr[u8])
+    @free(clean_src_raw as ptr[u8])
+        
+    let result_str = new_buf as str
+    ax_puts_local("[Debug] Concatenation finished successfully!")
+    fflush(null as ptr[void])
+    
+    let success_w = write_file_content("scratch/self_linked_concatenated.ax", result_str)
+    if not success_w:
+        ax_puts_local("Error: could not write self_linked_concatenated.ax")
+    return result_str
+fn print_num(val: i64):
+    if val == 0:
+        print_raw("0")
+        return
+    mut v := val
+    if v < 0:
+        print_raw("-")
+        v = -v
+    mut temp := v
+    mut digits := 0 as i64
+    while temp > 0:
+        digits = digits + 1
+        temp = temp / 10
+    let buf = @alloc(digits + 1) as ptr[u8]
+    mut i := digits - 1
+    temp = v
+    while i >= 0:
+        buf[i] = '0' as u8 + (temp % 10) as u8
+        temp = temp / 10
+        i = i - 1
+    buf[digits] = 0 as u8
+    print_raw(buf as str)
+    @free(buf)
+
 pub fn main() -> i32:
-    mut argc := 0 as i32
-    let args = get_freestanding_args(&argc)
+    let argc_ptr = @alloc(4) as ptr[i32]
+    argc_ptr[0] = 0 as i32
+    let args = get_freestanding_args(argc_ptr)
+    let argc = argc_ptr[0]
+    @free(argc_ptr as ptr[u8])
+
     if argc < 2:
         ax_puts_local("Usage: axc <command> [args]")
         ax_puts_local("Commands:")
-        ax_puts_local("  dump-air <file.ax>")
-        ax_puts_local("  emit-c <file.ax> [-o <out.c>]")
-        ax_puts_local("  build <file.ax> [-o <out.exe>] [--target <wasm32|wasm32-unknown-unknown>]")
+        ax_puts_local("  dump-air <file.ax> [-O0|-O1|-O2|-O3]")
+        ax_puts_local("  emit-c <file.ax> [-o <out.c>] [-O0|-O1|-O2|-O3]")
+        ax_puts_local("  build <file.ax> [-o <out.exe>] [-O0|-O1|-O2|-O3] [--target <wasm32|wasm32-unknown-unknown>]")
         ax_puts_local("  fmt <file.ax>")
         return 1
 
@@ -275,6 +530,7 @@ pub fn main() -> i32:
     mut target_wasm32 := false
     mut self_link := false
     mut optimize := false
+    mut opt_level := 1 as u8
 
     // Parse commands
     let cmd = args[1]
@@ -319,166 +575,41 @@ pub fn main() -> i32:
             self_link = true
         elif opt == "-use-gcc" or opt == "--use-gcc":
             self_link = false
-        elif opt == "-O1" or opt == "--opt":
+        elif opt == "-O0":
+            optimize = false
+        elif opt == "-O1":
             optimize = true
+            opt_level = 1 as u8
+        elif opt == "-O2" or opt == "-O" or opt == "--opt":
+            optimize = true
+            opt_level = 2 as u8
+        elif opt == "-O3":
+            optimize = true
+            opt_level = 3 as u8
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
-    let filename_ptr = filename as ptr[u8]
-    let file = fopen(filename_ptr as ptr[void], get_str_ptr("rb"))
-    if file == null as ptr[void]:
-        ax_puts_local("Error: could not open file")
+    mut src := read_file_content(filename)
+    if std.string.len(src) == 0 as i64:
+        ax_puts_local("Error: could not open or read file")
         return 1
-
-    fseek(file, 0, 2) // SEEK_END = 2
-    let size = ftell(file)
-    rewind(file)
-
-    if size < 0:
-        ax_puts_local("Error: could not get file size")
-        fclose(file)
-        return 1
-
-    let buffer = @alloc(size + 1) as ptr[u8]
-    if buffer == null as ptr[u8]:
-        ax_puts_local("Error: memory allocation failed")
-        fclose(file)
-        return 1
-
-    let bytes_read = fread(buffer as ptr[void], 1, size, file)
-    fclose(file)
-
-    buffer[bytes_read] = 0 as u8
-
-    mut src := buffer as str
 
     if is_fmt:
         ax_puts_local("[Debug] Running pure-AXIOM Formatter...")
         mut formatter := new_formatter()
         let formatted = formatter.format(src)
         
-        let out_file = fopen(filename_ptr as ptr[void], get_str_ptr("wb"))
-        if out_file != null as ptr[void]:
-            fputs(get_str_ptr(formatted), out_file)
-            fclose(out_file)
+        let success_f = write_file_content(filename, formatted)
+        if success_f:
             ax_puts_local("[Debug] Formatted file successfully!")
         else:
             ax_puts_local("Error: could not write formatted file")
         
         @free(get_str_ptr(formatted))
-        @free(buffer)
         return 0
 
     if self_link:
-        ax_puts_local("[Debug] Reading alloc.ax...")
-        fflush(null as ptr[void])
-        let raw_alloc = read_file_content("std/mem/alloc.ax")
-        ax_puts_local("[Debug] Reading scheduler.ax...")
-        fflush(null as ptr[void])
-        let raw_sched = read_file_content("std/scheduler.ax")
-        ax_puts_local("[Debug] Reading runtime.ax...")
-        fflush(null as ptr[void])
-        let raw_rt = read_file_content("std/runtime.ax")
-        ax_puts_local("[Debug] Reading os.ax...")
-        fflush(null as ptr[void])
-        let raw_os = read_file_content("std/os.ax")
-        
-        ax_puts_local("[Debug] Stripping imports from alloc.ax...")
-        fflush(null as ptr[void])
-        let alloc_src_raw = strip_imports(raw_alloc)
-        let alloc_src = strip_package_prefixes(alloc_src_raw)
-
-        ax_puts_local("[Debug] Stripping imports from scheduler.ax...")
-        fflush(null as ptr[void])
-        let sched_src_raw = strip_imports(raw_sched)
-        let sched_src = strip_package_prefixes(sched_src_raw)
-
-        ax_puts_local("[Debug] Stripping imports from runtime.ax...")
-        fflush(null as ptr[void])
-        let rt_src_raw = strip_imports(raw_rt)
-        let rt_src = strip_package_prefixes(rt_src_raw)
-
-        ax_puts_local("[Debug] Stripping imports from os.ax...")
-        fflush(null as ptr[void])
-        let os_src_raw = strip_imports(raw_os)
-        let os_src = strip_package_prefixes(os_src_raw)
-
-        ax_puts_local("[Debug] Stripping imports from src...")
-        fflush(null as ptr[void])
-        let clean_src_raw = strip_imports(src)
-        let clean_src = strip_package_prefixes(clean_src_raw)
-        
-        ax_puts_local("[Debug] Concatenating buffers...")
-        fflush(null as ptr[void])
-        let len_src = std.string.len(clean_src)
-        let len_alloc = std.string.len(alloc_src)
-        let len_sched = std.string.len(sched_src)
-        let len_rt = std.string.len(rt_src)
-        let len_os = std.string.len(os_src)
-        
-        let total_len = len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_src
-        ax_printf_local("[Debug] len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_src=%d, total_len=%d\n", len_alloc, len_sched, len_rt, len_os, len_src, total_len, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
-        let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
-        
-        @memcpy(new_buf, alloc_src as ptr[u8], len_alloc)
-        new_buf[len_alloc] = 10 as u8
-        
-        let off_sched = len_alloc + 1 as i64
-        @memcpy(((new_buf as i64) + off_sched) as ptr[u8], sched_src as ptr[u8], len_sched)
-        new_buf[off_sched + len_sched] = 10 as u8
-        
-        let off_rt = off_sched + len_sched + 1 as i64
-        @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
-        new_buf[off_rt + len_rt] = 10 as u8
-        
-        let off_os = off_rt + len_rt + 1 as i64
-        @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
-        new_buf[off_os + len_os] = 10 as u8
-        
-        let off_src = off_os + len_os + 1 as i64
-        @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
-        new_buf[total_len] = 0 as u8
-        
-        ax_puts_local("[Debug] Cleaning up...")
-        fflush(null as ptr[void])
-        if std.string.len(raw_alloc) > 0 as i64:
-            @free(raw_alloc as ptr[u8])
-        if std.string.len(raw_sched) > 0 as i64:
-            @free(raw_sched as ptr[u8])
-        if std.string.len(raw_rt) > 0 as i64:
-            @free(raw_rt as ptr[u8])
-        if std.string.len(raw_os) > 0 as i64:
-            @free(raw_os as ptr[u8])
-            
-        if alloc_src as ptr[u8] != alloc_src_raw as ptr[u8]:
-            @free(alloc_src as ptr[u8])
-        @free(alloc_src_raw as ptr[u8])
-        
-        if sched_src as ptr[u8] != sched_src_raw as ptr[u8]:
-            @free(sched_src as ptr[u8])
-        @free(sched_src_raw as ptr[u8])
-        
-        if rt_src as ptr[u8] != rt_src_raw as ptr[u8]:
-            @free(rt_src as ptr[u8])
-        @free(rt_src_raw as ptr[u8])
-
-        if os_src as ptr[u8] != os_src_raw as ptr[u8]:
-            @free(os_src as ptr[u8])
-        @free(os_src_raw as ptr[u8])
-        
-        if clean_src as ptr[u8] != clean_src_raw as ptr[u8]:
-            @free(clean_src as ptr[u8])
-        @free(clean_src_raw as ptr[u8])
-            
-        src = new_buf as str
-        ax_puts_local("[Debug] Concatenation finished successfully!")
-        fflush(null as ptr[void])
-        
-        let out_file = fopen("scratch/self_linked_concatenated.ax" as ptr[void], get_str_ptr("wb"))
-        if out_file != null as ptr[void]:
-            fputs(get_str_ptr(src), out_file)
-            fclose(out_file)
+        src = concatenate_stdlib(src)
 
     if not is_dump_air:
         ax_puts_local("[Debug] Stage 1: Starting compilation...")
@@ -500,6 +631,20 @@ pub fn main() -> i32:
 
     // 3. Resolve
     mut symtable := new_symbol_table(parser.pool)
+    mut typetable := new_type_table()
+    
+    let lazy = new_lazy_resolver(symtable, parser.pool as ptr[void])
+    lazy.typetable = typetable as ptr[void]
+    symtable.lazy_resolver = lazy as ptr[void]
+    
+    if not self_link and not is_dump_air:
+        let prelude_name = "std.result"
+        let prelude_name_id = parser.pool.intern_string(prelude_name)
+        let prelude_path = "std/result.ax"
+        lazy.lazy_resolver_register_import(prelude_name_id, prelude_path, 0 as u32)
+        lazy.lazy_resolver_preload_module(prelude_name_id)
+    
+    
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
     resolver.resolve()
     parser.pool = resolver.intern
@@ -508,10 +653,8 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
 
     // 4. Typecheck
-    mut typetable := new_type_table()
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
     checker.run_type_checker()
-    typetable = checker.types
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Typechecking.")
         fflush(null as ptr[void])
@@ -541,16 +684,45 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
 
     // 6. Build AIR
-    mut air_builder_val := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
-    mut air_builder := &air_builder_val
+    checker.ensure_capacity(parser.tree.nodes.len)
+    mut air_builder := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
     air_builder.build_module()
+    
+    // Build AIR for all lazy loaded modules and append their functions
+    if lazy != null as ptr[LazyResolver]:
+        mut mod_idx := 0 as i64
+        while mod_idx < lazy.modules.len:
+            let mod = lazy.modules.data[mod_idx]
+            if mod != null as ptr[ModuleInfo] and mod.status == MODULE_LOADED and mod.ast_tree != null as ptr[AstTree] and mod.node_types != null as ptr[void]:
+                mut mod_air_builder := new_air_module_builder(mod.ast_tree, resolver.symtable, typetable, parser.pool, mod.node_types as ptr[u32])
+                mod_air_builder.build_module()
+                
+                // Append functions to main air_builder.module
+                mut f_idx := 0 as i64
+                while f_idx < mod_air_builder.module.funcs.len:
+                    let f = mod_air_builder.module.funcs.data[f_idx]
+                    (&air_builder.module.funcs).push(f)
+                    f_idx = f_idx + 1 as i64
+                
+                // Free mod_air_builder itself but NOT the inner functions (since they were merged)
+                @free(mod_air_builder as ptr[u8])
+            mod_idx = mod_idx + 1 as i64
+
     parser.pool = air_builder.pool
     if not is_dump_air:
         ax_puts_local("[Debug] Stage 2: Finished building AIR module.")
+        fflush(null as ptr[void])
 
     if optimize:
+        if not is_dump_air:
+            ax_puts_local("[Debug] Stage 2.1: Running SSA optimizer...")
+            fflush(null as ptr[void])
         mut optimizer := new_ssa_optimizer()
-        optimizer.run(&air_builder.module)
+        optimizer.level = opt_level
+        optimizer.run(&(air_builder.module))
+        if not is_dump_air:
+            ax_puts_local("[Debug] Stage 2.2: Finished SSA optimizer.")
+            fflush(null as ptr[void])
 
     // 7. Handle output phase
     if is_dump_air:
@@ -573,7 +745,7 @@ pub fn main() -> i32:
                 ax_puts_local("Error: could not generate Wasm Text code")
                 return 1
             
-            @free(buffer)
+            @free(get_str_ptr(src))
             if tokens.data != null as ptr[Token]:
                 @free(tokens.data as ptr[u8])
             if lexer.tokens.data != null as ptr[Token]:
@@ -595,20 +767,20 @@ pub fn main() -> i32:
             free_pool(parser.pool)
             return 0
 
-        let temp_obj = "axiom_temp.obj"
-        ax_puts_local("[Debug] Stage 3: Starting native code generation...")
-        let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, "coff", self_link)
-        if not success:
-            ax_puts_local("Error: could not generate native binary code")
-            return 1
-        let temp_asm = "axiom_temp.asm"
-        compile_native_asm(temp_asm, air_builder.module, resolver.symtable, parser.pool, typetable, "nasm")
-        ax_puts_local("[Debug] Stage 4: Finished native code generation.")
-
         if std.string.len(output_file) == 0:
             output_file = "output.exe"
 
         if self_link:
+            let temp_obj = "axiom_temp.obj"
+            ax_puts_local("[Debug] Stage 3: Starting native code generation...")
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr("coff"), self_link)
+            if not success:
+                ax_puts_local("Error: could not generate native binary code")
+                return 1
+            let temp_asm = "axiom_temp.asm"
+            compile_native_asm(temp_asm, air_builder.module, resolver.symtable, parser.pool, typetable, "nasm")
+            ax_puts_local("[Debug] Stage 4: Finished native code generation.")
+
             ax_puts_local("[Debug] Stage 5: Starting self-linking...")
             mut linker := new_axiom_linker()
             axiom_linker_add_input(&linker, temp_obj)
@@ -624,27 +796,44 @@ pub fn main() -> i32:
                 ax_puts_local("Error: Self-linking failed")
                 return 1
         else:
-            // Link using gcc directly on the generated object file
+            // Generate C code first
+            ax_puts_local("[Debug] Stage 2.3: Starting C code generation...")
+            fflush(null as ptr[void])
+            mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
+            let gen_success = cgen.generate("axiom_temp.c")
+            if not gen_success:
+                ax_puts_local("Error: C code generation failed")
+                fflush(null as ptr[void])
+                return 1
+            ax_puts_local("[Debug] Stage 2.4: Finished C code generation successfully.")
+            fflush(null as ptr[void])
+
+            mut opt_str := "-O0"
+            if optimize:
+                if opt_level == 1 as u8:
+                    opt_str = "-O1"
+                elif opt_level == 2 as u8:
+                    opt_str = "-O2"
+                elif opt_level == 3 as u8:
+                    opt_str = "-O3"
+
             let cmd_buf = @alloc(2048) as ptr[u8]
             let output_file_nt = str_to_null_terminated(output_file)
-            let temp_obj_nt = str_to_null_terminated(temp_obj)
 
-            // Run gcc: gcc -O2 -o output.exe axiom_temp.obj -Iruntime runtime/axalloc/axalloc.c ...
-            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc -O2 -o %s %s -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], output_file_nt as ptr[void], temp_obj_nt as ptr[void])
+            // Compile C to executable using gcc
+            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up
-            // remove(temp_obj_nt as ptr[void])
             @free(output_file_nt)
-            @free(temp_obj_nt)
             @free(cmd_buf)
 
             if link_status != 0:
-                ax_puts_local("Error: Linking failed")
+                ax_puts_local("Error: C compilation failed")
                 return link_status
 
     // Free resources
-    @free(buffer)
+    @free(get_str_ptr(src))
     if tokens.data != null as ptr[Token]:
         @free(tokens.data as ptr[u8])
     if lexer.tokens.data != null as ptr[Token]:
@@ -659,13 +848,176 @@ pub fn main() -> i32:
     if parser.tree.extras.data != null as ptr[i32]:
         @free(parser.tree.extras.data as ptr[u8])
 
+    let dummy_len = typetable.entries.len + air_builder.tree.nodes.len + checker.tree.nodes.len
+    if dummy_len == -9999 as i64:
+        ax_puts_local("dummy")
+
     free_air_module_builder(air_builder)
     free_type_checker(checker)
     free_typetable(typetable)
+    free_lazy_resolver(lazy)
     free_symtable(resolver.symtable)
     free_pool(parser.pool)
 
-    if self_link:
-        @free(get_str_ptr(src))
+
 
     return 0
+
+pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[void]) -> i32:
+    let mod = mod_void as ptr[ModuleInfo]
+    let lazy = st.lazy_resolver as ptr[LazyResolver]
+    let intern = lazy.intern as ptr[InternPool]
+    let mod_name = intern.get(mod.name_id)
+
+    let rel_path = std.string.replace(mod_name, ".", "/")
+    mut file_path := std.string.concat(rel_path, ".ax")
+    @free(get_str_ptr(rel_path))
+
+    mut opened := false
+    mut actual_path := ""
+
+    let r = std.io.open(file_path)
+    if r.is_ok():
+        let file = r.unwrap()
+        let _ = file.close()
+        opened = true
+        actual_path = std.string.concat("", file_path)
+    else:
+        let path1 = std.string.concat("../", file_path)
+        let r1 = std.io.open(path1)
+        if r1.is_ok():
+            let file1 = r1.unwrap()
+            let _ = file1.close()
+            opened = true
+            actual_path = path1
+        else:
+            @free(get_str_ptr(path1))
+            let path2 = std.string.concat("../../", file_path)
+            let r2 = std.io.open(path2)
+            if r2.is_ok():
+                let file2 = r2.unwrap()
+                let _ = file2.close()
+                opened = true
+                actual_path = path2
+            else:
+                @free(get_str_ptr(path2))
+
+    if not opened:
+        ax_printf_local("Error: could not open module file '%s'\n", get_str_ptr(file_path) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        @free(get_str_ptr(file_path))
+        @free(get_str_ptr(mod_name))
+        return 1 as i32
+
+    mut src := read_file_content(actual_path)
+    ax_printf_local("[DEBUG-LOADER-READ] path='%s' len=%d\n", get_str_ptr(actual_path) as i64, std.string.len(src), 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_puts_local("[DEBUG-LOADER-STEP] Freeing actual_path")
+    fflush(null as ptr[void])
+    @free(get_str_ptr(actual_path))
+
+    // 1. Lex
+    ax_puts_local("[DEBUG-LOADER-STEP] Creating lexer")
+    fflush(null as ptr[void])
+    mut lexer := new_lexer(src)
+    ax_puts_local("[DEBUG-LOADER-STEP] Running tokenizer")
+    fflush(null as ptr[void])
+    let tokens = lexer.tokenize()
+
+    // 2. Parse
+    ax_puts_local("[DEBUG-LOADER-STEP] Creating parser")
+    fflush(null as ptr[void])
+    let parser_ptr = new_parser(tokens, src, intern)
+    ax_puts_local("[DEBUG-LOADER-STEP] Running parser")
+    fflush(null as ptr[void])
+    parser_ptr.parse_program()
+    let mod_tree = parser_ptr.tree
+    mod.ast_tree = mod_tree
+
+    // Save scope stack and reset to global scope (0)
+    ax_puts_local("[DEBUG-LOADER-STEP] Saving scope stack")
+    fflush(null as ptr[void])
+    let saved_len = st.stack.len
+    let saved_cap = st.stack.cap
+    let saved_data = st.stack.data
+    st.stack = new_u32_vec()
+    (&st.stack).push(0 as u32)
+
+    // 3. Resolve
+    ax_puts_local("[DEBUG-LOADER-STEP] Creating name resolver")
+    fflush(null as ptr[void])
+    mut mod_resolver := new_name_resolver(mod_tree, intern, st)
+    ax_puts_local("[DEBUG-LOADER-STEP] Running name resolver")
+    fflush(null as ptr[void])
+    mod_resolver.resolve()
+
+    // 4. Typecheck
+    ax_puts_local("[DEBUG-LOADER-STEP] Creating type checker")
+    fflush(null as ptr[void])
+    mut mod_checker := new_type_checker(mod_tree, intern, st, tt as ptr[TypeTable])
+    ax_puts_local("[DEBUG-LOADER-STEP] Running type checker")
+    fflush(null as ptr[void])
+    mod_checker.run_type_checker()
+    mod_checker.ensure_capacity(mod_tree.nodes.len)
+    mod.node_types = mod_checker.node_types as ptr[void]
+
+
+    // Restore scope stack
+    ax_puts_local("[DEBUG-LOADER-STEP] Restoring scope stack")
+    fflush(null as ptr[void])
+    if st.stack.data != null as ptr[u32]:
+        @free(st.stack.data as ptr[u8])
+    st.stack.len = saved_len
+    st.stack.cap = saved_cap
+    st.stack.data = saved_data
+
+    // 5. Export top-level public symbols
+    ax_puts_local("[DEBUG-LOADER-STEP] Exporting symbols")
+    fflush(null as ptr[void])
+    if mod_tree.nodes.len > 0:
+        let root = &mod_tree.nodes.data[0]
+        mut child := root.first_child
+        while child != 0 as u32:
+            let child_node = &mod_tree.nodes.data[child]
+            let kind = child_node.kind
+            let flags = child_node.flags
+            if kind == NODE_FUNC_DECL or kind == NODE_STRUCT_DECL or kind == NODE_CONST_DECL or kind == NODE_TYPE_ALIAS_DECL:
+                if (flags & FLAG_IS_PUB) != 0 as u16 or (flags & FLAG_IS_EXTERN) != 0 as u16:
+                    let sym_idx = child_node.payload
+                    if sym_idx != 0 as u32:
+                        let sym = &st.symbols.data[sym_idx]
+                        let local_name_id = sym.name_id
+                        let local_name = intern.get(local_name_id)
+                        let full_name = std.string.concat(mod_name, std.string.concat(".", local_name))
+                        let full_name_id = intern.intern_string(full_name)
+                        
+                        @free(get_str_ptr(full_name))
+                        @free(get_str_ptr(local_name))
+                        
+                        // Flat define in global scope (0)
+                        let global_scope = &st.scopes.data[0]
+                        global_scope.scope_put(full_name_id, sym_idx)
+                        
+                        // Register export
+                        let exp = ModuleExport(name_id: local_name_id, symbol_idx: sym_idx)
+                        (&mod.exports).push(exp)
+            child = child_node.next_sibling
+
+    // Cleanup resources
+    mod.src_leak = src
+    mod.tokens_leak = tokens
+    mod.tokens_data = tokens.data as ptr[void]
+    if lexer.tokens.data != null as ptr[Token]:
+        @free(lexer.tokens.data as ptr[u8])
+    if lexer.indent_stack.data != null as ptr[i32]:
+        @free(lexer.indent_stack.data as ptr[u8])
+    if lexer.newline_offsets.data != null as ptr[i32]:
+        @free(lexer.newline_offsets.data as ptr[u8])
+    mod.src_buffer = get_str_ptr(src) as ptr[void]
+    @free(get_str_ptr(file_path))
+    @free(get_str_ptr(mod_name))
+    @free(mod_resolver as ptr[u8])
+    @free(mod_checker as ptr[u8])
+    @free(parser_ptr as ptr[u8])
+
+    ax_puts_local("[DEBUG-LOADER-STEP] Finished load_module successfully!")
+    fflush(null as ptr[void])
+    return 0 as i32

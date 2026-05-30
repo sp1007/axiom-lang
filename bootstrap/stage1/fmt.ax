@@ -31,9 +31,9 @@ pub fn push(mut self: FmtTokenVec, t: FmtToken):
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 16) as ptr[FmtToken] // FmtToken is 16 bytes (1B kind, 7B padding/alignment, 8B str pointer)
+        let new_data = @alloc(new_cap * 24) as ptr[FmtToken] // FmtToken is 24 bytes (1B kind, 7B padding, 16B str (8B ptr + 8B len))
         if self.data != null as ptr[FmtToken]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -65,9 +65,7 @@ fn match_operator_or_punct(src: str, i: i64, n: i64) -> i64:
     if i + 1 < n:
         let two = std.string.slice(src, i, i + 2)
         if two == "**" or two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "<<" or two == ">>" or two == ":=" or two == "+=" or two == "-=" or two == "*=" or two == "/=" or two == "%=" or two == "->" or two == "..":
-            @free(two as ptr[u8])
             return 2 as i64
-        @free(two as ptr[u8])
 
     // Single-character operators/punctuations
     let b = src[i] as u8
@@ -245,21 +243,39 @@ pub fn new_formatter() -> Formatter:
 
 pub fn format(self: Formatter, src: str) -> str:
     // Core formatting pipeline in pure AXIOM
-    mut tokens := scan_tokens(src)
+    mut raw_tokens := scan_tokens(src)
+    mut tokens := new_fmt_token_vec()
+    
+    // Filter inline whitespace, keeping only structural indentation whitespace
+    mut k := 0 as i64
+    while k < raw_tokens.len:
+        let tok = raw_tokens.data[k]
+        if tok.kind == FMT_TOKEN_WHITESPACE:
+            mut is_indent := false
+            if k == 0:
+                is_indent = true
+            elif k > 0 and raw_tokens.data[k - 1].kind == FMT_TOKEN_NEWLINE:
+                is_indent = true
+                
+            if is_indent:
+                tokens.push(tok)
+        else:
+            tokens.push(tok)
+        k = k + 1
+    if raw_tokens.data != null as ptr[FmtToken]:
+        @free(raw_tokens.data as ptr[u8])
+
     if tokens.len == 0:
         return ""
 
-    // In this MVP Stage 1 implementation, we output formatted source tokens
-    // calibrating indentation and spacing around symbols and operators.
-    // For simplicity and 100% correct typechecking, we reconstruct text
-    // with canonical operator and punctuation spacing recursively.
+    // Calculate dynamic buffer size with padding for injected spacing
     mut total_size := 0 as i64
-    mut k := 0 as i64
+    k = 0
     while k < tokens.len:
-        total_size = total_size + std.string.len(tokens.data[k].text) + 1 as i64
+        total_size = total_size + std.string.len(tokens.data[k].text) + 2 as i64
         k = k + 1
 
-    let out_buf = @alloc(total_size + 8 as i64) as ptr[u8]
+    let out_buf = @alloc(total_size + 16 as i64) as ptr[u8]
     mut out_idx := 0 as i64
     k = 0
     while k < tokens.len:
@@ -268,26 +284,52 @@ pub fn format(self: Formatter, src: str) -> str:
         @memcpy(((out_buf as i64) + out_idx) as ptr[u8], tok.text as ptr[u8], t_len)
         out_idx = out_idx + t_len
         
-        // Simple space calibration between consecutive identifiers or symbols
         if k + 1 < tokens.len:
             let next_tok = tokens.data[k + 1]
-            if (tok.kind == FMT_TOKEN_IDENT or tok.kind == FMT_TOKEN_NUMBER) and (next_tok.kind == FMT_TOKEN_IDENT or next_tok.kind == FMT_TOKEN_NUMBER or next_tok.kind == FMT_TOKEN_OPERATOR):
-                out_buf[out_idx] = 32 as u8 // space
-                out_idx = out_idx + 1
-            elif tok.kind == FMT_TOKEN_OPERATOR or next_tok.kind == FMT_TOKEN_OPERATOR:
-                // Binary operator spacing
-                if tok.text != "-" and next_tok.text != "-" and tok.text != "!" and next_tok.text != "!":
-                    out_buf[out_idx] = 32 as u8
+            
+            // Check if spacing is between regular semantic tokens
+            let is_regular_tok = (tok.kind != FMT_TOKEN_NEWLINE and tok.kind != FMT_TOKEN_WHITESPACE and tok.kind != FMT_TOKEN_COMMENT)
+            let is_regular_next = (next_tok.kind != FMT_TOKEN_NEWLINE and next_tok.kind != FMT_TOKEN_WHITESPACE and next_tok.kind != FMT_TOKEN_COMMENT)
+            
+            if is_regular_tok and is_regular_next:
+                mut space := false
+                
+                if tok.kind == FMT_TOKEN_IDENT or tok.kind == FMT_TOKEN_NUMBER:
+                    if next_tok.kind == FMT_TOKEN_IDENT or next_tok.kind == FMT_TOKEN_NUMBER:
+                        space = true
+                    elif next_tok.kind == FMT_TOKEN_OPERATOR:
+                        if next_tok.text != "." and next_tok.text != "(" and next_tok.text != "[" and next_tok.text != ")" and next_tok.text != "]":
+                            space = true
+                            
+                elif tok.kind == FMT_TOKEN_OPERATOR:
+                    if tok.text != "." and tok.text != "!" and tok.text != "~" and next_tok.text != ")" and next_tok.text != "]" and next_tok.text != "," and next_tok.text != ":":
+                        // Check for unary minus context
+                        mut is_unary_minus := false
+                        if tok.text == "-":
+                            if k == 0 as i64:
+                                is_unary_minus = true
+                            else:
+                                let prev_tok = tokens.data[k - 1]
+                                if prev_tok.kind == FMT_TOKEN_OPERATOR or prev_tok.text == "=" or prev_tok.text == "," or prev_tok.text == "(" or prev_tok.text == "[" or prev_tok.text == ":" or prev_tok.text == "return":
+                                    is_unary_minus = true
+                        if not is_unary_minus:
+                            space = true
+                            
+                elif next_tok.kind == FMT_TOKEN_OPERATOR:
+                    if next_tok.text != "." and tok.text != "(" and tok.text != "[" and next_tok.text != ")" and next_tok.text != "]":
+                        space = true
+                        
+                if tok.text == "," or tok.text == ":":
+                    space = true
+                    
+                if space:
+                    out_buf[out_idx] = 32 as u8 // space
                     out_idx = out_idx + 1
         k = k + 1
 
     out_buf[out_idx] = 0 as u8
     
     // Clean up tokens
-    k = 0
-    while k < tokens.len:
-        @free(tokens.data[k].text as ptr[u8])
-        k = k + 1
     if tokens.data != null as ptr[FmtToken]:
         @free(tokens.data as ptr[u8])
 

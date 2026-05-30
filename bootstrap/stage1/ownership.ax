@@ -8,28 +8,28 @@ import std.string
 extern "C" fn exit(code: i32)
 
 pub struct OwnershipChecker:
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
     pub errors: u32
 
-pub fn new_ownership_checker(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> OwnershipChecker:
-    return OwnershipChecker(
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-        errors: 0 as u32,
-    )
+pub fn new_ownership_checker(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[OwnershipChecker]:
+    let oc = @alloc(@compiler_intrinsic("size_of")[OwnershipChecker]()) as ptr[OwnershipChecker]
+    oc.tree = tree
+    oc.pool = pool
+    oc.symtable = symtable
+    oc.typetable = typetable
+    oc.errors = 0 as u32
+    return oc
 
-pub fn check(mut self: OwnershipChecker):
+pub fn check(mut self: ptr[OwnershipChecker]):
     self.check_node(0 as u32)
     if self.errors > 0 as u32:
         ax_puts_local("Ownership check failed.")
         exit(1)
 
-pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
+pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
@@ -86,7 +86,7 @@ pub fn check_node(mut self: OwnershipChecker, node_idx: u32):
             self.check_node(child_idx)
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-pub fn check_move(mut self: OwnershipChecker, node_idx: u32):
+pub fn check_move(mut self: ptr[OwnershipChecker], node_idx: u32):
     if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
         return
     let node = self.tree.nodes.data[node_idx]
@@ -98,7 +98,7 @@ pub fn check_move(mut self: OwnershipChecker, node_idx: u32):
             let type_id = sym.type_id
             if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
                 let entry = self.typetable.entries.data[type_id]
-                if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_POINTER:
+                if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM:
                     is_copyable = false
             
             if not is_copyable:

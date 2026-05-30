@@ -77,7 +77,7 @@ func (t TypeID) SizeOf() uint32 {
 	case TypeI64, TypeU64, TypeF64:
 		return 8
 	case TypeString:
-		return 8 // string is a fat pointer (ptr + len)
+		return 16 // string is a fat pointer (ptr + len)
 	case TypeISize, TypeUSize:
 		return 8 // assume 64-bit platform for now
 	case TypeVoid, TypeUnknown:

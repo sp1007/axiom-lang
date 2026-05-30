@@ -41,8 +41,10 @@ func main() {
 		return syms[i].Offset < syms[j].Offset
 	})
 
-	fmt.Println("First 30 symbols in axiom_temp.obj:")
-	for i := 0; i < len(syms) && i < 30; i++ {
-		fmt.Printf("  Offset: 0x%05X  Sec: %d  Type: 0x%04X  Name: %s\n", syms[i].Offset, syms[i].Sec, syms[i].Type, syms[i].Name)
+	fmt.Println("Section 1 (.text) symbols around 0x2C08:")
+	for _, s := range syms {
+		if s.Sec == 1 && s.Offset >= 0x2A00 && s.Offset <= 0x2E00 {
+			fmt.Printf("  Offset: 0x%05X  Type: 0x%04X  Name: %s\n", s.Offset, s.Type, s.Name)
+		}
 	}
 }

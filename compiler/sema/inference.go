@@ -29,15 +29,28 @@ type InferenceEngine struct {
 
 // NewInferenceEngine creates a new InferenceEngine.
 func NewInferenceEngine(tree *ast.AstTree, st *SymbolTable, tt *types.TypeTable, mono *Monomorphizer) *InferenceEngine {
-	return &InferenceEngine{
+	var nodeTypes map[uint32]types.TypeID
+	if mono != nil && mono.ParentNodeTypes != nil {
+		nodeTypes = mono.ParentNodeTypes
+	} else {
+		nodeTypes = make(map[uint32]types.TypeID)
+	}
+
+	ie := &InferenceEngine{
 		ast:             tree,
 		symtable:        st,
 		types:           tt,
 		mono:            mono,
-		nodeTypes:       make(map[uint32]types.TypeID),
+		nodeTypes:       nodeTypes,
 		ifaces:          NewInterfaces(st, tt),
 		structsInferred: make(map[types.TypeID]bool),
 	}
+
+	if mono != nil && mono.ParentNodeTypes == nil {
+		mono.ParentNodeTypes = nodeTypes
+	}
+
+	return ie
 }
 
 // errorf appends a type error diagnostic.
@@ -178,6 +191,63 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 	var resultType types.TypeID = types.TypeUnknown
 
 	switch node.Kind {
+	case ast.NodeInterfaceDecl:
+		symIdx := node.Payload
+		fmt.Printf("[DEBUG-INFER-INTERFACE] Reached NodeInterfaceDecl: symIdx=%d\n", symIdx)
+		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+			sym := ie.symtable.SymbolAt(symIdx)
+			typeID := types.TypeID(sym.TypeID)
+			fmt.Printf("[DEBUG-INFER-INTERFACE]   sym.NameID=%d ('%s') typeID=%d\n", sym.NameID, ie.symtable.intern.Get(sym.NameID), typeID)
+			if typeID != 0 && typeID != types.TypeUnknown {
+				var methods []types.MethodSig
+				child := node.FirstChild
+				for child != 0 {
+					childNode := &ie.ast.Nodes[child]
+					if childNode.Kind == ast.NodeMethodSig {
+						methodNameID := childNode.Payload
+						var paramTypes []types.TypeID
+						var retType types.TypeID = types.TypeVoid
+
+						sigChild := childNode.FirstChild
+						isFirstParam := true
+						for sigChild != 0 {
+							sigChildNode := &ie.ast.Nodes[sigChild]
+							if sigChildNode.Kind == ast.NodeParamDecl {
+								pType := ie.inferNode(sigChild, types.TypeUnknown)
+								if isFirstParam {
+									isFirstParam = false
+								} else {
+									paramTypes = append(paramTypes, pType)
+								}
+							} else if sigChildNode.Kind == ast.NodeTypeExpr || sigChildNode.Kind == ast.NodeGenericType {
+								retType = ie.inferNode(sigChild, types.TypeUnknown)
+							}
+							sigChild = sigChildNode.NextSibling
+						}
+
+						methods = append(methods, types.MethodSig{
+							NameID: methodNameID,
+							Params: paramTypes,
+							Return: retType,
+						})
+					}
+					child = childNode.NextSibling
+				}
+				ie.types.UpdateInterface(typeID, methods)
+				fmt.Printf("[DEBUG-INFER-INTERFACE]   Updated interface typeID=%d with %d methods:\n", typeID, len(methods))
+				for _, m := range methods {
+					fmt.Printf("[DEBUG-INFER-INTERFACE]     method NameID=%d ('%s') ret=%d params=%v\n", m.NameID, ie.symtable.intern.Get(m.NameID), m.Return, m.Params)
+				}
+			}
+		}
+
+	case ast.NodeMethodSig:
+		child := node.FirstChild
+		for child != 0 {
+			ie.inferNode(child, types.TypeUnknown)
+			child = ie.ast.Nodes[child].NextSibling
+		}
+
 	case ast.NodeProgram, ast.NodeBlock:
 		child := node.FirstChild
 		for child != 0 {
@@ -254,14 +324,16 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		prevReturn := ie.currentReturn
 		ie.currentReturn = retType
 
-		// Infer function body and other children
-		child := node.FirstChild
-		for child != 0 {
-			childNode := &ie.ast.Nodes[child]
-			if childNode.Kind != ast.NodeParamDecl && childNode.Kind != ast.NodeTypeExpr {
-				ie.inferNode(child, types.TypeUnknown)
+		// Infer function body and other children if not generic
+		if node.Flags&uint16(ast.FlagIsGeneric) == 0 {
+			child := node.FirstChild
+			for child != 0 {
+				childNode := &ie.ast.Nodes[child]
+				if childNode.Kind != ast.NodeParamDecl && childNode.Kind != ast.NodeTypeExpr {
+					ie.inferNode(child, types.TypeUnknown)
+				}
+				child = childNode.NextSibling
 			}
-			child = childNode.NextSibling
 		}
 
 		ie.currentReturn = prevReturn
@@ -568,39 +640,68 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 	case ast.NodeIndexExpr:
 		collection := ie.ast.Nodes[nodeIdx].FirstChild
 		if collection != 0 {
+			var symIdx uint32 = 0
+			var sym *Symbol
 			if ie.ast.Nodes[collection].Kind == ast.NodeIdent {
-				symIdx := ie.ast.Nodes[collection].Payload
+				symIdx = ie.ast.Nodes[collection].Payload
+				var symName string
 				if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
-					sym := ie.symtable.SymbolAt(symIdx)
-					if sym.Flags & SymFlagGeneric != 0 {
-						// Generic instantiation!
-						var typeArgs []types.TypeID
-						idx := ie.ast.Nodes[collection].NextSibling
-						for idx != 0 {
-							t := ie.inferNode(idx, types.TypeUnknown)
-							typeArgs = append(typeArgs, t)
-							idx = ie.ast.Nodes[idx].NextSibling
-						}
-						
-						if ie.mono != nil {
-							fmt.Printf("[DEBUG-INDEX] Instantiating generic collection: collectionName=%s typeArgs=%v (hasGenericParam=%t)\n", string(ie.ast.NodeText(collection)), typeArgs, hasGenericParam(ie.types, typeArgs))
-							if hasGenericParam(ie.types, typeArgs) {
-								if sym.Kind == SymStruct || sym.Kind == SymTypeAlias || sym.Kind == SymVariant {
-									resultType = ie.types.RegisterGenericInst(sym.NameID, typeArgs)
-								} else {
-									resultType = types.TypeID(sym.TypeID)
-								}
-								break
+					symName = string(ie.symtable.intern.Get(ie.symtable.SymbolAt(symIdx).NameID))
+				}
+				fmt.Printf("[DEBUG-INDEX-IDENT] nodeIdx=%d collectionNodeIdx=%d text=%q Payload(symIdx)=%d symName=%q\n",
+					nodeIdx, collection, string(ie.ast.NodeText(collection)), symIdx, symName)
+				if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+					sym = ie.symtable.SymbolAt(symIdx)
+				}
+			} else if ie.ast.Nodes[collection].Kind == ast.NodeFieldExpr {
+				lhsIdx := ie.ast.Nodes[collection].FirstChild
+				lhsIsModule := false
+				if lhsIdx != 0 {
+					lhsNode := &ie.ast.Nodes[lhsIdx]
+					if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
+						lhsSymIdx := lhsNode.Payload
+						if lhsSymIdx != 0 && int(lhsSymIdx) < len(ie.symtable.Symbols) {
+							lhsSym := ie.symtable.SymbolAt(lhsSymIdx)
+							if lhsSym.Kind == SymModule {
+								lhsIsModule = true
 							}
-							instSymIdx, diags := ie.mono.InstantiateFunction(symIdx, typeArgs)
-							ie.errors = append(ie.errors, diags...)
-							
-							ie.ast.SetPayload(nodeIdx, instSymIdx) // save instantiated symIdx
-							instSym := ie.symtable.SymbolAt(instSymIdx)
-							resultType = types.TypeID(instSym.TypeID)
-							break
 						}
 					}
+				}
+				if lhsIsModule {
+					symIdx = ie.ast.Nodes[collection].Payload
+					if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+						sym = ie.symtable.SymbolAt(symIdx)
+					}
+				}
+			}
+
+			if sym != nil && sym.Flags&SymFlagGeneric != 0 {
+				// Generic instantiation!
+				var typeArgs []types.TypeID
+				idx := ie.ast.Nodes[collection].NextSibling
+				for idx != 0 {
+					t := ie.inferNode(idx, types.TypeUnknown)
+					typeArgs = append(typeArgs, t)
+					idx = ie.ast.Nodes[idx].NextSibling
+				}
+				
+				if ie.mono == nil || hasGenericParam(ie.types, typeArgs) {
+					fmt.Printf("[DEBUG-INDEX] Instantiating generic collection (NoMono/GenericParam): collectionName=%s typeArgs=%v\n", string(ie.ast.NodeText(collection)), typeArgs)
+					if sym.Kind == SymStruct || sym.Kind == SymTypeAlias || sym.Kind == SymVariant {
+						resultType = ie.types.RegisterGenericInst(sym.NameID, typeArgs)
+					} else {
+						resultType = types.TypeID(sym.TypeID)
+					}
+					break
+				} else {
+					instSymIdx, diags := ie.mono.InstantiateFunction(symIdx, typeArgs)
+					ie.errors = append(ie.errors, diags...)
+					
+					ie.ast.SetPayload(nodeIdx, instSymIdx) // save instantiated symIdx
+					instSym := ie.symtable.SymbolAt(instSymIdx)
+					resultType = types.TypeID(instSym.TypeID)
+					break
 				}
 			}
 			
@@ -686,6 +787,49 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		obj := node.FirstChild
 		isStructAccess := false
 		if obj != 0 {
+			fieldName := ""
+			if node.Payload != 0 {
+				fieldName = ie.symtable.intern.Get(node.Payload)
+			}
+			if fieldName == "new" {
+				baseNodeIdx := obj
+				if ie.ast.Nodes[obj].Kind == ast.NodeIndexExpr {
+					col := ie.ast.Nodes[obj].FirstChild
+					if col != 0 {
+						baseNodeIdx = col
+					}
+				}
+				objName := string(ie.ast.NodeText(baseNodeIdx))
+				if objName == "" && ie.ast.Nodes[baseNodeIdx].Kind == ast.NodeFieldExpr {
+					rhsNameID := ie.ast.Nodes[baseNodeIdx].Payload
+					if rhsNameID != 0 {
+						objName = ie.symtable.intern.Get(rhsNameID)
+					}
+				}
+				if objName == "Vec" || strings.HasSuffix(objName, ".Vec") ||
+					objName == "HashMap" || strings.HasSuffix(objName, ".HashMap") ||
+					objName == "HashSet" || strings.HasSuffix(objName, ".HashSet") ||
+					objName == "Option" || strings.HasSuffix(objName, ".Option") ||
+					objName == "Result" || strings.HasSuffix(objName, ".Result") {
+					objType := ie.inferNode(obj, types.TypeUnknown)
+					if objType == types.TypeUnknown {
+						if expected != types.TypeUnknown {
+							objType = expected
+						} else {
+							templateName := objName
+							if idx := strings.LastIndex(templateName, "."); idx != -1 {
+								templateName = templateName[idx+1:]
+							}
+							nameID := ie.symtable.intern.InternString(templateName)
+							objType = ie.types.RegisterGenericInst(nameID, []types.TypeID{})
+						}
+					}
+					resultType = ie.types.RegisterFunction([]types.TypeID{}, objType, nil)
+					ie.nodeTypes[nodeIdx] = resultType
+					return resultType
+				}
+			}
+
 			objType := ie.inferNode(obj, types.TypeUnknown)
 			fmt.Printf("[DEBUG-FIELD] FieldExpr nodeIdx=%d objType=%d fieldNameID=%d\n", nodeIdx, objType, uint32(node.Payload))
 
@@ -727,6 +871,34 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 					}
 				}
 				fmt.Printf("[DEBUG-FIELD] objType resolved to entry.Kind=%v structType=%d NameID=%d genericArgs=%v\n", entry.Kind, structType, entry.NameID, genericArgs)
+				if objType == types.TypeString || entry.Kind == types.KindSlice || entry.Kind == types.KindArray {
+					fieldName := ""
+					fieldNodeIdx := node.FirstChild
+					if fieldNodeIdx != 0 {
+						fieldNodeIdx = ie.ast.Nodes[fieldNodeIdx].NextSibling
+						if fieldNodeIdx != 0 && ie.ast.Nodes[fieldNodeIdx].Kind == ast.NodeIdent {
+							fieldName = string(ie.ast.NodeText(fieldNodeIdx))
+						}
+					}
+					if fieldName == "" && node.Payload != 0 {
+						fieldName = ie.symtable.intern.Get(node.Payload)
+					}
+					if fieldName == "len" {
+						resultType = types.TypeI64
+						isStructAccess = true
+					} else if fieldName == "ptr" {
+						var elemType types.TypeID
+						if objType == types.TypeString {
+							elemType = types.TypeU8
+						} else if entry.Kind == types.KindSlice {
+							elemType = ie.types.SliceElem(objType)
+						} else {
+							elemType = ie.types.ArrayElem(objType)
+						}
+						resultType = ie.types.RegisterPointer(elemType)
+						isStructAccess = true
+					}
+				}
 				if entry.Kind == types.KindStruct || entry.Kind == types.KindSum {
 					isStructAccess = true
 					var structInfo *types.StructType
@@ -767,69 +939,24 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 								substitutedRet := ie.types.SubstituteGenericType(method.Return, genericParams, genericArgs)
 								resultType = ie.types.RegisterFunction(substitutedParams, substitutedRet, nil)
 								found = true
-								break
-							}
-						}
-						if !found && ie.mono != nil {
-							structEntry := ie.types.Entry(objType)
-							if (structEntry.Kind == types.KindStruct || structEntry.Kind == types.KindSum) && structEntry.NameID != 0 {
-								structNameStr := string(ie.mono.intern.Get(structEntry.NameID))
-								if strings.HasPrefix(structNameStr, "_AX_") {
-									baseName, typeArgs := parseMangledName(ie.types, ie.mono.intern, structNameStr)
-									if baseName != "" {
-										if len(typeArgs) > 0 {
-											methodName := string(ie.mono.intern.Get(fieldNameID))
-											var foundTemplateSymIdx uint32 = 0
-											for idx, sym := range ie.symtable.Symbols {
-												if sym.Kind == SymFunc && sym.Flags&SymFlagGeneric != 0 {
-													symName := string(ie.mono.intern.Get(sym.NameID))
-													if symName == methodName {
-														tID := types.TypeID(sym.TypeID)
-														if tID != types.TypeUnknown && ie.types.Entry(tID).Kind == types.KindFunction {
-															fInfo := ie.types.FuncInfo(tID)
-															if len(fInfo.Params) > 0 {
-																recParam := fInfo.Params[0]
-																entry = ie.types.Entry(recParam)
-																if entry.Kind == types.KindPointer {
-																	recParam = ie.types.PointerElem(recParam)
-																	entry = ie.types.Entry(recParam)
-																} else if entry.Kind == types.KindRef {
-																	recParam = types.TypeID(entry.Extra)
-																	entry = ie.types.Entry(recParam)
-																}
-																recStructName := ""
-																if entry.NameID != 0 {
-																	recStructName = string(ie.mono.intern.Get(entry.NameID))
-																}
-																fmt.Printf("[DEBUG-OVERLOAD] methodName=%s baseName=%s recParam=%d kind=%v nameID=%d recStructName=%s\n", methodName, baseName, recParam, entry.Kind, entry.NameID, recStructName)
-																if (entry.Kind == types.KindStruct || entry.Kind == types.KindSum || entry.Kind == types.KindGenericInst) && entry.NameID != 0 {
-																	if recStructName == baseName {
-																		foundTemplateSymIdx = uint32(idx)
-																		break
-																	}
-																}
-															}
-														}
-													}
-												}
+								
+								// Find and save the method symbol index to nodeIdx Payload!
+								for idx, sym := range ie.symtable.Symbols {
+									if sym.Kind == SymFunc {
+										nameID := sym.NameID
+										if ie.symtable.InstantiatedToOriginalName != nil {
+											if origNameID, ok := ie.symtable.InstantiatedToOriginalName[uint32(idx)]; ok {
+												nameID = origNameID
 											}
-											if foundTemplateSymIdx != 0 {
-												if hasGenericParam(ie.types, typeArgs) {
-													methSym := ie.symtable.SymbolAt(foundTemplateSymIdx)
-													resultType = types.TypeID(methSym.TypeID)
-													found = true
-													break
-												}
-												fmt.Printf("[DEBUG] Instantiating generic method template: %s for typeArgs %v. structName=%s\n", methodName, typeArgs, structNameStr)
-												instSymIdx, diags := ie.mono.InstantiateFunction(foundTemplateSymIdx, typeArgs)
-												fmt.Printf("[DEBUG] Instantiated method %s: instSymIdx=%d, errs=%v\n", methodName, instSymIdx, diags)
-												ie.errors = append(ie.errors, diags...)
-												ie.ifaces.methodCache = make(map[types.TypeID][]types.MethodSig)
-												methods = ie.ifaces.getMethodsOfStruct(objType)
-												for _, method := range methods {
-													if method.NameID == fieldNameID {
-														resultType = ie.types.RegisterFunction(method.Params, method.Return, nil)
-														found = true
+										}
+										if nameID == fieldNameID {
+											tID := types.TypeID(sym.TypeID)
+											if tID != types.TypeUnknown && ie.types.Entry(tID).Kind == types.KindFunction {
+												fInfo := ie.types.FuncInfo(tID)
+												if len(fInfo.Params) > 0 {
+													firstParamType := fInfo.Params[0]
+													if ie.ifaces.baseTypeEquals(firstParamType, objType) {
+														ie.ast.SetPayload(nodeIdx, uint32(idx))
 														break
 													}
 												}
@@ -837,6 +964,103 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 										}
 									}
 								}
+								break
+							}
+						}
+						if ie.mono != nil {
+							structEntry := ie.types.Entry(objType)
+							var baseName string
+							var typeArgs []types.TypeID
+							var structNameStr string
+
+							if structEntry.Kind == types.KindGenericInst && structEntry.NameID != 0 {
+								baseName = string(ie.symtable.intern.Get(structEntry.NameID))
+								typeArgs = ie.types.GenericInstArgs(objType)
+								structNameStr = baseName
+							} else if (structEntry.Kind == types.KindStruct || structEntry.Kind == types.KindSum) && structEntry.NameID != 0 {
+								structNameStr = string(ie.symtable.intern.Get(structEntry.NameID))
+								if strings.HasPrefix(structNameStr, "_AX_") {
+									baseName, typeArgs = parseMangledName(ie.types, ie.symtable.intern, structNameStr)
+								}
+							}
+
+							if baseName != "" && len(typeArgs) > 0 {
+								methodName := string(ie.symtable.intern.Get(fieldNameID))
+								var foundTemplateSymIdx uint32 = 0
+								for idx, sym := range ie.symtable.Symbols {
+									if sym.Kind == SymFunc && sym.Flags&SymFlagGeneric != 0 {
+										symName := string(ie.symtable.intern.Get(sym.NameID))
+										if symName == methodName {
+											tID := types.TypeID(sym.TypeID)
+											if tID != types.TypeUnknown && ie.types.Entry(tID).Kind == types.KindFunction {
+												fInfo := ie.types.FuncInfo(tID)
+												if len(fInfo.Params) > 0 {
+													recParam := fInfo.Params[0]
+													entry = ie.types.Entry(recParam)
+													if entry.Kind == types.KindPointer {
+														recParam = ie.types.PointerElem(recParam)
+														entry = ie.types.Entry(recParam)
+													} else if entry.Kind == types.KindRef {
+														recParam = types.TypeID(entry.Extra)
+														entry = ie.types.Entry(recParam)
+													}
+													recStructName := ""
+													if entry.NameID != 0 {
+														recStructName = string(ie.symtable.intern.Get(entry.NameID))
+													}
+													fmt.Printf("[DEBUG-OVERLOAD] methodName=%s baseName=%s recParam=%d kind=%v nameID=%d recStructName=%s\n", methodName, baseName, recParam, entry.Kind, entry.NameID, recStructName)
+													if (entry.Kind == types.KindStruct || entry.Kind == types.KindSum || entry.Kind == types.KindGenericInst) && entry.NameID != 0 {
+														if recStructName == baseName || strings.HasSuffix(recStructName, "."+baseName) {
+															foundTemplateSymIdx = uint32(idx)
+															break
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+								if foundTemplateSymIdx != 0 {
+									if hasGenericParam(ie.types, typeArgs) {
+										if resultType == types.TypeUnknown {
+											methSym := ie.symtable.SymbolAt(foundTemplateSymIdx)
+											resultType = types.TypeID(methSym.TypeID)
+										}
+										found = true
+										break
+									}
+									fmt.Printf("[DEBUG] Instantiating generic method template: %s for typeArgs %v. structName=%s\n", methodName, typeArgs, structNameStr)
+									instSymIdx, diags := ie.mono.InstantiateFunction(foundTemplateSymIdx, typeArgs)
+									fmt.Printf("[DEBUG] Instantiated method %s: instSymIdx=%d, errs=%v\n", methodName, instSymIdx, diags)
+									ie.errors = append(ie.errors, diags...)
+									ie.ast.SetPayload(nodeIdx, instSymIdx)
+									ie.ifaces.methodCache = make(map[types.TypeID][]types.MethodSig)
+									methods = ie.ifaces.getMethodsOfStruct(objType)
+									for _, method := range methods {
+										if method.NameID == fieldNameID {
+											resultType = ie.types.RegisterFunction(method.Params, method.Return, nil)
+											found = true
+											break
+										}
+									}
+								}
+							}
+						}
+					}
+				} else if entry.Kind == types.KindGeneric && ie.types != nil {
+					constraintID := ie.types.GenericConstraint(objType)
+					if constraintID != 0 {
+						ifaceInfo := ie.types.InterfaceInfo(constraintID)
+						fieldNameID := uint32(node.Payload)
+						fieldName := ie.symtable.intern.Get(fieldNameID)
+						fmt.Printf("[DEBUG-GEN-FIELD] objType=%d entry.Kind=%d constraintID=%d fieldName='%s' fieldNameID=%d methods count=%d\n", objType, entry.Kind, constraintID, fieldName, fieldNameID, len(ifaceInfo.Methods))
+						for _, method := range ifaceInfo.Methods {
+							fmt.Printf("[DEBUG-GEN-FIELD]   method.NameID=%d ('%s')\n", method.NameID, ie.symtable.intern.Get(method.NameID))
+							if method.NameID == fieldNameID {
+								resultType = ie.types.RegisterFunction(method.Params, method.Return, nil)
+								isStructAccess = true
+								fmt.Printf("[DEBUG-GEN-FIELD]     FOUND method! resultType=%d\n", resultType)
+								break
 							}
 						}
 					}
@@ -868,7 +1092,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			if lhsIsModule || nodeIsModule {
 				if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
 					sym := ie.symtable.SymbolAt(symIdx)
-					if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst {
+					if sym.Kind == SymFunc || sym.Kind == SymVar || sym.Kind == SymConst || sym.Kind == SymStruct || sym.Kind == SymTypeAlias {
 						resultType = types.TypeID(sym.TypeID)
 					}
 				}
@@ -1180,11 +1404,11 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 						typeArgs = append(typeArgs, argType)
 						argNodeIdx = ie.ast.Nodes[argNodeIdx].NextSibling
 					}
-					if ie.mono != nil && len(typeArgs) > 0 {
-						if hasGenericParam(ie.types, typeArgs) {
+					if len(typeArgs) > 0 {
+						if ie.mono == nil || hasGenericParam(ie.types, typeArgs) {
 							sym := ie.symtable.SymbolAt(baseSymIdx)
 							resultType = ie.types.RegisterGenericInst(sym.NameID, typeArgs)
-							fmt.Printf("[DEBUG] Inference NodeGenericType (User-Defined Generic Template Ref): base='%s' typeArgs=%v instTypeID=%d\n", name, typeArgs, resultType)
+							fmt.Printf("[DEBUG] Inference NodeGenericType (User-Defined Generic Template Ref/NoMono): base='%s' typeArgs=%v instTypeID=%d\n", name, typeArgs, resultType)
 						} else {
 							instSymIdx, diags := ie.mono.InstantiateFunction(baseSymIdx, typeArgs)
 							ie.errors = append(ie.errors, diags...)
@@ -1237,14 +1461,19 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		if ie.currentMatchScrutinee != 0 {
 			var sumInfo *types.SumType
 			scrutineeEntry := ie.types.Entry(ie.currentMatchScrutinee)
+			fmt.Printf("[DEBUG-MATCH] scrutineeType=%d Kind=%d NameID=%d ('%s')\n", ie.currentMatchScrutinee, scrutineeEntry.Kind, scrutineeEntry.NameID, ie.symtable.intern.Get(scrutineeEntry.NameID))
 			if scrutineeEntry.Kind == types.KindSum {
 				sumInfo = ie.types.SumInfo(ie.currentMatchScrutinee)
 			} else if scrutineeEntry.Kind == types.KindGenericInst {
 				for idx := 0; idx < ie.types.Count(); idx++ {
 					e := ie.types.Entry(types.TypeID(idx))
-					if e.Kind == types.KindSum && e.NameID == scrutineeEntry.NameID {
-						sumInfo = ie.types.SumInfo(types.TypeID(idx))
-						break
+					if e.Kind == types.KindSum {
+						fmt.Printf("[DEBUG-MATCH-LOOP]   checking base sum type idx=%d e.NameID=%d ('%s')\n", idx, e.NameID, ie.symtable.intern.Get(e.NameID))
+						if e.NameID == scrutineeEntry.NameID {
+							sumInfo = ie.types.SumInfo(types.TypeID(idx))
+							fmt.Printf("[DEBUG-MATCH-LOOP]     FOUND sumInfo!\n")
+							break
+						}
 					}
 				}
 			}
@@ -1257,26 +1486,31 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 					if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
 						sym := ie.symtable.SymbolAt(symIdx)
 						var payloadType types.TypeID = 0
+						fmt.Printf("[DEBUG-VAR-PAT] sym.NameID=%d ('%s') variants count=%d:\n", sym.NameID, ie.symtable.intern.Get(sym.NameID), len(sumInfo.Variants))
 						for _, v := range sumInfo.Variants {
+							fmt.Printf("[DEBUG-VAR-PAT]   v.NameID=%d ('%s') payloadType=%d\n", v.NameID, ie.symtable.intern.Get(v.NameID), v.PayloadType)
 							if v.NameID == sym.NameID {
 								payloadType = v.PayloadType
-								break
 							}
 						}
+						fmt.Printf("[DEBUG-VAR-PAT] matched payloadType=%d\n", payloadType)
 						
 						// In generic sum types, we need to map generic params to inst args
 						if scrutineeEntry.Kind == types.KindGenericInst && payloadType != types.TypeUnknown {
 							params := sumInfo.GenericParams
 							args := ie.types.GenericInstArgs(ie.currentMatchScrutinee)
 							payloadType = ie.types.SubstituteGenericType(payloadType, params, args)
+							fmt.Printf("[DEBUG-VAR-PAT] substituted payloadType=%d using params=%v args=%v\n", payloadType, params, args)
 						}
 
 						ie.nodeTypes[pattern] = ie.currentMatchScrutinee
 
 						if arg != 0 {
 							argNode := &ie.ast.Nodes[arg]
+							fmt.Printf("[DEBUG-VAR-PAT] argNode.Kind=%v\n", argNode.Kind)
 							if argNode.Kind == ast.NodeBindingPat || argNode.Kind == ast.NodeIdent {
 								argSymIdx := argNode.Payload
+								fmt.Printf("[DEBUG-VAR-PAT] argSymIdx=%d name='%s' payloadType=%d\n", argSymIdx, ie.symtable.intern.Get(ie.symtable.SymbolAt(argSymIdx).NameID), payloadType)
 								if argSymIdx != 0 && int(argSymIdx) < len(ie.symtable.Symbols) {
 									argSym := ie.symtable.SymbolAt(argSymIdx)
 									argSym.TypeID = uint32(payloadType)
@@ -1360,20 +1594,18 @@ func (ie *InferenceEngine) getGenericParamTypeIDs(templateNodeIdx uint32) []type
 	gpChild := ie.ast.Nodes[gpNodeIdx].FirstChild
 	for gpChild != 0 {
 		if ie.ast.Nodes[gpChild].Kind == ast.NodeGenericParam {
-			found := false
-			for i := 0; i < len(ie.symtable.Symbols); i++ {
-				sym := ie.symtable.SymbolAt(uint32(i))
-				if sym.Kind == SymGenericParam && sym.DeclNode == gpChild {
+			symIdx := ie.ast.Nodes[gpChild].Payload
+			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+				sym := ie.symtable.SymbolAt(symIdx)
+				if sym.Kind == SymGenericParam {
 					paramTypeIDs = append(paramTypeIDs, types.TypeID(sym.TypeID))
-					found = true
-					break
+					gpChild = ie.ast.Nodes[gpChild].NextSibling
+					continue
 				}
 			}
-			if !found {
-				gpNameID := ie.ast.Nodes[gpChild].Payload
-				typeID := ie.types.RegisterGenericType(gpNameID)
-				paramTypeIDs = append(paramTypeIDs, typeID)
-			}
+			gpNameID := ie.ast.Nodes[gpChild].Payload
+			typeID := ie.types.RegisterGenericType(gpNameID)
+			paramTypeIDs = append(paramTypeIDs, typeID)
 		}
 		gpChild = ie.ast.Nodes[gpChild].NextSibling
 	}

@@ -186,3 +186,33 @@ int main(int argc, char** argv) {
 }
 #endif
 
+/* ================================================================
+ * Freestanding C-Independent File I/O Declarations
+ * ================================================================ */
+#ifndef AX_FREESTANDING_IO_DECLS
+#define AX_FREESTANDING_IO_DECLS
+
+extern void* ax_fopen(const char* filename, const char* mode);
+extern int ax_fclose(void* stream);
+extern size_t ax_fread(void* buffer, size_t size, size_t count, void* stream);
+extern size_t ax_fwrite(const void* buffer, size_t size, size_t count, void* stream);
+extern int ax_fputs_custom(const char* s, void* stream);
+extern int ax_fseek(void* stream, long offset, int origin);
+extern long ax_ftell(void* stream);
+extern void ax_rewind(void* stream);
+
+#define fopen  ax_fopen
+#define fclose ax_fclose
+#define fread  ax_fread
+#define fwrite ax_fwrite
+#define fputs  ax_fputs_custom
+#define fseek  ax_fseek
+#define ftell  ax_ftell
+#define rewind ax_rewind
+
+#endif
+
+ax_bool ax_sum_layout_is_pointer(void);
+
+
+

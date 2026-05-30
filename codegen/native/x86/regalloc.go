@@ -15,6 +15,7 @@ type RegAllocation struct {
 	Phys     PhysReg // physical register (RegNone if spilled)
 	Spilled  bool
 	SpillIdx int     // spill slot index (if spilled)
+	Is16     bool
 }
 
 // RegAllocResult contains the full register allocation output.

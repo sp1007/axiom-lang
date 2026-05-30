@@ -19,8 +19,9 @@ const (
 	bpAdd     = 90  // + -
 	bpMul     = 100 // * / %
 	bpPower   = 110 // **  (right-associative: LED uses bpPower-1)
+	bpAs      = 115 // as operator
 	bpUnary   = 120 // unary - ~ not
-	bpPostfix = 130 // . .* [] () as spawn await
+	bpPostfix = 130 // . .* [] () spawn await
 )
 
 func leftBindingPower(kind lexer.TokenKind) int {
@@ -47,12 +48,13 @@ func leftBindingPower(kind lexer.TokenKind) int {
 		return bpMul
 	case lexer.TokenStarStar:
 		return bpPower
+	case lexer.TokenAs:
+		return bpAs
 	case lexer.TokenDotDot:
 		return 35 // bpRange
 	// Postfix
 	case lexer.TokenDot, lexer.TokenDotStar,
-		lexer.TokenLBracket, lexer.TokenLParen,
-		lexer.TokenAs:
+		lexer.TokenLBracket, lexer.TokenLParen:
 		return bpPostfix
 	default:
 		return bpNone
@@ -244,9 +246,18 @@ func (p *Parser) parseLED(left uint32, opTok lexer.Token, bp int) uint32 {
 	case lexer.TokenLBracket:
 		node := p.tree.AddNode(ast.NodeIndexExpr, p.tokenIdx(opTok))
 		p.tree.AppendChild(node, left)
-		idx := p.parseExpr()
-		if idx != 0 {
-			p.tree.AppendChild(node, idx)
+		for !p.check(lexer.TokenRBracket) && !p.check(lexer.TokenEOF) {
+			prevPos := p.pos
+			idx := p.parseExpr()
+			if idx != 0 {
+				p.tree.AppendChild(node, idx)
+			}
+			if !p.check(lexer.TokenRBracket) {
+				p.expect(lexer.TokenComma)
+			}
+			if p.pos == prevPos {
+				p.consume()
+			}
 		}
 		p.expect(lexer.TokenRBracket)
 		return node

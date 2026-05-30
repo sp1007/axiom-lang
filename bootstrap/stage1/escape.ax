@@ -7,30 +7,30 @@ import std.string
 // extern "C" fn puts(s: str) -> i32
 
 pub struct EscapeAnalyser:
-    pub tree: AstTree
-    pub pool: InternPool
-    pub symtable: SymbolTable
-    pub typetable: TypeTable
+    pub tree: ptr[AstTree]
+    pub pool: ptr[InternPool]
+    pub symtable: ptr[SymbolTable]
+    pub typetable: ptr[TypeTable]
     pub curr_cg: ConnectionGraph
     pub escape_node_idx: u32
 
-pub fn new_escape_analyser(tree: AstTree, pool: InternPool, symtable: SymbolTable, typetable: TypeTable) -> EscapeAnalyser:
-    return EscapeAnalyser(
-        tree: tree,
-        pool: pool,
-        symtable: symtable,
-        typetable: typetable,
-        curr_cg: new_connection_graph(),
-        escape_node_idx: 0 as u32,
-    )
+pub fn new_escape_analyser(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[EscapeAnalyser]:
+    let ea = @alloc(@compiler_intrinsic("size_of")[EscapeAnalyser]()) as ptr[EscapeAnalyser]
+    ea.tree = tree
+    ea.pool = pool
+    ea.symtable = symtable
+    ea.typetable = typetable
+    ea.curr_cg = new_connection_graph()
+    ea.escape_node_idx = 0 as u32
+    return ea
 
-pub fn run(mut self: EscapeAnalyser):
+pub fn run(mut self: ptr[EscapeAnalyser]):
     self.curr_cg = new_connection_graph()
     self.escape_node_idx = 0 as u32
     self.traverse_nodes(0 as u32)
     free_connection_graph(self.curr_cg)
 
-pub fn traverse_nodes(mut self: EscapeAnalyser, node_idx: u32):
+pub fn traverse_nodes(mut self: ptr[EscapeAnalyser], node_idx: u32):
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
@@ -86,7 +86,7 @@ pub fn traverse_nodes(mut self: EscapeAnalyser, node_idx: u32):
             self.traverse_nodes(child_idx)
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-pub fn analyze_block(mut self: EscapeAnalyser, block_idx: u32):
+pub fn analyze_block(mut self: ptr[EscapeAnalyser], block_idx: u32):
     if block_idx == 0 as u32 or block_idx == 0xffffffff as u32:
         return
     let node = self.tree.nodes.data[block_idx]
@@ -95,7 +95,7 @@ pub fn analyze_block(mut self: EscapeAnalyser, block_idx: u32):
         self.analyze_stmt(child_idx)
         child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-pub fn analyze_stmt(mut self: EscapeAnalyser, stmt_idx: u32):
+pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
     if stmt_idx == 0 as u32 or stmt_idx == 0xffffffff as u32:
         return
     let node = self.tree.nodes.data[stmt_idx]
@@ -154,7 +154,7 @@ pub fn analyze_stmt(mut self: EscapeAnalyser, stmt_idx: u32):
             self.analyze_stmt(child_idx)
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-pub fn analyze_expr(mut self: EscapeAnalyser, expr_idx: u32, flow_dest: u32):
+pub fn analyze_expr(mut self: ptr[EscapeAnalyser], expr_idx: u32, flow_dest: u32):
     if expr_idx == 0 as u32 or expr_idx == 0xffffffff as u32:
         return
     let node = self.tree.nodes.data[expr_idx]

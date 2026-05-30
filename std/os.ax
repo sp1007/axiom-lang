@@ -1,9 +1,11 @@
-// AXIOM Standard Library — std::os
+// AXIOM Standard Library — std.os
 //
 // OS abstraction: paths, filesystem, signals, platform detection.
 
-import std::os::win32
-import std::os::linux_sys
+import std.os.win32
+import std.os.linux_sys
+import std.string
+import std.collections
 
 // --------------------------------------------------------------------------
 // Platform Constants (set at compile time)
@@ -100,7 +102,7 @@ pub fn pathbuf_is_absolute(self: PathBuf) -> bool:
                 return true
         return false
     else:
-        let c1 = s.ptr
+        let c1 = s.ptr as ptr[u8]
         return c1.* == '/' as u8
 
 pub fn pathbuf_to_str(self: PathBuf) -> str:
@@ -125,19 +127,20 @@ extern "C" fn RemoveDirectoryA(lpPathName: ptr[u8]) -> i32
 extern "C" fn DeleteFileA(lpFileName: ptr[u8]) -> i32
 extern "C" fn MoveFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8]) -> i32
 extern "C" fn CopyFileA(lpExistingFileName: ptr[u8], lpNewFileName: ptr[u8], bFailIfExists: i32) -> i32
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
-fn str_to_c_str(s: str) -> ptr[u8]:
+fn os_str_to_c_str(s: str) -> ptr[u8]:
     let len = s.len
     let buf = @alloc(len + 1) as ptr[u8]
     mut i := 0 as i64
     while i < len:
-        (buf as i64 + i).* = (s.ptr as i64 + i).* as u8
+        ((buf as i64 + i) as ptr[u8]).* = ((s.ptr as i64 + i) as ptr[u8]).*
         i = i + 1
-    (buf as i64 + len).* = 0 as u8
+    ((buf as i64 + len) as ptr[u8]).* = 0 as u8
     return buf
 
 pub fn metadata(path: str) -> Result[FileMetadata, str]:
-    let cpath = str_to_c_str(path)
+    let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
         let attrs = GetFileAttributesA(cpath)
         @free(cpath)
@@ -157,7 +160,7 @@ pub fn metadata(path: str) -> Result[FileMetadata, str]:
     else:
         // struct stat is 144 bytes on Linux x86_64
         let stat_buf = @alloc(144) as ptr[u8]
-        let res = std::os::linux_sys::syscall(
+        let res = syscall(
             4 as u64, // SYS_STAT
             cpath as u64,
             stat_buf as u64,
@@ -189,7 +192,7 @@ pub fn exists(path: str) -> bool:
     return metadata(path).is_ok()
 
 pub fn create_dir(path: str) -> Result[void, str]:
-    let cpath = str_to_c_str(path)
+    let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
         let res = CreateDirectoryA(cpath, null as ptr[void])
         @free(cpath)
@@ -197,7 +200,7 @@ pub fn create_dir(path: str) -> Result[void, str]:
             return Err("could not create directory")
         return Ok(void)
     else:
-        let res = std::os::linux_sys::syscall(
+        let res = syscall(
             83 as u64, // SYS_MKDIR
             cpath as u64,
             0o777 as u64,
@@ -223,7 +226,7 @@ pub fn create_dir_all(path: str) -> Result[void, str]:
     return create_dir(path)
 
 pub fn remove_file(path: str) -> Result[void, str]:
-    let cpath = str_to_c_str(path)
+    let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
         let res = DeleteFileA(cpath)
         @free(cpath)
@@ -231,7 +234,7 @@ pub fn remove_file(path: str) -> Result[void, str]:
             return Err("could not remove file")
         return Ok(void)
     else:
-        let res = std::os::linux_sys::syscall(
+        let res = syscall(
             87 as u64, // SYS_UNLINK
             cpath as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
@@ -242,7 +245,7 @@ pub fn remove_file(path: str) -> Result[void, str]:
         return Ok(void)
 
 pub fn remove_dir(path: str) -> Result[void, str]:
-    let cpath = str_to_c_str(path)
+    let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
         let res = RemoveDirectoryA(cpath)
         @free(cpath)
@@ -250,7 +253,7 @@ pub fn remove_dir(path: str) -> Result[void, str]:
             return Err("could not remove directory")
         return Ok(void)
     else:
-        let res = std::os::linux_sys::syscall(
+        let res = syscall(
             84 as u64, // SYS_RMDIR
             cpath as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
@@ -261,8 +264,8 @@ pub fn remove_dir(path: str) -> Result[void, str]:
         return Ok(void)
 
 pub fn rename(from: str, to: str) -> Result[void, str]:
-    let cfrom = str_to_c_str(from)
-    let cto = str_to_c_str(to)
+    let cfrom = os_str_to_c_str(from)
+    let cto = os_str_to_c_str(to)
     if IS_WINDOWS:
         let res = MoveFileA(cfrom, cto)
         @free(cfrom)
@@ -271,7 +274,7 @@ pub fn rename(from: str, to: str) -> Result[void, str]:
             return Err("could not rename")
         return Ok(void)
     else:
-        let res = std::os::linux_sys::syscall(
+        let res = syscall(
             82 as u64, // SYS_RENAME
             cfrom as u64,
             cto as u64,
@@ -284,8 +287,8 @@ pub fn rename(from: str, to: str) -> Result[void, str]:
         return Ok(void)
 
 pub fn copy(from: str, to: str) -> Result[u64, str]:
-    let cfrom = str_to_c_str(from)
-    let cto = str_to_c_str(to)
+    let cfrom = os_str_to_c_str(from)
+    let cto = os_str_to_c_str(to)
     if IS_WINDOWS:
         let res = CopyFileA(cfrom, cto, 0 as i32)
         @free(cfrom)
@@ -313,14 +316,13 @@ pub fn temp_dir() -> PathBuf:
 // Signals
 // --------------------------------------------------------------------------
 
-pub enum Signal:
-    SIGINT
-    SIGTERM
-    SIGHUP
-    SIGUSR1
-    SIGUSR2
+pub const SIGINT: i32 = 2
+pub const SIGTERM: i32 = 15
+pub const SIGHUP: i32 = 1
+pub const SIGUSR1: i32 = 10
+pub const SIGUSR2: i32 = 12
 
-pub fn trap_signal(sig: Signal, handler: fn()):
+pub fn trap_signal(sig: i32, handler: fn()):
     // Freestanding stub
     return
 
@@ -328,23 +330,23 @@ pub fn trap_signal(sig: Signal, handler: fn()):
 // Command Line Arguments & Environment Variables (C-Independent PEB/procfs)
 // --------------------------------------------------------------------------
 
-extern "C" fn GetCommandLineA() -> ptr[u8]
+extern "C" fn GetCommandLineW() -> ptr[u16]
 extern "C" fn GetEnvironmentVariableA(lpName: ptr[u8], lpBuffer: ptr[u8], nSize: u32) -> u32
 
 pub fn parse_cmdline(cmdline: ptr[u8]) -> Vec[str]:
-    mut res := Vec.new()
+    mut res := Vec[str].new()
     if cmdline == null as ptr[u8]:
         return res
     mut i := 0 as i64
-    while (cmdline as i64 + i).* != 0 as u8:
-        while (cmdline as i64 + i).* == ' ' as u8 or (cmdline as i64 + i).* == '\t' as u8 or (cmdline as i64 + i).* == '\r' as u8 or (cmdline as i64 + i).* == '\n' as u8:
+    while ((cmdline as i64 + i) as ptr[u8]).* != 0 as u8:
+        while ((cmdline as i64 + i) as ptr[u8]).* == ' ' as u8 or ((cmdline as i64 + i) as ptr[u8]).* == '\t' as u8 or ((cmdline as i64 + i) as ptr[u8]).* == '\r' as u8 or ((cmdline as i64 + i) as ptr[u8]).* == '\n' as u8:
             i = i + 1
-        if (cmdline as i64 + i).* == 0 as u8:
+        if ((cmdline as i64 + i) as ptr[u8]).* == 0 as u8:
             break
-        mut arg_buf := Vec.new()
+        mut arg_buf := Vec[u8].new()
         mut in_quotes := false
-        while (cmdline as i64 + i).* != 0 as u8:
-            let ch = (cmdline as i64 + i).*
+        while ((cmdline as i64 + i) as ptr[u8]).* != 0 as u8:
+            let ch = ((cmdline as i64 + i) as ptr[u8]).*
             if ch == '"' as u8:
                 in_quotes = not in_quotes
             elif (ch == ' ' as u8 or ch == '\t' as u8) and not in_quotes:
@@ -352,19 +354,78 @@ pub fn parse_cmdline(cmdline: ptr[u8]) -> Vec[str]:
             else:
                 arg_buf.push(ch)
             i = i + 1
-        let arg_len = arg_buf.len()
+        let arg_len = arg_buf.len
         let s_ptr = @alloc(arg_len + 1) as ptr[u8]
         mut j := 0 as i64
         while j < arg_len:
-            s_ptr[j] = arg_buf.get(j)
+            s_ptr[j] = arg_buf.data[j]
             j = j + 1
         s_ptr[arg_len] = 0 as u8
         res.push(s_ptr as str)
         arg_buf.destroy()
     return res
 
+pub fn parse_cmdline_w(cmdline: ptr[u16]) -> Vec[str]:
+    mut res := Vec[str].new()
+    if cmdline == null as ptr[u16]:
+        return res
+    mut i := 0 as i64
+    while cmdline[i] != 0 as u16:
+        while cmdline[i] == ' ' as u16 or cmdline[i] == '\t' as u16 or cmdline[i] == '\r' as u16 or cmdline[i] == '\n' as u16:
+            i = i + 1
+        if cmdline[i] == 0 as u16:
+            break
+        mut arg_buf := Vec[u16].new()
+        mut in_quotes := false
+        while cmdline[i] != 0 as u16:
+            let ch = cmdline[i]
+            if ch == '"' as u16:
+                in_quotes = not in_quotes
+            elif (ch == ' ' as u16 or ch == '\t' as u16) and not in_quotes:
+                break
+            else:
+                arg_buf.push(ch)
+            i = i + 1
+        
+        let arg_len = arg_buf.len
+        let s_ptr = @alloc(arg_len * 3 + 4) as ptr[u8]
+        mut j := 0 as i64
+        mut out_idx := 0 as i64
+        while j < arg_len:
+            let w1 = (arg_buf.data as ptr[u16])[j]
+            mut cp := w1 as i64
+            if w1 >= 0xD800 as u16 and w1 <= 0xDBFF as u16 and j + 1 < arg_len:
+                let w2 = (arg_buf.data as ptr[u16])[j + 1]
+                if w2 >= 0xDC00 as u16 and w2 <= 0xDFFF as u16:
+                    cp = (((w1 - 0xD800 as u16) as i64) << 10) + ((w2 - 0xDC00 as u16) as i64) + 65536 as i64
+                    j = j + 1
+            
+            if cp < 128 as i64:
+                s_ptr[out_idx] = cp as u8
+                out_idx = out_idx + 1
+            elif cp < 2048 as i64:
+                s_ptr[out_idx] = (192 as i64 + (cp >> 6)) as u8
+                s_ptr[out_idx + 1] = (128 as i64 + (cp & 63 as i64)) as u8
+                out_idx = out_idx + 2
+            elif cp < 65536 as i64:
+                s_ptr[out_idx] = (224 as i64 + (cp >> 12)) as u8
+                s_ptr[out_idx + 1] = (128 as i64 + ((cp >> 6) & 63 as i64)) as u8
+                s_ptr[out_idx + 2] = (128 as i64 + (cp & 63 as i64)) as u8
+                out_idx = out_idx + 3
+            else:
+                s_ptr[out_idx] = (240 as i64 + (cp >> 18)) as u8
+                s_ptr[out_idx + 1] = (128 as i64 + ((cp >> 12) & 63 as i64)) as u8
+                s_ptr[out_idx + 2] = (128 as i64 + ((cp >> 6) & 63 as i64)) as u8
+                s_ptr[out_idx + 3] = (128 as i64 + (cp & 63 as i64)) as u8
+                out_idx = out_idx + 4
+            j = j + 1
+        s_ptr[out_idx] = 0 as u8
+        res.push(s_ptr as str)
+        arg_buf.destroy()
+    return res
+
 pub fn parse_proc_cmdline(buf: ptr[u8], len: i64) -> Vec[str]:
-    mut res := Vec.new()
+    mut res := Vec[str].new()
     mut start := 0 as i64
     mut i := 0 as i64
     while i < len:
@@ -372,7 +433,7 @@ pub fn parse_proc_cmdline(buf: ptr[u8], len: i64) -> Vec[str]:
             if i > start:
                 let arg_len = i - start
                 let s_ptr = @alloc(arg_len + 1) as ptr[u8]
-                @memcpy(s_ptr, buf + start, arg_len)
+                @memcpy(s_ptr, ((buf as i64 + start) as ptr[u8]), arg_len)
                 s_ptr[arg_len] = 0 as u8
                 res.push(s_ptr as str)
             start = i + 1
@@ -380,36 +441,36 @@ pub fn parse_proc_cmdline(buf: ptr[u8], len: i64) -> Vec[str]:
     return res
 
 fn linux_read_file(path: str, buf: ptr[u8], max_len: i64) -> i64:
-    let cpath = str_to_c_str(path)
+    let cpath = os_str_to_c_str(path)
     // SYS_OPEN = 2, O_RDONLY = 0
-    let fd = std::os::linux_sys::syscall(2 as u64, cpath as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    let fd = syscall(2 as u64, cpath as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
     @free(cpath)
     if fd < 0:
         return -1
     // SYS_READ = 0
-    let n = std::os::linux_sys::syscall(0 as u64, fd as u64, buf as u64, max_len as u64, 0 as u64, 0 as u64, 0 as u64)
+    let n = syscall(0 as u64, fd as u64, buf as u64, max_len as u64, 0 as u64, 0 as u64, 0 as u64)
     // SYS_CLOSE = 3
-    std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+    syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
     return n
 
 pub fn args() -> Vec[str]:
     if IS_WINDOWS:
-        let cmdline = GetCommandLineA()
-        return parse_cmdline(cmdline)
+        let cmdline = GetCommandLineW()
+        return parse_cmdline_w(cmdline)
     else:
         // Direct read of /proc/self/cmdline on Linux using syscalls
         let buf = @alloc(8192) as ptr[u8]
         let n = linux_read_file("/proc/self/cmdline", buf, 8192)
         if n < 0:
             @free(buf)
-            return Vec.new()
+            return Vec[str].new()
         let res = parse_proc_cmdline(buf, n)
         @free(buf)
         return res
 
 pub fn env(key: str) -> Option[str]:
     if IS_WINDOWS:
-        let ckey = str_to_c_str(key)
+        let ckey = os_str_to_c_str(key)
         let buf = @alloc(4096) as ptr[u8]
         let n = GetEnvironmentVariableA(ckey, buf, 4096 as u32)
         @free(ckey)

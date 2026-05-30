@@ -10,6 +10,10 @@ extern "C" fn atof(s: ptr[u8]) -> f64
 
 
 
+pub fn safe_free_str(s: str):
+    if std.string.len(s) > 0 as i64:
+        @free(get_str_ptr(s))
+
 pub fn strip_quotes(s: str) -> str:
     let len = std.string.len(s)
     if len >= 2 and s[0] as u8 == '"' as u8 and s[len - 1] as u8 == '"' as u8:
@@ -71,16 +75,16 @@ pub fn format_float(val: f64) -> str:
     return result
 
 pub struct TypeChecker:
-    tree: AstTree
-    intern: InternPool
-    symtable: SymbolTable
-    types: TypeTable
+    tree: ptr[AstTree]
+    intern: ptr[InternPool]
+    symtable: ptr[SymbolTable]
+    types: ptr[TypeTable]
     node_types: ptr[u32]
     node_types_cap: i64
     current_return: u32
     current_match_scrutinee: u32
 
-pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable, types: TypeTable) -> TypeChecker:
+pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: ptr[SymbolTable], types: ptr[TypeTable]) -> ptr[TypeChecker]:
     let node_count = tree.nodes.len
     mut initial_cap := node_count
     if initial_cap < 16 as i64:
@@ -90,21 +94,429 @@ pub fn new_type_checker(tree: AstTree, intern: InternPool, symtable: SymbolTable
     while i < initial_cap:
         node_types[i] = 0 as u32
         i = i + 1
-    return TypeChecker(
-        tree: tree,
-        intern: intern,
-        symtable: symtable,
-        types: types,
-        node_types: node_types,
-        node_types_cap: initial_cap,
-        current_return: 0 as u32,
-        current_match_scrutinee: 0 as u32,
-    )
+    let tc = @alloc(@compiler_intrinsic("size_of")[TypeChecker]()) as ptr[TypeChecker]
+    tc.tree = tree
+    tc.intern = intern
+    tc.symtable = symtable
+    tc.types = types
+    tc.node_types = node_types
+    tc.node_types_cap = initial_cap
+    tc.current_return = 0 as u32
+    tc.current_match_scrutinee = 0 as u32
+    return tc
 
-pub fn free_type_checker(mut self: TypeChecker):
+pub fn parse_type_from_name(self: ptr[TypeChecker], name: str) -> u32:
+    if std.string.starts_with(name, "ptr_"):
+        let rest = std.string.slice(name, 4, std.string.len(name))
+        let inner = self.parse_type_from_name(rest)
+        return self.types.register_pointer(inner)
+    elif std.string.starts_with(name, "ref_"):
+        let rest = std.string.slice(name, 4, std.string.len(name))
+        let inner = self.parse_type_from_name(rest)
+        return self.types.register_pointer(inner)
+    elif std.string.starts_with(name, "slice_"):
+        let rest = std.string.slice(name, 6, std.string.len(name))
+        let inner = self.parse_type_from_name(rest)
+        return self.types.register_slice(inner)
+    elif std.string.starts_with(name, "arr_"):
+        let len_str_start = 4 as i64
+        mut len_str_end := len_str_start
+        let name_len = std.string.len(name)
+        let ptr_name = get_str_ptr(name)
+        while len_str_end < name_len and ptr_name[len_str_end] != '_' as u8:
+            len_str_end = len_str_end + 1 as i64
+        if len_str_end < name_len:
+            let len_str = std.string.slice(name, len_str_start, len_str_end)
+            mut arr_len := 0 as u32
+            mut idx := 0 as i64
+            let ptr_len = get_str_ptr(len_str)
+            let len_len = std.string.len(len_str)
+            while idx < len_len:
+                arr_len = arr_len * 10 as u32 + (ptr_len[idx] - 48 as u8) as u32
+                idx = idx + 1 as i64
+            
+            let rest = std.string.slice(name, len_str_end + 1 as i64, name_len)
+            let inner = self.parse_type_from_name(rest)
+            return self.types.register_array(inner, arr_len)
+
+    if name == "i8":
+        return 1 as u32
+    elif name == "i16":
+        return 2 as u32
+    elif name == "i32":
+        return 3 as u32
+    elif name == "i64":
+        return 4 as u32
+    elif name == "u8":
+        return 5 as u32
+    elif name == "u16":
+        return 6 as u32
+    elif name == "u32":
+        return 7 as u32
+    elif name == "u64":
+        return 8 as u32
+    elif name == "f32":
+        return 9 as u32
+    elif name == "f64":
+        return 10 as u32
+    elif name == "bool":
+        return 11 as u32
+    elif name == "string" or name == "str":
+        return 12 as u32
+    elif name == "char8":
+        return 13 as u32
+    elif name == "void":
+        return 14 as u32
+    elif name == "isize":
+        return 15 as u32
+    elif name == "usize":
+        return 16 as u32
+
+    // TypeTable Lookup
+    mut t_idx := 0 as i64
+    while t_idx < self.types.entries.len:
+        let t_entry = self.types.entries.data[t_idx]
+        if t_entry.name_id != 0 as u32:
+            let t_name = self.intern.get(t_entry.name_id)
+            if t_name == name:
+                return t_idx as u32
+        t_idx = t_idx + 1 as i64
+
+    return 0 as u32
+
+pub fn get_generic_args_from_mangled(self: ptr[TypeChecker], type_id: u32) -> U32Vec:
+    mut out_args := new_u32_vec()
+    if (type_id as i64) >= self.types.entries.len:
+        return out_args
+    let entry = self.types.entries.data[type_id as i64]
+    if entry.name_id == 0 as u32:
+        return out_args
+    let name_str = self.intern.get(entry.name_id)
+    let len = std.string.len(name_str)
+    
+    // Find the first "__" in the mangled name
+    mut temp_end := 0 as i64
+    while temp_end < len - 1 as i64:
+        if name_str[temp_end] as u8 == '_' as u8 and name_str[temp_end + 1 as i64] as u8 == '_' as u8:
+            break
+        temp_end = temp_end + 1 as i64
+        
+    if temp_end >= len - 1 as i64:
+        return out_args
+        
+    mut arg_start := temp_end + 2 as i64
+    while arg_start < len:
+        mut arg_end := arg_start
+        while arg_end < len - 1 as i64:
+            if name_str[arg_end] as u8 == '_' as u8 and name_str[arg_end + 1 as i64] as u8 == '_' as u8:
+                break
+            arg_end = arg_end + 1 as i64
+        if arg_end == len - 1 as i64:
+            arg_end = len
+            
+        let arg_len = arg_end - arg_start
+        if arg_len > 0 as i64:
+            mut arg_name_buf := @alloc(arg_len + 1 as i64) as ptr[u8]
+            @memcpy(arg_name_buf, ((get_str_ptr(name_str) as i64) + arg_start) as ptr[u8], arg_len)
+            arg_name_buf[arg_len] = 0 as u8
+            let arg_name := arg_name_buf as str
+            
+            let arg_type_id = self.parse_type_from_name(arg_name)
+            if arg_type_id != 0 as u32:
+                out_args.push(arg_type_id)
+                
+            @free(arg_name_buf)
+        arg_start = arg_end + 2 as i64
+        
+    return out_args
+
+pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u32, gen_params: U32Vec, inferred: U32Vec, src_tree: ptr[AstTree]):
+    if tn_idx == 0 as u32 or arg_type == 0 as u32:
+        return
+    let kind = src_tree.nodes.data[tn_idx].kind
+    if kind == NODE_TYPE_EXPR:
+        let param_sym_idx = src_tree.nodes.data[tn_idx].payload
+        if param_sym_idx != 0 as u32 and (param_sym_idx as i64) < self.symtable.symbols.len:
+            let param_sym = self.symtable.symbols.data[param_sym_idx]
+            if param_sym.kind == SYM_GENERIC_PARAM:
+                mut g_idx := 0 as i64
+                while g_idx < gen_params.len:
+                    if gen_params.data[g_idx] == param_sym.name_id:
+                        inferred.data[g_idx] = arg_type
+                        break
+                    g_idx = g_idx + 1 as i64
+    elif kind == NODE_GENERIC_TYPE:
+        let base_idx = src_tree.nodes.data[tn_idx].first_child
+        if base_idx != 0 as u32:
+            let base_node = src_tree.nodes.data[base_idx]
+            mut name_id := base_node.payload
+            if base_node.kind == NODE_IDENT or base_node.kind == NODE_TYPE_EXPR:
+                let sym_idx = base_node.payload
+                if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                    name_id = self.symtable.symbols.data[sym_idx as i64].name_id
+            let text = self.intern.get(name_id)
+            let ptr_text = text as ptr[u8]
+            mut is_ptr := false
+            mut is_slice := false
+            if std.string.len(text) == 3 as i64 and ptr_text[0] == 'p' as u8 and ptr_text[1] == 't' as u8 and ptr_text[2] == 'r' as u8:
+                is_ptr = true
+            elif std.string.len(text) == 5 as i64 and ptr_text[0] == 's' as u8 and ptr_text[1] == 'l' as u8 and ptr_text[2] == 'i' as u8 and ptr_text[3] == 'c' as u8 and ptr_text[4] == 'e' as u8:
+                is_slice = true
+
+            if is_ptr:
+                let arg_idx = base_node.next_sibling
+                if arg_idx != 0 as u32:
+                    mut norm_arg := arg_type
+                    mut entry = self.types.entries.data[norm_arg as i64]
+                    if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+                        let inner_arg_type = entry.extra
+                        self.infer_generic_type_args(arg_idx, inner_arg_type, gen_params, inferred, src_tree)
+            elif is_slice:
+                let arg_idx = base_node.next_sibling
+                if arg_idx != 0 as u32:
+                    mut norm_arg := arg_type
+                    mut entry = self.types.entries.data[norm_arg as i64]
+                    if entry.kind == TYPE_KIND_SLICE:
+                        let inner_arg_type = entry.extra
+                        self.infer_generic_type_args(arg_idx, inner_arg_type, gen_params, inferred, src_tree)
+            else:
+                // User-defined generic template (like Array or Map)
+                mut norm_arg := arg_type
+                mut entry = self.types.entries.data[norm_arg as i64]
+                while entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+                    norm_arg = entry.extra
+                    entry = self.types.entries.data[norm_arg as i64]
+                
+                mut arg_type_args := self.get_generic_args_from_mangled(norm_arg)
+                
+                mut param_arg_idx := base_node.next_sibling
+                mut a_idx := 0 as i64
+                while param_arg_idx != 0 as u32 and a_idx < arg_type_args.len:
+                    let concrete_arg_type = arg_type_args.data[a_idx]
+                    self.infer_generic_type_args(param_arg_idx, concrete_arg_type, gen_params, inferred, src_tree)
+                    param_arg_idx = src_tree.nodes.data[param_arg_idx].next_sibling
+                    a_idx = a_idx + 1 as i64
+                
+                if arg_type_args.data != null as ptr[u32]:
+                    @free(arg_type_args.data as ptr[u8])
+    elif kind == NODE_PTR_TYPE:
+        let inner_node_idx = src_tree.nodes.data[tn_idx].first_child
+        if inner_node_idx != 0 as u32:
+            mut norm_arg := arg_type
+            mut entry = self.types.entries.data[norm_arg as i64]
+            if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+                let inner_arg_type = entry.extra
+                self.infer_generic_type_args(inner_node_idx, inner_arg_type, gen_params, inferred, src_tree)
+    elif kind == NODE_SLICE_TYPE:
+        let inner_node_idx = src_tree.nodes.data[tn_idx].first_child
+        if inner_node_idx != 0 as u32:
+            mut norm_arg := arg_type
+            mut entry = self.types.entries.data[norm_arg as i64]
+            if entry.kind == TYPE_KIND_SLICE:
+                let inner_arg_type = entry.extra
+                self.infer_generic_type_args(inner_node_idx, inner_arg_type, gen_params, inferred, src_tree)
+
+pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u32) -> u32:
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return 0 as u32
+    
+    // If the symbol itself doesn't have overloads, return it immediately
+    let initial_sym = self.symtable.symbols.data[sym_idx]
+    if initial_sym.next_overload == 0 as u32:
+        return sym_idx
+        
+    // Unwrap pointer and reference from receiver type
+    mut unwrapped_rec := rec_type
+    while unwrapped_rec != TYPE_UNKNOWN:
+        let entry = self.types.entries.data[unwrapped_rec]
+        if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+            unwrapped_rec = entry.extra
+        else:
+            break
+            
+    if unwrapped_rec == TYPE_UNKNOWN:
+        return sym_idx
+        
+    let rec_entry = self.types.entries.data[unwrapped_rec]
+    
+    // Now walk the overload chain to find a match.
+    mut curr_idx := sym_idx
+    while curr_idx != 0 as u32:
+        let sym = self.symtable.symbols.data[curr_idx]
+        if sym.kind == SYM_FUNC:
+            // Get function type
+            let type_id = sym.type_id
+            if type_id != TYPE_UNKNOWN:
+                let f_entry = self.types.entries.data[type_id]
+                if f_entry.kind == TYPE_KIND_FUNC:
+                    let fi = self.types.funcs.data[f_entry.extra]
+                    if fi.params.len > 0:
+                        let first_param_type = fi.params.data[0]
+                        mut unwrapped_param := first_param_type
+                        while unwrapped_param != TYPE_UNKNOWN:
+                            let p_entry = self.types.entries.data[unwrapped_param]
+                            if p_entry.kind == TYPE_KIND_POINTER or p_entry.kind == TYPE_KIND_REF:
+                                unwrapped_param = p_entry.extra
+                            else:
+                                break
+                                
+                        if unwrapped_param != TYPE_UNKNOWN:
+                            let param_entry = self.types.entries.data[unwrapped_param]
+                            if param_entry.kind == rec_entry.kind:
+                                if rec_entry.kind == TYPE_KIND_STRUCT or rec_entry.kind == TYPE_KIND_SUM or rec_entry.kind == TYPE_KIND_GENERIC_INST or rec_entry.kind == TYPE_KIND_OPTION or rec_entry.kind == TYPE_KIND_RESULT:
+                                    if param_entry.extra == rec_entry.extra:
+                                        return curr_idx
+                                else:
+                                    return curr_idx
+                                
+        curr_idx = sym.next_overload
+        
+    return sym_idx
+
+pub fn extract_base_name(name: str) -> str:
+    let length = std.string.len(name)
+    if length < 4:
+        return std.string.concat("", name)
+        
+    let name_ptr = get_str_ptr(name)
+    if name_ptr[0] != '_' as u8 or name_ptr[1] != 'A' as u8 or name_ptr[2] != 'X' as u8 or name_ptr[3] != '_' as u8:
+        return std.string.concat("", name)
+        
+    // Find first occurrence of "__"
+    mut d_idx := -1 as i64
+    mut i := 4 as i64
+    while i < length - 1 as i64:
+        if name_ptr[i] == '_' as u8 and name_ptr[i + 1] == '_' as u8:
+            d_idx = i
+            break
+        i = i + 1
+        
+    // The prefix is name[0..d_idx] (or name[0..length] if no "__")
+    mut prefix_len := length
+    if d_idx != -1 as i64:
+        prefix_len = d_idx
+        
+    // Find last "_" in the prefix
+    mut last_u_idx := -1 as i64
+    i = prefix_len - 1 as i64
+    while i >= 0 as i64:
+        if name_ptr[i] == '_' as u8:
+            last_u_idx = i
+            break
+        i = i - 1 as i64
+        
+    // The base starts after the last "_" in prefix, and ends at prefix_len
+    mut start_idx := 0 as i64
+    if last_u_idx != -1 as i64 and last_u_idx < prefix_len - 1 as i64:
+        start_idx = last_u_idx + 1
+        
+    let base_len = prefix_len - start_idx
+    if base_len <= 0:
+        return std.string.concat("", "")
+        
+    // Allocate the fresh base string and copy characters
+    let base_ptr = @alloc(base_len + 1) as ptr[u8]
+    @memcpy(base_ptr, (name_ptr as i64 + start_idx) as ptr[u8], base_len)
+    base_ptr[base_len] = 0 as u8
+    return base_ptr as str
+
+pub fn match_method_name(sym_name: str, field_name: str) -> bool:
+    if sym_name == field_name:
+        return true
+    let dot_field = std.string.concat(".", field_name)
+    let res = std.string.ends_with(sym_name, dot_field)
+    @free(get_str_ptr(dot_field))
+    return res
+
+pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
+    let field_name = self.intern.get(field_name_id)
+    mut sym_idx := self.symtable.resolve(field_name_id)
+    sym_idx = self.resolve_method_overload(sym_idx, rec_type)
+    if sym_idx != 0 as u32:
+        safe_free_str(field_name)
+        return sym_idx
+        
+    // Fallback search for generic method templates
+    mut unwrapped_rec := rec_type
+    while unwrapped_rec != TYPE_UNKNOWN:
+        let entry = self.types.entries.data[unwrapped_rec]
+        if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+            unwrapped_rec = entry.extra
+        else:
+            break
+            
+    if unwrapped_rec == TYPE_UNKNOWN:
+        safe_free_str(field_name)
+        return 0 as u32
+        
+    let rec_entry = self.types.entries.data[unwrapped_rec]
+    if (rec_entry.kind == TYPE_KIND_STRUCT or rec_entry.kind == TYPE_KIND_SUM or rec_entry.kind == TYPE_KIND_GENERIC_INST or rec_entry.kind == TYPE_KIND_OPTION or rec_entry.kind == TYPE_KIND_RESULT) and rec_entry.name_id != 0 as u32:
+        let rec_struct_mangled = self.intern.get(rec_entry.name_id)
+        let rec_struct_name = extract_base_name(rec_struct_mangled)
+
+        
+        mut idx := 0 as i64
+        while idx < self.symtable.symbols.len:
+            let sym = self.symtable.symbols.data[idx]
+            if sym.kind == SYM_FUNC and (sym.flags & SYM_FLAG_GENERIC) != 0 as u16:
+                let sym_name = self.intern.get(sym.name_id)
+                if match_method_name(sym_name, field_name):
+                    let t_id = sym.type_id
+                    if t_id != TYPE_UNKNOWN:
+                        let f_entry = self.types.entries.data[t_id]
+                        if f_entry.kind == TYPE_KIND_FUNC:
+                            let fi = self.types.funcs.data[f_entry.extra]
+                            if fi.params.len > 0:
+                                mut first_param_type = fi.params.data[0]
+                                mut unwrapped_param := first_param_type
+                                while unwrapped_param != TYPE_UNKNOWN:
+                                    let p_entry = self.types.entries.data[unwrapped_param]
+                                    if p_entry.kind == TYPE_KIND_POINTER or p_entry.kind == TYPE_KIND_REF:
+                                        unwrapped_param = p_entry.extra
+                                    else:
+                                        break
+                                
+                                if unwrapped_param != TYPE_UNKNOWN:
+                                    let param_entry = self.types.entries.data[unwrapped_param]
+                                    if (param_entry.kind == TYPE_KIND_STRUCT or param_entry.kind == TYPE_KIND_SUM or param_entry.kind == TYPE_KIND_GENERIC_INST or param_entry.kind == TYPE_KIND_OPTION or param_entry.kind == TYPE_KIND_RESULT) and param_entry.name_id != 0 as u32:
+                                        let param_struct_name = self.intern.get(param_entry.name_id)
+                                        let param_base_name = extract_base_name(param_struct_name)
+                                        if match_method_name(rec_struct_name, param_base_name):
+                                            safe_free_str(rec_struct_mangled)
+                                            safe_free_str(rec_struct_name)
+                                            safe_free_str(param_struct_name)
+                                            safe_free_str(param_base_name)
+                                            safe_free_str(sym_name)
+                                            safe_free_str(field_name)
+                                            return idx as u32
+                                        safe_free_str(param_base_name)
+                                        safe_free_str(param_struct_name)
+                safe_free_str(sym_name)
+            idx = idx + 1 as i64
+        safe_free_str(rec_struct_mangled)
+        safe_free_str(rec_struct_name)
+    safe_free_str(field_name)
+    return 0 as u32
+
+pub fn free_type_checker(mut self: ptr[TypeChecker]):
     @free(self.node_types as ptr[u8])
 
-pub fn set_node_type(mut self: TypeChecker, node_idx: u32, type_id: u32):
+pub fn ensure_capacity(mut self: ptr[TypeChecker], cap: i64):
+    if cap <= self.node_types_cap:
+        return
+    let new_ptr = @alloc(cap * 4) as ptr[u32]
+    mut i := 0 as i64
+    while i < self.node_types_cap:
+        new_ptr[i] = self.node_types[i]
+        i = i + 1
+    while i < cap:
+        new_ptr[i] = 0 as u32
+        i = i + 1
+    @free(self.node_types as ptr[u8])
+    self.node_types = new_ptr
+    self.node_types_cap = cap
+
+pub fn set_node_type(mut self: ptr[TypeChecker], node_idx: u32, type_id: u32):
     if node_idx == 0xffffffff as u32:
         return
     let idx = node_idx as i64
@@ -169,7 +581,7 @@ pub fn parse_comptime_int(s: str) -> i64:
 
     return val * sign
 
-pub fn node_text(self: TypeChecker, node_idx: u32) -> str:
+pub fn node_text(self: ptr[TypeChecker], node_idx: u32) -> str:
     let node = self.tree.nodes.data[node_idx]
     let tok_idx = node.token_idx
     if tok_idx as i64 >= self.tree.tokens.len:
@@ -180,7 +592,7 @@ pub fn node_text(self: TypeChecker, node_idx: u32) -> str:
     let start_ptr = ((self.tree.src as ptr[u8]) as i64 + tok.offset as i64) as ptr[u8]
     return alloc_str_from_raw(start_ptr, tok.len as i64)
 
-pub fn eval_comptime(mut self: TypeChecker, node_idx: u32) -> ComptimeValue:
+pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]
     let kind = node.kind
     
@@ -342,13 +754,26 @@ pub fn eval_comptime(mut self: TypeChecker, node_idx: u32) -> ComptimeValue:
                 
     return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
 
-pub fn run_type_checker(mut self: TypeChecker):
+pub fn run_type_checker(mut self: ptr[TypeChecker]):
     // Phase 0: Register all Type Aliases / Sum Types
     mut i := 0 as i64
     while i < self.tree.nodes.len:
         let node = self.tree.nodes.data[i]
         if node.kind == NODE_TYPE_ALIAS_DECL:
             self.pre_infer_type_alias(i as u32)
+        i = i + 1
+
+    // Phase 0.5: Pre-register all Struct Type IDs to allow mutual / forward references
+    i = 0 as i64
+    while i < self.tree.nodes.len:
+        let node = self.tree.nodes.data[i]
+        if node.kind == NODE_STRUCT_DECL:
+            let sym_idx = node.payload
+            if sym_idx != 0 as u32:
+                let sym = self.symtable.symbols.data[sym_idx]
+                if sym.type_id == 0 as u32:
+                    let struct_type_id = self.types.register_struct(sym.name_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
+                    self.symtable.symbols.data[sym_idx].type_id = struct_type_id
         i = i + 1
 
     // Phase 1: Register all StructDeclarations
@@ -370,7 +795,7 @@ pub fn run_type_checker(mut self: TypeChecker):
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
 
-pub fn pre_infer_type_alias(mut self: TypeChecker, node_idx: u32):
+pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
     if sym_idx != 0 as u32:
         let sym = self.symtable.symbols.data[sym_idx]
@@ -425,7 +850,7 @@ pub fn pre_infer_type_alias(mut self: TypeChecker, node_idx: u32):
                             self.symtable.symbols.data[v_sym_idx].type_id = type_id
                     v_node = v_node_struct.next_sibling
 
-pub fn pre_infer_struct(mut self: TypeChecker, node_idx: u32):
+pub fn pre_infer_struct(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
     if sym_idx != 0 as u32:
         let sym = self.symtable.symbols.data[sym_idx]
@@ -443,6 +868,7 @@ pub fn pre_infer_struct(mut self: TypeChecker, node_idx: u32):
                         f_type_id = self.infer_node(f_type_node, TYPE_UNKNOWN)
                     self.symtable.symbols.data[f_sym_idx].type_id = f_type_id
                     fields.push(StructField(name_id: f_sym.name_id, type_id: f_type_id))
+
             child = child_node.next_sibling
         
         let type_id = sym.type_id
@@ -452,10 +878,20 @@ pub fn pre_infer_struct(mut self: TypeChecker, node_idx: u32):
             self.set_node_type(node_idx, struct_type_id)
         else:
             let entry = self.types.entries.data[type_id as i64]
-            self.types.structs.data[entry.extra as i64] = StructInfo(fields: fields)
+            mut struct_extra := entry.extra
+            if entry.kind == TYPE_KIND_GENERIC_INST:
+                mut idx := 0 as i64
+                while idx < self.types.entries.len:
+                    let e = self.types.entries.data[idx]
+                    if e.kind == TYPE_KIND_STRUCT and e.name_id == entry.name_id:
+                        struct_extra = e.extra
+                        break
+                    idx = idx + 1
+            if (entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST) and (struct_extra as i64) < self.types.structs.len:
+                self.types.structs.data[struct_extra as i64] = StructInfo(fields: fields)
             self.set_node_type(node_idx, type_id)
 
-pub fn pre_infer_func_signature(mut self: TypeChecker, node_idx: u32):
+pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
     mut has_existing := false
     if sym_idx != 0 as u32:
@@ -499,7 +935,7 @@ pub fn pre_infer_func_signature(mut self: TypeChecker, node_idx: u32):
             self.symtable.symbols.data[sym_idx].type_id = func_type_id
         self.set_node_type(node_idx, func_type_id)
 
-pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
+pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u32:
     if node_idx == 0 as u32:
         if self.tree.nodes.len == 0 as i64:
             return TYPE_UNKNOWN
@@ -639,8 +1075,17 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
         let scrutinee_type = self.current_match_scrutinee
         if scrutinee_type != TYPE_UNKNOWN:
             let s_entry = self.types.entries.data[scrutinee_type]
-            if s_entry.kind == TYPE_KIND_SUM:
-                let sum_info = self.types.sumtypes.data[s_entry.extra]
+            if s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST or s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
+                mut sum_extra := s_entry.extra
+                if s_entry.kind == TYPE_KIND_GENERIC_INST:
+                    mut idx := 0 as i64
+                    while idx < self.types.entries.len:
+                        let e = self.types.entries.data[idx]
+                        if e.kind == TYPE_KIND_SUM and e.name_id == s_entry.name_id:
+                            sum_extra = e.extra
+                            break
+                        idx = idx + 1
+                let sum_info = self.types.sumtypes.data[sum_extra]
                 
                 // Let's typecheck the pattern!
                 if pattern != 0 as u32:
@@ -762,36 +1207,92 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 let sym_idx = callee_node.payload
                 if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                     let sym = self.symtable.symbols.data[sym_idx]
-                    if sym.kind == SYM_FUNC and ((sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (self.tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16):
+                    mut src_tree := self.tree
+                    if (sym_idx as i64) < self.symtable.symbol_trees.len:
+                        let t = self.symtable.symbol_trees.data[sym_idx]
+                        if t != null as ptr[AstTree]:
+                            src_tree = t
+                    if sym.kind == SYM_FUNC and ((sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16)):
                         is_generic_call = true
                         template_sym_idx = sym_idx
+            elif callee_node.kind == NODE_FIELD_EXPR:
+                if (callee_node.flags & 2048 as u16) != 0 as u16:
+                    let rec_node = callee_node.first_child
+                    if rec_node != 0 as u32:
+                        self.infer_node(rec_node, TYPE_UNKNOWN)
+                    mut sym_idx := callee_node.payload
+                    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                        let sym = self.symtable.symbols.data[sym_idx]
+                        mut src_tree := self.tree
+                        if (sym_idx as i64) < self.symtable.symbol_trees.len:
+                            let t = self.symtable.symbol_trees.data[sym_idx]
+                            if t != null as ptr[AstTree]:
+                                src_tree = t
+                        if sym.kind == SYM_FUNC and ((sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16)):
+                            is_generic_call = true
+                            template_sym_idx = sym_idx
+                else:
+                    let field_name_id = callee_node.payload
+                    let rec_node = callee_node.first_child
+                    mut rec_type := TYPE_UNKNOWN
+                    if rec_node != 0 as u32:
+                        if (rec_node as i64) < self.node_types_cap:
+                            rec_type = self.node_types[rec_node as i64]
+                        if rec_type == TYPE_UNKNOWN:
+                            rec_type = self.infer_node(rec_node, TYPE_UNKNOWN)
+                    mut sym_idx := self.resolve_method_sym(field_name_id, rec_type)
+                    if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                        let sym = self.symtable.symbols.data[sym_idx]
+                        mut src_tree := self.tree
+                        if (sym_idx as i64) < self.symtable.symbol_trees.len:
+                            let t = self.symtable.symbol_trees.data[sym_idx]
+                            if t != null as ptr[AstTree]:
+                                src_tree = t
+                        if sym.kind == SYM_FUNC and ((sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16)):
+                            is_generic_call = true
+                            template_sym_idx = sym_idx
             
             if is_generic_call:
                 let decl_node = self.symtable.symbols.data[template_sym_idx].decl_node
-                ax_printf_local("[DEBUG-TC-GEN] is_generic_call=true, template_sym_idx=%d, decl_node=%d\n", template_sym_idx as i64, decl_node as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 
-                // Collect generic parameter name_ids
+                // Find the correct source AstTree for the generic template
+                mut src_tree := self.tree
+                if (template_sym_idx as i64) < self.symtable.symbol_trees.len:
+                    let t = self.symtable.symbol_trees.data[template_sym_idx]
+                    if t != null as ptr[AstTree]:
+                        src_tree = t
+
+                // Collect generic parameter name_ids using the correct source tree
                 mut gen_params := new_u32_vec()
-                mut c := self.tree.nodes.data[decl_node].first_child
+                mut c := src_tree.nodes.data[decl_node].first_child
                 while c != 0 as u32:
-                    let cn = self.tree.nodes.data[c]
+                    let cn = src_tree.nodes.data[c]
                     if cn.kind == NODE_GENERIC_PARAMS:
                         mut gp := cn.first_child
                         while gp != 0 as u32:
-                            gen_params.push(self.tree.nodes.data[gp].payload)
-                            gp = self.tree.nodes.data[gp].next_sibling
+                            mut gp_name_id := src_tree.nodes.data[gp].payload
+                            if gp_name_id != 0 as u32 and (gp_name_id as i64) < self.symtable.symbols.len:
+                                gp_name_id = self.symtable.symbols.data[gp_name_id].name_id
+                            gen_params.push(gp_name_id)
+                            gp = src_tree.nodes.data[gp].next_sibling
                         break
                     c = cn.next_sibling
                 
                 // Collect argument types
                 mut arg_types := new_u32_vec()
+                if callee_node.kind == NODE_FIELD_EXPR:
+                    let rec_node = callee_node.first_child
+                    if rec_node != 0 as u32:
+                        let rec_type = self.infer_node(rec_node, TYPE_UNKNOWN)
+                        arg_types.push(rec_type)
+                
                 mut arg_idx := self.tree.nodes.data[callee].next_sibling
                 while arg_idx != 0 as u32:
                     let a_type = self.infer_node(arg_idx, TYPE_UNKNOWN)
                     arg_types.push(a_type)
                     arg_idx = self.tree.nodes.data[arg_idx].next_sibling
                 
-                // Map generic params to inferred TypeIDs
+                // Map generic params to inferred TypeIDs using the correct source tree
                 mut inferred := new_u32_vec()
                 mut i := 0 as i64
                 while i < gen_params.len:
@@ -799,24 +1300,13 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                     i = i + 1
                 
                 mut p_idx := 0 as i64
-                c = self.tree.nodes.data[decl_node].first_child
+                c = src_tree.nodes.data[decl_node].first_child
                 while c != 0 as u32:
-                    let cn = self.tree.nodes.data[c]
+                    let cn = src_tree.nodes.data[c]
                     if cn.kind == NODE_PARAM_DECL:
                         let type_node_idx = cn.first_child
                         if type_node_idx != 0 as u32 and p_idx < arg_types.len:
-                            let tn = self.tree.nodes.data[type_node_idx]
-                            if tn.kind == NODE_TYPE_EXPR:
-                                let param_sym_idx = tn.payload
-                                if param_sym_idx != 0 as u32 and (param_sym_idx as i64) < self.symtable.symbols.len:
-                                    let param_sym = self.symtable.symbols.data[param_sym_idx]
-                                    if param_sym.kind == SYM_GENERIC_PARAM:
-                                        mut g_idx := 0 as i64
-                                        while g_idx < gen_params.len:
-                                            if gen_params.data[g_idx] == param_sym.name_id:
-                                                inferred.data[g_idx] = arg_types.data[p_idx]
-                                                break
-                                            g_idx = g_idx + 1 as i64
+                            self.infer_generic_type_args(type_node_idx, arg_types.data[p_idx], gen_params, inferred, src_tree)
                         p_idx = p_idx + 1
                     c = cn.next_sibling
                 
@@ -835,18 +1325,18 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if existing_sym_idx != 0 as u32:
                     inst_sym_idx = existing_sym_idx
                 else:
-                    inst_sym_idx = mono.instantiate_function(template_sym_idx, inferred)
-                    let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
-                    let cloned_root = inst_sym.decl_node
+                    let cloned_root = mono.instantiate_function(template_sym_idx, inferred)
+                    self.tree.append_child(0 as u32, cloned_root)
                     
                     mut resolver := new_name_resolver(self.tree, self.intern, self.symtable)
                     resolver.resolve_node(cloned_root)
                     
+                    inst_sym_idx = self.tree.nodes.data[cloned_root].payload
                     self.pre_infer_func_signature(cloned_root)
                     self.infer_node(cloned_root, TYPE_UNKNOWN)
                 
                 self.tree.nodes.data[callee].payload = inst_sym_idx
-                ax_printf_local("[DEBUG-TC-GEN] specialized call ok, inst_sym_idx=%d\n", inst_sym_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.tree.nodes.data[callee].flags = self.tree.nodes.data[callee].flags | 2048 as u16
                 
                 if gen_params.data != null as ptr[u32]:
                     @free(gen_params.data as ptr[u8])
@@ -861,9 +1351,13 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 if entry.kind == TYPE_KIND_FUNC:
                     let fi = self.types.funcs.data[entry.extra]
                     result_type = fi.ret
+                    
+
                 elif entry.kind == TYPE_KIND_STRUCT:
                     result_type = callee_type
                 elif entry.kind == TYPE_KIND_SUM:
+                    result_type = callee_type
+                elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
             else:
                 if callee_node.kind == NODE_IDENT:
@@ -889,14 +1383,56 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             
     elif kind == NODE_TYPE_EXPR:
         let sym_idx = self.tree.nodes.data[node_idx].payload
-        if sym_idx != 0 as u32:
-            result_type = self.symtable.symbols.data[sym_idx].type_id
+        if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+            let sym = self.symtable.symbols.data[sym_idx]
+            if sym.kind == SYM_STRUCT or sym.kind == SYM_INTERFACE or sym.kind == SYM_TYPE_ALIAS or sym.kind == SYM_VARIANT or sym.kind == SYM_GENERIC_PARAM or sym.kind == SYM_BUILTIN_TYPE:
+                result_type = sym.type_id
             
         let child = self.tree.nodes.data[node_idx].first_child
         if child != 0 as u32:
             let inner = self.infer_node(child, TYPE_UNKNOWN)
             if result_type == TYPE_UNKNOWN:
                 result_type = inner
+                
+        if result_type == TYPE_UNKNOWN:
+            mut text := ""
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                text = self.intern.get(self.symtable.symbols.data[sym_idx].name_id)
+            else:
+                text = self.node_text(node_idx)
+            if text == "i8":
+                result_type = 1 as u32
+            elif text == "i16":
+                result_type = 2 as u32
+            elif text == "i32" or text == "int":
+                result_type = 3 as u32
+            elif text == "i64":
+                result_type = 4 as u32
+            elif text == "u8":
+                result_type = 5 as u32
+            elif text == "u16":
+                result_type = 6 as u32
+            elif text == "u32":
+                result_type = 7 as u32
+            elif text == "u64":
+                result_type = 8 as u32
+            elif text == "f32":
+                result_type = 9 as u32
+            elif text == "f64":
+                result_type = 10 as u32
+            elif text == "bool":
+                result_type = 11 as u32
+            elif text == "str" or text == "string":
+                result_type = 12 as u32
+            elif text == "char":
+                result_type = 13 as u32
+            elif text == "void":
+                result_type = 14 as u32
+            elif text == "isize":
+                result_type = 15 as u32
+            elif text == "usize":
+                result_type = 16 as u32
+            safe_free_str(text)
                 
     elif kind == NODE_GENERIC_TYPE:
         let base_idx = self.tree.nodes.data[node_idx].first_child
@@ -932,7 +1468,12 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                 let sym_idx = base_node.payload
                 if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                     let sym = self.symtable.symbols.data[sym_idx as i64]
-                    if (sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (self.tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16:
+                    mut src_tree := self.tree
+                    if (sym_idx as i64) < self.symtable.symbol_trees.len:
+                        let t = self.symtable.symbol_trees.data[sym_idx]
+                        if t != null as ptr[AstTree]:
+                            src_tree = t
+                    if (sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16):
                         // Collect concrete type arguments
                         mut args := new_u32_vec()
                         mut arg_idx := base_node.next_sibling
@@ -952,13 +1493,14 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                             inst_sym_idx = existing_sym_idx
                         else:
                             // Instantiate!
-                            inst_sym_idx = mono.instantiate_function(sym_idx, args)
-                            let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
-                            let cloned_root = inst_sym.decl_node
+                            let cloned_root = mono.instantiate_function(sym_idx, args)
+                            self.tree.append_child(0 as u32, cloned_root)
                             
                             // Name resolution on the cloned subtree
                             mut resolver := new_name_resolver(self.tree, self.intern, self.symtable)
                             resolver.resolve_node(cloned_root)
+                            
+                            inst_sym_idx = self.tree.nodes.data[cloned_root].payload
                             
                             // Register type/signature in TypeTable
                             let cloned_kind = self.tree.nodes.data[cloned_root].kind
@@ -979,6 +1521,12 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
                                 self.infer_node(cloned_root, TYPE_UNKNOWN)
                             elif cloned_kind == NODE_TYPE_ALIAS_DECL:
                                 self.pre_infer_type_alias(cloned_root)
+                                mut m_child := self.tree.nodes.data[cloned_root].first_child
+                                while m_child != 0 as u32:
+                                    let mc = self.tree.nodes.data[m_child]
+                                    if mc.kind == NODE_FUNC_DECL:
+                                        self.pre_infer_func_signature(m_child)
+                                    m_child = mc.next_sibling
                                 self.infer_node(cloned_root, TYPE_UNKNOWN)
                         
                         let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
@@ -1024,6 +1572,15 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
     elif kind == NODE_BOOL_LIT:
         result_type = TYPE_BOOL
         
+    elif kind == NODE_CHAR_LIT:
+        result_type = TYPE_CHAR8
+        
+    elif kind == NODE_NIL_LIT:
+        if expected != TYPE_UNKNOWN:
+            result_type = expected
+        else:
+            result_type = TYPE_UNKNOWN
+        
     elif kind == NODE_CAST_EXPR:
         let expr = self.tree.nodes.data[node_idx].first_child
         mut target_type := TYPE_UNKNOWN
@@ -1039,68 +1596,211 @@ pub fn infer_node(mut self: TypeChecker, node_idx: u32, expected: u32) -> u32:
             result_type = self.tree.nodes.data[node_idx].payload
 
     elif kind == NODE_FIELD_EXPR:
-        let obj = self.tree.nodes.data[node_idx].first_child
-        if obj != 0 as u32:
-            mut obj_type := self.infer_node(obj, TYPE_UNKNOWN)
-            if obj_type != TYPE_UNKNOWN:
-                mut entry = self.types.entries.data[obj_type]
-                if entry.kind == TYPE_KIND_POINTER:
-                    obj_type = entry.extra
-                    entry = self.types.entries.data[obj_type]
-                if obj_type == TYPE_STRING:
-                    let field_name_id = self.tree.nodes.data[node_idx].payload
+        if (self.tree.nodes.data[node_idx].flags & 2048 as u16) != 0 as u16:
+            let obj = self.tree.nodes.data[node_idx].first_child
+            if obj != 0 as u32:
+                self.infer_node(obj, TYPE_UNKNOWN)
+            let sym_idx = self.tree.nodes.data[node_idx].payload
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                result_type = self.symtable.symbols.data[sym_idx].type_id
+        else:
+            let obj = self.tree.nodes.data[node_idx].first_child
+            if obj != 0 as u32:
+                let field_name_id = self.tree.nodes.data[node_idx].payload
+                mut is_builtin_new := false
+                if field_name_id != 0 as u32:
                     let field_name = self.intern.get(field_name_id)
-                    let ptr_field := field_name as ptr[u8]
-                    mut is_ptr_field := false
-                    mut is_len_field := false
-                    if std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'p' as u8 and ptr_field[1] == 't' as u8 and ptr_field[2] == 'r' as u8:
-                        is_ptr_field = true
-                    elif std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'l' as u8 and ptr_field[1] == 'e' as u8 and ptr_field[2] == 'n' as u8:
-                        is_len_field = true
+                    if field_name == "new":
+                        mut base_node_idx := obj
+                        let base_kind = self.tree.nodes.data[obj].kind
+                        if base_kind == NODE_GENERIC_TYPE or base_kind == NODE_INDEX_EXPR:
+                            let first = self.tree.nodes.data[obj].first_child
+                            if first != 0 as u32:
+                                base_node_idx = first
+                        
+                        mut obj_name := ""
+                        let base_node = self.tree.nodes.data[base_node_idx]
+                        if base_node.kind == NODE_IDENT or base_node.kind == NODE_TYPE_EXPR:
+                            let payload_val = base_node.payload
+                            if payload_val != 0 as u32:
+                                if (payload_val as i64) < self.symtable.symbols.len:
+                                    obj_name = self.intern.get(self.symtable.symbols.data[payload_val].name_id)
+                                else:
+                                    obj_name = self.intern.get(payload_val)
+                        else:
+                            obj_name = self.node_text(base_node_idx)
+                        
+                        mut is_collection := false
+                        if obj_name == "Vec" or std.string.ends_with(obj_name, ".Vec") or std.string.contains(obj_name, ".Vec__") or std.string.contains(obj_name, "__Vec"):
+                            is_collection = true
+                        elif obj_name == "HashMap" or std.string.ends_with(obj_name, ".HashMap") or std.string.contains(obj_name, ".HashMap__") or std.string.contains(obj_name, "__HashMap"):
+                            is_collection = true
+                        elif obj_name == "HashSet" or std.string.ends_with(obj_name, ".HashSet") or std.string.contains(obj_name, ".HashSet__") or std.string.contains(obj_name, "__HashSet"):
+                            is_collection = true
+                        elif obj_name == "Option" or std.string.ends_with(obj_name, ".Option") or std.string.contains(obj_name, ".Option__") or std.string.contains(obj_name, "__Option"):
+                            is_collection = true
+                        elif obj_name == "Result" or std.string.ends_with(obj_name, ".Result") or std.string.contains(obj_name, ".Result__") or std.string.contains(obj_name, "__Result"):
+                            is_collection = true
+                        
+                        if is_collection:
+                            is_builtin_new = true
+                            let obj_type_resolved = self.infer_node(obj, TYPE_UNKNOWN)
+                            let params_vec = U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+                            result_type = self.types.register_function(params_vec, obj_type_resolved)
+                            self.set_node_type(node_idx, result_type)
+                        
+                        safe_free_str(obj_name)
+                    safe_free_str(field_name)
+                
+                if not is_builtin_new:
+                    mut obj_type := self.infer_node(obj, TYPE_UNKNOWN)
+                    if obj_type != TYPE_UNKNOWN:
+                        mut entry = self.types.entries.data[obj_type]
+                        if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+                            obj_type = entry.extra
+                            entry = self.types.entries.data[obj_type]
+                        if obj_type == TYPE_STRING:
+                            let field_name_id = self.tree.nodes.data[node_idx].payload
+                            let field_name = self.intern.get(field_name_id)
+                            let ptr_field := field_name as ptr[u8]
+                            mut is_ptr_field := false
+                            mut is_len_field := false
+                            if std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'p' as u8 and ptr_field[1] == 't' as u8 and ptr_field[2] == 'r' as u8:
+                                is_ptr_field = true
+                            elif std.string.len(field_name) == 3 as i64 and ptr_field[0] == 'l' as u8 and ptr_field[1] == 'e' as u8 and ptr_field[2] == 'n' as u8:
+                                is_len_field = true
 
-                    if is_ptr_field:
-                        result_type = self.types.register_pointer(5 as u32)
-                        self.tree.nodes.data[node_idx].extra_idx = 0 as u32
-                    elif is_len_field:
-                        result_type = 4 as u32
-                        self.tree.nodes.data[node_idx].extra_idx = 1 as u32
-                    @free(field_name as ptr[u8])
-                elif entry.kind == TYPE_KIND_STRUCT:
-                    let struct_info = self.types.structs.data[entry.extra]
-                    let field_name_id = self.tree.nodes.data[node_idx].payload
-                    mut found := false
-                    mut j := 0 as i64
-                    while j < struct_info.fields.len:
-                        let f = struct_info.fields.data[j]
-                        if f.name_id == field_name_id:
-                            result_type = f.type_id
-                            self.tree.nodes.data[node_idx].extra_idx = j as u32
-                            found = true
-                            break
-                        j = j + 1
-                    // If not found, check if NameResolver resolved it to a global/builtin method
-                    if not found:
-                        let sym_idx = self.tree.nodes.data[node_idx].payload
+                            if is_ptr_field:
+                                result_type = self.types.register_pointer(5 as u32)
+                                self.tree.nodes.data[node_idx].extra_idx = 0 as u32
+                            elif is_len_field:
+                                result_type = 4 as u32
+                                self.tree.nodes.data[node_idx].extra_idx = 1 as u32
+                            safe_free_str(field_name)
+                        elif entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                            let field_name_id = self.tree.nodes.data[node_idx].payload
+                            mut found := false
+                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST:
+                                mut struct_extra := entry.extra
+                                if entry.kind == TYPE_KIND_GENERIC_INST:
+                                    mut idx := 0 as i64
+                                    while idx < self.types.entries.len:
+                                        let e = self.types.entries.data[idx]
+                                        if e.kind == TYPE_KIND_STRUCT and e.name_id == entry.name_id:
+                                            struct_extra = e.extra
+                                            break
+                                        idx = idx + 1
+                                let struct_info = &self.types.structs.data[struct_extra]
+                                mut j := 0 as i64
+                                while j < struct_info.fields.len:
+                                    let f = struct_info.fields.data[j]
+                                    if f.name_id == field_name_id:
+                                        result_type = f.type_id
+                                        self.tree.nodes.data[node_idx].extra_idx = j as u32
+                                        found = true
+                                        break
+                                    j = j + 1
+                            // If not found, check if it is a method or global function
+                            if not found:
+                                mut sym_idx := self.resolve_method_sym(field_name_id, obj_type)
+                                if sym_idx != 0 as u32:
+                                    let sym = self.symtable.symbols.data[sym_idx]
+                                    result_type = sym.type_id
+                    else:
+                        let sym_idx = self.symtable.resolve(self.tree.nodes.data[node_idx].payload)
                         if sym_idx != 0 as u32:
                             let sym = self.symtable.symbols.data[sym_idx]
                             result_type = sym.type_id
-            else:
-                let sym_idx = self.tree.nodes.data[node_idx].payload
-                if sym_idx != 0 as u32:
-                    let sym = self.symtable.symbols.data[sym_idx]
-                    result_type = sym.type_id
                     
     elif kind == NODE_INDEX_EXPR:
         let collection = self.tree.nodes.data[node_idx].first_child
         if collection != 0 as u32:
-            let col_type = self.infer_node(collection, TYPE_UNKNOWN)
-            let idx = self.tree.nodes.data[collection].next_sibling
-            if idx != 0 as u32:
-                self.infer_node(idx, TYPE_UNKNOWN)
-            if col_type != TYPE_UNKNOWN:
-                let c_entry = self.types.entries.data[col_type]
-                if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
-                    result_type = c_entry.extra
+            mut is_generic_inst := false
+            mut sym_idx := 0 as u32
+            let col_node = self.tree.nodes.data[collection]
+            if col_node.kind == NODE_IDENT:
+                sym_idx = col_node.payload
+            elif col_node.kind == NODE_FIELD_EXPR:
+                if (col_node.flags & 2048 as u16) != 0 as u16:
+                    sym_idx = col_node.payload
+            
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
+                let sym = self.symtable.symbols.data[sym_idx]
+                mut src_tree := self.tree
+                if (sym_idx as i64) < self.symtable.symbol_trees.len:
+                    let t = self.symtable.symbol_trees.data[sym_idx]
+                    if t != null as ptr[AstTree]:
+                        src_tree = t
+                if (sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16):
+                    is_generic_inst = true
+            
+            if is_generic_inst:
+                let sym = self.symtable.symbols.data[sym_idx]
+                mut args := new_u32_vec()
+                mut arg_idx := col_node.next_sibling
+                while arg_idx != 0 as u32:
+                    let arg_type = self.infer_node(arg_idx, TYPE_UNKNOWN)
+                    args.push(arg_type)
+                    arg_idx = self.tree.nodes.data[arg_idx].next_sibling
+                
+                mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
+                let mangled_name = mono.mangle_name(self.intern.get(sym.name_id), args)
+                let mangled_id = self.intern.intern(mangled_name)
+                let existing_sym_idx = self.symtable.resolve(mangled_id)
+                
+                mut inst_sym_idx := 0 as u32
+                if existing_sym_idx != 0 as u32:
+                    inst_sym_idx = existing_sym_idx
+                else:
+                    let cloned_root = mono.instantiate_function(sym_idx, args)
+                    self.tree.append_child(0 as u32, cloned_root)
+                    
+                    mut resolver := new_name_resolver(self.tree, self.intern, self.symtable)
+                    resolver.resolve_node(cloned_root)
+                    
+                    inst_sym_idx = self.tree.nodes.data[cloned_root].payload
+                    
+                    let cloned_kind = self.tree.nodes.data[cloned_root].kind
+                    if cloned_kind == NODE_STRUCT_DECL:
+                        self.pre_infer_struct(cloned_root)
+                        mut m_child := self.tree.nodes.data[cloned_root].first_child
+                        while m_child != 0 as u32:
+                            let mc = self.tree.nodes.data[m_child]
+                            if mc.kind == NODE_FUNC_DECL:
+                                self.pre_infer_func_signature(m_child)
+                            m_child = mc.next_sibling
+                        self.infer_node(cloned_root, TYPE_UNKNOWN)
+                    elif cloned_kind == NODE_FUNC_DECL:
+                        self.pre_infer_func_signature(cloned_root)
+                        self.infer_node(cloned_root, TYPE_UNKNOWN)
+                    elif cloned_kind == NODE_TYPE_ALIAS_DECL:
+                        self.pre_infer_type_alias(cloned_root)
+                        mut m_child := self.tree.nodes.data[cloned_root].first_child
+                        while m_child != 0 as u32:
+                            let mc = self.tree.nodes.data[m_child]
+                            if mc.kind == NODE_FUNC_DECL:
+                                self.pre_infer_func_signature(m_child)
+                            m_child = mc.next_sibling
+                        self.infer_node(cloned_root, TYPE_UNKNOWN)
+                
+                let inst_sym = self.symtable.symbols.data[inst_sym_idx]
+                result_type = inst_sym.type_id
+                
+                self.tree.nodes.data[node_idx].payload = inst_sym_idx
+                
+                if args.data != null as ptr[u32]:
+                    @free(args.data as ptr[u8])
+            else:
+                let col_type = self.infer_node(collection, TYPE_UNKNOWN)
+                let idx = self.tree.nodes.data[collection].next_sibling
+                if idx != 0 as u32:
+                    self.infer_node(idx, TYPE_UNKNOWN)
+                if col_type != TYPE_UNKNOWN:
+                    let c_entry = self.types.entries.data[col_type]
+                    if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
+                        result_type = c_entry.extra
+                    elif col_type == TYPE_STRING:
+                        result_type = 5 as u32
                     
     elif kind == NODE_COMPTIME:
         let child = self.tree.nodes.data[node_idx].first_child

@@ -256,31 +256,58 @@ pub fn push_compiled_func_info(mut self: ptr[CompiledFuncInfoVec], info: Compile
     self.data[self.len] = info
     self.len = self.len + 1
 
-pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: SymbolTable, pool: InternPool) -> str:
-    if sym_idx >= 0xE0000000 as i64:
-        let str_id = sym_idx - 0xE0000000 as i64
+pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable]) -> str:
+    if sym_idx == -30 as i64:
+        return "ax_str_slice"
+    let base: i64 = 3758096384
+    if sym_idx >= base:
+        let str_id = sym_idx - base
         let sym_name_buf = @alloc(64) as ptr[u8]
-        ax_snprintf_local(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as ptr[void], null as ptr[void])
+        let prefix = "Linfo.string." as ptr[u8]
+        mut idx := 0 as i64
+        while idx < 13:
+            sym_name_buf[idx] = prefix[idx]
+            idx = idx + 1
+        mut val := str_id as i64
+        if val == 0 as i64:
+            sym_name_buf[idx] = '0' as u8
+            idx = idx + 1
+        else:
+            mut temp_buf := @alloc(32) as ptr[u8]
+            mut temp_len := 0
+            while val > 0 as i64:
+                temp_buf[temp_len] = ('0' as u8 + (val % 10 as i64) as u8)
+                temp_len = temp_len + 1
+                val = val / 10 as i64
+            mut k := 0
+            while k < temp_len:
+                sym_name_buf[idx] = temp_buf[temp_len - 1 - k]
+                idx = idx + 1
+                k = k + 1
+            @free(temp_buf)
+        sym_name_buf[idx] = 0 as u8
         let res = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
         @free(sym_name_buf)
         return res
     if sym_idx == -1 as i64:
-        return "malloc"
+        return "ax_alloc"
 
     if sym_idx == -2 as i64:
-        return "free"
+        return "ax_free"
     if sym_idx == -3 as i64:
         return "ax_actor_spawn"
     if sym_idx == -4 as i64:
-        return "__ax_runtime_init"
+        return "ax___ax_runtime_init"
     if sym_idx == -5 as i64:
-        return "__ax_runtime_shutdown"
+        return "ax___ax_runtime_shutdown"
     if sym_idx == -8 as i64:
         return "abort"
     if sym_idx == -20 as i64:
         return "ExitProcess"
     if sym_idx == -21 as i64:
         return "strlen"
+    if sym_idx == -22 as i64:
+        return "ax_str_eq"
     if sym_idx == -10 as i64:
         return "ax_println_str"
     if sym_idx == -11 as i64:
@@ -299,22 +326,27 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: Symb
         return "ax_print_bool"
     if sym_idx <= 0 as i64:
         return current_fn_name
-    let name = x86_resolve_sym_name(sym_idx as u32, symbols, pool)
-    if name == "std.string.len":
+    let name = x86_resolve_sym_name(sym_idx as u32, symbols, pool, table)
+    if name == "alloc":
+        return "ax_alloc"
+    if name == "free":
+        return "ax_free"
+    if name == "std.string.len" or name == "ax_std.string.len":
         return "ax_str_len"
-    if name == "std.string.concat":
+    if name == "std.string.concat" or name == "ax_std.string.concat":
         return "ax_str_concat"
-    if name == "std.string.replace":
+    if name == "std.string.replace" or name == "ax_std.string.replace":
         return "ax_str_replace"
-    if name == "std.string.slice":
+    if name == "std.string.slice" or name == "ax_std.string.slice":
         return "ax_str_slice"
     return name
 
 
 
-pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: SymbolTable, pool: InternPool, table: TypeTable, format: str, self_link: bool) -> bool:
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool) -> bool:
+    let is_elf64 = (format_ptr[0] == 'e' as u8)
     mut abi := "win64"
-    if format == "elf64":
+    if is_elf64:
         abi = "sysv"
         
     mut all_code := new_byte_vec()
@@ -332,7 +364,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     while scan_fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[scan_fi]
         if not fn_ptr.is_extern:
-            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
             let name_nt = str_to_null_terminated(fn_name_str)
             ax_printf_local("[Debug Scan Fn] %s has %d insts\n", name_nt as i64, fn_ptr.insts.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -341,12 +373,17 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             while inst_i < fn_ptr.insts.len:
                 let inst = &fn_ptr.insts.data[inst_i]
                 if inst.opcode == OP_ICONST:
-                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
                     let name_nt = str_to_null_terminated(fn_name_str)
                     ax_printf_local("[Debug Scan] OP_ICONST in %s: type_id=%d, src1=%d\n", name_nt as i64, inst.type_id as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     fflush(null as ptr[void])
                     @free(name_nt)
-                if inst.opcode == OP_ICONST and inst.type_id == 12 as u16:
+                let t_id = inst.type_id as u32
+                mut is_str := (t_id == 12 as u32)
+                if t_id < table.entries.len as u32:
+                    if table.entries.data[t_id].size == 16 as u32:
+                        is_str = true
+                if inst.opcode == OP_ICONST and is_str:
                     let str_id = inst.src1
                     mut found := false
                     mut j := 0 as i64
@@ -359,7 +396,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                         let offset = rdata_buf.len as u32
                         str_keys.push(str_id)
                         str_offsets.push(offset)
-                        let text = pool.get(str_id)
+                        let raw_text = pool.get(str_id)
+                        let text = unescape_string_literal(raw_text)
                         let len = std.string.len(text)
                         let text_ptr = text as ptr[u8]
                         mut k := 0 as i64
@@ -367,6 +405,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                             push_byte(&rdata_buf, text_ptr[k])
                             k = k + 1
                         push_byte(&rdata_buf, 0 as u8) // null-terminate
+                        @free(text_ptr)
                 inst_i = inst_i + 1
         scan_fi = scan_fi + 1
 
@@ -376,12 +415,34 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
         let str_id = str_keys.data[str_i]
         let offset = str_offsets.data[str_i]
         let sym_name_buf = @alloc(64) as ptr[u8]
-        ax_snprintf_local(sym_name_buf as ptr[void], 64, "Linfo.string.%d" as ptr[u8], str_id as i64 as ptr[void], null as ptr[void])
+        let prefix = "Linfo.string." as ptr[u8]
+        mut idx := 0 as i64
+        while idx < 13:
+            sym_name_buf[idx] = prefix[idx]
+            idx = idx + 1
+        mut val := str_id as i64
+        if val == 0 as i64:
+            sym_name_buf[idx] = '0' as u8
+            idx = idx + 1
+        else:
+            mut temp_buf := @alloc(32) as ptr[u8]
+            mut temp_len := 0
+            while val > 0 as i64:
+                temp_buf[temp_len] = ('0' as u8 + (val % 10 as i64) as u8)
+                temp_len = temp_len + 1
+                val = val / 10 as i64
+            mut k := 0
+            while k < temp_len:
+                sym_name_buf[idx] = temp_buf[temp_len - 1 - k]
+                idx = idx + 1
+                k = k + 1
+            @free(temp_buf)
+        sym_name_buf[idx] = 0 as u8
         let temp_str = alloc_str_from_raw(sym_name_buf, strlen(sym_name_buf))
         let sym_name = pool.intern(temp_str)
         let sym_name_str = pool.get(sym_name)
         @free(temp_str as ptr[u8])
-        if format == "elf64":
+        if is_elf64:
             push_elf64_sym(&elf_syms, ELF64Sym(name_str: sym_name_str, value: offset as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 2 as u16))
         else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: sym_name_str, value: offset, section_num: 2 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
@@ -393,8 +454,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     while fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[fi]
         if fn_ptr.is_extern:
-            let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
-            if format == "elf64":
+            let name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
+            if is_elf64:
                 push_elf64_sym(&elf_syms, ELF64Sym(name_str: name, value: 0 as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: 0 as u16))
             else:
                 push_coff_symbol(&coff_syms, COFFSymbol(name_str: name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
@@ -404,7 +465,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     while fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[fi]
         if not fn_ptr.is_extern:
-            let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool)
+            let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
             let name_ptr = str_to_null_terminated(fn_name)
             ax_printf_local("[Debug] compile_native_binary: compiling function %s\n", name_ptr as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
@@ -418,12 +479,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             fflush(null as ptr[void])
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
             
-            mut gpr_len := 0 as i64
-            let avail_gprs = get_allocatable_gprs(&gpr_len)
-
-            ax_printf_local("[Debug]   running graph_coloring_alloc\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            ax_printf_local("[Debug]   running allocate_registers_orchestrator\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            let alloc_res = graph_coloring_alloc(intervals, avail_gprs, gpr_len, mach_insts.data, mach_insts.len, abi)
+            let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
             
             mut num_str_lits := 0 as i32
             mut loop_i := 0 as i64
@@ -443,13 +501,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             
             ax_printf_local("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame)
+            let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame, fn_ptr, table, symbols)
             
             mut emitter := new_mach_emitter()
 
             ax_printf_local("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
-            let is_windows = (format == "coff")
+            let is_windows = not is_elf64
             mut str_lit_counter := 0 as i32
             emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
@@ -471,9 +529,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             ax_printf_local("[Debug]     freeing cs_regs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
             @free(cs_regs)
-            ax_printf_local("[Debug]     freeing avail_gprs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(avail_gprs)
             ax_printf_local("[Debug]     freeing alloc_res.allocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             fflush(null as ptr[void])
             @free(alloc_res.allocs)
@@ -510,6 +565,87 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
             fflush(null as ptr[void])
                 
         fi = fi + 1
+
+    // Append identity variant constructors for sum types (Ok, Err, Some, None)
+    let ok_offset = all_code.len as u32
+    // mov rax, rcx -> 48 89 c8
+    push_byte(&all_code, 0x48 as u8)
+    push_byte(&all_code, 0x89 as u8)
+    push_byte(&all_code, 0xC8 as u8)
+    // ret -> c3
+    push_byte(&all_code, 0xC3 as u8)
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_Ok",
+        offset: ok_offset,
+        size: 4 as u32,
+        is_global: true,
+        relocs: new_relocation_vec()
+    ))
+
+    let err_offset = all_code.len as u32
+    push_byte(&all_code, 0x48 as u8)
+    push_byte(&all_code, 0x89 as u8)
+    push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0xC3 as u8)
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_Err",
+        offset: err_offset,
+        size: 4 as u32,
+        is_global: true,
+        relocs: new_relocation_vec()
+    ))
+
+    let some_offset = all_code.len as u32
+    push_byte(&all_code, 0x48 as u8)
+    push_byte(&all_code, 0x89 as u8)
+    push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0xC3 as u8)
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_Some",
+        offset: some_offset,
+        size: 4 as u32,
+        is_global: true,
+        relocs: new_relocation_vec()
+    ))
+
+    let none_offset = all_code.len as u32
+    push_byte(&all_code, 0x48 as u8)
+    push_byte(&all_code, 0x89 as u8)
+    push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0xC3 as u8)
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_None",
+        offset: none_offset,
+        size: 4 as u32,
+        is_global: true,
+        relocs: new_relocation_vec()
+    ))
+
+    // Append ax_block_size alias jumping to ax_str_slice
+    let block_size_offset = all_code.len as u32
+    // jmp near relative -> E9 00 00 00 00
+    push_byte(&all_code, 0xE9 as u8)
+    push_byte(&all_code, 0 as u8)
+    push_byte(&all_code, 0 as u8)
+    push_byte(&all_code, 0 as u8)
+    push_byte(&all_code, 0 as u8)
+
+    mut block_size_relocs := new_relocation_vec()
+    push_reloc(&block_size_relocs, Relocation(
+        offset: 1 as i64,
+        kind: 0 as u8, // RELOC_PC32
+        padding1: 0 as u8,
+        padding2: 0 as u16,
+        sym_name: 4294967266 as u32, // -30 as i64 represented as u32
+        addend: -4 as i64
+    ))
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_block_size",
+        offset: block_size_offset,
+        size: 5 as u32,
+        is_global: true,
+        relocs: block_size_relocs
+    ))
         
     ax_printf_local("[Debug] compile_native_binary: compiling loop finished, populating symbols starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
@@ -517,7 +653,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     mut i := 0 as i64
     while i < func_infos.len:
         let info = &func_infos.data[i]
-        if format == "elf64":
+        if is_elf64:
             push_elf64_sym(&elf_syms, ELF64Sym(name_str: info.name, value: info.offset as u64, size: info.size as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: text_sec_idx as u16))
         else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
@@ -537,12 +673,17 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
         while r_i < info.relocs.len:
             let r = info.relocs.data[r_i]
             mut sym_idx := r.sym_name as i64
-            if r.sym_name > 0xF0000000 as u32:
-                sym_idx = sym_idx - 4294967296 as i64
-            let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool)
+            let limit: i64 = 4026531840
+            if sym_idx > limit:
+                sym_idx = sym_idx - (1 as i64 << 32)
+            let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool, table)
+            let name_nt = str_to_null_terminated(target_name)
+            ax_printf_local("[Debug Reloc] func=%s, offset=%d, sym_name=%d, sym_idx=%d, resolved=%s\n", (info.name as ptr[u8]) as i64, r.offset as i64, r.sym_name as i64, sym_idx, name_nt as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            @free(name_nt)
             
             mut target_sym_idx := -1 as i32
-            if format == "elf64":
+            if is_elf64:
                 mut sym_search := 0 as i64
                 while sym_search < elf_syms.len:
                     if elf_syms.data[sym_search].name_str == target_name:
@@ -568,7 +709,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                     target_sym_idx = new_idx
                     
             let reloc_offset = func_offset + r.offset as u32
-            if format == "elf64":
+            if is_elf64:
                 push_reloc(&elf_relocs, Relocation(offset: reloc_offset as i64, kind: r.kind, padding1: 0 as u8, padding2: 0 as u16, sym_name: target_sym_idx as u32, addend: r.addend))
             else:
                 mut reloc_type := IMAGE_REL_AMD64_REL32
@@ -584,7 +725,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
                     all_code.data[reloc_offset as i64 + 6] = ((val >> 48 as i64) & 0xFF as i64) as u8
                     all_code.data[reloc_offset as i64 + 7] = ((val >> 56 as i64) & 0xFF as i64) as u8
                 else:
-                    let val = r.addend as i32
+                    mut val := (r.addend + 4) as i32
                     all_code.data[reloc_offset as i64 + 0] = (val & 0xFF as i32) as u8
                     all_code.data[reloc_offset as i64 + 1] = ((val >> 8 as i32) & 0xFF as i32) as u8
                     all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i32) & 0xFF as i32) as u8
@@ -597,7 +738,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: Symb
     ax_printf_local("[Debug] compile_native_binary: populating relocs done, writing object file starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     mut success := false
-    if format == "elf64":
+    if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &coff_relocs, &coff_syms)

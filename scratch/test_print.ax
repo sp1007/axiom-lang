@@ -1,3 +1,17 @@
-fn main() -> i32:
-    println("Hello, world!")
-    return 0
+import std.string
+
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+
+pub fn get_str_ptr(s: str) -> ptr[u8]:
+    return s as ptr[u8]
+
+fn print_raw(s: str):
+    let stdout_handle = GetStdHandle(0xFFFFFFF5 as u32)
+    mut written := 0 as u32
+    let s_ptr = get_str_ptr(s) as ptr[void]
+    let s_len = std.string.len(s) as u32
+    WriteFile(stdout_handle, s_ptr, s_len, (&written) as ptr[void], null as ptr[void])
+
+pub fn main():
+    print_raw("Usage: axc <file.ax>\n")

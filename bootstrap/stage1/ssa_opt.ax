@@ -240,15 +240,28 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
     if max_reg == 0 as u32:
         return false
 
+    let def_counts = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_counts as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+
     let copy_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
     @memset(copy_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
 
     mut i := 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
+        if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+            if inst.dest <= max_reg:
+                def_counts[inst.dest] = def_counts[inst.dest] + 1 as u32
+        i = i + 1 as i64
+
+    i = 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
         if inst.opcode != OP_NOP:
             if (inst.opcode == OP_COPY or inst.opcode == OP_MOVE) and inst.dest != 0 as u32 and inst.src1 != 0 as u32:
-                copy_map[inst.dest] = inst.src1
+                if inst.dest <= max_reg and inst.src1 <= max_reg:
+                    if def_counts[inst.dest] == 1 as u32 and def_counts[inst.src1] == 1 as u32:
+                        copy_map[inst.dest] = inst.src1
         i = i + 1 as i64
 
     mut changed := false
@@ -356,6 +369,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
 
         i = i + 1 as i64
 
+    @free(def_counts as ptr[u8])
     @free(copy_map as ptr[u8])
     return changed
 
@@ -404,7 +418,7 @@ pub fn remove_unreachable_blocks(f: ptr[AirFunc]) -> bool:
                 let inst_idx = f.block_instrs.data[blk.instrs_start + i]
                 if (inst_idx as i64) < f.insts.len:
                     f.insts.data[inst_idx].opcode = OP_NOP
-                    f.insts.data[inst_idx].type_id = 0 as u16
+                    f.insts.data[inst_idx].type_id = 0 as u32
                     f.insts.data[inst_idx].dest = 0 as u32
                     f.insts.data[inst_idx].src1 = 0 as u32
                     f.insts.data[inst_idx].src2 = 0 as u32
@@ -477,7 +491,7 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
             if not has_side_effect(inst.opcode):
                 if use_count[inst.dest] == 0 as u32:
                     inst.opcode = OP_NOP
-                    inst.type_id = 0 as u16
+                    inst.type_id = 0 as u32
                     inst.dest = 0 as u32
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -576,7 +590,7 @@ pub fn licm_func(f: ptr[AirFunc]) -> bool:
                                 adjust_bi = adjust_bi + 1 as i64
                                 
                             inst.opcode = OP_NOP
-                            inst.type_id = 0 as u16
+                            inst.type_id = 0 as u32
                             inst.dest = 0 as u32
                             inst.src1 = 0 as u32
                             inst.src2 = 0 as u32
@@ -1021,7 +1035,7 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                             next_reg = next_reg + 1 as u32
                                             insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
                                                 opcode: OP_ICONST,
-                                                type_id: 3 as u16,
+                                                type_id: 3 as u32,
                                                 dest: temp_iv_reg,
                                                 src1: curr_iv_val,
                                                 src2: 0 as u32
@@ -1110,7 +1124,8 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
     while fi < m.funcs.len:
         mut f := &m.funcs.data[fi]
         if not f.is_extern:
-            compute_loop_depths(f)
+            if self.level >= 2 as u8:
+                compute_loop_depths(f)
             mut iter := 0
             while iter < 10:
                 mut changed := false
@@ -1119,12 +1134,13 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
                     changed = true
                 if copy_prop_func(f):
                     changed = true
-                if licm_func(f):
-                    changed = true
-                if strength_reduction_func(f):
-                    changed = true
-                if loop_unroll_func(f):
-                    changed = true
+                if self.level >= 2 as u8:
+                    if licm_func(f):
+                        changed = true
+                    if strength_reduction_func(f):
+                        changed = true
+                    if loop_unroll_func(f):
+                        changed = true
                 if dce_func(f):
                     changed = true
 

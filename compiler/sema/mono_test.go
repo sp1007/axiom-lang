@@ -86,8 +86,8 @@ func TestMonoBasic(t *testing.T) {
 	instSym := st.SymbolAt(instSymID)
 	instName := string(pool.Get(instSym.NameID))
 	
-	if instName != "_AX_std_identity_i32" {
-		t.Errorf("expected mangled name _AX_std_identity_i32, got %s", instName)
+	if instName != "_AX_std_identity__i32" {
+		t.Errorf("expected mangled name _AX_std_identity__i32, got %s", instName)
 	}
 
 	// Second instantiation should return cached ID
@@ -264,7 +264,7 @@ func TestMonoRecursive(t *testing.T) {
 
 	sym := st.SymbolAt(instSymID)
 	instName := string(pool.Get(sym.NameID))
-	if instName != "_AX_std_fib_i32" {
-		t.Errorf("expected mangled name _AX_std_fib_i32, got %s", instName)
+	if instName != "_AX_std_fib__i32" {
+		t.Errorf("expected mangled name _AX_std_fib__i32, got %s", instName)
 	}
 }

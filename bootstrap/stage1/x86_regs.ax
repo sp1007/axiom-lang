@@ -1,5 +1,6 @@
 // bootstrap/stage1/x86_regs.ax
 // Physical register file and classifications for x86-64 in self-hosted AXIOM.
+import std.string
 
 pub const REG_RAX: u8 = 0
 pub const REG_RCX: u8 = 1
@@ -17,16 +18,39 @@ pub const REG_R12: u8 = 12
 pub const REG_R13: u8 = 13
 pub const REG_R14: u8 = 14
 pub const REG_R15: u8 = 15
+
+pub const REG_XMM0:  u8 = 16
+pub const REG_XMM1:  u8 = 17
+pub const REG_XMM2:  u8 = 18
+pub const REG_XMM3:  u8 = 19
+pub const REG_XMM4:  u8 = 20
+pub const REG_XMM5:  u8 = 21
+pub const REG_XMM6:  u8 = 22
+pub const REG_XMM7:  u8 = 23
+pub const REG_XMM8:  u8 = 24
+pub const REG_XMM9:  u8 = 25
+pub const REG_XMM10: u8 = 26
+pub const REG_XMM11: u8 = 27
+pub const REG_XMM12: u8 = 28
+pub const REG_XMM13: u8 = 29
+pub const REG_XMM14: u8 = 30
+pub const REG_XMM15: u8 = 31
+
 pub const REG_NONE: u8 = 255
 
 pub fn reg_is_gpr(r: u8) -> bool:
     return r < 16 as u8
 
+pub fn reg_is_xmm(r: u8) -> bool:
+    return r >= 16 as u8 and r < 32 as u8
+
 pub fn reg_hw_reg(r: u8) -> u8:
-    return r & 7 as u8
+    if reg_is_xmm(r):
+        return r - 16 as u8
+    return r & 15 as u8
 
 pub fn reg_needs_rex(r: u8) -> bool:
-    return r >= 8 as u8
+    return reg_hw_reg(r) >= 8 as u8
 
 pub fn reg_to_str(r: u8) -> str:
     if r == REG_RAX:
@@ -61,6 +85,38 @@ pub fn reg_to_str(r: u8) -> str:
         return "r14"
     if r == REG_R15:
         return "r15"
+    if r == REG_XMM0:
+        return "xmm0"
+    if r == REG_XMM1:
+        return "xmm1"
+    if r == REG_XMM2:
+        return "xmm2"
+    if r == REG_XMM3:
+        return "xmm3"
+    if r == REG_XMM4:
+        return "xmm4"
+    if r == REG_XMM5:
+        return "xmm5"
+    if r == REG_XMM6:
+        return "xmm6"
+    if r == REG_XMM7:
+        return "xmm7"
+    if r == REG_XMM8:
+        return "xmm8"
+    if r == REG_XMM9:
+        return "xmm9"
+    if r == REG_XMM10:
+        return "xmm10"
+    if r == REG_XMM11:
+        return "xmm11"
+    if r == REG_XMM12:
+        return "xmm12"
+    if r == REG_XMM13:
+        return "xmm13"
+    if r == REG_XMM14:
+        return "xmm14"
+    if r == REG_XMM15:
+        return "xmm15"
     return "none"
 
 // System V AMD64 ABI Integer Argument Registers
@@ -91,6 +147,36 @@ pub fn get_win64_arg_reg(idx: i64) -> u8:
         return REG_R9
     return REG_NONE
 
+pub fn get_sysv_float_arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_XMM0
+    if idx == 1:
+        return REG_XMM1
+    if idx == 2:
+        return REG_XMM2
+    if idx == 3:
+        return REG_XMM3
+    if idx == 4:
+        return REG_XMM4
+    if idx == 5:
+        return REG_XMM5
+    if idx == 6:
+        return REG_XMM6
+    if idx == 7:
+        return REG_XMM7
+    return REG_NONE
+
+pub fn get_win64_float_arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_XMM0
+    if idx == 1:
+        return REG_XMM1
+    if idx == 2:
+        return REG_XMM2
+    if idx == 3:
+        return REG_XMM3
+    return REG_NONE
+
 // Caller-saved GPRs (System V)
 pub fn reg_is_sysv_caller_saved(r: u8) -> bool:
     if r == REG_RAX or r == REG_RCX or r == REG_RDX or r == REG_RSI or r == REG_RDI or r == REG_R8 or r == REG_R9 or r == REG_R10 or r == REG_R11:
@@ -109,12 +195,82 @@ pub fn reg_is_win64_callee_saved(r: u8) -> bool:
         return true
     return false
 
-pub fn x86_resolve_sym_name(sym_idx: u32, symbols: SymbolTable, pool: InternPool) -> str:
+pub fn x86_resolve_sym_name(sym_idx: u32, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable]) -> str:
     if sym_idx == 0 as u32:
         return ""
     if sym_idx as i64 >= symbols.symbols.len:
         return ""
-    let name_id = symbols.symbols.data[sym_idx].name_id
-    let name = pool.get(name_id)
-    return name
+    let sym = &symbols.symbols.data[sym_idx as i64]
+    if sym.kind != 1 as u8 and sym.kind != 10 as u8 and sym.kind != 0 as u8 and sym.kind != 12 as u8 and sym.kind != 5 as u8:
+        return ""
+    let fn_name = pool.get(sym.name_id)
+    
+    if fn_name == "main" or fn_name == "_AX_main_main_v_v":
+        return fn_name
+        
+    if fn_name == "memcpy" or fn_name == "memset" or fn_name == "memmove" or fn_name == "realloc":
+        return fn_name
+        
+    if fn_name == "free":
+        let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+        if is_extern:
+            return "free"
+        return "ax_free"
+
+    if fn_name == "alloc":
+        let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+        if is_extern:
+            return "malloc"
+        return "ax_alloc"
+
+    if fn_name == "malloc":
+        let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+        if is_extern:
+            return "malloc"
+        return "ax_alloc"
+
+    let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
+    if is_extern:
+        return fn_name
+
+    if sym.type_id != 0 as u32 and table != null as ptr[TypeTable] and (sym.type_id as i64) < table.entries.len:
+        let entry = table.entries.data[sym.type_id as i64]
+        if entry.kind == TYPE_KIND_FUNC:
+            let fi = table.funcs.data[entry.extra as i64]
+            if fi.params.len > 0 as i64:
+                mut first_param_type = fi.params.data[0]
+                mut p_entry = table.entries.data[first_param_type as i64]
+                if p_entry.kind == TYPE_KIND_POINTER:
+                    first_param_type = p_entry.extra
+                    p_entry = table.entries.data[first_param_type as i64]
+                
+                if (p_entry.kind == TYPE_KIND_STRUCT or p_entry.kind == TYPE_KIND_SUM) and p_entry.name_id != 0 as u32:
+                    let struct_name = pool.get(p_entry.name_id)
+                    let struct_len = std.string.len(struct_name)
+                    let fn_len = std.string.len(fn_name)
+                    let total_len = 3 + struct_len + 1 + fn_len
+                    mut res := @alloc(total_len + 1) as ptr[u8]
+                    @memcpy(res, "ax_" as ptr[u8], 3)
+                    
+                    let dest1 = ((res as u64) + 3 as u64) as ptr[u8]
+                    @memcpy(dest1, get_str_ptr(struct_name), struct_len)
+                    
+                    res[3 + struct_len] = '_' as u8
+                    
+                    let dest2 = ((res as u64) + 3 as u64 + struct_len as u64 + 1 as u64) as ptr[u8]
+                    @memcpy(dest2, get_str_ptr(fn_name), fn_len)
+                    
+                    res[total_len] = 0 as u8
+                    let s_val = AxiomString(ptr: res, len: total_len)
+                    return (&s_val as ptr[str])[0]
+
+    let fn_len = std.string.len(fn_name)
+    mut res := @alloc(3 + fn_len + 1) as ptr[u8]
+    @memcpy(res, "ax_" as ptr[u8], 3)
+    let dest = ((res as u64) + 3 as u64) as ptr[u8]
+    @memcpy(dest, get_str_ptr(fn_name), fn_len)
+    res[3 + fn_len] = 0 as u8
+    let s_val = AxiomString(ptr: res, len: 3 + fn_len)
+    return (&s_val as ptr[str])[0]
+
 

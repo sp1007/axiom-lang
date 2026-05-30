@@ -61,6 +61,13 @@ func (ae *AsmEmitter) EmitInst(inst MachInst) string {
 	case MachRet:
 		return "    ret"
 	case MachMov:
+		dstReg := ae.resolveReg(inst.Dst)
+		srcReg := ae.resolveReg(inst.Src1)
+		if dstReg.IsXMM() && srcReg.IsXMM() {
+			return fmt.Sprintf("    movsd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+		} else if dstReg.IsXMM() || srcReg.IsXMM() {
+			return fmt.Sprintf("    movq %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+		}
 		return fmt.Sprintf("    mov %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
 	case MachMovImm:
 		return fmt.Sprintf("    mov %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
@@ -112,6 +119,7 @@ func (ae *AsmEmitter) EmitInst(inst MachInst) string {
 	case MachJcc:
 		return fmt.Sprintf("    j%s %s", inst.CC.String(), ae.FormatOperand(inst.Dst))
 	case MachLoad:
+		dstReg := ae.resolveReg(inst.Dst)
 		base := ae.FormatOperand(inst.Src1)
 		disp := int64(0)
 		if inst.Src2.Kind == OpndImm {
@@ -125,11 +133,18 @@ func (ae *AsmEmitter) EmitInst(inst MachInst) string {
 		} else {
 			addrStr = fmt.Sprintf("[%s - %d]", base, -disp)
 		}
+		if dstReg.IsXMM() {
+			if ae.Format == "winasm" {
+				return fmt.Sprintf("    movsd %s, qword ptr %s", ae.FormatOperand(inst.Dst), addrStr)
+			}
+			return fmt.Sprintf("    movsd %s, %s", ae.FormatOperand(inst.Dst), addrStr)
+		}
 		if ae.Format == "winasm" {
 			return fmt.Sprintf("    mov %s, qword ptr %s", ae.FormatOperand(inst.Dst), addrStr)
 		}
 		return fmt.Sprintf("    mov %s, %s", ae.FormatOperand(inst.Dst), addrStr)
 	case MachStore:
+		srcReg := ae.resolveReg(inst.Src1)
 		base := ae.FormatOperand(inst.Dst)
 		disp := int64(0)
 		if inst.Src2.Kind == OpndImm {
@@ -143,10 +158,34 @@ func (ae *AsmEmitter) EmitInst(inst MachInst) string {
 		} else {
 			addrStr = fmt.Sprintf("[%s - %d]", base, -disp)
 		}
+		if srcReg.IsXMM() {
+			if ae.Format == "winasm" {
+				return fmt.Sprintf("    movsd qword ptr %s, %s", addrStr, ae.FormatOperand(inst.Src1))
+			}
+			return fmt.Sprintf("    movsd %s, %s", addrStr, ae.FormatOperand(inst.Src1))
+		}
 		if ae.Format == "winasm" {
 			return fmt.Sprintf("    mov qword ptr %s, %s", addrStr, ae.FormatOperand(inst.Src1))
 		}
 		return fmt.Sprintf("    mov %s, %s", addrStr, ae.FormatOperand(inst.Src1))
+	case MachFAdd:
+		return fmt.Sprintf("    addsd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachFSub:
+		return fmt.Sprintf("    subsd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachFMul:
+		return fmt.Sprintf("    mulsd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachFDiv:
+		return fmt.Sprintf("    divsd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachFCmp:
+		return fmt.Sprintf("    comisd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachItof:
+		return fmt.Sprintf("    cvtsi2sd %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachFtoi:
+		return fmt.Sprintf("    cvttsd2si %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachMovDQ:
+		return fmt.Sprintf("    movq %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
+	case MachMovQD:
+		return fmt.Sprintf("    movq %s, %s", ae.FormatOperand(inst.Dst), ae.FormatOperand(inst.Src1))
 	default:
 		return "    ; unknown instruction"
 	}

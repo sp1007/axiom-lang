@@ -1,12 +1,12 @@
-// AXIOM Standard Library — std::net
+// AXIOM Standard Library — std.net
 //
 // Networking: TCP, UDP, IP addresses.
 
-import std::os::win32
-import std::os::linux_sys
-import std::os
+import std.os.win32
+import std.os.linux_sys
+import std.os
 
-#if std::os::IS_WINDOWS
+#if std.os.IS_WINDOWS
 extern "C" fn WSAStartup(wVersionRequired: u16, lpWSAData: ptr[void]) -> i32
 extern "C" fn socket(af: i32, type_val: i32, protocol: i32) -> i64
 extern "C" fn bind(s: i64, name: ptr[void], namelen: i32) -> i32
@@ -50,7 +50,7 @@ pub struct TcpStream {
 
 impl TcpStream {
     pub async fn connect(addr: SocketAddr) -> Result[TcpStream, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let wsa_data = @alloc(512) as ptr[void]
             WSAStartup(0x0202 as u16, wsa_data)
             @free(wsa_data as ptr[u8])
@@ -85,7 +85,7 @@ impl TcpStream {
             return Ok(TcpStream { fd: fd })
         } else {
             // Linux: SYS_SOCKET = 41, SYS_CONNECT = 42
-            let fd = std::os::linux_sys::syscall(41 as u64, 2 as u64, 1 as u64, 6 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let fd = std.os.linux_sys.syscall(41 as u64, 2 as u64, 1 as u64, 6 as u64, 0 as u64, 0 as u64, 0 as u64)
             if fd < 0 {
                 return Err("failed to create socket")
             }
@@ -105,10 +105,10 @@ impl TcpStream {
             ((sa as i64) + 2).* = port_swapped as i16
             ((sa as i64) + 4).* = ip_val as i32
 
-            let c_res = std::os::linux_sys::syscall(42 as u64, fd as u64, sa as u64, 16 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let c_res = std.os.linux_sys.syscall(42 as u64, fd as u64, sa as u64, 16 as u64, 0 as u64, 0 as u64, 0 as u64)
             @free(sa as ptr[u8])
             if c_res < 0 {
-                std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+                std.os.linux_sys.syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
                 return Err("failed to connect socket")
             }
 
@@ -117,14 +117,14 @@ impl TcpStream {
     }
 
     pub async fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let res = recv(self.fd, buf, count as i32, 0 as i32)
             if res < 0 {
                 return Err("recv failed")
             }
             return Ok(res as i64)
         } else {
-            let res = std::os::linux_sys::syscall(45 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
+            let res = std.os.linux_sys.syscall(45 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
             if res < 0 {
                 return Err("recv failed")
             }
@@ -133,14 +133,14 @@ impl TcpStream {
     }
 
     pub async fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let res = send(self.fd, buf, count as i32, 0 as i32)
             if res < 0 {
                 return Err("send failed")
             }
             return Ok(res as i64)
         } else {
-            let res = std::os::linux_sys::syscall(44 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
+            let res = std.os.linux_sys.syscall(44 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
             if res < 0 {
                 return Err("send failed")
             }
@@ -149,14 +149,14 @@ impl TcpStream {
     }
 
     pub fn close(mut self) -> Result[void, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let res = closesocket(self.fd)
             if res != 0 {
                 return Err("failed to close socket")
             }
             return Ok(())
         } else {
-            let res = std::os::linux_sys::syscall(3 as u64, self.fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let res = std.os.linux_sys.syscall(3 as u64, self.fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
             if res < 0 {
                 return Err("failed to close socket")
             }
@@ -175,7 +175,7 @@ pub struct TcpListener {
 
 impl TcpListener {
     pub fn bind(addr: SocketAddr) -> Result[TcpListener, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let wsa_data = @alloc(512) as ptr[void]
             WSAStartup(0x0202 as u16, wsa_data)
             @free(wsa_data as ptr[u8])
@@ -215,7 +215,7 @@ impl TcpListener {
 
             return Ok(TcpListener { fd: fd })
         } else {
-            let fd = std::os::linux_sys::syscall(41 as u64, 2 as u64, 1 as u64, 6 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let fd = std.os.linux_sys.syscall(41 as u64, 2 as u64, 1 as u64, 6 as u64, 0 as u64, 0 as u64, 0 as u64)
             if fd < 0 {
                 return Err("failed to create socket")
             }
@@ -235,16 +235,16 @@ impl TcpListener {
             ((sa as i64) + 2).* = port_swapped as i16
             ((sa as i64) + 4).* = ip_val as i32
 
-            let b_res = std::os::linux_sys::syscall(49 as u64, fd as u64, sa as u64, 16 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let b_res = std.os.linux_sys.syscall(49 as u64, fd as u64, sa as u64, 16 as u64, 0 as u64, 0 as u64, 0 as u64)
             @free(sa as ptr[u8])
             if b_res < 0 {
-                std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+                std.os.linux_sys.syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
                 return Err("failed to bind socket")
             }
 
-            let l_res = std::os::linux_sys::syscall(50 as u64, fd as u64, 128 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let l_res = std.os.linux_sys.syscall(50 as u64, fd as u64, 128 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
             if l_res < 0 {
-                std::os::linux_sys::syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+                std.os.linux_sys.syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
                 return Err("failed to listen on socket")
             }
 
@@ -253,7 +253,7 @@ impl TcpListener {
     }
 
     pub async fn accept(self) -> Result[TcpStream, str] {
-        if std::os::IS_WINDOWS {
+        if std.os.IS_WINDOWS {
             let sa = @alloc(16) as ptr[void]
             mut sa_len := 16 as i32
             let client_fd = accept(self.fd, sa, &sa_len)
@@ -265,7 +265,7 @@ impl TcpListener {
         } else {
             let sa = @alloc(16) as ptr[void]
             mut sa_len := 16 as i32
-            let client_fd = std::os::linux_sys::syscall(43 as u64, self.fd as u64, sa as u64, &sa_len as i64 as u64, 0 as u64, 0 as u64, 0 as u64)
+            let client_fd = std.os.linux_sys.syscall(43 as u64, self.fd as u64, sa as u64, &sa_len as i64 as u64, 0 as u64, 0 as u64, 0 as u64)
             @free(sa as ptr[u8])
             if client_fd < 0 {
                 return Err("failed to accept connection")

@@ -91,7 +91,15 @@ func (e *Emitter) emitMachInst(inst MachInst) {
 		dst := e.resolveReg(inst.Dst)
 		src := e.resolveReg(inst.Src1)
 		if dst != RegNone && src != RegNone {
-			e.emit(EncodeMovRR(dst, src))
+			if dst.IsXMM() && src.IsXMM() {
+				e.emit(EncodeMovSD(dst, src))
+			} else if dst.IsXMM() && src.IsGPR() {
+				e.emit(EncodeMovDQ(dst, src))
+			} else if dst.IsGPR() && src.IsXMM() {
+				e.emit(EncodeMovQD(dst, src))
+			} else {
+				e.emit(EncodeMovRR(dst, src))
+			}
 		}
 
 	case MachMovImm:
@@ -245,7 +253,11 @@ func (e *Emitter) emitMachInst(inst MachInst) {
 		if inst.Src2.Kind == OpndImm {
 			disp = int32(inst.Src2.Imm)
 		}
-		e.emit(EncodeMovLoad(dst, base, disp))
+		if dst.IsXMM() {
+			e.emit(EncodeMovSDLoad(dst, base, disp))
+		} else {
+			e.emit(EncodeMovLoad(dst, base, disp))
+		}
 
 	case MachStore:
 		base := e.resolveReg(inst.Dst)
@@ -254,7 +266,56 @@ func (e *Emitter) emitMachInst(inst MachInst) {
 		if inst.Src2.Kind == OpndImm {
 			disp = int32(inst.Src2.Imm)
 		}
-		e.emit(EncodeMovStore(base, disp, src))
+		if src.IsXMM() {
+			e.emit(EncodeMovSDStore(base, disp, src))
+		} else {
+			e.emit(EncodeMovStore(base, disp, src))
+		}
+
+	case MachFAdd:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeAddSD(dst, src))
+
+	case MachFSub:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeSubSD(dst, src))
+
+	case MachFMul:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeMulSD(dst, src))
+
+	case MachFDiv:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeDivSD(dst, src))
+
+	case MachFCmp:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeComiSD(dst, src))
+
+	case MachItof:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeCvtSI2SD(dst, src))
+
+	case MachFtoi:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeCvtTSD2SI(dst, src))
+
+	case MachMovDQ:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeMovDQ(dst, src))
+
+	case MachMovQD:
+		dst := e.resolveReg(inst.Dst)
+		src := e.resolveReg(inst.Src1)
+		e.emit(EncodeMovQD(dst, src))
 	}
 }
 
