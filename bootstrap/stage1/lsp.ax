@@ -1,0 +1,252 @@
+// bootstrap/stage1/lsp.ax
+// AXIOM Language Server Protocol (LSP) server implemented 100% in AXIOM.
+// Supports standard JSON-RPC framing, initialize, shutdown, hover, and definition stubs.
+
+import std.io
+import std.string
+import std.collections
+
+extern "C" fn exit(code: i32)
+extern "C" fn fflush(stream: ptr[void]) -> i32
+extern "C" fn puts(s: str) -> i32
+extern "C" fn snprintf(s_buf: ptr[u8], size: i64, format: str, val: i64) -> i32
+
+// Global active documents cache pointer (stored as u64 to bypass CGen global type bugs)
+mut g_documents: u64 = 0 as u64
+
+fn lsp_send_message(msg: str):
+    let out = std.io.stdout()
+    let len = msg.len
+    
+    // Convert len to string using snprintf
+    let len_buf = @alloc(32) as ptr[u8]
+    snprintf(len_buf, 32, "%d", len)
+    let len_str = len_buf as str
+    
+    // Headers
+    let header = std.string.concat("Content-Length: ", std.string.concat(std.string.concat("", len_str), "\r\n\r\n"))
+    let r1 = out.write_all(header)
+    let r2 = out.write_all(msg)
+    
+    @free(len_buf)
+    @free(get_str_ptr(header))
+    fflush(null as ptr[void])
+
+fn lsp_parse_content_length(header: str) -> i64:
+    let prefix = "Content-Length:"
+    if std.string.starts_with(header, prefix):
+        let val_part = std.string.slice(header, std.string.len(prefix), std.string.len(header))
+        let trimmed = std.string.trim(val_part)
+        let len_res = std.string.to_i64(trimmed)
+        mut len := 0 as i64
+        if len_res.is_ok():
+            len = len_res.unwrap()
+        @free(get_str_ptr(val_part))
+        @free(get_str_ptr(trimmed))
+        return len
+    return 0 as i64
+
+fn lsp_read_message(mut in_file: File) -> str:
+    // Read Content-Length header
+    let buf = @alloc(1024) as ptr[u8]
+    mut idx := 0 as i64
+    mut content_len := 0 as i64
+    
+    mut loop := true
+    while loop:
+        let r = in_file.read((buf as i64 + idx) as ptr[u8], 1)
+        if r.is_err() or r.unwrap() == 0 as i64:
+            @free(buf)
+            return ""
+        
+        let c = buf[idx]
+        if c == 10 as u8 and idx > 0 as i64 and buf[idx - 1] == 13 as u8:
+            // End of line
+            buf[idx + 1] = 0 as u8
+            let line = buf as str
+            let line_len = lsp_parse_content_length(line)
+            if line_len > 0 as i64:
+                content_len = line_len
+            
+            let trimmed_line = std.string.trim(line)
+            if std.string.len(trimmed_line) == 0 as i64:
+                // End of headers (\r\n\r\n)
+                loop = false
+            @free(get_str_ptr(trimmed_line))
+            idx = 0 as i64
+        else:
+            idx = idx + 1 as i64
+            if idx >= 1024 as i64:
+                @free(buf)
+                return ""
+    
+    @free(buf)
+    
+    if content_len <= 0 as i64:
+        return ""
+    
+    // Read body
+    let body_buf = @alloc(content_len + 1) as ptr[u8]
+    mut read_bytes := 0 as i64
+    while read_bytes < content_len:
+        let r = in_file.read((body_buf as i64 + read_bytes) as ptr[u8], content_len - read_bytes)
+        if r.is_err() or r.unwrap() == 0 as i64:
+            @free(body_buf)
+            return ""
+        read_bytes = read_bytes + r.unwrap()
+    body_buf[content_len] = 0 as u8
+    
+    let body = body_buf as str
+    return body
+
+fn lsp_json_get_field(json: str, key: str) -> str:
+    let search = std.string.concat("\"", std.string.concat(key, "\":"))
+    let idx = std.string.index_of(json, search)
+    @free(get_str_ptr(search))
+    if idx == -1 as i64:
+        return ""
+    
+    let start = idx + std.string.len(search)
+    let remains = std.string.slice(json, start, std.string.len(json))
+    let trimmed = std.string.trim(remains)
+    @free(get_str_ptr(remains))
+    
+    if std.string.len(trimmed) == 0 as i64:
+        @free(get_str_ptr(trimmed))
+        return ""
+        
+    // If string literal
+    if trimmed[0] as u8 == 34 as u8: // '"'
+        mut i := 1 as i64
+        mut escaped := false
+        while i < std.string.len(trimmed):
+            let c = trimmed[i] as u8
+            if escaped:
+                escaped = false
+            elif c == 92 as u8: // '\\'
+                escaped = true
+            elif c == 34 as u8: // '"'
+                let val = std.string.slice(trimmed, 1 as i64, i)
+                @free(get_str_ptr(trimmed))
+                return val
+            i = i + 1 as i64
+            
+    // If number or raw value
+    mut end_idx := 0 as i64
+    while end_idx < std.string.len(trimmed):
+        let c = trimmed[end_idx] as u8
+        if c == 44 as u8 or c == 125 as u8 or c == 93 as u8 or c == 13 as u8 or c == 10 as u8: // ',' or '}' or ']'
+            break
+        end_idx = end_idx + 1 as i64
+        
+    let val = std.string.slice(trimmed, 0 as i64, end_idx)
+    let clean = std.string.trim(val)
+    @free(get_str_ptr(trimmed))
+    @free(get_str_ptr(val))
+    return clean
+
+pub fn lsp_start_server():
+    // Initialize global documents HashMap on the heap (size of HashMap is 6 fields * 8 bytes = 48)
+    let size = 48 as u64
+    let map_ptr = @alloc(size) as ptr[HashMap[str, str]]
+    map_ptr.* = new_hashmap[str, str]()
+    g_documents = map_ptr as u64
+
+    let in_file = std.io.stdin()
+    
+    mut loop := true
+    while loop:
+        let msg_str = lsp_read_message(in_file)
+        if std.string.len(msg_str) == 0 as i64:
+            loop = false
+            continue
+        
+        let req_id = lsp_json_get_field(msg_str, "id")
+        let method = lsp_json_get_field(msg_str, "method")
+        
+        if method == "initialize":
+            let resp = std.string.concat(
+                "{\"jsonrpc\":\"2.0\",\"id\":",
+                std.string.concat(req_id, ",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true}}}")
+            )
+            lsp_send_message(resp)
+            @free(get_str_ptr(resp))
+        
+        elif method == "shutdown":
+            let resp = std.string.concat(
+                "{\"jsonrpc\":\"2.0\",\"id\":",
+                std.string.concat(req_id, ",\"result\":{}}")
+            )
+            lsp_send_message(resp)
+            @free(get_str_ptr(resp))
+        
+        elif method == "exit":
+            @free(get_str_ptr(req_id))
+            @free(get_str_ptr(method))
+            @free(get_str_ptr(msg_str))
+            exit(0 as i32)
+        
+        elif method == "textDocument/didOpen":
+            let uri = lsp_json_get_field(msg_str, "uri")
+            let text = lsp_json_get_field(msg_str, "text")
+            if std.string.len(uri) > 0 as i64:
+                let docs = g_documents as ptr[HashMap[str, str]]
+                (docs.*).insert(uri, text)
+                
+                // Publish empty diagnostics for now to satisfy client
+                let diag = std.string.concat(
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"",
+                    std.string.concat(uri, "\",\"diagnostics\":[]}}")
+                )
+                lsp_send_message(diag)
+                @free(get_str_ptr(diag))
+            else:
+                @free(get_str_ptr(text))
+            @free(get_str_ptr(uri))
+        
+        elif method == "textDocument/didChange":
+            let uri = lsp_json_get_field(msg_str, "uri")
+            let text = lsp_json_get_field(msg_str, "text")
+            if std.string.len(uri) > 0 as i64:
+                let docs = g_documents as ptr[HashMap[str, str]]
+                (docs.*).insert(uri, text)
+                
+                // Publish empty diagnostics
+                let diag = std.string.concat(
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"",
+                    std.string.concat(uri, "\",\"diagnostics\":[]}}")
+                )
+                lsp_send_message(diag)
+                @free(get_str_ptr(diag))
+            else:
+                @free(get_str_ptr(text))
+            @free(get_str_ptr(uri))
+        
+        elif method == "textDocument/hover":
+            let resp = std.string.concat(
+                "{\"jsonrpc\":\"2.0\",\"id\":",
+                std.string.concat(req_id, ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"```axiom\\n(hover) self-hosted\\n```\"}}}")
+            )
+            lsp_send_message(resp)
+            @free(get_str_ptr(resp))
+        
+        elif method == "textDocument/definition":
+            let resp = std.string.concat(
+                "{\"jsonrpc\":\"2.0\",\"id\":",
+                std.string.concat(req_id, ",\"result\":null}")
+            )
+            lsp_send_message(resp)
+            @free(get_str_ptr(resp))
+        
+        else:
+            if std.string.len(req_id) > 0 as i64:
+                let resp = std.string.concat(
+                    "{\"jsonrpc\":\"2.0\",\"id\":",
+                    std.string.concat(req_id, ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}")
+                )
+                lsp_send_message(resp)
+                @free(get_str_ptr(resp))
+        
+        @free(get_str_ptr(req_id))
+        @free(get_str_ptr(method))
+        @free(get_str_ptr(msg_str))

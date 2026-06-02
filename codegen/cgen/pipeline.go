@@ -504,11 +504,12 @@ func (p *Pipeline) emitTreeFuncDefs(w io.Writer, tree *ast.AstTree) {
 			if symIdx != 0 && int(symIdx) < len(p.symbols.Symbols) {
 				sym := p.symbols.SymbolAt(symIdx)
 				name = p.intern.Get(sym.NameID)
-				fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s: flagIsGeneric=%t, symFlagGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, sym.Flags&sema.SymFlagGeneric != 0, node.Flags)
+				// fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s: flagIsGeneric=%t, symFlagGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, sym.Flags&sema.SymFlagGeneric != 0, node.Flags)
 			} else {
 				name = string(p.tree.TokenText(node.TokenIdx))
-				fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s (no sym): flagIsGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, node.Flags)
+				// fmt.Printf("[DEBUG-CGEN-EMIT] Encountered top fn %s (no sym): flagIsGeneric=%t, flags=%d\n", name, node.Flags&ast.FlagIsGeneric != 0, node.Flags)
 			}
+			_ = name
 			if node.Flags&ast.FlagIsGeneric != 0 {
 				child = node.NextSibling
 				continue

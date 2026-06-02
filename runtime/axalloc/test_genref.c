@@ -16,8 +16,8 @@ static jmp_buf  panic_jmp;
 static char     panic_msg[256];
 static int      panic_triggered;
 
-void ax_panic(const char* msg) {
-    strncpy(panic_msg, msg, sizeof(panic_msg) - 1);
+void ax_panic(unsigned char* msg) {
+    strncpy(panic_msg, (const char*)msg, sizeof(panic_msg) - 1);
     panic_msg[sizeof(panic_msg) - 1] = '\0';
     panic_triggered = 1;
     longjmp(panic_jmp, 1);

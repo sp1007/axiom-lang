@@ -5,7 +5,10 @@
  * These stubs allow compilation on all platforms.
  */
 
+#define AXIOM_COMPILING_ALLOCATOR 1
+
 #include "platform_ext.h"
+#include "axalloc.h"
 #include <string.h>
 
 #ifdef _WIN32
@@ -13,6 +16,24 @@
 #else
 #include <sys/mman.h>
 #endif
+
+void* sys_mmap(void* addr, uint64_t len, int32_t prot, int32_t flags, int32_t fd, int64_t offset) {
+#if defined(_WIN32)
+    (void)prot; (void)flags; (void)fd; (void)offset;
+    return VirtualAlloc(addr, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    return mmap(addr, len, prot, flags, fd, offset);
+#endif
+}
+
+int32_t sys_munmap(void* addr, uint64_t len) {
+#if defined(_WIN32)
+    (void)len;
+    return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1;
+#else
+    return munmap(addr, len);
+#endif
+}
 
 /* --------------------------------------------------------------------------
  * p14-t05: NUMA Stubs (Non-NUMA fallback)
@@ -24,18 +45,6 @@ int ax_numa_current_node(void) {
 
 int ax_numa_node_count(void) {
     return 1;  /* single-node fallback */
-}
-
-void* ax_numa_alloc(size_t size, int node_id) {
-    (void)node_id;
-    /* Fall back to regular OS allocation */
-#ifdef _WIN32
-    return VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#else
-    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return (p == (void*)-1) ? NULL : p;
-#endif
 }
 
 void ax_numa_free(void* ptr, size_t size) {
@@ -83,3 +92,15 @@ int ax_is_gpu_pinned(const void* ptr) {
     (void)ptr;
     return 0;  /* nothing is GPU-pinned in stub mode */
 }
+
+#if !defined(AX_ALLOC_DEBUG) && !defined(AX_ALLOC_CANARY)
+void ax_ax_segment_manager_init(void);
+void ax_ax_segment_manager_shutdown(void);
+
+void ax_segment_manager_init(void) {
+    ax_ax_segment_manager_init();
+}
+void ax_segment_manager_shutdown(void) {
+    ax_ax_segment_manager_shutdown();
+}
+#endif

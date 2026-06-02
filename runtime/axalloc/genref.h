@@ -13,7 +13,7 @@
 #include "axalloc.h"
 
 /* Forward declaration of panic handler */
-extern void ax_panic(const char* msg);
+extern void ax_panic(unsigned char* msg);
 
 /* Portability macro for branch prediction hints */
 #ifndef AX_UNLIKELY

@@ -277,7 +277,8 @@ func runBuild(args []string) int {
 				tmpObjPath,
 				"/Fe:" + outputPath,
 				"/I" + runtimeDir,
-				filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
+				filepath.Join(runtimeDir, "axalloc", "axalloc_compiled.c"),
+				filepath.Join(runtimeDir, "axalloc", "platform_ext.c"),
 				filepath.Join(runtimeDir, "panic", "panic.c"),
 				filepath.Join(runtimeDir, "ax_assert.c"),
 				filepath.Join(runtimeDir, "ax_collections.c"),
@@ -300,7 +301,8 @@ func runBuild(args []string) int {
 				"-DAX_NATIVE_LINK",
 				"-o", outputPath,
 				"-I" + runtimeDir,
-				filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
+				filepath.Join(runtimeDir, "axalloc", "axalloc_compiled.c"),
+				filepath.Join(runtimeDir, "axalloc", "platform_ext.c"),
 				filepath.Join(runtimeDir, "panic", "panic.c"),
 				filepath.Join(runtimeDir, "ax_assert.c"),
 				filepath.Join(runtimeDir, "ax_collections.c"),
@@ -345,7 +347,7 @@ func runBuild(args []string) int {
 		fmt.Fprintf(os.Stderr, "axc: cannot create temp dir: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(tmpDir)
+	// defer os.RemoveAll(tmpDir)
 
 	cFilePath := filepath.Join(tmpDir, cSrcPath)
 	cFile, err := os.Create(cFilePath)
@@ -371,7 +373,8 @@ func runBuild(args []string) int {
 		OptLevel:    optLevelStr,
 		IncludeDirs: []string{runtimeDir},
 		ExtraSrcs: []string{
-			filepath.Join(runtimeDir, "axalloc", "axalloc.c"),
+			filepath.Join(runtimeDir, "axalloc", "axalloc_compiled.c"),
+			filepath.Join(runtimeDir, "axalloc", "platform_ext.c"),
 			filepath.Join(runtimeDir, "panic", "panic.c"),
 			filepath.Join(runtimeDir, "ax_assert.c"),
 			filepath.Join(runtimeDir, "ax_collections.c"),

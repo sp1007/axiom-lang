@@ -470,7 +470,7 @@ pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u3
         type_id: type_id,
         dest: reg,
         src1: val as u32,
-        src2: 0 as u32,
+        src2: (val >> 32 as i64) as u32,
     ))
     return reg
 
@@ -582,7 +582,6 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
         @free(get_str_ptr(text))
         return self.lower_nil_lit()
     let actual_name_id = self.mb.pool.intern(text)
-    @free(get_str_ptr(text))
 
     mut is_resolved := false
     mut sym_idx := 0 as u32
@@ -591,6 +590,8 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
         if sym.name_id == actual_name_id:
             is_resolved = true
             sym_idx = node.payload
+
+    @free(get_str_ptr(text))
 
     if is_resolved:
         let sym = self.mb.symbols.symbols.data[sym_idx as i64]
@@ -689,6 +690,55 @@ fn air_starts_with(s: str, prefix: str) -> bool:
         i = i + 1 as i64
     return true
 
+fn match_base_names(base1: str, base2: str) -> bool:
+    if base1 == base2:
+        return true
+    let len1 = std.string.len(base1)
+    let len2 = std.string.len(base2)
+    if len1 == 0 as i64 or len2 == 0 as i64:
+        return false
+        
+    let ptr1 = get_str_ptr(base1)
+    let ptr2 = get_str_ptr(base2)
+    
+    mut dot1 := -1 as i64
+    mut i1 := len1 - 1 as i64
+    while i1 >= 0 as i64:
+        if ptr1[i1] == '.' as u8:
+            dot1 = i1
+            break
+        i1 = i1 - 1
+        
+    mut dot2 := -1 as i64
+    mut i2 := len2 - 1 as i64
+    while i2 >= 0 as i64:
+        if ptr2[i2] == '.' as u8:
+            dot2 = i2
+            break
+        i2 = i2 - 1
+        
+    mut start1 := 0 as i64
+    if dot1 != -1 as i64:
+        start1 = dot1 + 1 as i64
+        
+    mut start2 := 0 as i64
+    if dot2 != -1 as i64:
+        start2 = dot2 + 1 as i64
+    
+    let sub_len1 = len1 - start1
+    let sub_len2 = len2 - start2
+    
+    if sub_len1 != sub_len2:
+        return false
+        
+    mut k := 0 as i64
+    while k < sub_len1:
+        if ptr1[start1 + k] != ptr2[start2 + k]:
+            return false
+        k = k + 1
+        
+    return true
+
 fn match_mangled_method_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
     if sym_id == method_id:
         return true
@@ -704,34 +754,42 @@ fn match_mangled_method_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id:
     let sym_len = sym_entry.len as i64
     let method_len = method_entry.len as i64
     
-    let prefix_part1 = get_str_ptr("_AX_std_")
-    let prefix_part1_len = 8 as i64
-    let prefix_part2_len = method_len
-    let suffix_len = 2 as i64 // "__"
-    
-    let expected_len = prefix_part1_len + prefix_part2_len + suffix_len
-    if sym_len < expected_len:
+    if sym_len < method_len:
         return false
         
-    // 1. Check "_AX_std_"
     mut i := 0 as i64
-    while i < prefix_part1_len:
-        if sym_bytes[i] != prefix_part1[i]:
-            return false
+    while i <= sym_len - method_len:
+        mut matches := true
+        mut j := 0 as i64
+        while j < method_len:
+            if sym_bytes[i + j] != method_bytes[j]:
+                matches = false
+                break
+            j = j + 1 as i64
+            
+        if matches:
+            mut post_ok := false
+            if i + method_len == sym_len:
+                post_ok = true
+            elif i + method_len + 2 <= sym_len:
+                if sym_bytes[i + method_len] == 95 as u8 and sym_bytes[i + method_len + 1] == 95 as u8:
+                    post_ok = true
+                    
+            if post_ok:
+                mut pre_ok := false
+                if i == 0:
+                    pre_ok = true
+                else:
+                    let prev_char = sym_bytes[i - 1]
+                    if prev_char == 46 as u8 or prev_char == 95 as u8: // '.' or '_'
+                        pre_ok = true
+                        
+                if pre_ok:
+                    return true
+                    
         i = i + 1 as i64
         
-    // 2. Check method_bytes
-    mut j := 0 as i64
-    while j < method_len:
-        if sym_bytes[prefix_part1_len + j] != method_bytes[j]:
-            return false
-        j = j + 1 as i64
-        
-    // 3. Check "__"
-    if sym_bytes[prefix_part1_len + method_len] != 95 as u8 or sym_bytes[prefix_part1_len + method_len + 1 as i64] != 95 as u8:
-        return false
-        
-    return true
+    return false
 
 fn match_mangled_method_name(sym_name: str, method_name: str) -> bool:
     if sym_name == method_name:
@@ -860,39 +918,6 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         
         if (callee_node.flags & 2048 as u16) != 0 as u16:
             let spec_sym_idx = callee_node.payload
-            if spec_sym_idx != 0 as u32 and (spec_sym_idx as i64) < self.mb.symbols.symbols.len:
-                let sym = self.mb.symbols.symbols.data[spec_sym_idx as i64]
-                let sym_name = self.mb.pool.get(sym.name_id)
-                if match_mangled_method_name(sym_name, "is_ok") or match_mangled_method_name(sym_name, "unwrap") or match_mangled_method_name(sym_name, "unwrap_err") or match_mangled_method_name(sym_name, "is_err"):
-                    ax_puts_local("[CGEN-DEBUG-IS-OK-2] Found method symbol: ")
-                    ax_puts_local(sym_name)
-                    ax_puts_local(" | rec_type_kind=")
-                    
-                    mut rec_type := 0 as u32
-                    if receiver_node_idx != 0 as u32:
-                        if self.mb.node_types != null as ptr[u32]:
-                            rec_type = self.mb.node_types[receiver_node_idx as i64]
-                            
-                    if rec_type != 0 as u32 and (rec_type as i64) < self.mb.typetable.entries.len:
-                        let entry = self.mb.typetable.entries.data[rec_type as i64]
-                        if entry.kind == TYPE_KIND_STRUCT:
-                            ax_puts_local("STRUCT")
-                        elif entry.kind == TYPE_KIND_SUM:
-                            ax_puts_local("SUM")
-                        elif entry.kind == TYPE_KIND_GENERIC_INST:
-                            ax_puts_local("GENERIC_INST")
-                        elif entry.kind == TYPE_KIND_OPTION:
-                            ax_puts_local("OPTION")
-                        elif entry.kind == TYPE_KIND_RESULT:
-                            ax_puts_local("RESULT")
-                        elif entry.kind == TYPE_KIND_POINTER:
-                            ax_puts_local("POINTER")
-                        else:
-                            ax_puts_local("OTHER")
-                    else:
-                        ax_puts_local("UNKNOWN/0")
-                    ax_puts_local("\n")
-            
             mut is_real_method := false
             mut rec_type := 0 as u32
             if receiver_node_idx != 0 as u32:
@@ -932,7 +957,7 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                             if fi.params.len > 0 as i64:
                                 is_method_call = true
                                 method_sym_idx = spec_sym_idx
-        else:
+        if not is_method_call:
             mut resolved := false
 
             if not resolved:
@@ -947,7 +972,9 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                 entry = self.mb.typetable.entries.data[rec_type as i64]
                         
                         if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
-                            let method_id = callee_node.payload
+                            let m_name_tok = self.mb.get_token_text(callee_node.token_idx)
+                            let method_id = self.mb.pool.intern(m_name_tok)
+                            safe_free_str(m_name_tok)
                             mut i := 0 as i64
                             while i < self.mb.symbols.symbols.len:
                                 let sym = self.mb.symbols.symbols.data[i]
@@ -962,19 +989,39 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                                 while p_entry.kind == TYPE_KIND_POINTER or p_entry.kind == TYPE_KIND_REF:
                                                     first_param = p_entry.extra
                                                     p_entry = self.mb.typetable.entries.data[first_param as i64]
+                                                
+                                                mut matches_type := false
                                                 if first_param == rec_type:
+                                                    matches_type = true
+                                                if matches_type:
                                                     method_sym_idx = i as u32
                                                     resolved = true
                                                     is_method_call = true
                                                     break
                                 i = i + 1 as i64
 
-    if not is_method_call and callee_node.kind == NODE_IDENT:
-        let sym_idx = callee_node.payload
-        if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
-            let sym = self.mb.symbols.symbols.data[sym_idx as i64]
-            if sym.kind == SYM_STRUCT:
-                return self.lower_struct_constructor_call(idx, node, sym.type_id)
+    mut is_struct_constructor := false
+    mut struct_type_id := 0 as u32
+
+    if not is_method_call:
+        if callee_node.kind == NODE_IDENT:
+            let sym_idx = callee_node.payload
+            if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
+                let sym = self.mb.symbols.symbols.data[sym_idx as i64]
+                if sym.kind == SYM_STRUCT:
+                    is_struct_constructor = true
+                    struct_type_id = sym.type_id
+        elif callee_node.kind == NODE_INDEX_EXPR or callee_node.kind == NODE_GENERIC_TYPE:
+            if self.mb.node_types != null as ptr[u32]:
+                let t_id = self.mb.node_types[child as i64]
+                if t_id != 0 as u32 and (t_id as i64) < self.mb.typetable.entries.len:
+                    let entry = self.mb.typetable.entries.data[t_id as i64]
+                    if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                        is_struct_constructor = true
+                        struct_type_id = t_id
+
+    if is_struct_constructor:
+        return self.lower_struct_constructor_call(idx, node, struct_type_id)
 
     let temp_args = @alloc(128 * 4) as ptr[u32]
     mut temp_count := 0 as u32
@@ -2068,6 +2115,9 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
             if entry.kind == TYPE_KIND_FUNC:
                 let fi = self.typetable.funcs.data[entry.extra as i64]
                 ret_type_id = fi.ret
+                
+
+                
                 mut i := 0 as i64
                 while i < fi.params.len:
                     param_types.push(fi.params.data[i])
@@ -2118,6 +2168,16 @@ pub fn build_module(self: ptr[AirModuleBuilder]):
                 let fn_val = self.lower_func(child, node)
                 self.module.funcs.push(fn_val)
         elif node.kind == NODE_STRUCT_DECL:
+            if node.flags & FLAG_IS_GENERIC == 0 as u16:
+                mut member := node.first_child
+                while member != 0 as u32:
+                    let member_node = self.tree.nodes.data[member as i64]
+                    if member_node.kind == NODE_FUNC_DECL:
+                        if member_node.flags & FLAG_IS_EXTERN == 0 as u16 and member_node.flags & FLAG_IS_GENERIC == 0 as u16:
+                            let fn_val = self.lower_func(member, member_node)
+                            self.module.funcs.push(fn_val)
+                    member = member_node.next_sibling
+        elif node.kind == NODE_TYPE_ALIAS_DECL:
             if node.flags & FLAG_IS_GENERIC == 0 as u16:
                 mut member := node.first_child
                 while member != 0 as u32:

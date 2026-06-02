@@ -187,7 +187,39 @@ func compileCBackendWithActor(t *testing.T, source []byte, outPath string, runti
 	cFile.WriteString("}\n")
 	cFile.WriteString("int ax_actor_has_messages_impl(void* actor_ptr) {\n")
 	cFile.WriteString("    return ax_actor_has_messages(actor_ptr);\n")
+	cFile.WriteString("}\n")
+	if strings.Contains(outPath, "scheduler") {
+		cFile.WriteString("void ax_mock_child_handler(void* self, void* payload, unsigned int msg_type);\n")
+		cFile.WriteString("void ax_ax_actor_system_init(void);\n")
+		cFile.WriteString("void* ax_ax_actor_lookup(unsigned long long id);\n")
+		cFile.WriteString("unsigned long long ax_ax_actor_spawn(void* handler, void* init_data, unsigned long long data_size);\n\n")
+	} else {
+		cFile.WriteString("void ax_mock_child_handler(void* self, void* payload, unsigned int msg_type) {\n")
+		cFile.WriteString("    (void)self; (void)payload; (void)msg_type;\n")
+		cFile.WriteString("}\n")
+		cFile.WriteString("void ax_ax_actor_system_init(void) {}\n")
+		cFile.WriteString("void* ax_ax_actor_lookup(unsigned long long id) { return (void*)0; }\n")
+		cFile.WriteString("unsigned long long ax_ax_actor_spawn(void* handler, void* init_data, unsigned long long data_size) { return 0; }\n\n")
+	}
+	cFile.WriteString("void* ax_get_mock_child_handler(void) {\n")
+	cFile.WriteString("    return (void*)ax_mock_child_handler;\n")
 	cFile.WriteString("}\n\n")
+
+	cFile.WriteString("struct AxActor;\n")
+	cFile.WriteString("typedef void (*AxHandlerFn)(struct AxActor* self, void* payload, unsigned int msg_type);\n")
+
+	cFile.WriteString("void ax_register_actor_table_callbacks(\n")
+	cFile.WriteString("    void* init_fn,\n")
+	cFile.WriteString("    void* destroy_fn,\n")
+	cFile.WriteString("    void* lookup_fn,\n")
+	cFile.WriteString("    void* spawn_fn\n")
+	cFile.WriteString(");\n")
+
+	cFile.WriteString("__attribute__((constructor)) void ax_init_actor_port_bridge(void) {\n")
+	cFile.WriteString("    ax_register_actor_table_callbacks(NULL, NULL, ax_ax_actor_lookup, ax_ax_actor_spawn);\n")
+	cFile.WriteString("}\n\n")
+
+
 
 	if err := pipeline.GenerateC(cFile); err != nil {
 		return err

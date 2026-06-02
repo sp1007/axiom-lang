@@ -194,20 +194,20 @@ pub fn exists(path: str) -> bool:
 pub fn create_dir(path: str) -> Result[void, str]:
     let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
-        let res = CreateDirectoryA(cpath, null as ptr[void])
+        let res_win = CreateDirectoryA(cpath, null as ptr[void])
         @free(cpath)
-        if res == 0:
+        if res_win == 0:
             return Err("could not create directory")
         return Ok(void)
     else:
-        let res = syscall(
+        let res_linux = syscall(
             83 as u64, // SYS_MKDIR
             cpath as u64,
             0o777 as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64
         )
         @free(cpath)
-        if res < 0:
+        if res_linux < 0:
             return Err("could not create directory")
         return Ok(void)
 
@@ -228,38 +228,38 @@ pub fn create_dir_all(path: str) -> Result[void, str]:
 pub fn remove_file(path: str) -> Result[void, str]:
     let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
-        let res = DeleteFileA(cpath)
+        let res_win = DeleteFileA(cpath)
         @free(cpath)
-        if res == 0:
+        if res_win == 0:
             return Err("could not remove file")
         return Ok(void)
     else:
-        let res = syscall(
+        let res_linux = syscall(
             87 as u64, // SYS_UNLINK
             cpath as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
         )
         @free(cpath)
-        if res < 0:
+        if res_linux < 0:
             return Err("could not remove file")
         return Ok(void)
 
 pub fn remove_dir(path: str) -> Result[void, str]:
     let cpath = os_str_to_c_str(path)
     if IS_WINDOWS:
-        let res = RemoveDirectoryA(cpath)
+        let res_win = RemoveDirectoryA(cpath)
         @free(cpath)
-        if res == 0:
+        if res_win == 0:
             return Err("could not remove directory")
         return Ok(void)
     else:
-        let res = syscall(
+        let res_linux = syscall(
             84 as u64, // SYS_RMDIR
             cpath as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
         )
         @free(cpath)
-        if res < 0:
+        if res_linux < 0:
             return Err("could not remove directory")
         return Ok(void)
 
@@ -267,14 +267,14 @@ pub fn rename(from: str, to: str) -> Result[void, str]:
     let cfrom = os_str_to_c_str(from)
     let cto = os_str_to_c_str(to)
     if IS_WINDOWS:
-        let res = MoveFileA(cfrom, cto)
+        let res_win = MoveFileA(cfrom, cto)
         @free(cfrom)
         @free(cto)
-        if res == 0:
+        if res_win == 0:
             return Err("could not rename")
         return Ok(void)
     else:
-        let res = syscall(
+        let res_linux = syscall(
             82 as u64, // SYS_RENAME
             cfrom as u64,
             cto as u64,
@@ -282,7 +282,7 @@ pub fn rename(from: str, to: str) -> Result[void, str]:
         )
         @free(cfrom)
         @free(cto)
-        if res < 0:
+        if res_linux < 0:
             return Err("could not rename")
         return Ok(void)
 

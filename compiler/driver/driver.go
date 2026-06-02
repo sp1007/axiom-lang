@@ -24,6 +24,7 @@ import (
 	"github.com/axiom-lang/axiom/compiler/parser"
 	"github.com/axiom-lang/axiom/compiler/sema"
 	"github.com/axiom-lang/axiom/compiler/types"
+	"github.com/axiom-lang/axiom/tools/pkg"
 )
 
 // CompileResult holds all intermediate products from the frontend pipeline.
@@ -213,9 +214,69 @@ func Compile(source []byte, filename string, opts *CompileOptions) *CompileResul
 		}
 		loadedModules[modulePath] = true
 
-		// Find the file path for the module
+		// 1. Locate project root by searching upwards for axiom.toml
+		projectRoot := ""
+		dir := filepath.Dir(filename)
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "axiom.toml")); err == nil {
+				projectRoot = dir
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir { // reached filesystem root
+				break
+			}
+			dir = parent
+		}
+
+		// 2. Try to load and parse axiom.lock to resolve package mappings
+		var packageMappings map[string]string
+		if projectRoot != "" {
+			lockPath := filepath.Join(projectRoot, "axiom.lock")
+			if lockBytes, err := os.ReadFile(lockPath); err == nil {
+				if lock, err := pkg.ParseLockfile(string(lockBytes)); err == nil {
+					packageMappings = make(map[string]string)
+					for _, p := range lock.Packages {
+						// Resolve cache or path directory
+						if strings.HasPrefix(p.Source, "path+") {
+							pathVal := p.Source[5:]
+							if !filepath.IsAbs(pathVal) {
+								pathVal = filepath.Join(projectRoot, pathVal)
+							}
+							packageMappings[p.Name] = pathVal
+						} else if strings.HasPrefix(p.Source, "git+") {
+							if cacheRoot, err := pkg.GetCacheRootDir(); err == nil {
+								packageMappings[p.Name] = filepath.Join(cacheRoot, p.Name, p.Commit)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 3. Resolve module path
 		var path string
-		if strings.HasPrefix(modulePath, "std.") || strings.Contains(modulePath, ".") {
+		firstPart := modulePath
+		remainingParts := ""
+		dotIdx := strings.Index(modulePath, ".")
+		if dotIdx != -1 {
+			firstPart = modulePath[:dotIdx]
+			remainingParts = modulePath[dotIdx+1:]
+		}
+
+		// Check if firstPart is a resolved package dependency
+		if packageMappings != nil && packageMappings[firstPart] != "" {
+			pkgPath := packageMappings[firstPart]
+			if remainingParts != "" {
+				path = filepath.Join(pkgPath, strings.Replace(remainingParts, ".", "/", -1)+".ax")
+			} else {
+				// E.g. import mypkg -> resolved to mypkg/mypkg.ax or mypkg/main.ax or mypkg/lib.ax
+				path = filepath.Join(pkgPath, firstPart+".ax")
+				if _, err := os.Stat(path); err != nil {
+					path = filepath.Join(pkgPath, "main.ax")
+				}
+			}
+		} else if strings.HasPrefix(modulePath, "std.") || strings.Contains(modulePath, ".") {
 			rel := strings.Replace(modulePath, ".", "/", -1) + ".ax"
 			path = filepath.Join(cwd, rel)
 		} else {
@@ -289,6 +350,30 @@ func Compile(source []byte, filename string, opts *CompileOptions) *CompileResul
 						m.Exports[sym.NameID] = symIdx
 						fmt.Printf("[MODULE EXPORT] Module=%s ExportSymbol=%s symIdx=%d\n", modulePath, intern.Get(sym.NameID), symIdx)
 					}
+				}
+				// If it is a public NodeTypeAliasDecl, also recursively export all its nested variants
+				if childNode.Kind == ast.NodeTypeAliasDecl && (childNode.Flags&uint16(ast.FlagIsPub) != 0 || childNode.Flags&uint16(ast.FlagIsExtern) != 0) {
+					var exportVariants func(uint32)
+					exportVariants = func(nIdx uint32) {
+						if nIdx == ast.NullIdx {
+							return
+						}
+						n := modTree.Node(nIdx)
+						if n.Kind == ast.NodeVariantDecl {
+							vSymIdx := n.Payload
+							if vSymIdx != 0 {
+								vSym := st.SymbolAt(vSymIdx)
+								m.Exports[vSym.NameID] = vSymIdx
+								fmt.Printf("[MODULE EXPORT VARIANT] Module=%s VariantSymbol=%s symIdx=%d\n", modulePath, intern.Get(vSym.NameID), vSymIdx)
+							}
+						}
+						c := n.FirstChild
+						for c != ast.NullIdx {
+							exportVariants(c)
+							c = modTree.Node(c).NextSibling
+						}
+					}
+					exportVariants(child)
 				}
 			}
 			child = childNode.NextSibling
@@ -395,5 +480,8 @@ func Compile(source []byte, filename string, opts *CompileOptions) *CompileResul
 	if result.Symbols != nil && result.Symbols.LazyResolver != nil {
 		fmt.Printf("[DRIVER COMPILE END] modulesCount=%d\n", len(result.Symbols.LazyResolver.GetModules()))
 	}
+	// Final debugging: dump all types and symbols of the whole compilation unit
+	_ = os.WriteFile("types_dump.txt", []byte(table.DumpTypes()), 0644)
+	_ = os.WriteFile("symbols_dump.txt", []byte(symbols.DumpSymbols()), 0644)
 	return result
 }

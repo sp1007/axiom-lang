@@ -45,6 +45,7 @@ pub struct Monomorphizer:
     pub pool: ptr[InternPool]
     pub symtable: ptr[SymbolTable]
     pub typetable: ptr[TypeTable]
+    pub struct_type_id: u32
 
 pub fn new_monomorphizer(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[Monomorphizer]:
     let mm = @alloc(@compiler_intrinsic("size_of")[Monomorphizer]()) as ptr[Monomorphizer]
@@ -52,6 +53,7 @@ pub fn new_monomorphizer(tree: ptr[AstTree], pool: ptr[InternPool], symtable: pt
     mm.pool = pool
     mm.symtable = symtable
     mm.typetable = typetable
+    mm.struct_type_id = 0 as u32
     return mm
 
 pub fn node_text(self: ptr[Monomorphizer], tree: ptr[AstTree], node_idx: u32) -> str:
@@ -70,6 +72,7 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
         return
 
     mut node := &self.tree.nodes.data[node_idx]
+    node.flags = node.flags & (~2048 as u16)
     let orig_node = src_tree.nodes.data[orig_node_idx]
     let kind = node.kind
 
@@ -89,9 +92,10 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
             
         mut name_id := 0 as u32
         if has_sym_payload:
-            let sym_idx = orig_node.payload
-            if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
-                name_id = self.symtable.symbols.data[sym_idx as i64].name_id
+            let orig_sym_idx = orig_node.payload
+            if orig_sym_idx != 0 as u32 and (orig_sym_idx as i64) < self.symtable.symbols.len:
+                let sym = self.symtable.symbols.data[orig_sym_idx as i64]
+                name_id = sym.name_id
 
         if name_id == 0 as u32:
             let text = self.node_text(src_tree, orig_node_idx)
@@ -141,8 +145,25 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
                             else:
                                 target_name_id = self.pool.intern("type_val")
                         node.payload = target_name_id
+                        if kind == NODE_TYPE_EXPR or kind == NODE_IDENT:
+                            node.flags = node.flags | FLAG_IS_SUBSTITUTED
                 else:
-                    node.payload = name_id
+                    mut is_local := false
+                    mut is_global_sym := false
+                    let orig_sym_idx = orig_node.payload
+                    if orig_sym_idx != 0 as u32 and (orig_sym_idx as i64) < self.symtable.symbols.len:
+                        let sym = self.symtable.symbols.data[orig_sym_idx as i64]
+                        if sym.name_id == name_id:
+                            if sym.kind == 0 as u8 or sym.kind == 6 as u8 or sym.kind == 8 as u8:
+                                is_local = true
+                            else:
+                                is_global_sym = true
+                    if is_local:
+                        node.payload = name_id
+                    else:
+                        node.payload = orig_node.payload
+                        if is_global_sym:
+                            node.flags = node.flags | 4096 as u16
             else:
                 node.payload = name_id
     elif kind == NODE_FIELD_EXPR:
@@ -298,18 +319,44 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
 
     // Find the correct source AstTree for the generic template
     mut src_tree := self.tree
+    mut t_is_null := true
     if (template_sym_id as i64) < self.symtable.symbol_trees.len:
         let t = self.symtable.symbol_trees.data[template_sym_id]
         if t != null as ptr[AstTree]:
             src_tree = t
+            t_is_null = false
+
+    let orig_name_dbg = self.pool.get(orig_sym.name_id)
+    ax_printf_local("[MONO-DEBUG] Instantiating template: %s template_sym_id=%d t_is_null=%d\n", get_str_ptr(orig_name_dbg) as i64, template_sym_id as i64, t_is_null as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    
+    // Print children of orig_sym's decl_node in src_tree
+    mut orig_child := src_tree.nodes.data[node_idx].first_child
+    mut child_count := 0 as i64
+    while orig_child != 0 as u32:
+        let cn = src_tree.nodes.data[orig_child as i64]
+        ax_printf_local("  [MONO-DEBUG-CHILD] orig child idx=%d kind=%d\n", orig_child as i64, cn.kind as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        orig_child = cn.next_sibling
+        child_count = child_count + 1 as i64
 
     // 1. Clone generic AST subtree from the correct source tree
     let cloned_root = self.tree.clone_subtree_from(src_tree, node_idx)
 
+    // Print children of cloned_root
+    mut cloned_child := self.tree.nodes.data[cloned_root].first_child
+    while cloned_child != 0 as u32:
+        let cn = self.tree.nodes.data[cloned_child as i64]
+        ax_printf_local("  [MONO-DEBUG-CLONED-CHILD] cloned child idx=%d kind=%d\n", cloned_child as i64, cn.kind as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        cloned_child = cn.next_sibling
+
+    let orig_name = self.pool.get(orig_sym.name_id)
+    let mangled = self.mangle_name(orig_name, args)
+    let mangled_id = self.pool.intern(mangled)
+
     mut struct_type_id := 0 as u32
     let cloned_kind = self.tree.nodes.data[cloned_root].kind
     if cloned_kind == NODE_STRUCT_DECL:
-        struct_type_id = self.typetable.register_struct(orig_sym.name_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
+        struct_type_id = self.typetable.register_struct(mangled_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
+    self.struct_type_id = struct_type_id
 
     // 2. Build type substitution map from original params using source tree
     mut subst := TypeSubstVec(data: null as ptr[TypeSubst], len: 0, cap: 0)
@@ -323,8 +370,13 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
             mut idx := 0 as i64
             while gp != 0 as u32 and idx < args.len:
                 mut gp_name_id := src_tree.nodes.data[gp].payload
-                if gp_name_id != 0 as u32 and (gp_name_id as i64) < self.symtable.symbols.len:
-                    gp_name_id = self.symtable.symbols.data[gp_name_id].name_id
+                if src_tree == self.tree:
+                    if gp_name_id != 0 as u32 and (gp_name_id as i64) < self.symtable.symbols.len:
+                        gp_name_id = self.symtable.symbols.data[gp_name_id].name_id
+                else:
+                    let text = self.node_text(src_tree, gp)
+                    gp_name_id = self.pool.intern(text)
+                    @free(get_str_ptr(text))
                 subst.push(TypeSubst(name_id: gp_name_id, type_id: args.data[idx]))
                 gp = src_tree.nodes.data[gp].next_sibling
                 idx = idx + 1 as i64
@@ -339,9 +391,6 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
     self.remove_generic_params_child(cloned_root)
 
     // 5. Mangle name and update payload to mangled name_id
-    let orig_name = self.pool.get(orig_sym.name_id)
-    let mangled = self.mangle_name(orig_name, args)
-    let mangled_id = self.pool.intern(mangled)
     self.tree.nodes.data[cloned_root].payload = mangled_id
 
     @free(subst.data as ptr[u8])

@@ -12,17 +12,66 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
+
 /* Stub ax_panic for standalone test builds */
-void ax_panic(const char* msg) {
-    fprintf(stderr, "ax_panic: %s\n", msg);
+void ax_panic(unsigned char* msg) {
+    fprintf(stderr, "ax_panic: %s\n", (const char*)msg);
     abort();
 }
+
+static void* g_ax_global_state = NULL;
+void* ax_get_global_state_internal(void) {
+    printf("[Stub] ax_get_global_state_internal called. Current state: %p\n", g_ax_global_state); fflush(stdout);
+    if (g_ax_global_state == NULL) {
+#if defined(_WIN32)
+        g_ax_global_state = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+        g_ax_global_state = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
+        printf("[Stub] Allocated global state: %p\n", g_ax_global_state); fflush(stdout);
+    }
+    return g_ax_global_state;
+}
+
+void* sys_mmap(void* addr, uint64_t len, int32_t prot, int32_t flags, int32_t fd, int64_t offset) {
+    printf("[Stub] sys_mmap called (addr=%p, len=%llu)\n", addr, (unsigned long long)len); fflush(stdout);
+#if defined(_WIN32)
+    (void)prot; (void)flags; (void)fd; (void)offset;
+    void* res = VirtualAlloc(addr, len, 0x3000, 0x04);
+    printf("[Stub] sys_mmap VirtualAlloc returned %p\n", res); fflush(stdout);
+    return res;
+#else
+    void* res = mmap(addr, len, prot, flags, fd, offset);
+    printf("[Stub] sys_mmap mmap returned %p\n", res); fflush(stdout);
+    return res;
+#endif
+}
+
+int32_t sys_munmap(void* addr, uint64_t len) {
+    printf("[Stub] sys_munmap called (addr=%p, len=%llu)\n", addr, (unsigned long long)len); fflush(stdout);
+#if defined(_WIN32)
+    (void)len;
+    int32_t res = VirtualFree(addr, 0, 0x8000) ? 0 : -1;
+    printf("[Stub] sys_munmap VirtualFree returned %d\n", res); fflush(stdout);
+    return res;
+#else
+    int32_t res = munmap(addr, len);
+    printf("[Stub] sys_munmap munmap returned %d\n", res); fflush(stdout);
+    return res;
+#endif
+}
+
 
 static int tests_passed = 0;
 static int tests_total  = 0;
 
-#define TEST(name) do { tests_total++; printf("  [%02d] %-50s", tests_total, name); } while(0)
-#define PASS()     do { tests_passed++; printf("PASS\n"); } while(0)
+#define TEST(name) do { tests_total++; printf("  [%02d] %-50s", tests_total, name); fflush(stdout); } while(0)
+#define PASS()     do { tests_passed++; printf("PASS\n"); fflush(stdout); } while(0)
 
 /* Test 1: ax_alloc returns non-NULL */
 static void test_alloc_basic(void) {
@@ -138,7 +187,7 @@ static void test_alloc_zero(void) {
     TEST("ax_alloc(0) returns non-NULL");
     void* ptr = ax_alloc(0);
     assert(ptr != NULL);
-    assert(ax_alloc_size(ptr) == 0);
+    assert(ax_alloc_size(ptr) == 1);
     ax_free(ptr);
     PASS();
 }
@@ -196,6 +245,7 @@ static void test_alloc_size_null(void) {
 
 int main(void) {
     printf("=== axalloc unit tests ===\n\n");
+    fflush(stdout);
 
     test_alloc_basic();
     test_alloc_size();

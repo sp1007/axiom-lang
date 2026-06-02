@@ -56,6 +56,7 @@ typedef struct {
     uint64_t     steals_attempted;
     uint64_t     steals_succeeded;
     int          running;
+    void*        thread_handle; /* Thread handle/pointer (pthread_t or Win32 HANDLE) */
 } AxWorker;
 
 /* --------------------------------------------------------------------------

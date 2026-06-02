@@ -12,6 +12,26 @@ int ax_actor_is_running_impl(void* actor_ptr) {
 int ax_actor_has_messages_impl(void* actor_ptr) {
     return ax_actor_has_messages(actor_ptr);
 }
+void ax_mock_child_handler(void* self, void* payload, unsigned int msg_type);
+void ax_ax_actor_system_init(void);
+void* ax_ax_actor_lookup(unsigned long long id);
+unsigned long long ax_ax_actor_spawn(void* handler, void* init_data, unsigned long long data_size);
+
+void* ax_get_mock_child_handler(void) {
+    return (void*)ax_mock_child_handler;
+}
+
+struct AxActor;
+typedef void (*AxHandlerFn)(struct AxActor* self, void* payload, unsigned int msg_type);
+void ax_register_actor_table_callbacks(
+    void* init_fn,
+    void* destroy_fn,
+    void* lookup_fn,
+    void* spawn_fn
+);
+__attribute__((constructor)) void ax_init_actor_port_bridge(void) {
+    ax_register_actor_table_callbacks(NULL, NULL, ax_ax_actor_lookup, ax_ax_actor_spawn);
+}
 
 #define AX_EMIT_MAIN
 #include "ax_runtime.h"
@@ -34,6 +54,9 @@ struct ax_AxRestartConfig;
 struct ax_AxActor;
 struct ax_AxMessage;
 struct ax_SchedulerStats;
+struct ax_AxChildSpec;
+struct ax_AxSupervisor;
+struct ax_AxSupervisorTable;
 
 /* Type definitions */
 struct ax_AxGlobalState {
@@ -122,6 +145,7 @@ struct ax_worker {
     ax_u64 steals_attempted;
     ax_u64 steals_succeeded;
     ax_i32 running;
+    void* thread_handle;
 };
 
 struct ax_scheduler {
@@ -142,6 +166,8 @@ struct ax_AxMsgQueue {
     struct ax_AxMessage* tail;
     ax_u64 msg_count;
     ax_u64 pending;
+    ax_i32 lock;
+    ax_i32 padding;
 };
 
 struct ax_AxRestartConfig {
@@ -181,6 +207,32 @@ struct ax_SchedulerStats {
     ax_u64 total_steals;
 };
 
+struct ax_AxChildSpec {
+    void* handler;
+    void* init_data;
+    ax_u64 data_size;
+    ax_i32 restart;
+    ax_u32 max_restarts;
+    ax_u32 window_ms;
+};
+
+struct ax_AxSupervisor {
+    ax_u64 id;
+    ax_i32 strategy;
+    ax_u64 children[16];
+    struct ax_AxChildSpec specs[16];
+    ax_u32 child_count;
+    ax_u32 restart_intensity;
+    ax_u32 restart_window_ms;
+    ax_u32 current_restarts;
+    ax_u64 window_start_ns;
+};
+
+struct ax_AxSupervisorTable {
+    ax_u32 count;
+    struct ax_AxSupervisor supervisors[16];
+};
+
 
 /* Global variables */
 extern const ax_i64 ax_SEGMENT_SIZE;
@@ -191,6 +243,16 @@ extern const ax_u32 ax_SEGMENT_MAGIC;
 const ax_u32 ax_SEGMENT_MAGIC = 0xAF5E6000;
 extern const ax_u32 ax_ACTOR_HEAP_MAGIC;
 const ax_u32 ax_ACTOR_HEAP_MAGIC = 0xAC704EA0;
+extern const ax_i32 ax_AX_STRATEGY_ONE_FOR_ONE;
+const ax_i32 ax_AX_STRATEGY_ONE_FOR_ONE = 0;
+extern const ax_i32 ax_AX_STRATEGY_ONE_FOR_ALL;
+const ax_i32 ax_AX_STRATEGY_ONE_FOR_ALL = 1;
+extern const ax_i32 ax_AX_STRATEGY_REST_FOR_ONE;
+const ax_i32 ax_AX_STRATEGY_REST_FOR_ONE = 2;
+extern ax_u64 ax_g_supervisor_table;
+ax_u64 ax_g_supervisor_table = ((ax_u64)(0));
+extern ax_u64 ax_g_child_runs;
+ax_u64 ax_g_child_runs = ((ax_u64)(0));
 
 /* Function prototypes */
 ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
@@ -246,19 +308,35 @@ ax_u64 ax_ax_actor_spawn(void* handler, void* init_data, ax_u64 data_size);
 ax_i32 ax_actor_step(void* actor_ptr);
 ax_i32 ax_actor_is_running(void* actor_ptr);
 ax_i32 ax_actor_has_messages(void* actor_ptr);
+void ax_actor_stop(ax_u64 id);
 static ax_bool ax_has_active_actors(void);
 ax_i32 ax_scheduler_run(struct ax_scheduler* self);
 static void ax_scheduler_worker_loop(struct ax_scheduler* self, struct ax_worker* w);
 void ax_scheduler_shutdown(struct ax_scheduler* self);
 void ax_scheduler_stats(struct ax_scheduler* self, struct ax_SchedulerStats* stats);
+ax_u64 ax_time_now_ns(void);
+ax_u64 ax_actor_ref_to_u64(AxActorID ref);
+void ax_ax_supervisor_table_init(void);
+struct ax_AxSupervisor* ax_ax_supervisor_lookup(ax_u64 id);
+struct ax_AxSupervisor* ax_AxSupervisor_ax_supervisor_add(struct ax_AxSupervisor sup_val);
+static void ax_supervisor_handler(void* self, void* payload, ax_u32 msg_type);
+ax_u64 ax_ax_supervisor_create(ax_i32 strategy, ax_u32 max_restarts, ax_u32 window_ms);
+ax_i32 ax_AxSupervisor_ax_supervisor_add_child(struct ax_AxSupervisor* sup, struct ax_AxChildSpec spec);
+ax_i32 ax_AxSupervisor_ax_supervisor_start_children(struct ax_AxSupervisor* sup);
+static ax_i32 ax_AxSupervisor_find_child_index(struct ax_AxSupervisor* sup, ax_u64 child_id);
+static void ax_AxSupervisor_restart_child(struct ax_AxSupervisor* sup, ax_u32 idx);
+void ax_AxSupervisor_ax_supervisor_handle_child_exit(struct ax_AxSupervisor* sup, ax_u64 child_id);
 ax_i64 syscall(ax_u64 num, ax_u64 a1, ax_u64 a2, ax_u64 a3, ax_u64 a4, ax_u64 a5, ax_u64 a6);
+void* ax_get_mock_child_handler(void);
+void ax_println_i64(ax_i64 val);
 static void ax_test_print_str(ax_string s);
 static void ax_test_runq_basic(void);
 static void ax_test_runq_steal(void);
 static void ax_test_scheduler_lifecycle(void);
+void ax_mock_child_handler(void* self, void* payload, ax_u32 msg_type);
+static void ax_test_supervisor_recovery(void);
 ax_i32 ax_main_usr(void);
 ax_i64 ax_std_string_len(ax_string p0);
-ax_i64 ax_std_string_char_count(ax_string p0);
 ax_string ax_std_string_trim(ax_string p0);
 ax_string ax_std_string_to_upper(ax_string p0);
 ax_string ax_std_string_to_lower(ax_string p0);
@@ -975,6 +1053,13 @@ ax_i32 ax_ax_actor_send(ax_u64 target, ax_u64 sender, ax_u32 msg_type, void* pay
         memcpy(payload_dest, ((ax_u8*)(payload)), ((ax_i64)(size)));
     }
     ax_AxMsgQueue_ax_msgq_push(((struct ax_AxMsgQueue*)((((ax_i64)(actor_ptr)) + ((ax_i64)(16))))), msg);
+    struct ax_AxGlobalState* state = ax_get_state();
+    ax_bool* p_g_sched_initialized = ((ax_bool*)((((ax_i64)(state)) + ((ax_i64)(1)))));
+    if ((*((ax_bool*)(p_g_sched_initialized)))) {
+        void** p_g_sched = ((void**)((((ax_i64)(state)) + ((ax_i64)(56)))));
+        struct ax_scheduler* sched = ((struct ax_scheduler*)((*((void**)(p_g_sched)))));
+        ax_scheduler_submit(sched, target);
+    }
     return ((ax_i32)(0));
 }
 
@@ -1148,6 +1233,178 @@ void ax_scheduler_stats(struct ax_scheduler* self, struct ax_SchedulerStats* sta
     }
 }
 
+void ax_ax_supervisor_table_init(void) {
+    if ((ax_g_supervisor_table != ((ax_u64)(0)))) {
+        return;
+    }
+    ax_i64 size = ((ax_i64)(sizeof(struct ax_AxSupervisorTable)));
+    struct ax_AxSupervisorTable* table = ((struct ax_AxSupervisorTable*)(ax_ax_os_alloc(size)));
+    table->count = ((ax_u32)(0));
+    ax_g_supervisor_table = ((ax_u64)(table));
+}
+
+struct ax_AxSupervisor* ax_ax_supervisor_lookup(ax_u64 id) {
+    if ((ax_g_supervisor_table == ((ax_u64)(0)))) {
+        ax_ax_supervisor_table_init();
+    }
+    struct ax_AxSupervisorTable* table = ((struct ax_AxSupervisorTable*)(ax_g_supervisor_table));
+    ax_u32 i = ((ax_u32)(0));
+    while ((i < table->count)) {
+        ax_i64 sup_addr = ((((ax_i64)(table)) + ((ax_i64)(8))) + (((ax_i64)(i)) * ((ax_i64)(sizeof(struct ax_AxSupervisor)))));
+        if ((((struct ax_AxSupervisor*)(sup_addr))->id == id)) {
+            return ((struct ax_AxSupervisor*)(sup_addr));
+        }
+        i = (i + ((ax_u32)(1)));
+    }
+    return ((struct ax_AxSupervisor*)(NULL));
+}
+
+struct ax_AxSupervisor* ax_AxSupervisor_ax_supervisor_add(struct ax_AxSupervisor sup_val) {
+    if ((ax_g_supervisor_table == ((ax_u64)(0)))) {
+        ax_ax_supervisor_table_init();
+    }
+    struct ax_AxSupervisorTable* table = ((struct ax_AxSupervisorTable*)(ax_g_supervisor_table));
+    if ((table->count >= ((ax_u32)(16)))) {
+        return ((struct ax_AxSupervisor*)(NULL));
+    }
+    ax_u32 idx = table->count;
+    ax_i64 dest_addr = ((((ax_i64)(table)) + ((ax_i64)(8))) + (((ax_i64)(idx)) * ((ax_i64)(sizeof(struct ax_AxSupervisor)))));
+    (*((struct ax_AxSupervisor*)(((struct ax_AxSupervisor*)(dest_addr))))) = sup_val;
+    table->count = (table->count + ((ax_u32)(1)));
+    return ((struct ax_AxSupervisor*)(dest_addr));
+}
+
+static void ax_supervisor_handler(void* self, void* payload, ax_u32 msg_type) {
+    struct ax_AxActor* actor = ((struct ax_AxActor*)(self));
+    struct ax_AxSupervisor* sup = ax_ax_supervisor_lookup(actor->id);
+    if ((sup == ((struct ax_AxSupervisor*)(NULL)))) {
+        return;
+    }
+    if ((msg_type == ((ax_u32)(3)))) {
+        ax_u64 child_id = (*((ax_u64*)(((ax_u64*)(payload)))));
+        ax_AxSupervisor_ax_supervisor_handle_child_exit(sup, child_id);
+    }
+}
+
+ax_u64 ax_ax_supervisor_create(ax_i32 strategy, ax_u32 max_restarts, ax_u32 window_ms) {
+    ax_u64 id = ax_actor_ref_to_u64(ax_actor_spawn((AxHandlerFn)ax_supervisor_handler, NULL, 0));
+    if ((id == ((ax_u64)(0)))) {
+        return ((ax_u64)(0));
+    }
+    struct ax_AxSupervisor sup = ((struct ax_AxSupervisor){.id=id, .strategy=strategy, .child_count=((ax_u32)(0)), .restart_intensity=max_restarts, .restart_window_ms=window_ms, .current_restarts=((ax_u32)(0)), .window_start_ns=((ax_u64)(0))});
+    ax_AxSupervisor_ax_supervisor_add(sup);
+    return id;
+}
+
+ax_i32 ax_AxSupervisor_ax_supervisor_add_child(struct ax_AxSupervisor* sup, struct ax_AxChildSpec spec) {
+    if (((sup == ((struct ax_AxSupervisor*)(NULL))) || (sup->child_count >= ((ax_u32)(16))))) {
+        return ((ax_i32)((-1)));
+    }
+    ax_u32 idx = sup->child_count;
+    ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(idx)) * ((ax_i64)(8))))));
+    (*((ax_u64*)(child_ptr))) = ((ax_u64)(0));
+    ax_i64 spec_size = ((ax_i64)(sizeof(struct ax_AxChildSpec)));
+    struct ax_AxChildSpec* spec_ptr = ((struct ax_AxChildSpec*)((((((ax_i64)(sup)) + ((ax_i64)(16))) + ((ax_i64)(128))) + (((ax_i64)(idx)) * spec_size))));
+    (*((struct ax_AxChildSpec*)(spec_ptr))) = spec;
+    sup->child_count = (sup->child_count + ((ax_u32)(1)));
+    return ((ax_i32)(0));
+}
+
+ax_i32 ax_AxSupervisor_ax_supervisor_start_children(struct ax_AxSupervisor* sup) {
+    if ((sup == ((struct ax_AxSupervisor*)(NULL)))) {
+        return ((ax_i32)((-1)));
+    }
+    ax_u32 i = ((ax_u32)(0));
+    ax_i64 spec_size = ((ax_i64)(sizeof(struct ax_AxChildSpec)));
+    while ((i < sup->child_count)) {
+        struct ax_AxChildSpec* spec_ptr = ((struct ax_AxChildSpec*)((((((ax_i64)(sup)) + ((ax_i64)(16))) + ((ax_i64)(128))) + (((ax_i64)(i)) * spec_size))));
+        ax_u64 child = ax_ax_actor_spawn(spec_ptr->handler, spec_ptr->init_data, spec_ptr->data_size);
+        if ((child == ((ax_u64)(0)))) {
+            return ((ax_i32)((-1)));
+        }
+        ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(i)) * ((ax_i64)(8))))));
+        (*((ax_u64*)(child_ptr))) = child;
+        struct ax_AxActor* actor = ((struct ax_AxActor*)(ax_ax_actor_lookup(child)));
+        if ((actor != ((struct ax_AxActor*)(NULL)))) {
+            actor->supervisor_id = sup->id;
+            actor->flags = (actor->flags | ((ax_u32)(2)));
+            actor->restart.policy = spec_ptr->restart;
+            actor->restart.max_restarts = spec_ptr->max_restarts;
+            actor->restart.window_ms = spec_ptr->window_ms;
+        }
+        i = (i + ((ax_u32)(1)));
+    }
+    return ((ax_i32)(0));
+}
+
+static ax_i32 ax_AxSupervisor_find_child_index(struct ax_AxSupervisor* sup, ax_u64 child_id) {
+    ax_u32 i = ((ax_u32)(0));
+    while ((i < sup->child_count)) {
+        ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(i)) * ((ax_i64)(8))))));
+        if (((*((ax_u64*)(child_ptr))) == child_id)) {
+            return ((ax_i32)(i));
+        }
+        i = (i + ((ax_u32)(1)));
+    }
+    return ((ax_i32)((-1)));
+}
+
+static void ax_AxSupervisor_restart_child(struct ax_AxSupervisor* sup, ax_u32 idx) {
+    ax_i64 spec_size = ((ax_i64)(sizeof(struct ax_AxChildSpec)));
+    struct ax_AxChildSpec* spec_ptr = ((struct ax_AxChildSpec*)((((((ax_i64)(sup)) + ((ax_i64)(16))) + ((ax_i64)(128))) + (((ax_i64)(idx)) * spec_size))));
+    ax_u64 child = ax_ax_actor_spawn(spec_ptr->handler, spec_ptr->init_data, spec_ptr->data_size);
+    ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(idx)) * ((ax_i64)(8))))));
+    (*((ax_u64*)(child_ptr))) = child;
+    struct ax_AxActor* actor = ((struct ax_AxActor*)(ax_ax_actor_lookup(child)));
+    if ((actor != ((struct ax_AxActor*)(NULL)))) {
+        actor->supervisor_id = sup->id;
+        actor->flags = (actor->flags | ((ax_u32)(2)));
+    }
+}
+
+void ax_AxSupervisor_ax_supervisor_handle_child_exit(struct ax_AxSupervisor* sup, ax_u64 child_id) {
+    if ((sup == ((struct ax_AxSupervisor*)(NULL)))) {
+        return;
+    }
+    ax_u64 now = ax_time_now_ns();
+    ax_u64 window_ns = (((ax_u64)(sup->restart_window_ms)) * ((ax_u64)(1000000)));
+    if (((now - sup->window_start_ns) > window_ns)) {
+        sup->current_restarts = ((ax_u32)(0));
+        sup->window_start_ns = now;
+    }
+    sup->current_restarts = (sup->current_restarts + ((ax_u32)(1)));
+    if ((sup->current_restarts > sup->restart_intensity)) {
+        return;
+    }
+    ax_i32 idx = ax_AxSupervisor_find_child_index(sup, child_id);
+    if ((idx < ((ax_i32)(0)))) {
+        return;
+    }
+    if ((sup->strategy == ((ax_i32)(0)))) {
+        ax_AxSupervisor_restart_child(sup, ((ax_u32)(idx)));
+    } else if ((sup->strategy == ((ax_i32)(1)))) {
+        ax_u32 i = ((ax_u32)(0));
+        while ((i < sup->child_count)) {
+            ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(i)) * ((ax_i64)(8))))));
+            if (((*((ax_u64*)(child_ptr))) != ((ax_u64)(0)))) {
+                ax_actor_stop((*((ax_u64*)(child_ptr))));
+            }
+            ax_AxSupervisor_restart_child(sup, i);
+            i = (i + ((ax_u32)(1)));
+        }
+    } else if ((sup->strategy == ((ax_i32)(2)))) {
+        ax_u32 i = ((ax_u32)(idx));
+        while ((i < sup->child_count)) {
+            ax_u64* child_ptr = ((ax_u64*)(((((ax_i64)(sup)) + ((ax_i64)(16))) + (((ax_i64)(i)) * ((ax_i64)(8))))));
+            if (((*((ax_u64*)(child_ptr))) != ((ax_u64)(0)))) {
+                ax_actor_stop((*((ax_u64*)(child_ptr))));
+            }
+            ax_AxSupervisor_restart_child(sup, i);
+            i = (i + ((ax_u32)(1)));
+        }
+    }
+}
+
 static void ax_test_print_str(ax_string s) {
     if (1) {
         void* h = GetStdHandle(((ax_u32)(0xFFFFFFF5)));
@@ -1217,11 +1474,63 @@ static void ax_test_scheduler_lifecycle(void) {
     ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  PASS: test_scheduler_lifecycle\n", .len=33});
 }
 
+void ax_mock_child_handler(void* self, void* payload, ax_u32 msg_type) {
+    ax_g_child_runs = (ax_g_child_runs + ((ax_u64)(1)));
+}
+
+static void ax_test_supervisor_recovery(void) {
+    ax_ax_actor_system_init();
+    ax_u64 sup_id = ax_ax_supervisor_create(ax_AX_STRATEGY_ONE_FOR_ONE, ((ax_u32)(3)), ((ax_u32)(5000)));
+    ax_assert_axiom((sup_id != ((ax_u64)(0))), AX_STR("(sup_id != ((ax_u64)(0)))"));
+    struct ax_AxSupervisor* sup = ax_ax_supervisor_lookup(sup_id);
+    ax_assert_axiom((sup != ((struct ax_AxSupervisor*)(NULL))), AX_STR("(sup != ((struct ax_AxSupervisor*)(NULL)))"));
+    struct ax_AxChildSpec spec = ((struct ax_AxChildSpec){.handler=ax_get_mock_child_handler(), .init_data=((void*)(NULL)), .data_size=((ax_u64)(0)), .restart=((ax_i32)(1)), .max_restarts=((ax_u32)(3)), .window_ms=((ax_u32)(5000))});
+    ax_assert_axiom((ax_AxSupervisor_ax_supervisor_add_child(sup, spec) == ((ax_i32)(0))), AX_STR("(ax_AxSupervisor_ax_supervisor_add_child(sup, spec) == ((ax_i32)(0)))"));
+    ax_assert_axiom((sup->child_count == ((ax_u32)(1))), AX_STR("(sup->child_count == ((ax_u32)(1)))"));
+    ax_assert_axiom((ax_AxSupervisor_ax_supervisor_start_children(sup) == ((ax_i32)(0))), AX_STR("(ax_AxSupervisor_ax_supervisor_start_children(sup) == ((ax_i32)(0)))"));
+    ax_u64 child_id = (ax_bounds_check((ax_u64)(0), (ax_u64)(16)), (sup->children)[0]);
+    ax_assert_axiom((child_id != ((ax_u64)(0))), AX_STR("(child_id != ((ax_u64)(0)))"));
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  [DEBUG] sup_id: ", .len=18});
+    ax_println_i64(((ax_i64)(sup_id)));
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  [DEBUG] child_id: ", .len=20});
+    ax_println_i64(((ax_i64)(child_id)));
+    struct ax_AxActor* child_actor = ((struct ax_AxActor*)(ax_ax_actor_lookup(child_id)));
+    ax_assert_axiom((child_actor != ((struct ax_AxActor*)(NULL))), AX_STR("(child_actor != ((struct ax_AxActor*)(NULL)))"));
+    ax_assert_axiom((child_actor->supervisor_id == sup_id), AX_STR("(child_actor->supervisor_id == sup_id)"));
+    ax_actor_stop(child_id);
+    struct ax_AxGlobalState* state = ax_get_global_state();
+    void** p_g_sched = ((void**)((((ax_i64)(state)) + ((ax_i64)(56)))));
+    struct ax_scheduler* sched = ((struct ax_scheduler*)((*((void**)(p_g_sched)))));
+    ax_i32 steps = 0;
+    while ((steps < 20)) {
+        struct ax_runq* q = ((struct ax_runq*)(((ax_bounds_check((ax_u64)(0), (ax_u64)(256)), &(((sched->workers)[0]).runq)))));
+        ax_u64 id = ax_runq_pop(q);
+        if ((id != ((ax_u64)(0)))) {
+            ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  [DEBUG] Popped actor ID: ", .len=27});
+            ax_println_i64(((ax_i64)(id)));
+            void* actor_ptr = ax_ax_actor_lookup(id);
+            if ((actor_ptr != ((void*)(NULL)))) {
+                while ((ax_actor_step(actor_ptr) != ((ax_i32)(0)))) {
+                    steps = (steps + 1);
+                }
+            }
+        }
+        steps = (steps + 1);
+    }
+    ax_u64 new_child_id = (ax_bounds_check((ax_u64)(0), (ax_u64)(16)), (sup->children)[0]);
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  [DEBUG] new_child_id: ", .len=24});
+    ax_println_i64(((ax_i64)(new_child_id)));
+    ax_assert_axiom((new_child_id != ((ax_u64)(0))), AX_STR("(new_child_id != ((ax_u64)(0)))"));
+    ax_assert_axiom((new_child_id != child_id), AX_STR("(new_child_id != child_id)"));
+    ax_test_print_str((ax_string){.ptr=(const ax_u8*)"  PASS: test_supervisor_recovery\n", .len=33});
+}
+
 ax_i32 ax_main_usr(void) {
     ax_test_print_str((ax_string){.ptr=(const ax_u8*)"Running AXIOM-native Scheduler unit tests...\n", .len=45});
     ax_test_runq_basic();
     ax_test_runq_steal();
     ax_test_scheduler_lifecycle();
+    ax_test_supervisor_recovery();
     ax_test_print_str((ax_string){.ptr=(const ax_u8*)"All AXIOM-native Scheduler tests passed!\n", .len=41});
     return 0;
 }

@@ -1,0 +1,35 @@
+// AXIOM Standard Library — bootstrap/runtime/genref.ax
+//
+// Generational Reference checking for use-after-free protection.
+
+import bootstrap.runtime.panic
+
+pub struct AxRef:
+    pub ptr: ptr[void]
+    pub gen_id: u64
+
+pub fn ax_deref(ref: AxRef) -> ptr[void]:
+    if ref.ptr == null as ptr[void]:
+        ax_panic("null pointer dereference")
+    let h = ((ref.ptr as i64) - 16 as i64) as ptr[AxHeader]
+    if h.gen_id != ref.gen_id:
+        ax_panic("GenerationalID mismatch: use-after-free detected")
+    return ref.ptr
+
+pub fn ax_invalidate(p: ptr[void]):
+    if p == null as ptr[void]:
+        return
+    let h = ((p as i64) - 16 as i64) as ptr[AxHeader]
+    h.gen_id = 0 as u64
+
+pub fn ax_ref_valid(ref: AxRef) -> bool:
+    if ref.ptr == null as ptr[void]:
+        return false
+    let h = ((ref.ptr as i64) - 16 as i64) as ptr[AxHeader]
+    return h.gen_id == ref.gen_id
+
+pub fn ax_make_ref(p: ptr[void]) -> AxRef:
+    if p == null as ptr[void]:
+        return AxRef(ptr: null as ptr[void], gen_id: 0 as u64)
+    let h = ((p as i64) - 16 as i64) as ptr[AxHeader]
+    return AxRef(ptr: p, gen_id: h.gen_id)

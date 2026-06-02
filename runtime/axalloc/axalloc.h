@@ -13,12 +13,30 @@
  */
 #pragma once
 
+#define AX_ALLOC_DEBUG 1
+
+
 #include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#ifdef AXIOM_COMPILING_ALLOCATOR
+
+/* Minimal declarations needed when compiling the allocator itself to prevent conflicts */
+
+typedef struct {
+    void*    ptr;     /* points to the byte immediately AFTER the AxHeader */
+    uint64_t gen_id;  /* generation at the time this reference was created */
+} AxRef;
+
+void* ax_get_global_state_internal(void);
+
+#define ax_assert_axiom(cond, msg) ((cond) ? (void)0 : ax_panic((const char*)(msg).ptr))
+
+#else
 
 /**
  * AxHeader: 16 bytes prepended to every heap allocation.
@@ -43,6 +61,33 @@ typedef struct {
     void*    ptr;     /* points to the byte immediately AFTER the AxHeader */
     uint64_t gen_id;  /* generation at the time this reference was created */
 } AxRef;
+
+#if !defined(AX_ALLOC_DEBUG) && !defined(AX_ALLOC_CANARY)
+
+/* Forward declarations of AXIOM-native compiled allocator functions */
+void* ax_ax_alloc(int64_t size);
+void ax_ax_free(void* p);
+void* ax_ax_realloc(void* p, int64_t new_size);
+int64_t ax_ax_alloc_size(void* p);
+uint8_t* ax_ax_numa_alloc(int64_t size, int32_t node_id);
+
+static inline void* ax_alloc(size_t size) {
+    return ax_ax_alloc((int64_t)size);
+}
+static inline void ax_free(void* ptr) {
+    ax_ax_free(ptr);
+}
+static inline void* ax_realloc(void* ptr, size_t new_size) {
+    return ax_ax_realloc(ptr, (int64_t)new_size);
+}
+static inline size_t ax_alloc_size(void* ptr) {
+    return (size_t)ax_ax_alloc_size(ptr);
+}
+static inline void* ax_numa_alloc(size_t size, int node_id) {
+    return ax_ax_numa_alloc((int64_t)size, (int32_t)node_id);
+}
+
+#else
 
 /**
  * ax_alloc — Allocate `size` bytes of heap memory.
@@ -74,6 +119,8 @@ void* ax_realloc(void* ptr, size_t new_size);
  */
 size_t ax_alloc_size(void* ptr);
 
+#endif
+
 /**
  * ax_get_header — Get the AxHeader for a user pointer.
  * The header is located immediately before the user data.
@@ -98,9 +145,13 @@ static inline AxRef ax_make_ref(void* ptr) {
     return ref;
 }
 
+#endif
+
 #ifdef __cplusplus
 }
 #endif
 
+#ifndef AXIOM_COMPILING_ALLOCATOR
 /* Include generational reference checking (ax_deref, ax_invalidate, etc.) */
 #include "genref.h"
+#endif

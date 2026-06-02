@@ -3,12 +3,12 @@
 #include "ax_stdlib.h"
 
 /* Forward declarations */
+struct ax__AX_std_Option__string;
 struct ax_PathBuf;
+struct ax__AX_std_Result__void__string;
 struct ax_FileMetadata;
 struct ax__AX_std_Result__FileMetadata__string;
 struct ax__AX_std_Option__PathBuf;
-struct ax__AX_std_Result__void__string;
-struct ax__AX_std_Option__string;
 struct ax__AX_std_HashMap__string__string;
 struct ax_Command;
 struct ax_Child;
@@ -20,9 +20,59 @@ struct ax__AX_std_Result__Output__string;
 struct ax__AX_std_Result__u64__string;
 
 /* Type definitions */
+enum ax__AX_std_Option__string_tag {
+    ax__AX_std_Option__string_Some = 0,
+    ax__AX_std_Option__string_None = 1,
+};
+
+struct ax__AX_std_Option__string {
+    enum ax__AX_std_Option__string_tag tag;
+    union {
+        ax_string Some;
+    } data;
+};
+
+static inline struct ax__AX_std_Option__string ax__AX_std_Option__string_some(ax_string value) {
+    struct ax__AX_std_Option__string _result;
+    _result.tag = ax__AX_std_Option__string_Some;
+    _result.data.Some = value;
+    return _result;
+}
+
+static inline struct ax__AX_std_Option__string ax__AX_std_Option__string_none(void) {
+    struct ax__AX_std_Option__string _result;
+    _result.tag = ax__AX_std_Option__string_None;
+    return _result;
+}
+
 struct ax_PathBuf {
     ax_string inner;
 };
+
+enum ax__AX_std_Result__void__string_tag {
+    ax__AX_std_Result__void__string_Ok = 0,
+    ax__AX_std_Result__void__string_Err = 1,
+};
+
+struct ax__AX_std_Result__void__string {
+    enum ax__AX_std_Result__void__string_tag tag;
+    union {
+        ax_string Err;
+    } data;
+};
+
+static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_ok(void) {
+    struct ax__AX_std_Result__void__string _result;
+    _result.tag = ax__AX_std_Result__void__string_Ok;
+    return _result;
+}
+
+static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_err(ax_string value) {
+    struct ax__AX_std_Result__void__string _result;
+    _result.tag = ax__AX_std_Result__void__string_Err;
+    _result.data.Err = value;
+    return _result;
+}
 
 struct ax_FileMetadata {
     ax_u64 size;
@@ -83,56 +133,6 @@ static inline struct ax__AX_std_Option__PathBuf ax__AX_std_Option__PathBuf_some(
 static inline struct ax__AX_std_Option__PathBuf ax__AX_std_Option__PathBuf_none(void) {
     struct ax__AX_std_Option__PathBuf _result;
     _result.tag = ax__AX_std_Option__PathBuf_None;
-    return _result;
-}
-
-enum ax__AX_std_Result__void__string_tag {
-    ax__AX_std_Result__void__string_Ok = 0,
-    ax__AX_std_Result__void__string_Err = 1,
-};
-
-struct ax__AX_std_Result__void__string {
-    enum ax__AX_std_Result__void__string_tag tag;
-    union {
-        ax_string Err;
-    } data;
-};
-
-static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_ok(void) {
-    struct ax__AX_std_Result__void__string _result;
-    _result.tag = ax__AX_std_Result__void__string_Ok;
-    return _result;
-}
-
-static inline struct ax__AX_std_Result__void__string ax__AX_std_Result__void__string_err(ax_string value) {
-    struct ax__AX_std_Result__void__string _result;
-    _result.tag = ax__AX_std_Result__void__string_Err;
-    _result.data.Err = value;
-    return _result;
-}
-
-enum ax__AX_std_Option__string_tag {
-    ax__AX_std_Option__string_Some = 0,
-    ax__AX_std_Option__string_None = 1,
-};
-
-struct ax__AX_std_Option__string {
-    enum ax__AX_std_Option__string_tag tag;
-    union {
-        ax_string Some;
-    } data;
-};
-
-static inline struct ax__AX_std_Option__string ax__AX_std_Option__string_some(ax_string value) {
-    struct ax__AX_std_Option__string _result;
-    _result.tag = ax__AX_std_Option__string_Some;
-    _result.data.Some = value;
-    return _result;
-}
-
-static inline struct ax__AX_std_Option__string ax__AX_std_Option__string_none(void) {
-    struct ax__AX_std_Option__string _result;
-    _result.tag = ax__AX_std_Option__string_None;
     return _result;
 }
 
@@ -526,17 +526,17 @@ ax_bool ax_exists(ax_string path) {
 struct ax__AX_std_Result__void__string ax_create_dir(ax_string path) {
     ax_u8* cpath = ax_os_str_to_c_str(path);
     if (ax_IS_WINDOWS) {
-        ax_i32 res = CreateDirectoryA(cpath, ((void*)(NULL)));
+        ax_i32 res_win = CreateDirectoryA(cpath, ((void*)(NULL)));
         ax_free(cpath);
-        if ((res == 0)) {
+        if ((res_win == 0)) {
             return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not create directory", .len=26});
         }
         return ax__AX_std_Result__void__string_ok();
     } else {
         {
-            ax_i64 res = syscall(((ax_u64)(83)), ((ax_u64)(cpath)), ((ax_u64)(0o777)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+            ax_i64 res_linux = syscall(((ax_u64)(83)), ((ax_u64)(cpath)), ((ax_u64)(0o777)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
             ax_free(cpath);
-            if ((res < 0)) {
+            if ((res_linux < 0)) {
                 return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not create directory", .len=26});
             }
             return ax__AX_std_Result__void__string_ok();
@@ -567,17 +567,17 @@ struct ax__AX_std_Result__void__string ax_create_dir_all(ax_string path) {
 struct ax__AX_std_Result__void__string ax_remove_file(ax_string path) {
     ax_u8* cpath = ax_os_str_to_c_str(path);
     if (ax_IS_WINDOWS) {
-        ax_i32 res = DeleteFileA(cpath);
+        ax_i32 res_win = DeleteFileA(cpath);
         ax_free(cpath);
-        if ((res == 0)) {
+        if ((res_win == 0)) {
             return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not remove file", .len=21});
         }
         return ax__AX_std_Result__void__string_ok();
     } else {
         {
-            ax_i64 res = syscall(((ax_u64)(87)), ((ax_u64)(cpath)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+            ax_i64 res_linux = syscall(((ax_u64)(87)), ((ax_u64)(cpath)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
             ax_free(cpath);
-            if ((res < 0)) {
+            if ((res_linux < 0)) {
                 return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not remove file", .len=21});
             }
             return ax__AX_std_Result__void__string_ok();
@@ -588,17 +588,17 @@ struct ax__AX_std_Result__void__string ax_remove_file(ax_string path) {
 struct ax__AX_std_Result__void__string ax_remove_dir(ax_string path) {
     ax_u8* cpath = ax_os_str_to_c_str(path);
     if (ax_IS_WINDOWS) {
-        ax_i32 res = RemoveDirectoryA(cpath);
+        ax_i32 res_win = RemoveDirectoryA(cpath);
         ax_free(cpath);
-        if ((res == 0)) {
+        if ((res_win == 0)) {
             return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not remove directory", .len=26});
         }
         return ax__AX_std_Result__void__string_ok();
     } else {
         {
-            ax_i64 res = syscall(((ax_u64)(84)), ((ax_u64)(cpath)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+            ax_i64 res_linux = syscall(((ax_u64)(84)), ((ax_u64)(cpath)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
             ax_free(cpath);
-            if ((res < 0)) {
+            if ((res_linux < 0)) {
                 return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not remove directory", .len=26});
             }
             return ax__AX_std_Result__void__string_ok();
@@ -610,19 +610,19 @@ struct ax__AX_std_Result__void__string ax_rename(ax_string from, ax_string to) {
     ax_u8* cfrom = ax_os_str_to_c_str(from);
     ax_u8* cto = ax_os_str_to_c_str(to);
     if (ax_IS_WINDOWS) {
-        ax_i32 res = MoveFileA(cfrom, cto);
+        ax_i32 res_win = MoveFileA(cfrom, cto);
         ax_free(cfrom);
         ax_free(cto);
-        if ((res == 0)) {
+        if ((res_win == 0)) {
             return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not rename", .len=16});
         }
         return ax__AX_std_Result__void__string_ok();
     } else {
         {
-            ax_i64 res = syscall(((ax_u64)(82)), ((ax_u64)(cfrom)), ((ax_u64)(cto)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
+            ax_i64 res_linux = syscall(((ax_u64)(82)), ((ax_u64)(cfrom)), ((ax_u64)(cto)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)), ((ax_u64)(0)));
             ax_free(cfrom);
             ax_free(cto);
-            if ((res < 0)) {
+            if ((res_linux < 0)) {
                 return ax__AX_std_Result__void__string_err((ax_string){.ptr=(const ax_u8*)"could not rename", .len=16});
             }
             return ax__AX_std_Result__void__string_ok();
@@ -1132,29 +1132,29 @@ ax_i32 ax_main_usr(void) {
 
 ax_bool ax_AX_std_is_ok__FileMetadata__string(struct ax__AX_std_Result__FileMetadata__string self) {
     if (ax_sum_layout_is_pointer()) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return (((((ax_u64*)(raw))[0]) & ((ax_u64)(1))) == ((ax_u64)(0)));
+        ax_u64* raw64 = ((ax_u64*)(&(self)));
+        return (((((ax_u64*)(raw64))[0]) & ((ax_u64)(1))) == ((ax_u64)(0)));
     }
     ax_u64 size = (sizeof(struct ax_FileMetadata) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
         return AX_TRUE;
     }
-    ax_u32* raw = ((ax_u32*)(&(self)));
-    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
+    ax_u32* raw32 = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw32))[0]) == ((ax_u32)(0)));
 }
 
 ax_bool ax_AX_std_is_some__PathBuf(struct ax__AX_std_Option__PathBuf self) {
     if (ax_sum_layout_is_pointer()) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+        ax_u64* raw64_ptr = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw64_ptr))[0]) != ((ax_u64)(0)));
     }
     ax_u64 size = (sizeof(struct ax_PathBuf) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+        ax_u64* raw64_val = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw64_val))[0]) != ((ax_u64)(0)));
     }
-    ax_u32* raw = ((ax_u32*)(&(self)));
-    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
+    ax_u32* raw32 = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw32))[0]) == ((ax_u32)(0)));
 }
 
 struct ax_PathBuf ax_AX_std_unwrap__PathBuf(struct ax__AX_std_Option__PathBuf self) {
@@ -1162,45 +1162,47 @@ struct ax_PathBuf ax_AX_std_unwrap__PathBuf(struct ax__AX_std_Option__PathBuf se
         ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called Option.unwrap() on a None value", .len=38}).ptr);
     }
     if (ax_sum_layout_is_pointer()) {
-        struct ax_PathBuf* raw = ((struct ax_PathBuf*)(&(self)));
-        return (*((struct ax_PathBuf*)(raw)));
+        ax_u64* raw64 = ((ax_u64*)(&(self)));
+        ax_u64 masked = (((ax_u64*)(raw64))[0]);
+        struct ax_PathBuf* typed_ptr = ((struct ax_PathBuf*)(masked));
+        return (*((struct ax_PathBuf*)(typed_ptr)));
     }
     ax_u64 size = (sizeof(struct ax_PathBuf) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
-        ax_u8* raw = ((ax_u8*)(&(self)));
-        struct ax_PathBuf* typed = ((struct ax_PathBuf*)(raw));
-        return (*((struct ax_PathBuf*)(typed)));
+        ax_u8* raw8_small = ((ax_u8*)(&(self)));
+        struct ax_PathBuf* typed_small = ((struct ax_PathBuf*)(raw8_small));
+        return (*((struct ax_PathBuf*)(typed_small)));
     }
-    ax_u8* raw = ((ax_u8*)(&(self)));
-    struct ax_PathBuf* payload_ptr = ((struct ax_PathBuf*)((((ax_i64)(raw)) + ((ax_i64)(8)))));
+    ax_u8* raw8_large = ((ax_u8*)(&(self)));
+    struct ax_PathBuf* payload_ptr = ((struct ax_PathBuf*)((((ax_i64)(raw8_large)) + ((ax_i64)(8)))));
     return (*((struct ax_PathBuf*)(payload_ptr)));
 }
 
 ax_bool ax_AX_std_is_err__void__string(struct ax__AX_std_Result__void__string self) {
     if (ax_sum_layout_is_pointer()) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return (((((ax_u64*)(raw))[0]) & ((ax_u64)(1))) == ((ax_u64)(1)));
+        ax_u64* raw64 = ((ax_u64*)(&(self)));
+        return (((((ax_u64*)(raw64))[0]) & ((ax_u64)(1))) == ((ax_u64)(1)));
     }
     ax_u64 size = (sizeof(void) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
         return AX_FALSE;
     }
-    ax_u32* raw = ((ax_u32*)(&(self)));
-    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(1)));
+    ax_u32* raw32 = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw32))[0]) == ((ax_u32)(1)));
 }
 
 ax_bool ax_AX_std_is_some__string(struct ax__AX_std_Option__string self) {
     if (ax_sum_layout_is_pointer()) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+        ax_u64* raw64_ptr = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw64_ptr))[0]) != ((ax_u64)(0)));
     }
     ax_u64 size = (sizeof(ax_string) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
-        ax_u64* raw = ((ax_u64*)(&(self)));
-        return ((((ax_u64*)(raw))[0]) != ((ax_u64)(0)));
+        ax_u64* raw64_val = ((ax_u64*)(&(self)));
+        return ((((ax_u64*)(raw64_val))[0]) != ((ax_u64)(0)));
     }
-    ax_u32* raw = ((ax_u32*)(&(self)));
-    return ((((ax_u32*)(raw))[0]) == ((ax_u32)(0)));
+    ax_u32* raw32 = ((ax_u32*)(&(self)));
+    return ((((ax_u32*)(raw32))[0]) == ((ax_u32)(0)));
 }
 
 ax_string ax_AX_std_unwrap__string(struct ax__AX_std_Option__string self) {
@@ -1208,17 +1210,19 @@ ax_string ax_AX_std_unwrap__string(struct ax__AX_std_Option__string self) {
         ax_panic((const char*)((ax_string){.ptr=(const ax_u8*)"called Option.unwrap() on a None value", .len=38}).ptr);
     }
     if (ax_sum_layout_is_pointer()) {
-        ax_string* raw = ((ax_string*)(&(self)));
-        return (*((ax_string*)(raw)));
+        ax_u64* raw64 = ((ax_u64*)(&(self)));
+        ax_u64 masked = (((ax_u64*)(raw64))[0]);
+        ax_string* typed_ptr = ((ax_string*)(masked));
+        return (*((ax_string*)(typed_ptr)));
     }
     ax_u64 size = (sizeof(ax_string) * ((ax_u64)(2)));
     if ((size <= ((ax_u64)(8)))) {
-        ax_u8* raw = ((ax_u8*)(&(self)));
-        ax_string* typed = ((ax_string*)(raw));
-        return (*((ax_string*)(typed)));
+        ax_u8* raw8_small = ((ax_u8*)(&(self)));
+        ax_string* typed_small = ((ax_string*)(raw8_small));
+        return (*((ax_string*)(typed_small)));
     }
-    ax_u8* raw = ((ax_u8*)(&(self)));
-    ax_string* payload_ptr = ((ax_string*)((((ax_i64)(raw)) + ((ax_i64)(8)))));
+    ax_u8* raw8_large = ((ax_u8*)(&(self)));
+    ax_string* payload_ptr = ((ax_string*)((((ax_i64)(raw8_large)) + ((ax_i64)(8)))));
     return (*((ax_string*)(payload_ptr)));
 }
 

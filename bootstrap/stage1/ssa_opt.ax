@@ -9,7 +9,7 @@ import std.string
 
 pub struct ConstVal:
     pub known: bool
-    pub val: u32
+    pub val: u64
 
 pub struct SsaOptimizer:
     pub level: u8
@@ -55,63 +55,63 @@ pub fn opcode_is_control(op: u16) -> bool:
         return true
     return false
 
-pub fn eval_binary(op: u16, a: u32, b: u32, out_val: ptr[u32]) -> bool:
-    let ai = a as i32
-    let bi = b as i32
+pub fn eval_binary(op: u16, a: u64, b: u64, out_val: ptr[u64]) -> bool:
+    let ai = a as i64
+    let bi = b as i64
 
     if op == OP_IADD:
-        out_val[0] = (ai + bi) as u32
+        out_val[0] = (ai + bi) as u64
         return true
     elif op == OP_ISUB:
-        out_val[0] = (ai - bi) as u32
+        out_val[0] = (ai - bi) as u64
         return true
     elif op == OP_IMUL:
-        out_val[0] = (ai * bi) as u32
+        out_val[0] = (ai * bi) as u64
         return true
     elif op == OP_IDIV:
-        if bi == 0:
+        if bi == 0 as i64:
             return false
-        out_val[0] = (ai / bi) as u32
+        out_val[0] = (ai / bi) as u64
         return true
     elif op == OP_IMOD:
-        if bi == 0:
+        if bi == 0 as i64:
             return false
-        out_val[0] = (ai % bi) as u32
+        out_val[0] = (ai % bi) as u64
         return true
     elif op == OP_EQ:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai == bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_NE:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai != bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_LT:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai < bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_LE:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai <= bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_GT:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai > bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_GE:
-        mut res := 0 as u32
+        mut res := 0 as u64
         if ai >= bi:
-            res = 1 as u32
+            res = 1 as u64
         out_val[0] = res
         return true
     elif op == OP_AND:
@@ -124,28 +124,28 @@ pub fn eval_binary(op: u16, a: u32, b: u32, out_val: ptr[u32]) -> bool:
         out_val[0] = a ^ b
         return true
     elif op == OP_SHL:
-        if b >= 32 as u32:
-            out_val[0] = 0 as u32
+        if b >= 64 as u64:
+            out_val[0] = 0 as u64
             return true
         out_val[0] = a << b
         return true
     elif op == OP_SHR:
-        if b >= 32 as u32:
-            out_val[0] = 0 as u32
+        if b >= 64 as u64:
+            out_val[0] = 0 as u64
             return true
-        out_val[0] = (ai >> (b as i32)) as u32
+        out_val[0] = (ai >> (b as i64)) as u64
         return true
 
     return false
 
-pub fn eval_unary(op: u16, a: u32, out_val: ptr[u32]) -> bool:
+pub fn eval_unary(op: u16, a: u64, out_val: ptr[u64]) -> bool:
     if op == OP_NEG:
-        out_val[0] = (-(a as i32)) as u32
+        out_val[0] = (-(a as i64)) as u64
         return true
     elif op == OP_NOT:
-        mut res := 0 as u32
-        if a == 0 as u32:
-            res = 1 as u32
+        mut res := 0 as u64
+        if a == 0 as u64:
+            res = 1 as u64
         out_val[0] = res
         return true
     return false
@@ -165,14 +165,14 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
             def_counts[inst.dest] = def_counts[inst.dest] + 1 as u32
         i = i + 1 as i64
 
-    let vals = @alloc((max_reg as i64 + 1 as i64) * 8 as i64) as ptr[ConstVal]
+    let vals = @alloc((max_reg as i64 + 1 as i64) * (@compiler_intrinsic("size_of")[ConstVal]() as i64)) as ptr[ConstVal]
     mut reg_idx := 0 as u32
     while reg_idx <= max_reg:
-        vals[reg_idx] = ConstVal(known: false, val: 0 as u32)
+        vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
 
     mut changed := false
-    let out_val = @alloc(4 as i64) as ptr[u32]
+    let out_val = @alloc(8 as i64) as ptr[u64]
 
     i = 0 as i64
     while i < f.insts.len:
@@ -181,15 +181,19 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
         if inst.opcode == OP_ICONST or inst.opcode == OP_FCONST:
             if inst.dest != 0 as u32:
                 if def_counts[inst.dest] <= 1 as u32:
-                    vals[inst.dest] = ConstVal(known: true, val: inst.src1)
+                    if inst.opcode == OP_ICONST:
+                        let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
+                        vals[inst.dest] = ConstVal(known: true, val: full_val)
+                    else:
+                        vals[inst.dest] = ConstVal(known: true, val: inst.src1 as u64)
                 else:
-                    vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                    vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
             i = i + 1 as i64
             continue
 
         if not opcode_is_binary_alu(inst.opcode) and not is_unary_foldable(inst.opcode):
             if inst.dest != 0 as u32:
-                vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
             i = i + 1 as i64
             continue
 
@@ -200,12 +204,12 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                 let ok = eval_binary(inst.opcode, src1_val.val, src2_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST
-                    inst.src1 = out_val[0]
-                    inst.src2 = 0 as u32
+                    inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
+                    inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
                     if def_counts[inst.dest] <= 1 as u32:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
-                        vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                        vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
                     changed = true
                     i = i + 1 as i64
                     continue
@@ -216,18 +220,18 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                 let ok = eval_unary(inst.opcode, src1_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST
-                    inst.src1 = out_val[0]
-                    inst.src2 = 0 as u32
+                    inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
+                    inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
                     if def_counts[inst.dest] <= 1 as u32:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
-                        vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+                        vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
                     changed = true
                     i = i + 1 as i64
                     continue
 
         if inst.dest != 0 as u32:
-            vals[inst.dest] = ConstVal(known: false, val: 0 as u32)
+            vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
         i = i + 1 as i64
 
     @free(def_counts as ptr[u8])
@@ -418,7 +422,7 @@ pub fn remove_unreachable_blocks(f: ptr[AirFunc]) -> bool:
                 let inst_idx = f.block_instrs.data[blk.instrs_start + i]
                 if (inst_idx as i64) < f.insts.len:
                     f.insts.data[inst_idx].opcode = OP_NOP
-                    f.insts.data[inst_idx].type_id = 0 as u32
+                    f.insts.data[inst_idx].type_id = 0 as u16
                     f.insts.data[inst_idx].dest = 0 as u32
                     f.insts.data[inst_idx].src1 = 0 as u32
                     f.insts.data[inst_idx].src2 = 0 as u32
@@ -491,7 +495,7 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
             if not has_side_effect(inst.opcode):
                 if use_count[inst.dest] == 0 as u32:
                     inst.opcode = OP_NOP
-                    inst.type_id = 0 as u32
+                    inst.type_id = 0 as u16
                     inst.dest = 0 as u32
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -590,7 +594,7 @@ pub fn licm_func(f: ptr[AirFunc]) -> bool:
                                 adjust_bi = adjust_bi + 1 as i64
                                 
                             inst.opcode = OP_NOP
-                            inst.type_id = 0 as u32
+                            inst.type_id = 0 as u16
                             inst.dest = 0 as u32
                             inst.src1 = 0 as u32
                             inst.src2 = 0 as u32
@@ -890,17 +894,18 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
             inst_i = inst_i + 1 as u32
         bi = bi + 1 as i64
 
-    let vals = @alloc((max_reg as i64 + 1 as i64) * 8 as i64) as ptr[ConstVal]
+    let vals = @alloc((max_reg as i64 + 1 as i64) * (@compiler_intrinsic("size_of")[ConstVal]() as i64)) as ptr[ConstVal]
     mut reg_idx := 0 as u32
     while reg_idx <= max_reg:
-        vals[reg_idx] = ConstVal(known: false, val: 0 as u32)
+        vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
 
     mut i := 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
         if inst.opcode == OP_ICONST and inst.dest != 0 as u32:
-            vals[inst.dest] = ConstVal(known: true, val: inst.src1)
+            let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
+            vals[inst.dest] = ConstVal(known: true, val: full_val)
         i = i + 1 as i64
 
     mut changed := false
@@ -968,7 +973,7 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                 ph_inst_i = ph_inst_i + 1 as u32
 
                             if start_reg != 0 as u32:
-                                mut start_val := 0 as u32
+                                mut start_val := 0 as u64
                                 mut start_known := false
                                 if start_reg == iv_reg:
                                     let ph_blk2 = f.blocks.data[pre_header_id]
@@ -977,7 +982,7 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                         let ph_inst_idx = f.block_instrs.data[ph_blk2.instrs_start + ph_inst_i2]
                                         let ph_inst = f.insts.data[ph_inst_idx]
                                         if ph_inst.opcode == OP_ICONST and ph_inst.dest == iv_reg:
-                                            start_val = ph_inst.src1
+                                            start_val = ((ph_inst.src2 as u64) << 32 as u64) | (ph_inst.src1 as u64)
                                             start_known = true
                                             break
                                         ph_inst_i2 = ph_inst_i2 + 1 as u32
@@ -1000,7 +1005,7 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                                 step_reg = b_inst.src1
                                             let step_val_const = vals[step_reg]
                                             if step_val_const.known:
-                                                step_val = step_val_const.val
+                                                step_val = step_val_const.val as u32
                                                 break
                                         body_inst_i = body_inst_i + 1 as u32
 
@@ -1008,17 +1013,17 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                     mut trip_count := 0 as u32
                                     if cmp_op == OP_LT:
                                         if limit_val > start_val and step_val > 0 as u32:
-                                            trip_count = (limit_val - start_val) / step_val
+                                            trip_count = ((limit_val - start_val) / (step_val as u64)) as u32
                                     elif cmp_op == OP_LE:
                                         if limit_val >= start_val and step_val > 0 as u32:
-                                            trip_count = (limit_val - start_val) / step_val + 1 as u32
+                                            trip_count = ((limit_val - start_val) / (step_val as u64) + 1 as u64) as u32
 
                                     if trip_count > 0 as u32 and trip_count <= 4 as u32:
                                         let renamed_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
 
                                         mut iter := 0 as u32
                                         while iter < trip_count:
-                                            let curr_iv_val = start_val + iter * step_val
+                                            let curr_iv_val = start_val + (iter as u64) * (step_val as u64)
                                             @memset(renamed_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
 
                                             mut body_inst_i2 := 0 as u32
@@ -1037,8 +1042,8 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                                 opcode: OP_ICONST,
                                                 type_id: 3 as u32,
                                                 dest: temp_iv_reg,
-                                                src1: curr_iv_val,
-                                                src2: 0 as u32
+                                                src1: (curr_iv_val & 0xFFFFFFFF as u64) as u32,
+                                                src2: ((curr_iv_val >> 32 as u64) & 0xFFFFFFFF as u64) as u32
                                             ))
 
                                             body_inst_i2 = 0 as u32

@@ -831,14 +831,15 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 	isExtern := false
 	if funcNode.Kind == ast.NodeIdent {
 		funcName := string(g.Tree.TokenText(funcNode.TokenIdx))
+		_ = funcName
 		symIdx := funcNode.Payload
-		fmt.Printf("[DEBUG-CGEN-CALL] name=%s symIdx=%d\n", funcName, symIdx)
+		// fmt.Printf("[DEBUG-CGEN-CALL] name=%s symIdx=%d\n", funcName, symIdx)
 		if symIdx != 0 && g.Symbols != nil && int(symIdx) < len(g.Symbols.Symbols) {
 			sym := g.Symbols.SymbolAt(symIdx)
-			fmt.Printf("[DEBUG-CGEN-CALL]   sym.Kind=%v sym.Flags=%d\n", sym.Kind, sym.Flags)
+			// fmt.Printf("[DEBUG-CGEN-CALL]   sym.Kind=%v sym.Flags=%d\n", sym.Kind, sym.Flags)
 			if sym.Kind == sema.SymFunc && (sym.Flags&sema.SymFlagExtern != 0) {
 				isExtern = true
-				fmt.Printf("[DEBUG-CGEN-CALL]   SET isExtern=true!\n")
+				// fmt.Printf("[DEBUG-CGEN-CALL]   SET isExtern=true!\n")
 			}
 		}
 	}
@@ -981,10 +982,10 @@ func (g *ExprGen) emitCall(idx uint32, node *ast.AstNode) string {
 
 		if isExtern && actualIdx != ast.NullIdx {
 			argType := g.NodeType(actualIdx)
-			fmt.Printf("[DEBUG-CGEN-CALL]   arg %d kind=%v type=%v\n", i, g.Tree.Node(actualIdx).Kind, argType)
+			// fmt.Printf("[DEBUG-CGEN-CALL]   arg %d kind=%v type=%v\n", i, g.Tree.Node(actualIdx).Kind, argType)
 			if argType == types.TypeString {
 				val = fmt.Sprintf("(const char*)(%s).ptr", val)
-				fmt.Printf("[DEBUG-CGEN-CALL]     wrapped to C string: %s\n", val)
+				// fmt.Printf("[DEBUG-CGEN-CALL]     wrapped to C string: %s\n", val)
 			}
 		}
 		args = append(args, val)
@@ -1457,7 +1458,13 @@ func (g *ExprGen) emitField(idx uint32, node *ast.AstNode) string {
 	lhsNode := g.Tree.Node(lhsIdx)
 	if lhsNode.Payload != 0 && g.Symbols != nil && int(lhsNode.Payload) < len(g.Symbols.Symbols) {
 		lhsSym := g.Symbols.SymbolAt(lhsNode.Payload)
-		if lhsSym.Kind == sema.SymModule {
+		lhsName := ""
+		if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
+			lhsName = string(g.Tree.TokenText(lhsNode.TokenIdx))
+		}
+		symName := string(g.Intern.Get(lhsSym.NameID))
+		nameMatch := (symName == lhsName || strings.HasSuffix(symName, "."+lhsName))
+		if nameMatch && lhsSym.Kind == sema.SymModule {
 			fmt.Printf("[DEBUG-CGEN-FIELD] lhsNode.Payload=%d lhsSym.Kind=%v node.Payload=%d\n", lhsNode.Payload, lhsSym.Kind, node.Payload)
 			fieldName := string(g.Tree.TokenText(node.TokenIdx))
 			if node.Payload != 0 && int(node.Payload) < len(g.Symbols.Symbols) {
@@ -1556,7 +1563,7 @@ func (g *ExprGen) emitCast(idx uint32, node *ast.AstNode) string {
 
 	inner := g.Emit(children[0])
 	targetType := types.TypeID(node.Payload)
-	fmt.Printf("[DEBUG-CGEN] emitCast nodeIdx=%d payload=%d targetType=%d\n", idx, node.Payload, targetType)
+	// fmt.Printf("[DEBUG-CGEN] emitCast nodeIdx=%d payload=%d targetType=%d\n", idx, node.Payload, targetType)
 
 	srcType := g.NodeType(children[0])
 	if srcType != types.TypeUnknown && g.Table != nil {
@@ -1906,7 +1913,7 @@ func (g *ExprGen) NodeType(nodeIdx uint32) types.TypeID {
 		children := g.Tree.Children(nodeIdx)
 		if len(children) >= 1 {
 			objType := g.NodeType(children[0])
-			fmt.Printf("[DEBUG-NODETYPE-FIELD] nodeIdx=%d, children[0]=%d, objType=%d\n", nodeIdx, children[0], objType)
+			// fmt.Printf("[DEBUG-NODETYPE-FIELD] nodeIdx=%d, children[0]=%d, objType=%d\n", nodeIdx, children[0], objType)
 			if objType != types.TypeUnknown {
 				entry := g.Table.Entry(objType)
 				if entry.Kind == types.KindPointer {

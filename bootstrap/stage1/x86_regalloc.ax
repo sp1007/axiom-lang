@@ -115,21 +115,36 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     iv.end = i as i32
         i = i + 1
 
-    // Scan for back-edges and extend lifetimes
+    // Scan for back-edges and extend lifetimes with O(1) label lookup
+    mut max_label := 0 as u32
+    mut label_scan := 0 as i64
+    while label_scan < insts_len:
+        if insts[label_scan].op == MACH_LABEL:
+            if insts[label_scan].dst.label > max_label:
+                max_label = insts[label_scan].dst.label
+        label_scan = label_scan + 1
+
+    let label_to_idx_size = (max_label + 1 as u32) as i64
+    let label_to_idx = @alloc(label_to_idx_size * 8) as ptr[i64]
+    mut fill_l := 0 as i64
+    while fill_l < label_to_idx_size:
+        label_to_idx[fill_l] = -1 as i64
+        fill_l = fill_l + 1
+
+    label_scan = 0
+    while label_scan < insts_len:
+        if insts[label_scan].op == MACH_LABEL:
+            let l_id = insts[label_scan].dst.label
+            label_to_idx[l_id as i64] = label_scan
+        label_scan = label_scan + 1
+
     i = 0 as i64
     while i < insts_len:
         let inst = &insts[i]
         if inst.op == MACH_JMP or inst.op == MACH_JCC:
             if inst.dst.kind == OPND_LABEL:
                 let target_label = inst.dst.label
-                // Find the target instruction index
-                mut target_idx := -1 as i64
-                mut search_idx := 0 as i64
-                while search_idx < insts_len:
-                    if insts[search_idx].op == MACH_LABEL and insts[search_idx].dst.label == target_label:
-                        target_idx = search_idx
-                        break
-                    search_idx = search_idx + 1
+                let target_idx = label_to_idx[target_label as i64]
                 
                 // If it is a back-edge (target_idx < i)
                 if target_idx != -1 as i64 and target_idx < i:
@@ -143,6 +158,7 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                                     iv.end = i as i32
                         v_scan = v_scan + 1
         i = i + 1
+    @free(label_to_idx as ptr[u8])
 
     mut result := new_live_interval_vec()
     mut v := 0 as i64
@@ -345,9 +361,10 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         mut j := i + 1
         while j < intervals.len:
             let iv2 = &intervals.data[j]
-            if iv1.start <= iv2.end and iv2.start <= iv1.end:
-                adj[iv1.vreg].append_unique(iv2.vreg)
-                adj[iv2.vreg].append_unique(iv1.vreg)
+            if iv2.start > iv1.end:
+                break
+            adj[iv1.vreg].append_unique(iv2.vreg)
+            adj[iv2.vreg].append_unique(iv1.vreg)
             j = j + 1
         i = i + 1
 
@@ -625,32 +642,28 @@ pub fn get_dst_behavior(op: u16) -> u8:
 pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> MachInstVec:
     mut result := new_mach_inst_vec()
 
-    if insts_len > 300 as i64:
-        ax_printf_local("[Debug] insert_spill_code for function sym_id=%d, len=%d:\n", fn_ptr.sym_id as i64, insts_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        mut max_v := 0 as u32
-        mut j := 0 as i64
-        while j < insts_len:
-            let inst = insts[j]
-            ax_printf_local("  inst %d: op=%d, dst.kind=%d, dst.vreg=%d, src1.kind=%d, src1.vreg=%d\n", j, inst.op as i64, inst.dst.kind as i64, inst.dst.vreg as i64, inst.src1.kind as i64, inst.src1.vreg as i64, 0 as i64, 0 as i64)
-            if inst.dst.kind == 1 as u8 and inst.dst.vreg > max_v:
-                max_v = inst.dst.vreg
-            if inst.src1.kind == 1 as u8 and inst.src1.vreg > max_v:
-                max_v = inst.src1.vreg
-            if inst.src2.kind == 1 as u8 and inst.src2.vreg > max_v:
-                max_v = inst.src2.vreg
-            j = j + 1
-
-        mut k := 0 as i32
-        while k <= max_v as i32:
-            let alloc = allocs[k]
-            if alloc.spilled:
-                let is_16 = regalloc_is_16byte(k as u32, fn_ptr, table, symbols)
-                ax_printf_local("  vreg %d: spilled=true, spill_idx=%d, is_16=%d\n", k as i64, alloc.spill_idx as i64, is_16 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            k = k + 1
-
-
-
-
+    // if insts_len > 300 as i64:
+    //     ax_printf_local("[Debug] insert_spill_code for function sym_id=%d, len=%d:\n", fn_ptr.sym_id as i64, insts_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    //     mut max_v := 0 as u32
+    //     mut j := 0 as i64
+    //     while j < insts_len:
+    //         let inst = insts[j]
+    //         ax_printf_local("  inst %d: op=%d, dst.kind=%d, dst.vreg=%d, src1.kind=%d, src1.vreg=%d\n", j, inst.op as i64, inst.dst.kind as i64, inst.dst.vreg as i64, inst.src1.kind as i64, inst.src1.vreg as i64, 0 as i64, 0 as i64)
+    //         if inst.dst.kind == 1 as u8 and inst.dst.vreg > max_v:
+    //             max_v = inst.dst.vreg
+    //         if inst.src1.kind == 1 as u8 and inst.src1.vreg > max_v:
+    //             max_v = inst.src1.vreg
+    //         if inst.src2.kind == 1 as u8 and inst.src2.vreg > max_v:
+    //             max_v = inst.src2.vreg
+    //         j = j + 1
+    // 
+    //     mut k := 0 as i32
+    //     while k <= max_v as i32:
+    //         let alloc = allocs[k]
+    //         if alloc.spilled:
+    //             let is_16 = regalloc_is_16byte(k as u32, fn_ptr, table, symbols)
+    //             ax_printf_local("  vreg %d: spilled=true, spill_idx=%d, is_16=%d\n", k as i64, alloc.spill_idx as i64, is_16 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    //         k = k + 1
 
     mut i := 0 as i64
     while i < insts_len:

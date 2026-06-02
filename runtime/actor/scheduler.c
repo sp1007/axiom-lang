@@ -22,11 +22,11 @@ void ax_runq_init(AxRunQueue* q) {
 
 int ax_runq_push(AxRunQueue* q, AxActorID id) {
     uint64_t b = q->bottom;
-    uint64_t t = q->top;
+    uint64_t t = __atomic_load_n(&q->top, __ATOMIC_ACQUIRE);
     if (b - t >= AX_RUNQ_SIZE) return -1; /* full */
 
     q->buffer[b % AX_RUNQ_SIZE] = id;
-    q->bottom = b + 1;
+    __atomic_store_n(&q->bottom, b + 1, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -35,38 +35,55 @@ AxActorID ax_runq_pop(AxRunQueue* q) {
     if (b == 0) return AX_ACTOR_ID_NONE;
 
     b--;
-    q->bottom = b;
-    uint64_t t = q->top;
+    __atomic_store_n(&q->bottom, b, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    uint64_t t = __atomic_load_n(&q->top, __ATOMIC_ACQUIRE);
 
-    if (t <= b) {
-        return q->buffer[b % AX_RUNQ_SIZE];
-    }
+    if (t > b) {
+        __atomic_store_n(&q->bottom, t, __ATOMIC_RELEASE);
+        return AX_ACTOR_ID_NONE;
+      }
 
+    AxActorID id = q->buffer[b % AX_RUNQ_SIZE];
     if (t == b) {
-        q->bottom = t + 1;
-        q->top = t + 1;
-        return q->buffer[b % AX_RUNQ_SIZE];
+        if (!__sync_bool_compare_and_swap(&q->top, t, t + 1)) {
+            id = AX_ACTOR_ID_NONE;
+        }
+        __atomic_store_n(&q->bottom, t + 1, __ATOMIC_RELEASE);
     }
-
-    /* Queue empty */
-    q->bottom = t;
-    return AX_ACTOR_ID_NONE;
-}
-
-AxActorID ax_runq_steal(AxRunQueue* q) {
-    uint64_t t = q->top;
-    uint64_t b = q->bottom;
-
-    if (t >= b) return AX_ACTOR_ID_NONE; /* empty */
-
-    AxActorID id = q->buffer[t % AX_RUNQ_SIZE];
-    q->top = t + 1;
     return id;
 }
 
-int ax_runq_empty(const AxRunQueue* q) {
-    return q->top >= q->bottom;
+AxActorID ax_runq_steal(AxRunQueue* q) {
+    while (1) {
+        uint64_t t = __atomic_load_n(&q->top, __ATOMIC_ACQUIRE);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        uint64_t b = __atomic_load_n(&q->bottom, __ATOMIC_ACQUIRE);
+
+        if (t >= b) return AX_ACTOR_ID_NONE; /* empty */
+
+        AxActorID id = q->buffer[t % AX_RUNQ_SIZE];
+        if (__sync_bool_compare_and_swap(&q->top, t, t + 1)) {
+            return id;
+        }
+    }
 }
+
+int ax_runq_empty(const AxRunQueue* q) {
+    return __atomic_load_n(&q->top, __ATOMIC_ACQUIRE) >= __atomic_load_n(&q->bottom, __ATOMIC_ACQUIRE);
+}
+
+/* --------------------------------------------------------------------------
+ * Scheduler
+ * -------------------------------------------------------------------------- */
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 /* --------------------------------------------------------------------------
  * Scheduler
@@ -83,6 +100,7 @@ int ax_scheduler_init(AxScheduler* sched, uint32_t worker_count) {
         sched->workers[i].id = i;
         ax_runq_init(&sched->workers[i].runq);
         sched->workers[i].running = 0;
+        sched->workers[i].thread_handle = NULL;
     }
 
     return 0;
@@ -120,8 +138,14 @@ static void worker_loop(AxScheduler* sched, AxWorker* worker) {
         }
 
         if (id == AX_ACTOR_ID_NONE) {
-            /* No work available — in real impl would yield/sleep */
-            break;
+            /* Yield/Sleep 1ms to prevent burning 100% CPU when idle */
+#ifdef _WIN32
+            Sleep(1);
+#else
+            struct timespec ts = {0, 1000000}; /* 1ms */
+            nanosleep(&ts, NULL);
+#endif
+            continue;
         }
 
         /* Execute: step the actor */
@@ -141,17 +165,40 @@ static void worker_loop(AxScheduler* sched, AxWorker* worker) {
     }
 }
 
+typedef struct {
+    AxScheduler* sched;
+    AxWorker* worker;
+} ThreadArgs;
+
+#ifdef _WIN32
+static DWORD WINAPI worker_thread_func(LPVOID lpParam) {
+#else
+static void* worker_thread_func(void* lpParam) {
+#endif
+    ThreadArgs* args = (ThreadArgs*)lpParam;
+    worker_loop(args->sched, args->worker);
+    free(args);
+    return 0;
+}
+
 int ax_scheduler_run(AxScheduler* sched) {
     if (!sched) return -1;
 
     sched->running = 1;
     for (uint32_t i = 0; i < sched->worker_count; i++) {
         sched->workers[i].running = 1;
-    }
 
-    /* Single-threaded execution for now */
-    for (uint32_t i = 0; i < sched->worker_count; i++) {
-        worker_loop(sched, &sched->workers[i]);
+        ThreadArgs* args = (ThreadArgs*)malloc(sizeof(ThreadArgs));
+        args->sched = sched;
+        args->worker = &sched->workers[i];
+
+#ifdef _WIN32
+        sched->workers[i].thread_handle = CreateThread(NULL, 0, worker_thread_func, args, 0, NULL);
+#else
+        pthread_t thread;
+        pthread_create(&thread, NULL, worker_thread_func, args);
+        sched->workers[i].thread_handle = (void*)thread;
+#endif
     }
 
     return 0;
@@ -163,6 +210,19 @@ void ax_scheduler_shutdown(AxScheduler* sched) {
     sched->running = 0;
     for (uint32_t i = 0; i < sched->worker_count; i++) {
         sched->workers[i].running = 0;
+    }
+
+    /* Join all worker threads */
+    for (uint32_t i = 0; i < sched->worker_count; i++) {
+        if (sched->workers[i].thread_handle) {
+#ifdef _WIN32
+            WaitForSingleObject(sched->workers[i].thread_handle, INFINITE);
+            CloseHandle(sched->workers[i].thread_handle);
+#else
+            pthread_join((pthread_t)sched->workers[i].thread_handle, NULL);
+#endif
+            sched->workers[i].thread_handle = NULL;
+        }
     }
 }
 

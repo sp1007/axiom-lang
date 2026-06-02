@@ -14,7 +14,7 @@
 #include <malloc.h>
 #endif
 
-extern void ax_panic(const char* msg);
+extern void ax_panic(unsigned char* msg);
 
 #define MAGIC_HEADER 0xDEADBEEFCAFEBABEULL
 #define MAGIC_FOOTER 0xBABEC0FEDEADF00DULL
@@ -186,6 +186,9 @@ void** std_mem_alloc_get_free_pool(void) {
     return &axiom_free_segment_pool;
 }
 
+#ifndef BUILDING_AX_RUNTIME_DLL
 void ax_segment_manager_init(void) {
     // Stub for MVP allocator
 }
+#endif
+

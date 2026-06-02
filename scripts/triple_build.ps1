@@ -103,6 +103,7 @@ $frontendFiles = @(
     "bootstrap/stage1/x86_coff.ax",
     "bootstrap/stage1/linker.ax",
     "bootstrap/stage1/fmt.ax",
+    "bootstrap/stage1/lsp.ax",
     "bootstrap/stage1/main_air.ax"
 )
 

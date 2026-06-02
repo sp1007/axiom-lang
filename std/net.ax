@@ -117,51 +117,42 @@ impl TcpStream {
     }
 
     pub async fn read(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        if std.os.IS_WINDOWS {
-            let res = recv(self.fd, buf, count as i32, 0 as i32)
-            if res < 0 {
+        if std.os.IS_WINDOWS:
+            let res_win = recv(self.fd, buf, count as i32, 0 as i32)
+            if res_win < 0:
                 return Err("recv failed")
-            }
-            return Ok(res as i64)
-        } else {
-            let res = std.os.linux_sys.syscall(45 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
-            if res < 0 {
+            return Ok(res_win as i64)
+        else:
+            let res_linux = std.os.linux_sys.syscall(45 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
+            if res_linux < 0:
                 return Err("recv failed")
-            }
-            return Ok(res)
-        }
+            return Ok(res_linux)
     }
 
     pub async fn write(mut self, buf: ptr[u8], count: i64) -> Result[i64, str] {
-        if std.os.IS_WINDOWS {
-            let res = send(self.fd, buf, count as i32, 0 as i32)
-            if res < 0 {
+        if std.os.IS_WINDOWS:
+            let res_win = send(self.fd, buf, count as i32, 0 as i32)
+            if res_win < 0:
                 return Err("send failed")
-            }
-            return Ok(res as i64)
-        } else {
-            let res = std.os.linux_sys.syscall(44 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
-            if res < 0 {
+            return Ok(res_win as i64)
+        else:
+            let res_linux = std.os.linux_sys.syscall(44 as u64, self.fd as u64, buf as u64, count as u64, 0 as u64, 0 as u64, 0 as u64)
+            if res_linux < 0:
                 return Err("send failed")
-            }
-            return Ok(res)
-        }
+            return Ok(res_linux)
     }
 
     pub fn close(mut self) -> Result[void, str] {
-        if std.os.IS_WINDOWS {
-            let res = closesocket(self.fd)
-            if res != 0 {
+        if std.os.IS_WINDOWS:
+            let res_win = closesocket(self.fd)
+            if res_win != 0:
                 return Err("failed to close socket")
-            }
             return Ok(())
-        } else {
-            let res = std.os.linux_sys.syscall(3 as u64, self.fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
-            if res < 0 {
+        else:
+            let res_linux = std.os.linux_sys.syscall(3 as u64, self.fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+            if res_linux < 0:
                 return Err("failed to close socket")
-            }
             return Ok(())
-        }
     }
 
     pub fn peer_addr(self) -> SocketAddr {

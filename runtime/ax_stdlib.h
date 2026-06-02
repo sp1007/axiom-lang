@@ -78,7 +78,7 @@ void ax_eprintln_str(ax_string s);
  * Use ax_assert_axiom to avoid conflict with panic.h's ax_assert
  * ================================================================ */
 
-void ax_assert_axiom(ax_bool condition, ax_string message);
+void (ax_assert_axiom)(ax_bool condition, ax_string message);
 void ax_assert_eq_i64(ax_i64 actual, ax_i64 expected);
 void ax_assert_eq_str(ax_string actual, ax_string expected);
 void ax_assert_eq_bool(ax_bool actual, ax_bool expected);

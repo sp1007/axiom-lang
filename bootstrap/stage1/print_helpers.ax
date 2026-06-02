@@ -16,6 +16,10 @@ extern "C" fn ax_string_get_ptr_val(s: AxiomString) -> ptr[u8]
 pub fn get_str_ptr(s: str) -> ptr[u8]:
     return s as ptr[u8]
 
+pub fn safe_free_str(s: str):
+    if std.string.len(s) > 0 as i64:
+        @free(get_str_ptr(s))
+
 
 pub fn unescape_string_literal(s: str) -> str:
     let s_len = std.string.len(s)
@@ -75,6 +79,9 @@ pub fn ax_puts_local(s: str) -> i32:
     return 0
 
 fn print_i64_raw(val: i64):
+    if val == -9223372036854775808 as i64:
+        print_raw("-9223372036854775808")
+        return
     if val == 0:
         print_raw("0")
         return
@@ -225,6 +232,9 @@ fn print_to_file(stream: ptr[void], s: str):
     @free(buf)
 
 fn print_i64_to_file(stream: ptr[void], val: i64):
+    if val == -9223372036854775808 as i64:
+        print_to_file(stream, "-9223372036854775808")
+        return
     if val == 0:
         print_to_file(stream, "0")
         return
@@ -403,3 +413,88 @@ pub fn ax_sprintf_local(buf: ptr[u8], format: ptr[u8], val: f64) -> i32:
         
     dest[dest_idx] = 0 as u8
     return (dest_idx + prefix_len) as i32
+
+pub fn extract_qualified_base_name(name: str) -> str:
+    let length = std.string.len(name)
+    if length < 1:
+        return std.string.concat("", "")
+        
+    let name_ptr = get_str_ptr(name)
+    if length >= 4 and name_ptr[0] == '_' as u8 and name_ptr[1] == 'A' as u8 and name_ptr[2] == 'X' as u8 and name_ptr[3] == '_' as u8:
+        return extract_base_name(name)
+        
+    // Find last '.'
+    mut last_dot := -1 as i64
+    mut i := length - 1 as i64
+    while i >= 0 as i64:
+        if name_ptr[i] == '.' as u8:
+            last_dot = i
+            break
+        i = i - 1 as i64
+        
+    mut base := name
+    if last_dot != -1 as i64:
+        base = std.string.slice(name, last_dot + 1, length)
+        
+    let base_len = std.string.len(base)
+    let base_ptr = get_str_ptr(base)
+    mut d_idx := -1 as i64
+    mut j := 0 as i64
+    while j < base_len - 1 as i64:
+        if base_ptr[j] == '_' as u8 and base_ptr[j + 1] == '_' as u8:
+            d_idx = j
+            break
+        j = j + 1
+        
+    if d_idx != -1 as i64:
+        return std.string.slice(base, 0, d_idx)
+    return std.string.concat("", base)
+
+
+pub fn extract_base_name(name: str) -> str:
+    let length = std.string.len(name)
+    if length < 4:
+        return std.string.concat("", name)
+        
+    let name_ptr = get_str_ptr(name)
+    if name_ptr[0] != '_' as u8 or name_ptr[1] != 'A' as u8 or name_ptr[2] != 'X' as u8 or name_ptr[3] != '_' as u8:
+        return std.string.concat("", name)
+        
+    // Find first occurrence of "__"
+    mut d_idx := -1 as i64
+    mut i := 4 as i64
+    while i < length - 1 as i64:
+        if name_ptr[i] == '_' as u8 and name_ptr[i + 1] == '_' as u8:
+            d_idx = i
+            break
+        i = i + 1
+        
+    // The prefix is name[0..d_idx] (or name[0..length] if no "__")
+    mut prefix_len := length
+    if d_idx != -1 as i64:
+        prefix_len = d_idx
+        
+    // Find last "_" in the prefix
+    mut last_u_idx := -1 as i64
+    i = prefix_len - 1 as i64
+    while i >= 0 as i64:
+        if name_ptr[i] == '_' as u8:
+            last_u_idx = i
+            break
+        i = i - 1 as i64
+        
+    // The base starts after the last "_" in prefix, and ends at prefix_len
+    mut start_idx := 0 as i64
+    if last_u_idx != -1 as i64 and last_u_idx < prefix_len - 1 as i64:
+        start_idx = last_u_idx + 1
+        
+    let base_len = prefix_len - start_idx
+    if base_len <= 0:
+        return std.string.concat("", "")
+        
+    // Allocate the fresh base string and copy characters
+    let base_ptr = @alloc(base_len + 1) as ptr[u8]
+    @memcpy(base_ptr, (name_ptr as i64 + start_idx) as ptr[u8], base_len)
+    base_ptr[base_len] = 0 as u8
+    return base_ptr as str
+

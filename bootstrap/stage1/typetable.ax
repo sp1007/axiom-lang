@@ -213,18 +213,45 @@ pub fn new_sum_info_vec() -> SumInfoVec:
 pub fn new_variant_info_vec() -> VariantInfoVec:
     return VariantInfoVec(data: null as ptr[VariantInfo], len: 0, cap: 0)
 
+pub struct U32VecVec:
+    pub data: ptr[U32Vec]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_u32_vec_vec() -> U32VecVec:
+    return U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+
+pub fn push(self: ptr[U32VecVec], val: U32Vec) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let item_size = @compiler_intrinsic("size_of")[U32Vec]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[U32Vec]
+        if self.data != null as ptr[U32Vec]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = val
+    self.len = self.len + 1
+    return idx
+
 pub struct TypeTable:
-    entries: TypeEntryVec
-    structs: StructInfoVec
-    funcs: FuncInfoVec
-    sumtypes: SumInfoVec
+    pub entries: TypeEntryVec
+    pub structs: StructInfoVec
+    pub funcs: FuncInfoVec
+    pub sumtypes: SumInfoVec
+    pub generic_insts: U32VecVec
 
 pub fn new_type_table() -> ptr[TypeTable]:
-    let tt = @alloc(96) as ptr[TypeTable]
+    let tt = @alloc(120) as ptr[TypeTable]
     tt.entries = TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0)
     tt.structs = StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0)
     tt.funcs = FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0)
     tt.sumtypes = SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
+    tt.generic_insts = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
     
     // 0: Unknown sentinel
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
@@ -351,6 +378,56 @@ pub fn register_array(self: ptr[TypeTable], elem_id: u32, length: u32) -> u32:
         extra: elem_id,
     ))
 
+pub fn register_generic_inst(self: ptr[TypeTable], name_id: u32, args: U32Vec) -> u32:
+    mut i := 0 as i64
+    while i < self.entries.len:
+        let entry = self.entries.data[i]
+        if entry.kind == TYPE_KIND_GENERIC_INST and entry.name_id == name_id:
+            let inst_idx = entry.extra
+            let inst_args = &self.generic_insts.data[inst_idx]
+            if inst_args.len == args.len:
+                mut args_match := true
+                mut j := 0 as i64
+                while j < args.len:
+                    if inst_args.data[j] != args.data[j]:
+                        args_match = false
+                        break
+                    j = j + 1
+                if args_match:
+                    if args.data != null as ptr[u32]:
+                        @free(args.data as ptr[u8])
+                    return i as u32
+        i = i + 1
+    
+    let inst_idx = (&self.generic_insts).push(args)
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_GENERIC_INST,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 0 as u32,
+        align: 0 as u32,
+        extra: inst_idx,
+    ))
+
+pub fn register_generic(self: ptr[TypeTable], name_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.entries.len:
+        let entry = self.entries.data[i]
+        if entry.kind == TYPE_KIND_GENERIC and entry.name_id == name_id:
+            return i as u32
+        i = i + 1
+    
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_GENERIC,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 0 as u32,
+        align: 0 as u32,
+        extra: 0 as u32,
+    ))
+
 pub fn free_typetable(self: ptr[TypeTable]):
     mut i := 0 as i64
     while i < self.structs.len:
@@ -370,6 +447,14 @@ pub fn free_typetable(self: ptr[TypeTable]):
         if s.variants.data != null as ptr[VariantInfo]:
             @free(s.variants.data as ptr[u8])
         i = i + 1
+    i = 0 as i64
+    while i < self.generic_insts.len:
+        let g = self.generic_insts.data[i]
+        if g.data != null as ptr[u32]:
+            @free(g.data as ptr[u8])
+        i = i + 1
+    if self.generic_insts.data != null as ptr[U32Vec]:
+        @free(self.generic_insts.data as ptr[u8])
     if self.sumtypes.data != null as ptr[SumInfo]:
         @free(self.sumtypes.data as ptr[u8])
     if self.entries.data != null as ptr[TypeEntry]:

@@ -478,12 +478,15 @@ func (nr *NameResolver) resolveNode(nodeIdx uint32) {
 						}
 					} else if sym.Kind == SymStruct && nr.lazy != nil {
 						fieldNameID := node.Payload
-						modNameID := nr.lazy.FindModuleOfSymbol(symIdx)
-						if modNameID != 0 {
-							resolvedIdx, diag := nr.lazy.ResolveField(modNameID, fieldNameID, diagnostics.Pos{})
-							if diag == nil {
-								node.Payload = resolvedIdx
-								nr.resolved[nodeIdx] = true
+						fieldName := nr.intern.Get(fieldNameID)
+						if fieldName != "new" {
+							modNameID := nr.lazy.FindModuleOfSymbol(symIdx)
+							if modNameID != 0 {
+								resolvedIdx, diag := nr.lazy.ResolveField(modNameID, fieldNameID, diagnostics.Pos{})
+								if diag == nil {
+									node.Payload = resolvedIdx
+									nr.resolved[nodeIdx] = true
+								}
 							}
 						}
 					}

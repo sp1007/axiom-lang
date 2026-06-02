@@ -16,6 +16,9 @@ pub struct AxMsgQueue:
     pub tail: ptr[AxMessage]
     pub msg_count: u64
     pub pending: u64
+    pub lock: i32
+    pub padding: i32
+
 
 pub struct AxRestartConfig:
     pub policy: i32
@@ -114,6 +117,8 @@ pub struct worker:
     pub steals_attempted: u64
     pub steals_succeeded: u64
     pub running: i32
+    pub thread_handle: ptr[void]
+
 
 // --------------------------------------------------------------------------
 // Scheduler Stats Struct
@@ -250,6 +255,12 @@ pub fn ax_actor_send(target: u64, sender: u64, msg_type: u32, payload: ptr[void]
         let payload_dest = (msg as i64 + @compiler_intrinsic("size_of")[AxMessage]() as i64) as ptr[u8]
         @memcpy(payload_dest, payload as ptr[u8], size as i64)
     ax_msgq_push((actor_ptr as i64 + 16 as i64) as ptr[AxMsgQueue], msg)
+    let state = get_state()
+    let p_g_sched_initialized = (state as i64 + 1 as i64) as ptr[bool]
+    if p_g_sched_initialized.*:
+        let p_g_sched = (state as i64 + 56 as i64) as ptr[ptr[void]]
+        let sched = p_g_sched.* as ptr[scheduler]
+        sched.submit(target)
     return 0 as i32
 
 pub fn ax_actor_spawn(handler: ptr[void], init_data: ptr[void], data_size: u64) -> u64:
@@ -301,6 +312,7 @@ pub fn ax_actor_spawn(handler: ptr[void], init_data: ptr[void], data_size: u64) 
 extern "C" fn ax_actor_step(actor_ptr: ptr[void]) -> i32
 extern "C" fn ax_actor_is_running(actor_ptr: ptr[void]) -> i32
 extern "C" fn ax_actor_has_messages(actor_ptr: ptr[void]) -> i32
+extern "C" fn ax_actor_stop(id: u64)
 
 fn has_active_actors() -> bool:
     let state = get_state()
@@ -397,3 +409,196 @@ pub fn stats(self: ptr[scheduler], stats: ptr[SchedulerStats]):
         stats.total_executed = stats.total_executed + w.tasks_executed
         stats.total_steals = stats.total_steals + w.steals_succeeded
         i = i + 1 as u32
+
+// --------------------------------------------------------------------------
+// Option 2 — Supervisor Trees Implementation in AXIOM
+// --------------------------------------------------------------------------
+
+pub const AX_STRATEGY_ONE_FOR_ONE: i32 = 0
+pub const AX_STRATEGY_ONE_FOR_ALL: i32 = 1
+pub const AX_STRATEGY_REST_FOR_ONE: i32 = 2
+
+pub struct AxChildSpec:
+    pub handler: ptr[void]
+    pub init_data: ptr[void]
+    pub data_size: u64
+    pub restart: i32
+    pub max_restarts: u32
+    pub window_ms: u32
+
+pub struct AxSupervisor:
+    pub id: u64
+    pub strategy: i32
+    pub children: [u64; 16]
+    pub specs: [AxChildSpec; 16]
+    pub child_count: u32
+    pub restart_intensity: u32
+    pub restart_window_ms: u32
+    pub current_restarts: u32
+    pub window_start_ns: u64
+
+pub struct AxSupervisorTable:
+    pub count: u32
+    pub supervisors: [AxSupervisor; 16]
+
+mut g_supervisor_table: u64 = 0 as u64
+
+extern "C" fn ax_time_now_ns() -> u64
+extern "C" fn ax_actor_ref_to_u64(ref: ActorRef) -> u64
+
+pub fn ax_supervisor_table_init():
+    if g_supervisor_table != 0 as u64:
+        return
+    let size = @compiler_intrinsic("size_of")[AxSupervisorTable]() as i64
+    let table = ax_os_alloc(size) as ptr[AxSupervisorTable]
+    table.count = 0 as u32
+    g_supervisor_table = table as u64
+
+pub fn ax_supervisor_lookup(id: u64) -> ptr[AxSupervisor]:
+    if g_supervisor_table == 0 as u64:
+        ax_supervisor_table_init()
+    let table = g_supervisor_table as ptr[AxSupervisorTable]
+    mut i := 0 as u32
+    while i < table.count:
+        let sup_addr = table as i64 + 8 as i64 + i as i64 * @compiler_intrinsic("size_of")[AxSupervisor]() as i64
+        if (sup_addr as ptr[AxSupervisor]).id == id:
+            return sup_addr as ptr[AxSupervisor]
+        i = i + 1 as u32
+    return null as ptr[AxSupervisor]
+
+pub fn ax_supervisor_add(sup_val: AxSupervisor) -> ptr[AxSupervisor]:
+    if g_supervisor_table == 0 as u64:
+        ax_supervisor_table_init()
+    let table = g_supervisor_table as ptr[AxSupervisorTable]
+    if table.count >= 16 as u32:
+        return null as ptr[AxSupervisor]
+    let idx = table.count
+    let dest_addr = table as i64 + 8 as i64 + idx as i64 * @compiler_intrinsic("size_of")[AxSupervisor]() as i64
+    (dest_addr as ptr[AxSupervisor]).* = sup_val
+    table.count = table.count + 1 as u32
+    return dest_addr as ptr[AxSupervisor]
+
+
+fn supervisor_handler(self: ptr[void], payload: ptr[void], msg_type: u32):
+    let actor = self as ptr[AxActor]
+    let sup = ax_supervisor_lookup(actor.id)
+    if sup == null as ptr[AxSupervisor]:
+        return
+    if msg_type == 3 as u32: // AX_MSG_EXIT
+        let child_id = (payload as ptr[u64]).*
+        ax_supervisor_handle_child_exit(sup, child_id)
+
+pub fn ax_supervisor_create(strategy: i32, max_restarts: u32, window_ms: u32) -> u64:
+    let id = ax_actor_ref_to_u64(spawn supervisor_handler(null as ptr[void], null as ptr[void], 0 as u32))
+    if id == 0 as u64:
+        return 0 as u64
+    mut sup := AxSupervisor(
+        id: id,
+        strategy: strategy,
+        child_count: 0 as u32,
+        restart_intensity: max_restarts,
+        restart_window_ms: window_ms,
+        current_restarts: 0 as u32,
+        window_start_ns: 0 as u64
+    )
+    ax_supervisor_add(sup)
+    return id
+
+pub fn ax_supervisor_add_child(sup: ptr[AxSupervisor], spec: AxChildSpec) -> i32:
+    if sup == null as ptr[AxSupervisor] or sup.child_count >= 16 as u32:
+        return -1 as i32
+    let idx = sup.child_count
+    let child_ptr = (sup as i64 + 16 as i64 + idx as i64 * 8 as i64) as ptr[u64]
+    child_ptr.* = 0 as u64
+    
+    let spec_size = @compiler_intrinsic("size_of")[AxChildSpec]() as i64
+    let spec_ptr = (sup as i64 + 16 as i64 + 128 as i64 + idx as i64 * spec_size) as ptr[AxChildSpec]
+    spec_ptr.* = spec
+    
+    sup.child_count = sup.child_count + 1 as u32
+    return 0 as i32
+
+pub fn ax_supervisor_start_children(sup: ptr[AxSupervisor]) -> i32:
+    if sup == null as ptr[AxSupervisor]:
+        return -1 as i32
+    mut i := 0 as u32
+    let spec_size = @compiler_intrinsic("size_of")[AxChildSpec]() as i64
+    while i < sup.child_count:
+        let spec_ptr = (sup as i64 + 16 as i64 + 128 as i64 + i as i64 * spec_size) as ptr[AxChildSpec]
+        let child = ax_actor_spawn(spec_ptr.handler, spec_ptr.init_data, spec_ptr.data_size)
+        if child == 0 as u64:
+            return -1 as i32
+        
+        let child_ptr = (sup as i64 + 16 as i64 + i as i64 * 8 as i64) as ptr[u64]
+        child_ptr.* = child
+        
+        let actor = ax_actor_lookup(child) as ptr[AxActor]
+        if actor != null as ptr[AxActor]:
+            actor.supervisor_id = sup.id
+            actor.flags = actor.flags | 2 as u32 // AX_ACTOR_FLAG_LINKED
+            actor.restart.policy = spec_ptr.restart
+            actor.restart.max_restarts = spec_ptr.max_restarts
+            actor.restart.window_ms = spec_ptr.window_ms
+            
+        i = i + 1 as u32
+    return 0 as i32
+
+fn find_child_index(sup: ptr[AxSupervisor], child_id: u64) -> i32:
+    mut i := 0 as u32
+    while i < sup.child_count:
+        let child_ptr = (sup as i64 + 16 as i64 + i as i64 * 8 as i64) as ptr[u64]
+        if child_ptr.* == child_id:
+            return i as i32
+        i = i + 1 as u32
+    return -1 as i32
+
+fn restart_child(sup: ptr[AxSupervisor], idx: u32):
+    let spec_size = @compiler_intrinsic("size_of")[AxChildSpec]() as i64
+    let spec_ptr = (sup as i64 + 16 as i64 + 128 as i64 + idx as i64 * spec_size) as ptr[AxChildSpec]
+    let child = ax_actor_spawn(spec_ptr.handler, spec_ptr.init_data, spec_ptr.data_size)
+    
+    let child_ptr = (sup as i64 + 16 as i64 + idx as i64 * 8 as i64) as ptr[u64]
+    child_ptr.* = child
+    
+    let actor = ax_actor_lookup(child) as ptr[AxActor]
+    if actor != null as ptr[AxActor]:
+        actor.supervisor_id = sup.id
+        actor.flags = actor.flags | 2 as u32 // AX_ACTOR_FLAG_LINKED
+
+pub fn ax_supervisor_handle_child_exit(sup: ptr[AxSupervisor], child_id: u64):
+    if sup == null as ptr[AxSupervisor]:
+        return
+    let now = ax_time_now_ns()
+    let window_ns = sup.restart_window_ms as u64 * 1000000 as u64
+    if (now - sup.window_start_ns) > window_ns:
+        sup.current_restarts = 0 as u32
+        sup.window_start_ns = now
+        
+    sup.current_restarts = sup.current_restarts + 1 as u32
+    if sup.current_restarts > sup.restart_intensity:
+        // Too many restarts
+        return
+        
+    let idx = find_child_index(sup, child_id)
+    if idx < 0 as i32:
+        return
+        
+    if sup.strategy == 0 as i32: // AX_STRATEGY_ONE_FOR_ONE
+        restart_child(sup, idx as u32)
+    elif sup.strategy == 1 as i32: // AX_STRATEGY_ONE_FOR_ALL
+        mut i := 0 as u32
+        while i < sup.child_count:
+            let child_ptr = (sup as i64 + 16 as i64 + i as i64 * 8 as i64) as ptr[u64]
+            if child_ptr.* != 0 as u64:
+                ax_actor_stop(child_ptr.*)
+            restart_child(sup, i)
+            i = i + 1 as u32
+    elif sup.strategy == 2 as i32: // AX_STRATEGY_REST_FOR_ONE
+        mut i := idx as u32
+        while i < sup.child_count:
+            let child_ptr = (sup as i64 + 16 as i64 + i as i64 * 8 as i64) as ptr[u64]
+            if child_ptr.* != 0 as u64:
+                ax_actor_stop(child_ptr.*)
+            restart_child(sup, i)
+            i = i + 1 as u32
+

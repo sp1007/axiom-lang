@@ -15,39 +15,41 @@ extern "C" fn ax_sum_layout_is_pointer() -> bool
 
 pub fn is_some[T](self: Option[T]) -> bool:
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        return raw[0] != 0 as u64
+        let raw64_ptr = (&self) as ptr[u64]
+        return raw64_ptr[0] != 0 as u64
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
-        let raw = (&self) as ptr[u64]
-        return raw[0] != 0 as u64
-    let raw = (&self) as ptr[u32]
-    return raw[0] == 0 as u32
+        let raw64_val = (&self) as ptr[u64]
+        return raw64_val[0] != 0 as u64
+    let raw32 = (&self) as ptr[u32]
+    return raw32[0] == 0 as u32
 
 pub fn is_none[T](self: Option[T]) -> bool:
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        return raw[0] == 0 as u64
+        let raw64_ptr = (&self) as ptr[u64]
+        return raw64_ptr[0] == 0 as u64
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
-        let raw = (&self) as ptr[u64]
-        return raw[0] == 0 as u64
-    let raw = (&self) as ptr[u32]
-    return raw[0] == 1 as u32
+        let raw64_val = (&self) as ptr[u64]
+        return raw64_val[0] == 0 as u64
+    let raw32 = (&self) as ptr[u32]
+    return raw32[0] == 1 as u32
 
 pub fn unwrap[T](self: Option[T]) -> T:
     if not self.is_some():
         panic("called Option.unwrap() on a None value")
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[T]
-        return raw.*
+        let raw64 = (&self) as ptr[u64]
+        let masked = raw64[0]
+        let typed_ptr = masked as ptr[T]
+        return typed_ptr.*
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
-        let raw = (&self) as ptr[u8]
-        let typed = raw as ptr[T]
-        return typed.*
-    let raw = (&self) as ptr[u8]
-    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[T]
+        let raw8_small = (&self) as ptr[u8]
+        let typed_small = raw8_small as ptr[T]
+        return typed_small.*
+    let raw8_large = (&self) as ptr[u8]
+    let payload_ptr = ((raw8_large as i64) + 8 as i64) as ptr[T]
     return payload_ptr.*
 
 pub fn unwrap_or[T](self: Option[T], default: T) -> T:
@@ -94,56 +96,56 @@ pub fn or_other[T](self: Option[T], other: Option[T]) -> Option[T]:
 
 pub fn is_ok[T, E](self: Result[T, E]) -> bool:
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        return (raw[0] & 1 as u64) == 0 as u64
+        let raw64 = (&self) as ptr[u64]
+        return (raw64[0] & 1 as u64) == 0 as u64
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
         return true
-    let raw = (&self) as ptr[u32]
-    return raw[0] == 0 as u32
+    let raw32 = (&self) as ptr[u32]
+    return raw32[0] == 0 as u32
 
 pub fn is_err[T, E](self: Result[T, E]) -> bool:
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        return (raw[0] & 1 as u64) == 1 as u64
+        let raw64 = (&self) as ptr[u64]
+        return (raw64[0] & 1 as u64) == 1 as u64
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
         return false
-    let raw = (&self) as ptr[u32]
-    return raw[0] == 1 as u32
+    let raw32 = (&self) as ptr[u32]
+    return raw32[0] == 1 as u32
 
 pub fn unwrap[T, E](self: Result[T, E]) -> T:
     if not self.is_ok():
         panic("called Result.unwrap() on an Err value")
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        let masked = raw[0] & (0xfffffffffffffffe as u64)
-        let typed = (&masked) as ptr[T]
-        return typed.*
+        let raw64 = (&self) as ptr[u64]
+        let masked = raw64[0] & (0xfffffffffffffffe as u64)
+        let typed_ptr = masked as ptr[T]
+        return typed_ptr.*
     let size = @compiler_intrinsic("size_of")[T]() * (2 as u64)
     if size <= (8 as u64):
-        let raw = (&self) as ptr[u8]
-        let typed = raw as ptr[T]
-        return typed.*
-    let raw = (&self) as ptr[u8]
-    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[T]
+        let raw8_small = (&self) as ptr[u8]
+        let typed_small = raw8_small as ptr[T]
+        return typed_small.*
+    let raw8_large = (&self) as ptr[u8]
+    let payload_ptr = ((raw8_large as i64) + 8 as i64) as ptr[T]
     return payload_ptr.*
 
 pub fn unwrap_err[T, E](self: Result[T, E]) -> E:
     if not self.is_err():
         panic("called Result.unwrap_err() on an Ok value")
     if ax_sum_layout_is_pointer():
-        let raw = (&self) as ptr[u64]
-        let masked = raw[0] & (0xfffffffffffffffe as u64)
-        let typed = (&masked) as ptr[E]
-        return typed.*
+        let raw64 = (&self) as ptr[u64]
+        let masked = raw64[0] & (0xfffffffffffffffe as u64)
+        let typed_ptr = masked as ptr[E]
+        return typed_ptr.*
     let size = @compiler_intrinsic("size_of")[E]() * (2 as u64)
     if size <= (8 as u64):
-        let raw = (&self) as ptr[u8]
-        let typed = raw as ptr[E]
-        return typed.*
-    let raw = (&self) as ptr[u8]
-    let payload_ptr = ((raw as i64) + 8 as i64) as ptr[E]
+        let raw8_small = (&self) as ptr[u8]
+        let typed_small = raw8_small as ptr[E]
+        return typed_small.*
+    let raw8_large = (&self) as ptr[u8]
+    let payload_ptr = ((raw8_large as i64) + 8 as i64) as ptr[E]
     return payload_ptr.*
 
 pub fn unwrap_or[T, E](self: Result[T, E], default: T) -> T:

@@ -162,33 +162,48 @@ pub fn type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size: ptr[u3
         out_size[0] = entry.size
         out_align[0] = entry.align
         return
-    elif entry.kind == TYPE_KIND_STRUCT:
-        let struct_idx = entry.extra
-        let info = table.structs.data[struct_idx]
-        mut offset := 0 as u32
-        mut max_align := 1 as u32
-        mut i := 0 as i64
-        while i < info.fields.len:
-            let f = info.fields.data[i]
-            mut f_size := 0 as u32
-            mut f_align := 0 as u32
-            type_size_and_align(table, f.type_id, &f_size, &f_align)
-            if f_align == 0 as u32:
-                f_align = 8 as u32
-            // Align offset
-            offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
-            offset = offset + f_size
-            if f_align > max_align:
-                max_align = f_align
-            i = i + 1
+    elif entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST:
+        mut struct_idx := 0xffffffff as u32
+        if entry.kind == TYPE_KIND_STRUCT:
+            struct_idx = entry.extra
+        else:
+            mut idx := 0 as i64
+            while idx < table.entries.len:
+                let e = table.entries.data[idx]
+                if e.kind == TYPE_KIND_STRUCT and e.name_id == entry.name_id:
+                    struct_idx = e.extra
+                    break
+                idx = idx + 1
         
-        mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
-        if size == 0 as u32:
-            size = 8 as u32
-        entry.size = size
-        entry.align = max_align
-        out_size[0] = size
-        out_align[0] = max_align
+        if struct_idx != 0xffffffff as u32:
+            let info = table.structs.data[struct_idx]
+            mut offset := 0 as u32
+            mut max_align := 1 as u32
+            mut i := 0 as i64
+            while i < info.fields.len:
+                let f = info.fields.data[i]
+                mut f_size := 0 as u32
+                mut f_align := 0 as u32
+                type_size_and_align(table, f.type_id, &f_size, &f_align)
+                if f_align == 0 as u32:
+                    f_align = 8 as u32
+                // Align offset
+                offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
+                offset = offset + f_size
+                if f_align > max_align:
+                    max_align = f_align
+                i = i + 1
+            
+            mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
+            if size == 0 as u32:
+                size = 8 as u32
+            entry.size = size
+            entry.align = max_align
+            out_size[0] = size
+            out_align[0] = max_align
+        else:
+            out_size[0] = 8 as u32
+            out_align[0] = 8 as u32
     elif entry.kind == TYPE_KIND_ARRAY:
         let elem_id = entry.extra
         let length = entry.name_id
@@ -218,10 +233,24 @@ pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) 
         entry = table.entries.data[real_type_id]
     ax_printf_local("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", real_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
-    if entry.kind != 1 as u8: // TYPE_KIND_STRUCT = 1
+    if entry.kind != 1 as u8 and entry.kind != 8 as u8: // TYPE_KIND_STRUCT = 1, TYPE_KIND_GENERIC_INST = 8
         return field_idx * 8 as u32
     
-    let struct_idx = entry.extra
+    mut struct_idx := 0xffffffff as u32
+    if entry.kind == 1 as u8:
+        struct_idx = entry.extra
+    else:
+        mut idx := 0 as i64
+        while idx < table.entries.len:
+            let e = table.entries.data[idx]
+            if e.kind == 1 as u8 and e.name_id == entry.name_id:
+                struct_idx = e.extra
+                break
+            idx = idx + 1
+            
+    if struct_idx == 0xffffffff as u32:
+        return field_idx * 8 as u32
+        
     let info = table.structs.data[struct_idx]
     ax_printf_local("[field_offset] info.fields.len=%d, info.fields.data=%x\n", info.fields.len as i64, (info.fields.data as i64) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
@@ -254,10 +283,24 @@ pub fn field_size(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) ->
     if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
         real_type_id = entry.extra
         entry = table.entries.data[real_type_id]
-    if entry.kind != 1 as u8: // TYPE_KIND_STRUCT = 1
+    if entry.kind != 1 as u8 and entry.kind != 8 as u8: // TYPE_KIND_STRUCT = 1, TYPE_KIND_GENERIC_INST = 8
         return 8 as u32
     
-    let struct_idx = entry.extra
+    mut struct_idx := 0xffffffff as u32
+    if entry.kind == 1 as u8:
+        struct_idx = entry.extra
+    else:
+        mut idx := 0 as i64
+        while idx < table.entries.len:
+            let e = table.entries.data[idx]
+            if e.kind == 1 as u8 and e.name_id == entry.name_id:
+                struct_idx = e.extra
+                break
+            idx = idx + 1
+            
+    if struct_idx == 0xffffffff as u32:
+        return 8 as u32
+        
     let info = table.structs.data[struct_idx]
     if field_idx as i64 >= info.fields.len:
         return 8 as u32

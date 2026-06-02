@@ -36,7 +36,7 @@ void ax_set_program_name(const char* name);
  * ax_panic — Print msg to stderr with stack trace, then abort().
  * Never returns.
  */
-AX_NORETURN void ax_panic(const char* msg);
+AX_NORETURN void ax_panic(unsigned char* msg);
 
 /**
  * ax_bounds_check — Panic if idx >= len.

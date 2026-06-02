@@ -34,6 +34,7 @@ import bootstrap.stage1.x86_elf64
 import bootstrap.stage1.x86_coff
 import bootstrap.stage1.linker
 import bootstrap.stage1.fmt
+import bootstrap.stage1.lsp
 
 // extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 extern "C" fn puts(s: ptr[u8]) -> i32
@@ -144,6 +145,12 @@ fn read_file_content(path: str) -> str:
         if r2.is_ok():
             let content = r2.unwrap()
             return content
+        else:
+            ax_puts_local("Error: read_all failed: ")
+            ax_puts_local(r2.unwrap_err())
+    else:
+        ax_puts_local("Error: open failed: ")
+        ax_puts_local(r.unwrap_err())
     return ""
 
 fn write_file_content(path: str, content: str) -> bool:
@@ -222,15 +229,11 @@ fn strip_package_prefixes(s: str) -> str:
 
 
 
-extern "C" fn GetCommandLineW() -> ptr[u16]
+extern "C" fn GetCommandLineA() -> ptr[u8]
 
-fn local_wslice_to_ptr(data: ptr[u16], len: i64) -> ptr[u8]:
+fn local_slice_to_ptr(data: ptr[u8], len: i64) -> ptr[u8]:
     let res = @alloc(len + 1) as ptr[u8]
-    mut i := 0 as i64
-    while i < len:
-        let val = data[i]
-        res[i] = val as u8
-        i = i + 1
+    @memcpy(res, data, len)
     res[len] = 0 as u8
     return res
 
@@ -255,14 +258,14 @@ fn populate_str_in_place(s_ptr: ptr[u8], s_len: i64, dest: ptr[str]):
     out_bytes[14] = ((s_len >> 48) & 0xFF) as u8
     out_bytes[15] = ((s_len >> 56) & 0xFF) as u8
 
-fn is_space(c: u16) -> bool:
-    if c == ' ' as u16:
+fn is_space_ansi(c: u8) -> bool:
+    if c == ' ' as u8:
         return true
-    if c == '\t' as u16:
+    if c == '\t' as u8:
         return true
-    if c == '\r' as u16:
+    if c == '\r' as u8:
         return true
-    if c == '\n' as u16:
+    if c == '\n' as u8:
         return true
     return false
 
@@ -270,38 +273,38 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
     let args = @alloc(64 * 16) as ptr[str]
     mut count := 0 as i64
     if @compiler_intrinsic("is_windows"):
-        let cmdline = GetCommandLineW()
-        if cmdline != null as ptr[u16]:
+        let cmdline = GetCommandLineA()
+        if cmdline != null as ptr[u8]:
             mut i := 0 as i64
-            while cmdline[i] != 0 as u16 and count < 64:
-                while is_space(cmdline[i]):
+            while cmdline[i] != 0 as u8 and count < 64:
+                while is_space_ansi(cmdline[i]):
                     i = i + 1
-                if cmdline[i] == 0 as u16:
+                if cmdline[i] == 0 as u8:
                     break
                 let start = i
                 mut in_quotes := false
-                while cmdline[i] != 0 as u16:
+                while cmdline[i] != 0 as u8:
                     let ch = cmdline[i]
-                    if ch == '"' as u16:
+                    if ch == '"' as u8:
                         in_quotes = not in_quotes
                     else:
                         if not in_quotes:
-                            if is_space(ch):
+                            if is_space_ansi(ch):
                                 break
                     i = i + 1
                 let arg_len = i - start
-                mut final_ptr := ((cmdline as i64) + start * 2) as ptr[u16]
+                mut final_ptr := ((cmdline as i64) + start) as ptr[u8]
                 mut final_len := arg_len
                 
                 mut is_quoted := false
                 if arg_len >= 2:
-                    if cmdline[start] == '"' as u16:
-                        if cmdline[i - 1] == '"' as u16:
+                    if cmdline[start] == '"' as u8:
+                        if cmdline[i - 1] == '"' as u8:
                             is_quoted = true
                 if is_quoted:
-                    final_ptr = ((cmdline as i64) + (start + 1) * 2) as ptr[u16]
+                    final_ptr = ((cmdline as i64) + start + 1) as ptr[u8]
                     final_len = arg_len - 2
-                let s_ptr = local_wslice_to_ptr(final_ptr, final_len)
+                let s_ptr = local_slice_to_ptr(final_ptr, final_len)
                 populate_str_in_place(s_ptr, final_len, ((args as i64) + count * 16) as ptr[str])
                 count = count + 1
     else:
@@ -520,6 +523,8 @@ pub fn main() -> i32:
         ax_puts_local("  emit-c <file.ax> [-o <out.c>] [-O0|-O1|-O2|-O3]")
         ax_puts_local("  build <file.ax> [-o <out.exe>] [-O0|-O1|-O2|-O3] [--target <wasm32|wasm32-unknown-unknown>]")
         ax_puts_local("  fmt <file.ax>")
+        ax_puts_local("  lsp")
+        fflush(null as ptr[void])
         return 1
 
     mut is_dump_air := false
@@ -532,6 +537,7 @@ pub fn main() -> i32:
     mut self_link := false
     mut optimize := false
     mut opt_level := 1 as u8
+    mut no_stdlib := false
 
     // Parse commands
     let cmd = args[1]
@@ -548,6 +554,9 @@ pub fn main() -> i32:
     elif cmd == "fmt":
         is_fmt = true
         file_arg_idx = 2
+    elif cmd == "lsp":
+        lsp_start_server()
+        return 0
     else:
         is_dump_air = true
         file_arg_idx = 1
@@ -587,12 +596,15 @@ pub fn main() -> i32:
         elif opt == "-O3":
             optimize = true
             opt_level = 3 as u8
+        elif opt == "--no-stdlib":
+            no_stdlib = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
     mut src := read_file_content(filename)
     if std.string.len(src) == 0 as i64:
         ax_puts_local("Error: could not open or read file")
+        fflush(null as ptr[void])
         return 1
 
     if is_fmt:
@@ -609,7 +621,7 @@ pub fn main() -> i32:
         @free(get_str_ptr(formatted))
         return 0
 
-    if self_link:
+    if self_link and not no_stdlib:
         src = concatenate_stdlib(src)
 
     if not is_dump_air:
@@ -631,9 +643,18 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
 
     // 3. Resolve
+    if not is_dump_air:
+        ax_puts_local("[Debug] Creating symbol table...")
+        fflush(null as ptr[void])
     mut symtable := new_symbol_table(parser.pool)
+    if not is_dump_air:
+        ax_puts_local("[Debug] Creating type table...")
+        fflush(null as ptr[void])
     mut typetable := new_type_table()
     
+    if not is_dump_air:
+        ax_puts_local("[Debug] Creating lazy resolver...")
+        fflush(null as ptr[void])
     let lazy = new_lazy_resolver(symtable, parser.pool as ptr[void])
     lazy.typetable = typetable as ptr[void]
     symtable.lazy_resolver = lazy as ptr[void]
@@ -642,12 +663,28 @@ pub fn main() -> i32:
         let prelude_name = "std.result"
         let prelude_name_id = parser.pool.intern_string(prelude_name)
         let prelude_path = "std/result.ax"
+        ax_puts_local("[Debug] Registering std.result import...")
+        fflush(null as ptr[void])
         lazy.lazy_resolver_register_import(prelude_name_id, prelude_path, 0 as u32)
+        ax_puts_local("[Debug] Preloading std.result module...")
+        fflush(null as ptr[void])
         lazy.lazy_resolver_preload_module(prelude_name_id)
     
-    
+    if not is_dump_air:
+        ax_puts_local("[Debug] Creating name resolver...")
+        fflush(null as ptr[void])
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
-    resolver.resolve()
+    if not is_dump_air:
+        ax_puts_local("[Debug] Resolver created. Pre-defining top levels...")
+        fflush(null as ptr[void])
+    resolver.pre_define_top_levels()
+    if not is_dump_air:
+        ax_puts_local("[Debug] Pre-defining finished. Resolving root...")
+        fflush(null as ptr[void])
+    resolver.resolve_node(0 as u32)
+    if not is_dump_air:
+        ax_puts_local("[Debug] Resolving finished.")
+        fflush(null as ptr[void])
     parser.pool = resolver.intern
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Resolving.")
@@ -809,7 +846,7 @@ pub fn main() -> i32:
             ax_puts_local("[Debug] Stage 2.4: Finished C code generation successfully.")
             fflush(null as ptr[void])
 
-            mut opt_str := "-O0"
+            mut opt_str := "-O1"
             if optimize:
                 if opt_level == 1 as u8:
                     opt_str = "-O1"
@@ -822,7 +859,7 @@ pub fn main() -> i32:
             let output_file_nt = str_to_null_terminated(output_file)
 
             // Compile C to executable using gcc
-            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
+            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -g -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up
@@ -831,6 +868,7 @@ pub fn main() -> i32:
 
             if link_status != 0:
                 ax_puts_local("Error: C compilation failed")
+                fflush(null as ptr[void])
                 return link_status
 
     // Free resources
@@ -910,32 +948,29 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
         return 1 as i32
 
     mut src := read_file_content(actual_path)
-    ax_printf_local("[DEBUG-LOADER-READ] path='%s' len=%d\n", get_str_ptr(actual_path) as i64, std.string.len(src), 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    ax_puts_local("[DEBUG-LOADER-STEP] Freeing actual_path")
+    ax_printf_local("[Debug] read_file_content len=%d\n", src.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     @free(get_str_ptr(actual_path))
 
     // 1. Lex
-    ax_puts_local("[DEBUG-LOADER-STEP] Creating lexer")
+    ax_printf_local("[Debug] Lexing...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     mut lexer := new_lexer(src)
-    ax_puts_local("[DEBUG-LOADER-STEP] Running tokenizer")
-    fflush(null as ptr[void])
     let tokens = lexer.tokenize()
+    ax_printf_local("[Debug] Lexing finished, tokens len=%d\n", tokens.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
 
     // 2. Parse
-    ax_puts_local("[DEBUG-LOADER-STEP] Creating parser")
+    ax_printf_local("[Debug] Parsing...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     let parser_ptr = new_parser(tokens, src, intern)
-    ax_puts_local("[DEBUG-LOADER-STEP] Running parser")
-    fflush(null as ptr[void])
     parser_ptr.parse_program()
     let mod_tree = parser_ptr.tree
+    ax_printf_local("[Debug] Parsing finished, nodes count=%d\n", mod_tree.nodes.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
     mod.ast_tree = mod_tree
 
     // Save scope stack and reset to global scope (0)
-    ax_puts_local("[DEBUG-LOADER-STEP] Saving scope stack")
-    fflush(null as ptr[void])
     let saved_len = st.stack.len
     let saved_cap = st.stack.cap
     let saved_data = st.stack.data
@@ -943,27 +978,25 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     (&st.stack).push(0 as u32)
 
     // 3. Resolve
-    ax_puts_local("[DEBUG-LOADER-STEP] Creating name resolver")
+    ax_printf_local("[Debug] Resolving...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     mut mod_resolver := new_name_resolver(mod_tree, intern, st)
-    ax_puts_local("[DEBUG-LOADER-STEP] Running name resolver")
-    fflush(null as ptr[void])
     mod_resolver.resolve()
+    ax_printf_local("[Debug] Resolving finished\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
 
     // 4. Typecheck
-    ax_puts_local("[DEBUG-LOADER-STEP] Creating type checker")
+    ax_printf_local("[Debug] Typechecking...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     mut mod_checker := new_type_checker(mod_tree, intern, st, tt as ptr[TypeTable])
-    ax_puts_local("[DEBUG-LOADER-STEP] Running type checker")
-    fflush(null as ptr[void])
     mod_checker.run_type_checker()
+    ax_printf_local("[Debug] Typechecking finished\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
     mod_checker.ensure_capacity(mod_tree.nodes.len)
     mod.node_types = mod_checker.node_types as ptr[void]
 
 
     // Restore scope stack
-    ax_puts_local("[DEBUG-LOADER-STEP] Restoring scope stack")
-    fflush(null as ptr[void])
     if st.stack.data != null as ptr[u32]:
         @free(st.stack.data as ptr[u8])
     st.stack.len = saved_len
@@ -971,8 +1004,6 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     st.stack.data = saved_data
 
     // 5. Export top-level public symbols
-    ax_puts_local("[DEBUG-LOADER-STEP] Exporting symbols")
-    fflush(null as ptr[void])
     if mod_tree.nodes.len > 0:
         let root = &mod_tree.nodes.data[0]
         mut child := root.first_child
@@ -1000,6 +1031,39 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
                         // Register export
                         let exp = ModuleExport(name_id: local_name_id, symbol_idx: sym_idx)
                         (&mod.exports).push(exp)
+
+                        if kind == NODE_TYPE_ALIAS_DECL:
+                            mut sum_child := child_node.first_child
+                            mut sum_type_idx := 0 as u32
+                            while sum_child != 0 as u32:
+                                if mod_tree.nodes.data[sum_child].kind == NODE_SUM_TYPE:
+                                    sum_type_idx = sum_child
+                                    break
+                                sum_child = mod_tree.nodes.data[sum_child].next_sibling
+                            
+                            if sum_type_idx != 0 as u32:
+                                let sum_type_node = &mod_tree.nodes.data[sum_type_idx]
+                                mut variant_idx := sum_type_node.first_child
+                                while variant_idx != 0 as u32:
+                                    let variant_node = &mod_tree.nodes.data[variant_idx]
+                                    if variant_node.kind == NODE_VARIANT_DECL:
+                                        let v_sym_idx = variant_node.payload
+                                        if v_sym_idx != 0 as u32:
+                                            let v_sym = &st.symbols.data[v_sym_idx]
+                                            let v_local_name_id = v_sym.name_id
+                                            let v_local_name = intern.get(v_local_name_id)
+                                            let v_full_name = std.string.concat(mod_name, std.string.concat(".", v_local_name))
+                                            let v_full_name_id = intern.intern_string(v_full_name)
+                                            
+                                            @free(get_str_ptr(v_full_name))
+                                            @free(get_str_ptr(v_local_name))
+                                            
+                                            let global_scope_inner = &st.scopes.data[0]
+                                            global_scope_inner.scope_put(v_full_name_id, v_sym_idx)
+                                            
+                                            let v_exp = ModuleExport(name_id: v_local_name_id, symbol_idx: v_sym_idx)
+                                            (&mod.exports).push(v_exp)
+                                    variant_idx = variant_node.next_sibling
             child = child_node.next_sibling
 
     // Cleanup resources
@@ -1019,6 +1083,4 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     @free(mod_checker as ptr[u8])
     @free(parser_ptr as ptr[u8])
 
-    ax_puts_local("[DEBUG-LOADER-STEP] Finished load_module successfully!")
-    fflush(null as ptr[void])
     return 0 as i32

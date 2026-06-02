@@ -103,7 +103,10 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 	for idx, sym := range chk.symtable.Symbols {
 		if sym.Kind == SymFunc {
 			tID := types.TypeID(sym.TypeID)
-			funcName := string(chk.symtable.intern.Get(sym.NameID))
+			var funcName string
+			if sym.NameID != 0 && int(sym.NameID) <= chk.symtable.intern.Len() {
+				funcName = string(chk.symtable.intern.Get(sym.NameID))
+			}
 			if strings.Contains(funcName, "contains") || strings.Contains(funcName, "get") {
 				entryKind := "unknown"
 				if tID != types.TypeUnknown {
@@ -117,10 +120,13 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 					firstParamType := fInfo.Params[0]
 					// Check if first parameter is exactly the struct type, or a ref to it.
 					matched := chk.baseTypeEquals(firstParamType, structType)
-					funcName := string(chk.symtable.intern.Get(sym.NameID))
-					if strings.Contains(funcName, "contains") || strings.Contains(funcName, "insert") || strings.Contains(funcName, "remove") {
+					var funcName2 string
+					if sym.NameID != 0 && int(sym.NameID) <= chk.symtable.intern.Len() {
+						funcName2 = string(chk.symtable.intern.Get(sym.NameID))
+					}
+					if strings.Contains(funcName2, "contains") || strings.Contains(funcName2, "insert") || strings.Contains(funcName2, "remove") {
 						fmt.Printf("[DEBUG-GET-METHODS] funcName=%s (idx %d) firstParamType=%d structType=%d matched=%v\n", 
-							funcName, idx, firstParamType, structType, matched)
+							funcName2, idx, firstParamType, structType, matched)
 					}
 					if matched {
 						nameID := sym.NameID
@@ -158,7 +164,10 @@ func (chk *Interfaces) getMethodsOfStruct(structType types.TypeID) []types.Metho
 
 							if len(structGPs) == 0 {
 								// Find the original template struct to get its GenericParams
-								baseStructName := getBaseName(string(chk.symtable.intern.Get(structEntry.NameID)))
+								var baseStructName string
+								if structEntry.NameID != 0 && int(structEntry.NameID) <= chk.symtable.intern.Len() {
+									baseStructName = getBaseName(string(chk.symtable.intern.Get(structEntry.NameID)))
+								}
 								baseNameID := chk.symtable.intern.InternString(baseStructName)
 								if tmplSymIdx, found := chk.symtable.ResolveGlobal(baseNameID); found {
 									tmplSym := chk.symtable.SymbolAt(tmplSymIdx)
@@ -248,7 +257,10 @@ func (chk *Interfaces) getTypeArgs(tID types.TypeID, entry *types.TypeEntry) []t
 		return chk.types.GenericInstArgs(tID)
 	}
 	if (entry.Kind == types.KindStruct || entry.Kind == types.KindSum) && entry.NameID != 0 {
-		nameStr := string(chk.symtable.intern.Get(entry.NameID))
+		var nameStr string
+		if int(entry.NameID) <= chk.symtable.intern.Len() {
+			nameStr = string(chk.symtable.intern.Get(entry.NameID))
+		}
 		if strings.HasPrefix(nameStr, "_AX_") {
 			_, args := parseMangledName(chk.types, chk.symtable.intern, nameStr)
 			return args
@@ -285,8 +297,13 @@ func (chk *Interfaces) baseTypeEquals(t1, target types.TypeID) bool {
 	name1 := entry1.NameID
 	name2 := entry2.NameID
 	if name1 != 0 && name2 != 0 {
-		nameStr1 := string(chk.symtable.intern.Get(name1))
-		nameStr2 := string(chk.symtable.intern.Get(name2))
+		var nameStr1, nameStr2 string
+		if int(name1) <= chk.symtable.intern.Len() {
+			nameStr1 = string(chk.symtable.intern.Get(name1))
+		}
+		if int(name2) <= chk.symtable.intern.Len() {
+			nameStr2 = string(chk.symtable.intern.Get(name2))
+		}
 		baseName1 := getBaseName(nameStr1)
 		baseName2 := getBaseName(nameStr2)
 		if baseName1 != "" && baseName1 == baseName2 {

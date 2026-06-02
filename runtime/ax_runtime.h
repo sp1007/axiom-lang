@@ -18,6 +18,7 @@
  */
 #pragma once
 
+
 /* ================================================================
  * 1. System headers
  * ================================================================ */
@@ -27,6 +28,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+
 
 /* ================================================================
  * 2. Primitive type aliases (AXIOM → C)
@@ -74,17 +87,39 @@ typedef struct {
     ax_u64       len;  /* byte length */
 } ax_string;
 
+
+
 /** Convenience macro for string literals */
 #define AX_STR(literal) \
     ((ax_string){ .ptr = (const ax_u8*)(literal), .len = sizeof(literal) - 1 })
 
+#ifdef AX_FREESTANDING_RUNTIME
+#define ax_alloc ax_ax_alloc
+#define ax_free ax_ax_free
+#define ax_realloc ax_ax_realloc
+#define ax_set_program_name ax_ax_set_program_name
+#define __ax_runtime_init ax_ax_segment_manager_init
+#define __ax_runtime_shutdown ax_ax_segment_manager_shutdown
+#define ax_assert_axiom ax_ax_assert_axiom
+
+extern void* ax_ax_alloc(ax_i64 size);
+extern void ax_ax_free(void* p);
+extern void* ax_ax_realloc(void* p, ax_i64 new_size);
+extern void ax_ax_set_program_name(ax_u8* name);
+extern void ax_ax_segment_manager_init(void);
+extern void ax_ax_segment_manager_shutdown(void);
+extern void ax_ax_assert_axiom(ax_bool cond, ax_string msg);
+#endif
+
 /* ================================================================
  * 4. Runtime subsystems
  * ================================================================ */
+#ifndef AX_FREESTANDING_RUNTIME
 #include "axalloc/axalloc.h"
 /* Note: axalloc.h includes genref.h at the bottom */
 #include "panic/panic.h"
 #include "actor/actor.h"
+#endif
 
 /* ================================================================
  * 5. Slice types
@@ -158,21 +193,16 @@ extern int ax_main(void);
 extern void __ax_runtime_init(void);
 extern void __ax_runtime_shutdown(void);
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 int main(int argc, char** argv) {
 #ifdef _WIN32
     SetConsoleOutputCP(65001);
 #endif
+#ifdef AX_FREESTANDING_RUNTIME
+    ax_set_program_name((ax_u8*)(argc > 0 ? argv[0] : "<axiom>"));
+#else
     ax_set_program_name(argc > 0 ? argv[0] : "<axiom>");
+#endif
     __ax_runtime_init();
 #ifdef AX_MAIN_WITH_ARGS
     int ret = ax_main((ax_i32)argc, (ax_u8**)argv);

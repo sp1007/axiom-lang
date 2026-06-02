@@ -42,6 +42,7 @@ func TestStage1NativeLink(t *testing.T) {
 	x86Elf64Path := filepath.Join(workspaceDir, "bootstrap/stage1/x86_elf64.ax")
 	linkerPath := filepath.Join(workspaceDir, "bootstrap/stage1/linker.ax")
 	fmtPath := filepath.Join(workspaceDir, "bootstrap/stage1/fmt.ax")
+	lspPath := filepath.Join(workspaceDir, "bootstrap/stage1/lsp.ax")
 	mainPath := filepath.Join(workspaceDir, "bootstrap/stage1/main_air.ax")
 
 	sourceBytes, err := concatenateAxiomFiles(
@@ -50,7 +51,7 @@ func TestStage1NativeLink(t *testing.T) {
 		airPath, airBuilderPath, ssaOptPath, cgenPath, wasmPath,
 		x86RegsPath, x86SelectorPath, x86RegallocPath, x86AsmEmitterPath,
 		x86ModrmPath, x86EncodingPath, x86EmitterPath, x86Elf64Path, x86CoffPath,
-		linkerPath, fmtPath, mainPath,
+		linkerPath, fmtPath, lspPath, mainPath,
 	)
 	if err != nil {
 		t.Fatalf("failed to concatenate stage1 files: %v", err)
@@ -77,6 +78,11 @@ func TestStage1NativeLink(t *testing.T) {
 	absWorkspaceDir, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		t.Fatalf("failed to get absolute workspace path: %v", err)
+	}
+
+	// Copy generated stage1 C file for freestanding build
+	if cBytes, err := os.ReadFile(binPath + ".c"); err == nil {
+		_ = os.WriteFile(filepath.Join(absWorkspaceDir, "scratch/freestanding_stage1.c"), cBytes, 0644)
 	}
 
 	srcAxFile, err := filepath.Abs(filepath.Join(absWorkspaceDir, "tests/air/001_return_const.ax"))
@@ -112,7 +118,7 @@ func TestStage1NativeLink(t *testing.T) {
 		t.Fatalf("failed to create scratch dir: %v", err)
 	}
 
-	cmd := exec.Command(binPath, "build", srcAxFile, "-o", outputExe)
+	cmd := exec.Command(binPath, "build", srcAxFile, "-o", outputExe, "--no-stdlib")
 	cmd.Dir = absWorkspaceDir // Set working directory to the repository root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

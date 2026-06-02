@@ -131,6 +131,13 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 		}
 
 	case ast.NodeFieldExpr:
+		if node.Flags&2048 != 0 {
+			obj := node.FirstChild
+			if obj != 0 {
+				tc.checkStmt(obj)
+			}
+			break
+		}
 		symIdx := node.Payload
 		if symIdx != 0 && int(symIdx) < len(tc.symtable.Symbols) {
 			sym := tc.symtable.SymbolAt(symIdx)
@@ -226,7 +233,7 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 
 			if !lhsIsModule && objType != types.TypeUnknown {
 				entry = tc.types.Entry(objType)
-				fmt.Printf("[DEBUG-CHECK-FIELD] objType=%d entry.Kind=%d fieldName='%s' isResolvedSym=%v\n", objType, entry.Kind, fieldName, isResolvedSym)
+				// fmt.Printf("[DEBUG-CHECK-FIELD] objType=%d entry.Kind=%d fieldName='%s' isResolvedSym=%v\n", objType, entry.Kind, fieldName, isResolvedSym)
 				if entry.Kind == types.KindPointer {
 					objType = tc.types.PointerElem(objType)
 					entry = tc.types.Entry(objType)
@@ -236,10 +243,10 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					for idx := 0; idx < tc.types.Count(); idx++ {
 						e := tc.types.Entry(types.TypeID(idx))
 						var name1, name2 string
-						if e.NameID != 0 {
+						if e.NameID != 0 && int(e.NameID) <= tc.symtable.intern.Len() {
 							name1 = tc.symtable.intern.Get(e.NameID)
 						}
-						if entry.NameID != 0 {
+						if entry.NameID != 0 && int(entry.NameID) <= tc.symtable.intern.Len() {
 							name2 = tc.symtable.intern.Get(entry.NameID)
 						}
 						if (e.Kind == types.KindStruct || e.Kind == types.KindSum || e.Kind == types.KindGenericInst) && name1 != "" && name1 == name2 {
@@ -255,13 +262,13 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 					}
 				} else if entry.Kind == types.KindGeneric {
 					constraintID := tc.types.GenericConstraint(objType)
-					fmt.Printf("[DEBUG-CHECK-FIELD] generic constraintID=%d for objType=%d\n", constraintID, objType)
+					// fmt.Printf("[DEBUG-CHECK-FIELD] generic constraintID=%d for objType=%d\n", constraintID, objType)
 					if constraintID != 0 {
 						ifaceInfo := tc.types.InterfaceInfo(constraintID)
 						fieldNameID := tc.symtable.intern.InternString(fieldName)
-						fmt.Printf("[DEBUG-CHECK-FIELD] looking for fieldNameID=%d in interface %d methods:\n", fieldNameID, constraintID)
+						// fmt.Printf("[DEBUG-CHECK-FIELD] looking for fieldNameID=%d in interface %d methods:\n", fieldNameID, constraintID)
 						for _, method := range ifaceInfo.Methods {
-							fmt.Printf("[DEBUG-CHECK-FIELD]   method.NameID=%d ('%s')\n", method.NameID, tc.symtable.intern.Get(method.NameID))
+							// fmt.Printf("[DEBUG-CHECK-FIELD]   method.NameID=%d ('%s')\n", method.NameID, tc.symtable.intern.Get(method.NameID))
 							if method.NameID == fieldNameID {
 								isStructAccess = true
 								break
@@ -269,12 +276,15 @@ func (tc *TypeChecker) checkExpr(nodeIdx uint32) {
 						}
 					}
 				}
-				fmt.Printf("[DEBUG-CHECK-FIELD] final isStructAccess=%v\n", isStructAccess)
+				// fmt.Printf("[DEBUG-CHECK-FIELD] final isStructAccess=%v\n", isStructAccess)
 			}
 
 			isBuiltinMethod := false
 			if entry != nil && entry.Kind == types.KindGenericInst {
-				name := string(tc.symtable.intern.Get(entry.NameID))
+				var name string
+				if entry.NameID != 0 && int(entry.NameID) <= tc.symtable.intern.Len() {
+					name = string(tc.symtable.intern.Get(entry.NameID))
+				}
 				if name == "Vec" && (fieldName == "len" || fieldName == "get" || fieldName == "push" || fieldName == "data" || fieldName == "destroy" || fieldName == "cap") {
 					isBuiltinMethod = true
 				} else if name == "Option" && (fieldName == "unwrap" || fieldName == "unwrap_or" || fieldName == "expect" || fieldName == "is_ok" || fieldName == "is_some" || fieldName == "is_none" || fieldName == "map" || fieldName == "flat_map" || fieldName == "ok_or" || fieldName == "filter" || fieldName == "or_other") {

@@ -1,0 +1,45 @@
+// AXIOM Standard Library — bootstrap/runtime/runtime_test.ax
+//
+// Standalone unit tests for AXIOM-native freestanding runtime.
+
+fn test_print_str(s: str):
+    sys_write(1, s.ptr as ptr[void], s.len as u64)
+
+fn test_allocator():
+    let p1 = ax_alloc(10 as i64)
+    assert(p1 != null as ptr[void])
+    
+    let hdr1 = ((p1 as i64) - 16 as i64) as ptr[AxHeader]
+    assert(hdr1.gen_id == 1 as u64)
+    assert(hdr1.size == 10 as u64)
+    
+    // Test Realloc
+    let p2 = ax_realloc(p1, 20 as i64)
+    assert(p2 != null as ptr[void])
+    let hdr2 = ((p2 as i64) - 16 as i64) as ptr[AxHeader]
+    assert(hdr2.size == 20 as u64)
+    
+    ax_free(p2)
+    test_print_str("  PASS: test_allocator\n")
+
+fn test_genref():
+    let p = ax_alloc(32 as i64)
+    let ref = ax_make_ref(p)
+    assert(ref.ptr == p)
+    assert(ref.gen_id == 1 as u64)
+    
+    let p_checked = ax_deref(ref)
+    assert(p_checked == p)
+    
+    assert(ax_ref_valid(ref))
+    
+    ax_invalidate(p)
+    assert(not ax_ref_valid(ref))
+    
+    test_print_str("  PASS: test_genref\n")
+
+pub fn main():
+    test_print_str("Running AXIOM-native Freestanding Runtime unit tests...\n")
+    test_allocator()
+    test_genref()
+    test_print_str("All AXIOM-native Freestanding Runtime tests passed!\n")

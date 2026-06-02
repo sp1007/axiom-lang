@@ -68,29 +68,7 @@ pub fn push(mut self: CGEdgeVec, e: CGEdge) -> u32:
     self.len = self.len + 1
     return idx
 
-pub struct U32VecVec:
-    pub data: ptr[U32Vec]
-    pub len: i64
-    pub cap: i64
 
-pub fn new_u32_vec_vec() -> U32VecVec:
-    return U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
-
-pub fn push(mut self: U32VecVec, v: U32Vec) -> u32:
-    if self.len == self.cap:
-        mut new_cap := 16 as i64
-        if self.cap != 0:
-            new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 24) as ptr[U32Vec] // size of U32Vec is 24 bytes
-        if self.data != null as ptr[U32Vec]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
-            @free(self.data as ptr[u8])
-        self.data = new_data
-        self.cap = new_cap
-    let idx = self.len as u32
-    self.data[self.len] = v
-    self.len = self.len + 1
-    return idx
 
 pub struct ConnectionGraph:
     pub nodes: CGNodeVec

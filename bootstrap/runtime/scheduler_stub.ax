@@ -1,0 +1,129 @@
+// AXIOM Standard Library — bootstrap/runtime/scheduler_stub.ax
+//
+// Freestanding M:N Scheduler stub in AXIOM.
+// Bypasses libc and manages worker threads.
+
+import std.os
+import bootstrap.runtime.axalloc
+
+pub struct AxRunQueue:
+    pub buffer: ptr[u64]
+    pub top: u64
+    pub bottom: u64
+
+pub struct AxWorker:
+    pub id: u32
+    pub runq: AxRunQueue
+    pub tasks_executed: u64
+    pub steals_attempted: u64
+    pub steals_succeeded: u64
+    pub running: i32
+
+pub struct AxScheduler:
+    pub workers: ptr[AxWorker]
+    pub worker_count: u32
+    pub running: i32
+    pub total_submitted: u64
+
+pub struct AxSchedulerStats:
+    pub worker_count: u32
+    pub total_submitted: u64
+    pub total_executed: u64
+    pub total_steals: u64
+
+pub fn ax_runq_init(q: ptr[AxRunQueue]):
+    q.top = 0 as u64
+    q.bottom = 0 as u64
+    q.buffer = ax_alloc(4096 as i64 * 8 as i64) as ptr[u64]
+
+pub fn ax_runq_push(q: ptr[AxRunQueue], id: u64) -> i32:
+    let b = q.bottom
+    let t = @compiler_intrinsic("atomic_load", &q.top)
+    if (b - t) >= 4096 as u64:
+        return -1 // Queue full
+    let idx = (b & 4095 as u64) as i64
+    let p = ((q.buffer as i64) + idx * 8 as i64) as ptr[u64]
+    p.* = id
+    @compiler_intrinsic("atomic_store", &q.bottom, b + 1 as u64)
+    return 0
+
+pub fn ax_runq_pop(q: ptr[AxRunQueue]) -> u64:
+    mut b := q.bottom
+    if b == 0 as u64:
+        return 0 as u64
+    b = b - 1 as u64
+    @compiler_intrinsic("atomic_store", &q.bottom, b)
+    let t = @compiler_intrinsic("atomic_load", &q.top)
+    if t > b:
+        @compiler_intrinsic("atomic_store", &q.bottom, t)
+        return 0 as u64
+    let idx = (b & 4095 as u64) as i64
+    let p = ((q.buffer as i64) + idx * 8 as i64) as ptr[u64]
+    mut id := p.*
+    if t == b:
+        if not @compiler_intrinsic("atomic_cas", &q.top, t, t + 1 as u64):
+            id = 0 as u64
+        @compiler_intrinsic("atomic_store", &q.bottom, t + 1 as u64)
+    return id
+
+pub fn ax_runq_steal(q: ptr[AxRunQueue]) -> u64:
+    let t = @compiler_intrinsic("atomic_load", &q.top)
+    let b = @compiler_intrinsic("atomic_load", &q.bottom)
+    if t >= b:
+        return 0 as u64 // Empty
+    let idx = (t & 4095 as u64) as i64
+    let p = ((q.buffer as i64) + idx * 8 as i64) as ptr[u64]
+    let id = p.*
+    if @compiler_intrinsic("atomic_cas", &q.top, t, t + 1 as u64):
+        return id
+    return 0 as u64
+
+pub fn ax_runq_empty(q: ptr[AxRunQueue]) -> i32:
+    if @compiler_intrinsic("atomic_load", &q.top) >= @compiler_intrinsic("atomic_load", &q.bottom):
+        return 1
+    return 0
+
+pub fn ax_scheduler_init(sched: ptr[AxScheduler], worker_count: u32) -> i32:
+    sched.worker_count = worker_count
+    sched.running = 0
+    sched.total_submitted = 0 as u64
+    
+    // Allocate 256 * AxWorker
+    // AxWorker size: id (4B) + padding (4B) + AxRunQueue (24B) + tasks_executed (8B) + steals_attempted (8B) + steals_succeeded (8B) + running (4B) + padding (24B) = 80B
+    let worker_size = 80 as i64
+    sched.workers = ax_alloc(256 as i64 * worker_size) as ptr[AxWorker]
+    
+    mut i := 0 as i64
+    while i < 256 as i64:
+        let w = ((sched.workers as i64) + i * worker_size) as ptr[AxWorker]
+        w.id = i as u32
+        w.tasks_executed = 0 as u64
+        w.steals_attempted = 0 as u64
+        w.steals_succeeded = 0 as u64
+        w.running = 0
+        ax_runq_init(&w.runq)
+        i = i + 1
+    return 0
+
+pub fn ax_scheduler_submit(sched: ptr[AxScheduler], actor_id: u64) -> i32:
+    sched.total_submitted = sched.total_submitted + 1 as u64
+    let w = sched.workers
+    return ax_runq_push(&w.runq, actor_id)
+
+pub fn ax_scheduler_run(sched: ptr[AxScheduler]) -> i32:
+    sched.running = 1
+    let w = sched.workers
+    w.running = 1
+    return 0
+
+pub fn ax_scheduler_stats(sched: ptr[AxScheduler], stats: ptr[AxSchedulerStats]):
+    stats.worker_count = sched.worker_count
+    stats.total_submitted = sched.total_submitted
+    let w = sched.workers
+    stats.total_executed = w.tasks_executed
+    stats.total_steals = w.steals_succeeded
+
+pub fn ax_scheduler_shutdown(sched: ptr[AxScheduler]):
+    sched.running = 0
+    let w = sched.workers
+    w.running = 0

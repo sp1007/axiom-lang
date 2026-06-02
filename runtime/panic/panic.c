@@ -29,7 +29,7 @@ long long syscall(long long num, long long a1, long long a2, long long a3, long 
     return 0;
 }
 
-AX_NORETURN void ax_panic(const char* msg) {
+AX_NORETURN void ax_panic(unsigned char* msg) {
     HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
     if (hErr != INVALID_HANDLE_VALUE) {
         DWORD written;
@@ -38,7 +38,7 @@ AX_NORETURN void ax_panic(const char* msg) {
         WriteFile(hErr, program_name, (DWORD)my_strlen(program_name), &written, NULL);
         const char* mid = "': ";
         WriteFile(hErr, mid, (DWORD)my_strlen(mid), &written, NULL);
-        WriteFile(hErr, msg, (DWORD)my_strlen(msg), &written, NULL);
+        WriteFile(hErr, (const char*)msg, (DWORD)my_strlen((const char*)msg), &written, NULL);
         WriteFile(hErr, "\n", 1, &written, NULL);
 
         const char* trace_title = "Stack trace:\n";
@@ -73,13 +73,13 @@ AX_NORETURN void ax_panic(const char* msg) {
 #include <unistd.h>
 #include <sys/syscall.h>
 
-AX_NORETURN void ax_panic(const char* msg) {
+AX_NORETURN void ax_panic(unsigned char* msg) {
     const char* prefix = "\nAXIOM PANIC in '";
     syscall(SYS_write, 2, prefix, my_strlen(prefix));
     syscall(SYS_write, 2, program_name, my_strlen(program_name));
     const char* mid = "': ";
     syscall(SYS_write, 2, mid, my_strlen(mid));
-    syscall(SYS_write, 2, msg, my_strlen(msg));
+    syscall(SYS_write, 2, (const char*)msg, my_strlen((const char*)msg));
     syscall(SYS_write, 2, "\n", 1);
     syscall(SYS_exit, 101);
     while (1) {} // Unreachable
@@ -88,7 +88,7 @@ AX_NORETURN void ax_panic(const char* msg) {
 #else
 
 /* Fallback: direct exit */
-AX_NORETURN void ax_panic(const char* msg) {
+AX_NORETURN void ax_panic(unsigned char* msg) {
     ExitProcess(101);
 }
 

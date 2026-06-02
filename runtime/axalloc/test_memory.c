@@ -23,6 +23,42 @@
 #include "axalloc.h"
 #include "../panic/panic.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
+
+static void* g_ax_global_state = NULL;
+void* ax_get_global_state_internal(void) {
+    if (g_ax_global_state == NULL) {
+#if defined(_WIN32)
+        g_ax_global_state = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+        g_ax_global_state = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
+    }
+    return g_ax_global_state;
+}
+
+void* sys_mmap(void* addr, uint64_t len, int32_t prot, int32_t flags, int32_t fd, int64_t offset) {
+#if defined(_WIN32)
+    (void)prot; (void)flags; (void)fd; (void)offset;
+    return VirtualAlloc(addr, len, 0x3000, 0x04);
+#else
+    return mmap(addr, len, prot, flags, fd, offset);
+#endif
+}
+
+int32_t sys_munmap(void* addr, uint64_t len) {
+#if defined(_WIN32)
+    (void)len;
+    return VirtualFree(addr, 0, 0x8000) ? 0 : -1;
+#else
+    return munmap(addr, len);
+#endif
+}
+
 /* ---- Test harness ---- */
 static jmp_buf  g_jmp;
 static int      g_panic_triggered;
@@ -30,8 +66,8 @@ static char     g_panic_msg[256];
 static int      g_pass, g_total;
 
 /* Override ax_panic to use longjmp for testable panics. */
-void ax_panic(const char* msg) {
-    strncpy(g_panic_msg, msg, sizeof(g_panic_msg)-1);
+void ax_panic(unsigned char* msg) {
+    strncpy(g_panic_msg, (const char*)msg, sizeof(g_panic_msg)-1);
     g_panic_msg[sizeof(g_panic_msg)-1] = '\0';
     g_panic_triggered = 1;
     longjmp(g_jmp, 1);

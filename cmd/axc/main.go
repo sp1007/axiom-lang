@@ -62,6 +62,9 @@ func main() {
 	case "lsp":
 		os.Exit(lsp.StartServer())
 
+	case "get", "install":
+		os.Exit(runGet(os.Args[2:]))
+
 	case "version":
 		fmt.Println("axc 0.0.1-dev (AXIOM compiler)")
 
@@ -83,6 +86,8 @@ commands:
   emit-c        Emit C11 code from an AXIOM source file
   fmt           Format AXIOM source files canonically
   lsp           Start AXIOM Language Server Protocol (LSP) server
+  get           Resolve, fetch, and lock dependencies
+  install       Alias for 'get'
   dump-tokens   Tokenize a file and print JSON token stream
   dump-ast      Parse a file and print the AST
   dump-air      Lower to AIR and print text representation

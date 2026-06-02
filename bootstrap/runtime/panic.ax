@@ -1,27 +1,102 @@
 // AXIOM Standard Library — bootstrap/runtime/panic.ax
 //
-// Self-hosted panic handler in AXIOM.
+// Self-hosted panic handler and core runtime FFI shims in AXIOM.
 // Bypasses libc completely by writing directly to OS standard error handle.
 
-import std::os::win32
-import std::os::linux_sys
-import std::os
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
-pub fn ax_panic(msg: str) {
-    if std::os::IS_WINDOWS {
-        let h_err = std::os::win32::GetStdHandle(std::os::win32::STD_ERROR_HANDLE)
-        let prefix = "\nAXIOM PANIC: "
+extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn VirtualAlloc(lpAddress: ptr[void], dwSize: u64, flAllocationType: u32, flProtect: u32) -> ptr[void]
+
+mut g_program_name: u64 = 0 as u64
+mut g_ax_global_state: u64 = 0 as u64
+
+pub fn ax_set_program_name(name: ptr[u8]):
+    g_program_name = name as u64
+
+fn my_strlen(s: ptr[u8]) -> i64:
+    if s == null as ptr[u8]:
+        return 0
+    mut len := 0 as i64
+    while ((s as i64 + len) as ptr[u8]).* != 0 as u8:
+        len = len + 1
+    return len
+
+fn my_strcmp(s1: ptr[u8], s2: str) -> bool:
+    if s1 == null as ptr[u8]:
+        return false
+    mut i := 0 as i64
+    while i < s2.len:
+        let c1 = ((s1 as i64 + i) as ptr[u8]).*
+        let c2 = ((s2.ptr as i64 + i) as ptr[u8]).*
+        if c1 != c2:
+            return false
+        i = i + 1
+    return ((s1 as i64 + s2.len) as ptr[u8]).* == 0 as u8
+
+pub fn ax_panic(msg: str):
+    let prefix = "\nAXIOM PANIC: "
+    if @compiler_intrinsic("is_windows"):
+        let h_err = GetStdHandle(0xFFFFFFF4 as u32) // STD_ERROR_HANDLE
         mut written := 0 as u32
-        std::os::win32::WriteFile(h_err, prefix.ptr, prefix.len as u32, &written as ptr[void], null as ptr[void])
-        std::os::win32::WriteFile(h_err, msg.ptr, msg.len as u32, &written as ptr[void], null as ptr[void])
-        std::os::win32::WriteFile(h_err, "\n".ptr, 1 as u32, &written as ptr[void], null as ptr[void])
-        std::os::win32::ExitProcess(101 as u32)
-    } else {
+        WriteFile(h_err, prefix.ptr as ptr[void], prefix.len as u32, &written as ptr[void], null as ptr[void])
+        if g_program_name != 0 as u64:
+            let prog_name = g_program_name as ptr[u8]
+            WriteFile(h_err, prog_name as ptr[void], my_strlen(prog_name) as u32, &written as ptr[void], null as ptr[void])
+            WriteFile(h_err, ": ".ptr as ptr[void], 2 as u32, &written as ptr[void], null as ptr[void])
+        WriteFile(h_err, msg.ptr as ptr[void], msg.len as u32, &written as ptr[void], null as ptr[void])
+        WriteFile(h_err, "\n".ptr as ptr[void], 1 as u32, &written as ptr[void], null as ptr[void])
+        ExitProcess(101 as u32)
+    else:
         // Linux: SYS_WRITE = 1, STDERR = 2, SYS_EXIT = 60
-        let prefix = "\nAXIOM PANIC: "
-        std::os::linux_sys::syscall(1 as u64, 2 as u64, prefix.ptr as u64, prefix.len as u64, 0 as u64, 0 as u64, 0 as u64)
-        std::os::linux_sys::syscall(1 as u64, 2 as u64, msg.ptr as u64, msg.len as u64, 0 as u64, 0 as u64, 0 as u64)
-        std::os::linux_sys::syscall(1 as u64, 2 as u64, "\n".ptr as u64, 1 as u64, 0 as u64, 0 as u64, 0 as u64)
-        std::os::linux_sys::syscall(60 as u64, 101 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
-    }
-}
+        syscall(1 as u64, 2 as u64, prefix.ptr as u64, prefix.len as u64, 0 as u64, 0 as u64, 0 as u64)
+        if g_program_name != 0 as u64:
+            syscall(1 as u64, 2 as u64, g_program_name, my_strlen(g_program_name as ptr[u8]) as u64, 0 as u64, 0 as u64, 0 as u64)
+            syscall(1 as u64, 2 as u64, ": ".ptr as u64, 2 as u64, 0 as u64, 0 as u64, 0 as u64)
+        syscall(1 as u64, 2 as u64, msg.ptr as u64, msg.len as u64, 0 as u64, 0 as u64, 0 as u64)
+        syscall(1 as u64, 2 as u64, "\n".ptr as u64, 1 as u64, 0 as u64, 0 as u64, 0 as u64)
+        
+        // Direct exit bypass libc
+        syscall(60 as u64, 101 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+pub fn ax_assert_axiom(cond: bool, msg: str):
+    if not cond:
+        ax_panic(msg)
+
+pub fn ax_get_global_state_internal() -> ptr[void]:
+    if g_ax_global_state == 0 as u64:
+        if @compiler_intrinsic("is_windows"):
+            // Windows flAllocationType: MEM_COMMIT | MEM_RESERVE = 0x3000
+            // flProtect: PAGE_READWRITE = 0x04
+            let block = VirtualAlloc(null as ptr[void], 4096 as u64, 0x3000 as u32, 0x04 as u32)
+            g_ax_global_state = block as u64
+        else:
+            // Linux: SYS_MMAP = 9, PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
+            let res = syscall(9 as u64, 0 as u64, 4096 as u64, 3 as u64, 0x22 as u64, 0xFFFFFFFFFFFFFFFF as u64, 0 as u64)
+            g_ax_global_state = res as u64
+    return g_ax_global_state as ptr[void]
+
+pub fn ax_compiler_intrinsic(name: ptr[u8], p1: ptr[void], p2: ptr[void], p3: ptr[void]) -> i64:
+    if my_strcmp(name, "is_windows"):
+        if @compiler_intrinsic("is_windows"):
+            return 1
+        return 0
+    // Atomic stubs mapping to raw instructions (handled at code emission level or safe defaults)
+    if my_strcmp(name, "atomic_load"):
+        let p = p1 as ptr[i64]
+        return p.*
+    if my_strcmp(name, "atomic_store"):
+        let p = p1 as ptr[i64]
+        p.* = p2 as i64
+        return 0
+    if my_strcmp(name, "atomic_cas"):
+        let p = p1 as ptr[i64]
+        let expected = p2 as i64
+        let desired = p3 as i64
+        if p.* == expected:
+            p.* = desired
+            return 1
+        return 0
+    return 0

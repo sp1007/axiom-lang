@@ -4,6 +4,7 @@
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn strlen(s: ptr[u8]) -> i64
 
+
 pub struct InternEntry:
     hash: u32
     padding: u32
@@ -32,7 +33,7 @@ pub struct InternPool:
     arena: ptr[u8]
     table: ptr[InternEntry]
     ids: ptr[InternEntry]
-    state: ptr[InternState]
+    state: InternState
 
 pub fn new_intern_pool() -> ptr[InternPool]:
     let table_size = 512 as i64
@@ -43,13 +44,15 @@ pub fn new_intern_pool() -> ptr[InternPool]:
         i = i + 1
     let ids = @alloc(256 * 24) as ptr[InternEntry]
     
-    let state = @alloc(32) as ptr[InternState] // 4 * 8 = 32 bytes
-    (state.*).arena_len = 0
-    (state.*).arena_cap = 0
-    (state.*).table_size = table_size
-    (state.*).count = 0
+    let state = InternState(
+        arena_len: 0,
+        arena_cap: 0,
+        table_size: table_size,
+        count: 0,
+    )
 
-    let pool = @alloc(32) as ptr[InternPool]
+
+    let pool = @alloc(56) as ptr[InternPool]
     pool.arena = null as ptr[u8]
     pool.table = table
     pool.ids = ids
@@ -65,7 +68,7 @@ fn alloc_str_from_raw(data: ptr[u8], len: i64) -> str:
     return buf as str
 
 pub fn get_str(self: ptr[InternPool], id: u32) -> str:
-    if id == 0 as u32 or id > (self.state.*).count as u32:
+    if id == 0 as u32 or id > self.state.count as u32:
         return ""
     let entry = self.ids[id as i64 - 1]
     let start_ptr = (self.arena as i64 + entry.start as i64) as ptr[u8]
@@ -80,7 +83,7 @@ pub fn intern(mut self: ptr[InternPool], s: str) -> u32:
         return 0 as u32
 
     let h = fnv1a(s)
-    let mask = (self.state.*).table_size - 1
+    let mask = self.state.table_size - 1
     mut idx = (h as i64) & mask
 
     while true:
@@ -110,32 +113,32 @@ fn insert_at(mut self: ptr[InternPool], slot: i64, s: str, h: u32) -> u32:
     let length = std.string.len(s)
     
     // Check if we need to resize ids table
-    if (self.state.*).count > 0 and (self.state.*).count % 256 == 0:
-        let new_ids = @alloc(((self.state.*).count + 256) * 24) as ptr[InternEntry]
-        @memcpy(new_ids as ptr[u8], self.ids as ptr[u8], (self.state.*).count * 24)
+    if self.state.count > 0 and self.state.count % 256 == 0:
+        let new_ids = @alloc((self.state.count + 256) * 24) as ptr[InternEntry]
+        @memcpy(new_ids as ptr[u8], self.ids as ptr[u8], self.state.count * 24)
         self.ids = new_ids
 
     // Resize arena if needed
-    if (self.state.*).arena_len + length >= (self.state.*).arena_cap:
+    if self.state.arena_len + length >= self.state.arena_cap:
         mut new_cap := 1024 as i64
-        if (self.state.*).arena_cap != 0:
-            new_cap = (self.state.*).arena_cap * 2
-        if new_cap < (self.state.*).arena_len + length:
-            new_cap = (self.state.*).arena_len + length + 1024
+        if self.state.arena_cap != 0:
+            new_cap = self.state.arena_cap * 2
+        if new_cap < self.state.arena_len + length:
+            new_cap = self.state.arena_len + length + 1024
         let new_arena = @alloc(new_cap) as ptr[u8]
         if self.arena != null as ptr[u8]:
-            @memcpy(new_arena, self.arena, (self.state.*).arena_len)
+            @memcpy(new_arena, self.arena, self.state.arena_len)
         self.arena = new_arena
-        (self.state.*).arena_cap = new_cap
+        self.state.arena_cap = new_cap
 
-    let start = (self.state.*).arena_len
+    let start = self.state.arena_len
     mut i := 0
     while i < length:
         self.arena[start + i] = s[i] as u8
         i = i + 1
-    (self.state.*).arena_len = (self.state.*).arena_len + length
+    self.state.arena_len = self.state.arena_len + length
 
-    let new_id = ((self.state.*).count + 1) as u32
+    let new_id = (self.state.count + 1) as u32
     let entry = InternEntry(
         hash: h,
         padding: 0 as u32,
@@ -146,17 +149,17 @@ fn insert_at(mut self: ptr[InternPool], slot: i64, s: str, h: u32) -> u32:
     )
 
     self.table[slot] = entry
-    self.ids[(self.state.*).count] = entry
-    (self.state.*).count = (self.state.*).count + 1
+    self.ids[self.state.count] = entry
+    self.state.count = self.state.count + 1
 
     // If load factor exceeds 70%, we grow the hash table
-    if ((self.state.*).count * 100) / (self.state.*).table_size > 70:
+    if (self.state.count * 100) / self.state.table_size > 70:
         self.grow_table()
 
     return new_id
 
 fn grow_table(mut self: ptr[InternPool]):
-    let old_size = (self.state.*).table_size
+    let old_size = self.state.table_size
     let new_size = old_size * 2
     let new_table = @alloc(new_size * 24) as ptr[InternEntry]
     mut i := 0
@@ -176,7 +179,7 @@ fn grow_table(mut self: ptr[InternPool]):
         i = i + 1
 
     self.table = new_table
-    (self.state.*).table_size = new_size
+    self.state.table_size = new_size
 
 pub fn free_pool(mut self: ptr[InternPool]):
     if self.arena != null as ptr[u8]:
@@ -185,5 +188,4 @@ pub fn free_pool(mut self: ptr[InternPool]):
         @free(self.table as ptr[u8])
     if self.ids != null as ptr[InternEntry]:
         @free(self.ids as ptr[u8])
-    if self.state != null as ptr[InternState]:
-        @free(self.state as ptr[u8])
+    @free(self as ptr[u8])

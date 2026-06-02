@@ -7,6 +7,9 @@ import std.os.linux_sys
 import std.os
 import std.result
 
+extern "C" fn printf(fmt: ptr[u8], err: u32) -> i32
+extern "C" fn fflush(stream: ptr[void]) -> i32
+
 /// A readable byte stream.
 pub interface Reader:
     fn read(mut self: Self, buf: ptr[u8], count: i64) -> Result[i64, str]
@@ -46,6 +49,9 @@ pub fn open(path: str) -> Result[File, str]:
         )
         @free(cpath)
         if h as i64 == -1 as i64:
+            let err = std.os.win32.GetLastError()
+            printf("CreateFileA failed: %d\n" as ptr[u8], err)
+            fflush(null as ptr[void])
             return Err("could not open file")
         return Ok(File(handle: h as i64, path: path, mode: 0 as i32))
     else:
@@ -92,69 +98,72 @@ pub fn create(path: str) -> Result[File, str]:
 
 pub fn close(mut self: File) -> Result[void, str]:
     if std.os.IS_WINDOWS:
-        let res = std.os.win32.CloseHandle(self.handle as ptr[void])
-        if res == 0:
+        let res_win = std.os.win32.CloseHandle(self.handle as ptr[void])
+        if res_win == 0:
             return Err("could not close file")
         return Ok(void)
     else:
-        let res = std.os.linux_sys.syscall(
+        let res_linux = std.os.linux_sys.syscall(
             3 as u64, // SYS_CLOSE
             self.handle as u64,
             0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
         )
-        if res < 0:
+        if res_linux < 0:
             return Err("could not close file")
         return Ok(void)
 
 pub fn read(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
     if std.os.IS_WINDOWS:
         mut read_bytes := 0 as u32
-        let res = std.os.win32.ReadFile(
+        let res_win = std.os.win32.ReadFile(
             self.handle as ptr[void],
             buf,
             count as u32,
             &read_bytes as ptr[void],
             null as ptr[void]
         )
-        if res == 0:
+        if res_win == 0:
+            let err = std.os.win32.GetLastError()
+            printf("ReadFile failed: %d\n" as ptr[u8], err)
+            fflush(null as ptr[void])
             return Err("could not read from file")
         return Ok(read_bytes as i64)
     else:
-        let res = std.os.linux_sys.syscall(
+        let res_linux = std.os.linux_sys.syscall(
             0 as u64, // SYS_READ
             self.handle as u64,
             buf as u64,
             count as u64,
             0 as u64, 0 as u64, 0 as u64
         )
-        if res < 0:
+        if res_linux < 0:
             return Err("could not read from file")
-        return Ok(res)
+        return Ok(res_linux)
 
 pub fn write(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
     if std.os.IS_WINDOWS:
         mut written := 0 as u32
-        let res = std.os.win32.WriteFile(
+        let res_win = std.os.win32.WriteFile(
             self.handle as ptr[void],
             buf,
             count as u32,
             &written as ptr[void],
             null as ptr[void]
         )
-        if res == 0:
+        if res_win == 0:
             return Err("could not write to file")
         return Ok(written as i64)
     else:
-        let res = std.os.linux_sys.syscall(
+        let res_linux = std.os.linux_sys.syscall(
             1 as u64, // SYS_WRITE
             self.handle as u64,
             buf as u64,
             count as u64,
             0 as u64, 0 as u64, 0 as u64
         )
-        if res < 0:
+        if res_linux < 0:
             return Err("could not write to file")
-        return Ok(res)
+        return Ok(res_linux)
 
 pub fn flush(mut self: File) -> Result[void, str]:
     return Ok(void)

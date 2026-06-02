@@ -69,6 +69,7 @@ typedef struct {
     AxMessage* tail;       /* producers append to tail */
     uint64_t   msg_count;  /* total messages received */
     uint64_t   pending;    /* current pending count */
+    volatile int lock;     /* lightweight spinlock */
 } AxMsgQueue;
 
 /** Initialize a message queue. */
@@ -160,6 +161,8 @@ int ax_actor_send(AxActorID target, AxActorID sender,
  * Request an actor to stop gracefully.
  */
 void ax_actor_stop(AxActorID id);
+uint64_t ax_actor_ref_to_u64(uint64_t ref);
+
 
 /**
  * Process one message from the actor's mailbox.
@@ -196,6 +199,15 @@ int ax_actor_is_running(void* actor);
  * Check if the actor has pending messages.
  */
 int ax_actor_has_messages(void* actor);
+
+struct ActorHeap;
+void ax_register_actor_table_callbacks(
+    void* init_fn,
+    void* destroy_fn,
+    void* lookup_fn,
+    void* spawn_fn
+);
+
 
 #ifdef __cplusplus
 }

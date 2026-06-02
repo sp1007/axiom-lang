@@ -399,6 +399,12 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 	}
 	cFile.Close()
 
+	// Save a copy of the C file to scratch directory for debugging!
+	if cBytes, err := os.ReadFile(cSrcPath); err == nil {
+		repoRoot, _ := filepath.Abs("../..")
+		_ = os.WriteFile(filepath.Join(repoRoot, "scratch/temp_bootstrap.c"), cBytes, 0644)
+	}
+
 	// Append linker stubs for standalone resolver/typecheck testing
 	if filename == "" {
 		fStubs, err := os.OpenFile(cSrcPath, os.O_APPEND|os.O_WRONLY, 0644)
@@ -444,6 +450,94 @@ func compileCBackendIgnoringAtDiagnostics(t *testing.T, source []byte, outPath s
 		Debug: true,
 	})
 	fmt.Fprintln(os.Stderr, "[COMPILER] Done compileCBackendIgnoringAtDiagnostics")
+	return err
+}
+
+// compileCBackendFreestanding compiles AXIOM source to an executable via C Backend, without linking standard C runtime files.
+func compileCBackendFreestanding(t *testing.T, source []byte, outPath string, filename string) error {
+	fmt.Fprintln(os.Stderr, "[COMPILER] Lexing...")
+	// Lex
+	tokens, _, lexDiags := lexer.Lex(source)
+	if hasErrorsIgnoringAt(lexDiags) {
+		return fmt.Errorf("lex errors: %v", lexDiags)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Parsing...")
+	// Parse
+	intern := ast.NewInternPool(256)
+	tree, parseDiags := parser.Parse(tokens, source, intern)
+	if hasErrors(parseDiags) {
+		return fmt.Errorf("parse errors: %v", parseDiags)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Name Resolution...")
+	// Semantic analysis
+	symbols := sema.NewSymbolTable(intern)
+	table := types.NewTypeTable()
+
+	resolver := sema.NewNameResolver(tree, intern, symbols, table, nil)
+	if errs := resolver.Resolve(); hasErrors(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		return fmt.Errorf("name resolution errors:\n%s", formatted)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Type Inference...")
+	mono := sema.NewMonomorphizer(tree, intern, symbols, table)
+	infer := sema.NewInferenceEngine(tree, symbols, table, mono)
+	if errs := infer.Infer(); hasErrors(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		return fmt.Errorf("type inference errors:\n%s", formatted)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Semantic Analysis: Type Checking...")
+	tc := sema.NewTypeChecker(tree, intern, symbols, table, infer)
+	if errs := tc.Check(); hasErrors(errs) {
+		opts := diagnostics.DefaultFormatOptions()
+		opts.UseColor = false
+		formatted := diagnostics.FormatDiagnostics(errs, source, "bootstrap/stage1/tmp_concatenated_lexer.ax", opts)
+		return fmt.Errorf("type check errors:\n%s", formatted)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Running CTGC and Ownership...")
+	if err := runCTGCAndOwnership(tree, intern, symbols, table, infer); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Transpiling to C...")
+	// Transpile to C
+	pipeline := cgen.NewPipeline(table, intern, symbols, tree)
+	cSrcPath := outPath + ".c"
+	cFile, err := os.Create(cSrcPath)
+	if err != nil {
+		return err
+	}
+
+	if err := pipeline.GenerateC(cFile); err != nil {
+		cFile.Close()
+		return err
+	}
+	cFile.Close()
+
+	// Prepend #define AX_FREESTANDING_RUNTIME to bypass standard C runtime subsystem inclusions
+	if cBytes, err := os.ReadFile(cSrcPath); err == nil {
+		content := "#define AX_FREESTANDING_RUNTIME\n" + string(cBytes)
+		_ = os.WriteFile(cSrcPath, []byte(content), 0644)
+	}
+
+	fmt.Fprintln(os.Stderr, "[COMPILER] Compiling C source (freestanding)...")
+	// Compile C
+	runtimeDir := getRuntimeDir()
+
+	err = pipeline.CompileCWithOptions(outPath, cSrcPath, cgen.CompileOptions{
+		IncludeDirs: []string{runtimeDir},
+		ExtraSrcs:   nil,
+		Debug:       true,
+	})
+	fmt.Fprintln(os.Stderr, "[COMPILER] Done compileCBackendFreestanding")
 	return err
 }
 
@@ -612,7 +706,8 @@ func runDiffTest(t *testing.T, dt DiffTest) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	// defer os.RemoveAll(tmpDir)
+	t.Logf("NATIVE DIFF TEMP DIR: %s", tmpDir)
 
 	cBin := filepath.Join(tmpDir, "c_exec")
 	nativeBin := filepath.Join(tmpDir, "native_exec")

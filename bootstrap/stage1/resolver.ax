@@ -3,7 +3,7 @@
 
 import std.string
 
-// extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+extern "C" fn fflush(stream: ptr[void]) -> i32
 
 // SymKind constants
 pub const SYM_VAR: u8 = 0
@@ -351,6 +351,7 @@ pub struct SymbolTable:
     lazy_resolver: ptr[void]
     pub current_tree: ptr[AstTree]
     pub symbol_trees: AstTreePtrVec
+    pub intern: ptr[void]
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -360,6 +361,7 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.lazy_resolver = null as ptr[void]
     st.current_tree = null as ptr[AstTree]
     st.symbol_trees = new_ast_tree_ptr_vec()
+    st.intern = intern as ptr[void]
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
@@ -467,6 +469,15 @@ pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, de
             (&self.symbol_trees).push(self.current_tree)
             let scope3 = &self.scopes.data[scope_idx]
             scope3.scope_put(name_id, sym_idx)
+            
+            // Prelude support
+            let pool = self.intern as ptr[InternPool]
+            let name_str = pool.get(name_id)
+            if name_str == "Result" or name_str == "Option" or name_str == "Vec" or name_str == "Ok" or name_str == "Err" or name_str == "Some" or name_str == "None":
+                let global_scope = &self.scopes.data[0]
+                global_scope.scope_put(name_id, sym_idx)
+            safe_free_str(name_str)
+            
             return sym_idx
         // printf("  [COLLISION] prev.name_id=%d, prev.symbol_idx=%d\n", prev.name_id as i64, prev.symbol_idx as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         // Support function overloading
@@ -507,6 +518,15 @@ pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, de
     (&self.symbol_trees).push(self.current_tree)
     let scope2 = &self.scopes.data[scope_idx]
     scope2.scope_put(name_id, sym_idx)
+    
+    // Prelude support
+    let pool = self.intern as ptr[InternPool]
+    let name_str = pool.get(name_id)
+    if name_str == "Result" or name_str == "Option" or name_str == "Vec" or name_str == "Ok" or name_str == "Err" or name_str == "Some" or name_str == "None":
+        let global_scope = &self.scopes.data[0]
+        global_scope.scope_put(name_id, sym_idx)
+    safe_free_str(name_str)
+    
     return sym_idx
 
 pub fn resolve(self: ptr[SymbolTable], name_id: u32) -> u32:
@@ -533,6 +553,42 @@ pub fn resolve_type(self: ptr[SymbolTable], name_id: u32) -> u32:
                 return sym_idx
         i = i - 1
     return 0 as u32
+
+pub fn resolve_global(self: ptr[SymbolTable], name_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.symbols.len:
+        let sym = self.symbols.data[i]
+        if sym.name_id == name_id:
+            return i as u32
+        i = i + 1
+    return 0 as u32
+
+pub fn resolve_global_fallback(self: ptr[SymbolTable], name_id: u32) -> u32:
+    mut sym_idx := self.resolve_global(name_id)
+    if sym_idx != 0 as u32:
+        return sym_idx
+        
+    let pool = self.intern as ptr[InternPool]
+    let name_str = pool.get(name_id)
+    let suffix = std.string.concat(".", name_str)
+    
+    let global_scope = &self.scopes.data[0]
+    mut idx := 0 as i64
+    while idx < global_scope.capacity as i64:
+        let entry = global_scope.entries[idx]
+        if entry.name_id != 0 as u32:
+            let entry_name = pool.get(entry.name_id)
+            if std.string.ends_with(entry_name, suffix):
+                sym_idx = entry.symbol_idx
+                safe_free_str(entry_name)
+                break
+            safe_free_str(entry_name)
+        idx = idx + 1 as i64
+        
+    safe_free_str(name_str)
+    safe_free_str(suffix)
+    return sym_idx
+
 
 pub struct NameResolver:
     tree: ptr[AstTree]
@@ -609,12 +665,17 @@ pub fn resolve_children(mut self: ptr[NameResolver], node_idx: u32):
     let node = self.tree.nodes.data[node_idx]
     mut child := node.first_child
     while child != 0 as u32:
+        let next_sibling = self.tree.nodes.data[child].next_sibling
         self.resolve_node(child)
-        child = self.tree.nodes.data[child].next_sibling
+        child = next_sibling
 
 pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
     let kind = self.tree.nodes.data[node_idx].kind
     let flags = self.tree.nodes.data[node_idx].flags
+    let first_child = self.tree.nodes.data[node_idx].first_child
+    let next_sibling = self.tree.nodes.data[node_idx].next_sibling
+    let payload = self.tree.nodes.data[node_idx].payload
+
 
     if kind == NODE_PROGRAM:
         self.resolve_children(node_idx)
@@ -848,23 +909,27 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
         self.symtable.pop_scope()
 
     elif kind == NODE_IDENT:
-        let name_id = self.tree.nodes.data[node_idx].payload
-        let name = self.intern.get(name_id)
-        if name != "break" and name != "continue":
-            let sym_idx = self.symtable.resolve(name_id)
-            if sym_idx != 0 as u32:
-                self.tree.nodes.data[node_idx].payload = sym_idx
-                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        if (self.tree.nodes.data[node_idx].flags & 4096 as u16) == 0 as u16:
+            let name_id = self.tree.nodes.data[node_idx].payload
+            let name = self.intern.get(name_id)
+            if name != "break" and name != "continue":
+                let sym_idx = self.symtable.resolve(name_id)
+                if sym_idx != 0 as u32:
+                    self.tree.nodes.data[node_idx].payload = sym_idx
+                    self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags & (65535 as u16 ^ FLAG_IS_SUBSTITUTED)
+                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
         self.resolve_children(node_idx)
         // @free(get_str_ptr(name))
 
     elif kind == NODE_TYPE_EXPR:
-        if self.tree.nodes.data[node_idx].payload != 0 as u32:
-            let name_id = self.tree.nodes.data[node_idx].payload
-            let sym_idx = self.symtable.resolve_type(name_id)
-            if sym_idx != 0 as u32:
-                self.tree.nodes.data[node_idx].payload = sym_idx
-                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        if (self.tree.nodes.data[node_idx].flags & 4096 as u16) == 0 as u16:
+            if self.tree.nodes.data[node_idx].payload != 0 as u32:
+                let name_id = self.tree.nodes.data[node_idx].payload
+                let sym_idx = self.symtable.resolve_type(name_id)
+                if sym_idx != 0 as u32:
+                    self.tree.nodes.data[node_idx].payload = sym_idx
+                    self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags & (65535 as u16 ^ FLAG_IS_SUBSTITUTED)
+                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
         self.resolve_children(node_idx)
 
     elif kind == NODE_BINDING_PAT:
@@ -873,11 +938,12 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
         self.tree.nodes.data[node_idx].payload = sym_idx
 
     elif kind == NODE_VARIANT_PAT:
-        let name_id = self.tree.nodes.data[node_idx].payload
-        let sym_idx = self.symtable.resolve(name_id)
-        if sym_idx != 0 as u32:
-            self.tree.nodes.data[node_idx].payload = sym_idx
-            self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+        if (self.tree.nodes.data[node_idx].flags & 4096 as u16) == 0 as u16:
+            let name_id = self.tree.nodes.data[node_idx].payload
+            let sym_idx = self.symtable.resolve(name_id)
+            if sym_idx != 0 as u32:
+                self.tree.nodes.data[node_idx].payload = sym_idx
+                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
         self.resolve_children(node_idx)
 
     elif kind == NODE_GENERIC_PARAM:

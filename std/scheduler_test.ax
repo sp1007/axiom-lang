@@ -7,6 +7,8 @@ import std.string
 extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
 extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+extern "C" fn ax_get_mock_child_handler() -> ptr[void]
+extern "C" fn ax_println_i64(val: i64)
 
 fn test_print_str(s: str):
     if @compiler_intrinsic("is_windows"):
@@ -93,9 +95,84 @@ fn test_scheduler_lifecycle():
     @free(sched as ptr[u8])
     test_print_str("  PASS: test_scheduler_lifecycle\n")
 
+mut g_child_runs: u64 = 0 as u64
+
+pub fn mock_child_handler(self: ptr[void], payload: ptr[void], msg_type: u32):
+    g_child_runs = g_child_runs + 1 as u64
+
+fn test_supervisor_recovery():
+    ax_actor_system_init()
+    
+    // Create supervisor with strategy ONE_FOR_ONE, max 3 restarts in 5000ms
+    let sup_id = ax_supervisor_create(AX_STRATEGY_ONE_FOR_ONE, 3 as u32, 5000 as u32)
+    assert(sup_id != 0 as u64)
+    
+    let sup = ax_supervisor_lookup(sup_id)
+    assert(sup != null as ptr[AxSupervisor])
+    
+    let spec = AxChildSpec(
+        handler: ax_get_mock_child_handler(),
+        init_data: null as ptr[void],
+        data_size: 0 as u64,
+        restart: 1 as i32, // AX_RESTART_ALWAYS = 1
+        max_restarts: 3 as u32,
+        window_ms: 5000 as u32
+    )
+    
+    assert(ax_supervisor_add_child(sup, spec) == 0 as i32)
+    assert(sup.child_count == 1 as u32)
+    
+    // Start children
+    assert(ax_supervisor_start_children(sup) == 0 as i32)
+    let child_id = sup.children[0]
+    assert(child_id != 0 as u64)
+    
+    test_print_str("  [DEBUG] sup_id: ")
+    ax_println_i64(sup_id as i64)
+    test_print_str("  [DEBUG] child_id: ")
+    ax_println_i64(child_id as i64)
+    
+    // Verify child is running
+    let child_actor = ax_actor_lookup(child_id) as ptr[AxActor]
+    assert(child_actor != null as ptr[AxActor])
+    assert(child_actor.supervisor_id == sup_id)
+    
+    // Simulate actor crash/exit
+    ax_actor_stop(child_id)
+    
+    // Execute scheduler steps
+    let state = get_global_state()
+    let p_g_sched = (state as i64 + 56 as i64) as ptr[ptr[void]]
+    let sched = p_g_sched.* as ptr[scheduler]
+    
+    // Run step loops to process AX_MSG_STOP and trigger AX_MSG_EXIT
+    mut steps := 0
+    while steps < 20:
+        let q = (&sched.workers[0].runq) as ptr[runq]
+        mut id := q.pop()
+        if id != 0 as u64:
+            test_print_str("  [DEBUG] Popped actor ID: ")
+            ax_println_i64(id as i64)
+            let actor_ptr = ax_actor_lookup(id)
+            if actor_ptr != null as ptr[void]:
+                while ax_actor_step(actor_ptr) != 0 as i32:
+                    steps = steps + 1
+        steps = steps + 1
+        
+    // Assert child was restarted and has a new ID
+    let new_child_id = sup.children[0]
+    test_print_str("  [DEBUG] new_child_id: ")
+    ax_println_i64(new_child_id as i64)
+    assert(new_child_id != 0 as u64)
+    assert(new_child_id != child_id) // Different ID because it was respawned!
+    
+    test_print_str("  PASS: test_supervisor_recovery\n")
+
 pub fn main():
     test_print_str("Running AXIOM-native Scheduler unit tests...\n")
     test_runq_basic()
     test_runq_steal()
     test_scheduler_lifecycle()
+    test_supervisor_recovery()
     test_print_str("All AXIOM-native Scheduler tests passed!\n")
+

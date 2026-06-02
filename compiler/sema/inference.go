@@ -784,12 +784,40 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		}
 
 	case ast.NodeFieldExpr:
+		if node.Flags&2048 != 0 {
+			symIdx := node.Payload
+			if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
+				sym := ie.symtable.SymbolAt(symIdx)
+				resultType = types.TypeID(sym.TypeID)
+				ie.nodeTypes[nodeIdx] = resultType
+				return resultType
+			}
+		}
 		obj := node.FirstChild
 		isStructAccess := false
 		if obj != 0 {
+			lhsIsModule := false
+			lhsNode := &ie.ast.Nodes[obj]
+			if lhsNode.Kind == ast.NodeIdent || lhsNode.Kind == ast.NodeFieldExpr {
+				lhsSymIdx := lhsNode.Payload
+				if lhsSymIdx != 0 && int(lhsSymIdx) < len(ie.symtable.Symbols) {
+					lhsSym := ie.symtable.SymbolAt(lhsSymIdx)
+					if lhsSym.Kind == SymModule {
+						lhsIsModule = true
+					}
+				}
+			}
 			fieldName := ""
 			if node.Payload != 0 {
-				fieldName = ie.symtable.intern.Get(node.Payload)
+				if lhsIsModule && int(node.Payload) < len(ie.symtable.Symbols) {
+					sym := ie.symtable.SymbolAt(node.Payload)
+					if sym.NameID != 0 && int(sym.NameID) <= ie.symtable.intern.Len() {
+						fieldName = ie.symtable.intern.Get(sym.NameID)
+					}
+				}
+				if fieldName == "" && int(node.Payload) <= ie.symtable.intern.Len() {
+					fieldName = ie.symtable.intern.Get(node.Payload)
+				}
 			}
 			if fieldName == "new" {
 				baseNodeIdx := obj
@@ -803,7 +831,15 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 				if objName == "" && ie.ast.Nodes[baseNodeIdx].Kind == ast.NodeFieldExpr {
 					rhsNameID := ie.ast.Nodes[baseNodeIdx].Payload
 					if rhsNameID != 0 {
-						objName = ie.symtable.intern.Get(rhsNameID)
+						if int(rhsNameID) < len(ie.symtable.Symbols) {
+							sym := ie.symtable.SymbolAt(rhsNameID)
+							if sym.NameID != 0 && int(sym.NameID) <= ie.symtable.intern.Len() {
+								objName = ie.symtable.intern.Get(sym.NameID)
+							}
+						}
+						if objName == "" && int(rhsNameID) <= ie.symtable.intern.Len() {
+							objName = ie.symtable.intern.Get(rhsNameID)
+						}
 					}
 				}
 				if objName == "Vec" || strings.HasSuffix(objName, ".Vec") ||
@@ -833,7 +869,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			objType := ie.inferNode(obj, types.TypeUnknown)
 			fmt.Printf("[DEBUG-FIELD] FieldExpr nodeIdx=%d objType=%d fieldNameID=%d\n", nodeIdx, objType, uint32(node.Payload))
 
-			lhsIsModule := false
+			lhsIsModule = false
 			curr := obj
 			for ie.ast.Nodes[curr].Kind == ast.NodeFieldExpr {
 				curr = ie.ast.Nodes[curr].FirstChild
@@ -881,7 +917,9 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 						}
 					}
 					if fieldName == "" && node.Payload != 0 {
-						fieldName = ie.symtable.intern.Get(node.Payload)
+						if int(node.Payload) <= ie.symtable.intern.Len() {
+							fieldName = ie.symtable.intern.Get(node.Payload)
+						}
 					}
 					if fieldName == "len" {
 						resultType = types.TypeI64
@@ -957,6 +995,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 													firstParamType := fInfo.Params[0]
 													if ie.ifaces.baseTypeEquals(firstParamType, objType) {
 														ie.ast.SetPayload(nodeIdx, uint32(idx))
+														ie.ast.SetFlags(nodeIdx, 2048)
 														break
 													}
 												}
@@ -973,11 +1012,11 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 							var typeArgs []types.TypeID
 							var structNameStr string
 
-							if structEntry.Kind == types.KindGenericInst && structEntry.NameID != 0 {
+							if structEntry.Kind == types.KindGenericInst && structEntry.NameID != 0 && int(structEntry.NameID) <= ie.symtable.intern.Len() {
 								baseName = string(ie.symtable.intern.Get(structEntry.NameID))
 								typeArgs = ie.types.GenericInstArgs(objType)
 								structNameStr = baseName
-							} else if (structEntry.Kind == types.KindStruct || structEntry.Kind == types.KindSum) && structEntry.NameID != 0 {
+							} else if (structEntry.Kind == types.KindStruct || structEntry.Kind == types.KindSum) && structEntry.NameID != 0 && int(structEntry.NameID) <= ie.symtable.intern.Len() {
 								structNameStr = string(ie.symtable.intern.Get(structEntry.NameID))
 								if strings.HasPrefix(structNameStr, "_AX_") {
 									baseName, typeArgs = parseMangledName(ie.types, ie.symtable.intern, structNameStr)
@@ -985,11 +1024,17 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 							}
 
 							if baseName != "" && len(typeArgs) > 0 {
-								methodName := string(ie.symtable.intern.Get(fieldNameID))
+								methodName := ""
+								if fieldNameID != 0 && int(fieldNameID) <= ie.symtable.intern.Len() {
+									methodName = string(ie.symtable.intern.Get(fieldNameID))
+								}
 								var foundTemplateSymIdx uint32 = 0
 								for idx, sym := range ie.symtable.Symbols {
 									if sym.Kind == SymFunc && sym.Flags&SymFlagGeneric != 0 {
-										symName := string(ie.symtable.intern.Get(sym.NameID))
+										symName := ""
+										if sym.NameID != 0 && int(sym.NameID) <= ie.symtable.intern.Len() {
+											symName = string(ie.symtable.intern.Get(sym.NameID))
+										}
 										if symName == methodName {
 											tID := types.TypeID(sym.TypeID)
 											if tID != types.TypeUnknown && ie.types.Entry(tID).Kind == types.KindFunction {
@@ -1005,7 +1050,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 														entry = ie.types.Entry(recParam)
 													}
 													recStructName := ""
-													if entry.NameID != 0 {
+													if entry.NameID != 0 && int(entry.NameID) <= ie.symtable.intern.Len() {
 														recStructName = string(ie.symtable.intern.Get(entry.NameID))
 													}
 													fmt.Printf("[DEBUG-OVERLOAD] methodName=%s baseName=%s recParam=%d kind=%v nameID=%d recStructName=%s\n", methodName, baseName, recParam, entry.Kind, entry.NameID, recStructName)
@@ -1034,6 +1079,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 									fmt.Printf("[DEBUG] Instantiated method %s: instSymIdx=%d, errs=%v\n", methodName, instSymIdx, diags)
 									ie.errors = append(ie.errors, diags...)
 									ie.ast.SetPayload(nodeIdx, instSymIdx)
+									ie.ast.SetFlags(nodeIdx, 2048)
 									ie.ifaces.methodCache = make(map[types.TypeID][]types.MethodSig)
 									methods = ie.ifaces.getMethodsOfStruct(objType)
 									for _, method := range methods {
@@ -1656,7 +1702,7 @@ func parseMangledName(tt *types.TypeTable, intern *ast.InternPool, name string) 
 		// 2. Check registered types in TypeTable
 		for idx := 0; idx < tt.Count(); idx++ {
 			entry := tt.Entry(types.TypeID(idx))
-			if entry.NameID != 0 {
+			if entry.NameID != 0 && int(entry.NameID) <= intern.Len() {
 				tName := string(intern.Get(entry.NameID))
 				if tName != "" && strings.HasPrefix(remainder, tName) {
 					l := len(tName)
@@ -1703,7 +1749,7 @@ func typeFromName(tt *types.TypeTable, intern *ast.InternPool, name string) type
 	}
 	for idx := 0; idx < tt.Count(); idx++ {
 		entry := tt.Entry(types.TypeID(idx))
-		if entry.Kind == types.KindStruct && entry.NameID != 0 {
+		if entry.Kind == types.KindStruct && entry.NameID != 0 && int(entry.NameID) <= intern.Len() {
 			structName := string(intern.Get(entry.NameID))
 			if structName == name {
 				return types.TypeID(idx)

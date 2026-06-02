@@ -118,7 +118,6 @@ ax_bool ax__AX_std_HashMap__i64__bool_remove(struct ax__AX_std_HashMap__i64__boo
 void ax__AX_std_HashSet__i64_destroy(struct ax__AX_std_HashSet__i64* self);
 void ax__AX_std_HashMap__i64__bool_destroy(struct ax__AX_std_HashMap__i64__bool* self);
 ax_i64 ax_std_string_len(ax_string p0);
-ax_string ax_std_string_to_upper(ax_string p0);
 
 
 static void ax_test_print_str(ax_string s) {
