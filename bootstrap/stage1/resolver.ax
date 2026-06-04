@@ -240,6 +240,39 @@ pub fn append_unique(mut self: ptr[U32Vec], val: u32) -> u32:
         i = i + 1
     return self.push(val)
 
+pub fn sort(mut self: ptr[U32Vec]):
+    if self.len <= 1:
+        return
+    mut gap := self.len / 2
+    while gap > 0:
+        mut i := gap
+        while i < self.len:
+            let temp = self.data[i]
+            mut j := i
+            while j >= gap:
+                if self.data[j - gap] > temp:
+                    self.data[j] = self.data[j - gap]
+                    j = j - gap
+                else:
+                    break
+            self.data[j] = temp
+            i = i + 1
+        gap = gap / 2
+
+
+pub fn deduplicate(mut self: ptr[U32Vec]):
+    if self.len <= 1:
+        return
+    mut write_idx := 1 as i64
+    mut read_idx := 1 as i64
+    while read_idx < self.len:
+        if self.data[read_idx] != self.data[write_idx - 1]:
+            self.data[write_idx] = self.data[read_idx]
+            write_idx = write_idx + 1
+        read_idx = read_idx + 1
+    self.len = write_idx
+
+
 pub struct ModuleExport:
     name_id: u32
     symbol_idx: u32

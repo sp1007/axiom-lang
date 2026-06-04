@@ -1,89 +1,69 @@
 package main
 
 import (
-	"debug/pe"
 	"fmt"
-	"os"
 	"syscall"
 )
 
 func main() {
-	target := "bin/axc_stage2.exe"
-	if len(os.Args) > 1 {
-		target = os.Args[1]
-	}
-	f, err := pe.Open(target)
+	check("kernel32.dll", []string{
+		"GetStdHandle",
+		"WriteFile",
+		"VirtualAlloc",
+		"GetLastError",
+		"VirtualFree",
+		"ExitProcess",
+		"GetFileAttributesA",
+		"CreateDirectoryA",
+		"DeleteFileA",
+		"RemoveDirectoryA",
+		"MoveFileA",
+		"CopyFileA",
+		"GetCommandLineW",
+		"GetEnvironmentVariableA",
+	})
+
+	check("ax_runtime.dll", []string{
+		"ax_get_global_state_internal",
+		"ax_actor_step",
+		"ax_actor_is_running",
+		"ax_actor_has_messages",
+		"ax_actor_spawn",
+		"ax_actor_ref_to_u64",
+		"ax_time_now_ns",
+		"ax_actor_stop",
+		"ax_str_eq",
+		"ax_str_parse_i64",
+		"ax_str_parse_f64",
+		"ax_println_str",
+		"ax_sum_layout_is_pointer",
+		"ax_panic",
+		"ax_str_slice",
+	})
+
+	check("ucrtbase.dll", []string{
+		"memset",
+		"memcpy",
+		"strlen",
+		"printf",
+		"fflush",
+	})
+}
+
+func check(dllName string, symbols []string) {
+	dll, err := syscall.LoadDLL(dllName)
 	if err != nil {
-		fmt.Printf("Failed to open PE %s: %v\n", target, err)
-		os.Exit(1)
+		fmt.Printf("Error loading %s: %v\n", dllName, err)
+		return
 	}
-	defer f.Close()
+	defer dll.Release()
 
-	importedSymbols, err := f.ImportedSymbols()
-	if err != nil {
-		fmt.Printf("Failed to get imported symbols: %v\n", err)
-		os.Exit(1)
-	}
-
-	libs := make(map[string]syscall.Handle)
-	getLib := func(name string) syscall.Handle {
-		if h, ok := libs[name]; ok {
-			return h
-		}
-		h, err := syscall.LoadLibrary(name)
+	for _, sym := range symbols {
+		_, err := dll.FindProc(sym)
 		if err != nil {
-			fmt.Printf("Failed to LoadLibrary %s: %v\n", name, err)
-			libs[name] = 0
-			return 0
-		}
-		libs[name] = h
-		return h
-	}
-
-	defer func() {
-		for _, h := range libs {
-			if h != 0 {
-				syscall.FreeLibrary(h)
-			}
-		}
-	}()
-
-	fmt.Println("Testing imported symbols resolution:")
-	missingCount := 0
-	for _, sym := range importedSymbols {
-		// sym is in format "FuncName:DllName.dll"
-		var funcName, dllName string
-		for i := 0; i < len(sym); i++ {
-			if sym[i] == ':' {
-				funcName = sym[:i]
-				dllName = sym[i+1:]
-				break
-			}
-		}
-		if funcName == "" || dllName == "" {
-			fmt.Printf("Invalid import format: %s\n", sym)
-			continue
-		}
-
-		h := getLib(dllName)
-		if h == 0 {
-			missingCount++
-			continue
-		}
-
-		proc, err := syscall.GetProcAddress(h, funcName)
-		if err != nil {
-			fmt.Printf("  [MISSING] Symbol '%s' NOT found in %s (err: %v)\n", funcName, dllName, err)
-			missingCount++
+			fmt.Printf("MISSING in %s: %s (error: %v)\n", dllName, sym, err)
 		} else {
-			_ = proc
-			// fmt.Printf("  [OK] %s in %s\n", funcName, dllName)
+			fmt.Printf("Found in %s: %s\n", dllName, sym)
 		}
-	}
-
-	if missingCount == 0 {
-		fmt.Println("All imported symbols successfully resolved on this machine!")
-	} else {
-		fmt.Printf("Found %d missing symbols!\n", missingCount)
 	}
 }

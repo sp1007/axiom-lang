@@ -73,7 +73,99 @@ fn print_raw_ptr(c_ptr: ptr[u8], len: i64):
     let s_str = (&s as ptr[str])[0]
     print(s_str)
 
+
+fn check_prefix(s_ptr: ptr[u8], s_len: i64, prefix: str) -> bool:
+    let p_ptr = prefix as ptr[u8]
+    let p_len = std.string.len(prefix)
+    if s_len < p_len:
+        return false
+    mut i := 0 as i64
+    while i < p_len:
+        if s_ptr[i] != p_ptr[i]:
+            return false
+        i = i + 1
+    return true
+
+
+fn is_verbose_debug(s: str) -> bool:
+    let s_len = std.string.len(s)
+    if s_len < 2:
+        return false
+    let s_ptr = s as ptr[u8]
+    
+    // Skip leading spaces
+    mut start_idx := 0 as i64
+    while start_idx < s_len and s_ptr[start_idx] == ' ' as u8:
+        start_idx = start_idx + 1
+        
+    if start_idx >= s_len - 1:
+        return false
+        
+    if s_ptr[start_idx] == '[' as u8:
+        let ch = s_ptr[start_idx + 1]
+        // Check standard prefixes first
+        if ch == 'M' as u8 or ch == 'T' as u8 or ch == 'C' as u8:
+            // Matches [MONO-DEBUG], [TC-DEBUG], [CGEN-DEBUG] etc
+            return true
+        if ch == 'f' as u8:
+            // Matches [field_offset]
+            if check_prefix((s_ptr as i64 + start_idx) as ptr[u8], s_len - start_idx, "[field_offset]"):
+                return true
+        if ch == 'D' as u8:
+            // Matches [Debug ...] or [DEBUG ...]
+            // Check if it's one of the high-level progress prints starting with [Debug] or [DEBUG]
+            let p_ptr = (s_ptr as i64 + start_idx) as ptr[u8]
+            let p_len = s_len - start_idx
+            if check_prefix(p_ptr, p_len, "[Debug] Stage"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Finished"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Creating"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Registering"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Preloading"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Resolver"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Pre-defining"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Resolving"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Typechecking"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Running"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Stripping"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Concatenating"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Cleaning up"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Concatenation"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] read_file_content"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Lexing"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Parsing"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Format"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Reading"):
+                return false
+            // Any other [Debug ...] or [DEBUG ...] should be silenced
+            return true
+    else:
+        // Silences ", arg_count=" print
+        if s_ptr[start_idx] == ',' as u8:
+            if check_prefix((s_ptr as i64 + start_idx) as ptr[u8], s_len - start_idx, ", arg_count="):
+                return true
+    return false
+
 pub fn ax_puts_local(s: str) -> i32:
+    if is_verbose_debug(s):
+        return 0
     print_raw(s)
     print_raw("\n")
     return 0
@@ -118,6 +210,8 @@ fn print_i64_raw(val: i64):
     @free(buf)
 
 pub fn ax_printf_local(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    if is_verbose_debug(fmt):
+        return 0
     let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0
@@ -271,6 +365,8 @@ fn print_i64_to_file(stream: ptr[void], val: i64):
     @free(buf)
 
 pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    if is_verbose_debug(fmt):
+        return 0
     let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0

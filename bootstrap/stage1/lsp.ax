@@ -9,7 +9,7 @@ import std.collections
 extern "C" fn exit(code: i32)
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn puts(s: str) -> i32
-extern "C" fn snprintf(s_buf: ptr[u8], size: i64, format: str, val: i64) -> i32
+extern "C" fn ax_i64_to_str(val: i64) -> str
 
 // Global active documents cache pointer (stored as u64 to bypass CGen global type bugs)
 mut g_documents: u64 = 0 as u64
@@ -18,17 +18,14 @@ fn lsp_send_message(msg: str):
     let out = std.io.stdout()
     let len = msg.len
     
-    // Convert len to string using snprintf
-    let len_buf = @alloc(32) as ptr[u8]
-    snprintf(len_buf, 32, "%d", len)
-    let len_str = len_buf as str
+    // Convert len to string using ax_i64_to_str
+    let len_str = ax_i64_to_str(len)
     
     // Headers
     let header = std.string.concat("Content-Length: ", std.string.concat(std.string.concat("", len_str), "\r\n\r\n"))
     let r1 = out.write_all(header)
     let r2 = out.write_all(msg)
     
-    @free(len_buf)
     @free(get_str_ptr(header))
     fflush(null as ptr[void])
 

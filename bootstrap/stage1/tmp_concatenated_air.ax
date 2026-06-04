@@ -76,7 +76,99 @@ fn print_raw_ptr(c_ptr: ptr[u8], len: i64):
     let s_str = (&s as ptr[str])[0]
     print(s_str)
 
+
+fn check_prefix(s_ptr: ptr[u8], s_len: i64, prefix: str) -> bool:
+    let p_ptr = prefix as ptr[u8]
+    let p_len = std.string.len(prefix)
+    if s_len < p_len:
+        return false
+    mut i := 0 as i64
+    while i < p_len:
+        if s_ptr[i] != p_ptr[i]:
+            return false
+        i = i + 1
+    return true
+
+
+fn is_verbose_debug(s: str) -> bool:
+    let s_len = std.string.len(s)
+    if s_len < 2:
+        return false
+    let s_ptr = s as ptr[u8]
+    
+    // Skip leading spaces
+    mut start_idx := 0 as i64
+    while start_idx < s_len and s_ptr[start_idx] == ' ' as u8:
+        start_idx = start_idx + 1
+        
+    if start_idx >= s_len - 1:
+        return false
+        
+    if s_ptr[start_idx] == '[' as u8:
+        let ch = s_ptr[start_idx + 1]
+        // Check standard prefixes first
+        if ch == 'M' as u8 or ch == 'T' as u8 or ch == 'C' as u8:
+            // Matches [MONO-DEBUG], [TC-DEBUG], [CGEN-DEBUG] etc
+            return true
+        if ch == 'f' as u8:
+            // Matches [field_offset]
+            if check_prefix((s_ptr as i64 + start_idx) as ptr[u8], s_len - start_idx, "[field_offset]"):
+                return true
+        if ch == 'D' as u8:
+            // Matches [Debug ...] or [DEBUG ...]
+            // Check if it's one of the high-level progress prints starting with [Debug] or [DEBUG]
+            let p_ptr = (s_ptr as i64 + start_idx) as ptr[u8]
+            let p_len = s_len - start_idx
+            if check_prefix(p_ptr, p_len, "[Debug] Stage"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Finished"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Creating"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Registering"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Preloading"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Resolver"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Pre-defining"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Resolving"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Typechecking"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Running"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Stripping"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Concatenating"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Cleaning up"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Concatenation"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] read_file_content"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Lexing"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Parsing"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Format"):
+                return false
+            if check_prefix(p_ptr, p_len, "[Debug] Reading"):
+                return false
+            // Any other [Debug ...] or [DEBUG ...] should be silenced
+            return true
+    else:
+        // Silences ", arg_count=" print
+        if s_ptr[start_idx] == ',' as u8:
+            if check_prefix((s_ptr as i64 + start_idx) as ptr[u8], s_len - start_idx, ", arg_count="):
+                return true
+    return false
+
 pub fn ax_puts_local(s: str) -> i32:
+    if is_verbose_debug(s):
+        return 0
     print_raw(s)
     print_raw("\n")
     return 0
@@ -121,6 +213,8 @@ fn print_i64_raw(val: i64):
     @free(buf)
 
 pub fn ax_printf_local(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    if is_verbose_debug(fmt):
+        return 0
     let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0
@@ -274,6 +368,8 @@ fn print_i64_to_file(stream: ptr[void], val: i64):
     @free(buf)
 
 pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
+    if is_verbose_debug(fmt):
+        return 0
     let s_ptr = get_str_ptr(fmt)
     let s_len = std.string.len(fmt)
     mut arg_idx := 0
@@ -3175,6 +3271,39 @@ pub fn append_unique(mut self: ptr[U32Vec], val: u32) -> u32:
             return i as u32
         i = i + 1
     return self.push(val)
+
+pub fn sort(mut self: ptr[U32Vec]):
+    if self.len <= 1:
+        return
+    mut gap := self.len / 2
+    while gap > 0:
+        mut i := gap
+        while i < self.len:
+            let temp = self.data[i]
+            mut j := i
+            while j >= gap:
+                if self.data[j - gap] > temp:
+                    self.data[j] = self.data[j - gap]
+                    j = j - gap
+                else:
+                    break
+            self.data[j] = temp
+            i = i + 1
+        gap = gap / 2
+
+
+pub fn deduplicate(mut self: ptr[U32Vec]):
+    if self.len <= 1:
+        return
+    mut write_idx := 1 as i64
+    mut read_idx := 1 as i64
+    while read_idx < self.len:
+        if self.data[read_idx] != self.data[write_idx - 1]:
+            self.data[write_idx] = self.data[read_idx]
+            write_idx = write_idx + 1
+        read_idx = read_idx + 1
+    self.len = write_idx
+
 
 pub struct ModuleExport:
     name_id: u32
@@ -11794,27 +11923,279 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
     @free(vals as ptr[u8])
     return changed
 
+pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
+    let max_reg = max_reg_id(f)
+    if max_reg == 0 as u32:
+        return false
+
+    let def_counts = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+    @memset(def_counts as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode != OP_NOP and inst.dest != 0 as u32 and inst.opcode != OP_BRANCH:
+            def_counts[inst.dest] = def_counts[inst.dest] + 1 as u32
+        i = i + 1 as i64
+
+    let vals = @alloc((max_reg as i64 + 1 as i64) * (@compiler_intrinsic("size_of")[ConstVal]() as i64)) as ptr[ConstVal]
+    mut reg_idx := 0 as u32
+    while reg_idx <= max_reg:
+        vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
+        reg_idx = reg_idx + 1 as u32
+    i = 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode == OP_ICONST and inst.dest != 0 as u32:
+            if def_counts[inst.dest] <= 1 as u32:
+                let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
+                vals[inst.dest] = ConstVal(known: true, val: full_val)
+        i = i + 1 as i64
+
+    mut changed := false
+    i = 0 as i64
+    while i < f.insts.len:
+        mut inst := &f.insts.data[i]
+
+        if inst.opcode == OP_IADD:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                let v2 = vals[inst.src2]
+                if v2.known and v2.val == 0 as u64:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+                else:
+                    let v1 = vals[inst.src1]
+                    if v1.known and v1.val == 0 as u64:
+                        inst.opcode = OP_COPY
+                        inst.src1 = inst.src2
+                        inst.src2 = 0 as u32
+                        changed = true
+
+        elif inst.opcode == OP_ISUB:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                if inst.src1 == inst.src2:
+                    inst.opcode = OP_ICONST
+                    inst.src1 = 0 as u32
+                    inst.src2 = 0 as u32
+                    if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                    changed = true
+                else:
+                    let v2 = vals[inst.src2]
+                    if v2.known and v2.val == 0 as u64:
+                        inst.opcode = OP_COPY
+                        inst.src2 = 0 as u32
+                        changed = true
+
+        elif inst.opcode == OP_IMUL:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                let v1 = vals[inst.src1]
+                let v2 = vals[inst.src2]
+                if (v2.known and v2.val == 0 as u64) or (v1.known and v1.val == 0 as u64):
+                    inst.opcode = OP_ICONST
+                    inst.src1 = 0 as u32
+                    inst.src2 = 0 as u32
+                    if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                    changed = true
+                elif v2.known and v2.val == 1 as u64:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+                elif v1.known and v1.val == 1 as u64:
+                    inst.opcode = OP_COPY
+                    inst.src1 = inst.src2
+                    inst.src2 = 0 as u32
+                    changed = true
+
+        elif inst.opcode == OP_IDIV:
+            if inst.src2 != 0 as u32:
+                let v2 = vals[inst.src2]
+                if v2.known and v2.val == 1 as u64:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+
+        elif inst.opcode == OP_IMOD:
+            if inst.src2 != 0 as u32:
+                let v2 = vals[inst.src2]
+                if v2.known and v2.val == 1 as u64:
+                    inst.opcode = OP_ICONST
+                    inst.src1 = 0 as u32
+                    inst.src2 = 0 as u32
+                    if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                    changed = true
+
+        elif inst.opcode == OP_AND:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                if inst.src1 == inst.src2:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+                else:
+                    let v1 = vals[inst.src1]
+                    let v2 = vals[inst.src2]
+                    if (v1.known and v1.val == 0 as u64) or (v2.known and v2.val == 0 as u64):
+                        inst.opcode = OP_ICONST
+                        inst.src1 = 0 as u32
+                        inst.src2 = 0 as u32
+                        if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                            vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                        changed = true
+
+        elif inst.opcode == OP_OR:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                if inst.src1 == inst.src2:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+
+        elif inst.opcode == OP_XOR:
+            if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
+                if inst.src1 == inst.src2:
+                    inst.opcode = OP_ICONST
+                    inst.src1 = 0 as u32
+                    inst.src2 = 0 as u32
+                    if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                        vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                    changed = true
+
+        elif inst.opcode == OP_SHL or inst.opcode == OP_SHR:
+            if inst.src2 != 0 as u32:
+                let v2 = vals[inst.src2]
+                if v2.known and v2.val == 0 as u64:
+                    inst.opcode = OP_COPY
+                    inst.src2 = 0 as u32
+                    changed = true
+
+        elif inst.opcode == OP_EQ:
+            if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                inst.opcode = OP_ICONST
+                inst.src1 = 1 as u32
+                inst.src2 = 0 as u32
+                if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                    vals[inst.dest] = ConstVal(known: true, val: 1 as u64)
+                changed = true
+
+        elif inst.opcode == OP_NE:
+            if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                inst.opcode = OP_ICONST
+                inst.src1 = 0 as u32
+                inst.src2 = 0 as u32
+                if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                    vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                changed = true
+
+        elif inst.opcode == OP_LT or inst.opcode == OP_GT:
+            if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                inst.opcode = OP_ICONST
+                inst.src1 = 0 as u32
+                inst.src2 = 0 as u32
+                if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                    vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
+                changed = true
+
+        elif inst.opcode == OP_LE or inst.opcode == OP_GE:
+            if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                inst.opcode = OP_ICONST
+                inst.src1 = 1 as u32
+                inst.src2 = 0 as u32
+                if inst.dest != 0 as u32 and def_counts[inst.dest] <= 1 as u32:
+                    vals[inst.dest] = ConstVal(known: true, val: 1 as u64)
+                changed = true
+
+        elif inst.opcode == OP_BRANCH:
+            if inst.src1 != 0 as u32:
+                let cond_val = vals[inst.src1]
+                if cond_val.known:
+                    let true_blk = inst.src2
+                    let false_blk = inst.dest
+                    if cond_val.val != 0 as u64:
+                        inst.opcode = OP_JUMP
+                        inst.src1 = true_blk
+                        inst.src2 = 0 as u32
+                        inst.dest = 0 as u32
+                    else:
+                        inst.opcode = OP_JUMP
+                        inst.src1 = false_blk
+                        inst.src2 = 0 as u32
+                        inst.dest = 0 as u32
+                    changed = true
+
+        i = i + 1 as i64
+
+    @free(def_counts as ptr[u8])
+    @free(vals as ptr[u8])
+    return changed
+
+pub fn cse_func(f: ptr[AirFunc]) -> bool:
+    mut changed := false
+
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        let blk = f.blocks.data[bi]
+
+        mut i := 0 as u32
+        while i < blk.instrs_len:
+            let inst_idx_i = f.block_instrs.data[blk.instrs_start + i]
+            let inst_i = f.insts.data[inst_idx_i]
+
+            if inst_i.opcode == OP_NOP or inst_i.dest == 0 as u32 or has_side_effect(inst_i.opcode):
+                i = i + 1 as u32
+                continue
+            if inst_i.opcode == OP_ICONST or inst_i.opcode == OP_FCONST:
+                i = i + 1 as u32
+                continue
+            if not opcode_is_binary_alu(inst_i.opcode) and inst_i.opcode != OP_NEG and inst_i.opcode != OP_NOT:
+                i = i + 1 as u32
+                continue
+
+            mut j := 0 as u32
+            while j < i:
+                let inst_idx_j = f.block_instrs.data[blk.instrs_start + j]
+                let inst_j = f.insts.data[inst_idx_j]
+                if inst_j.opcode == inst_i.opcode and inst_j.src1 == inst_i.src1 and inst_j.src2 == inst_i.src2 and inst_j.dest != 0 as u32 and inst_j.opcode != OP_NOP:
+                    mut cur_inst := &f.insts.data[inst_idx_i]
+                    cur_inst.opcode = OP_COPY
+                    cur_inst.src1 = inst_j.dest
+                    cur_inst.src2 = 0 as u32
+                    changed = true
+                    break
+                j = j + 1 as u32
+            i = i + 1 as u32
+
+        bi = bi + 1 as i64
+
+    return changed
+
+pub const OPT_LARGE_FUNC_THRESHOLD: i64 = 2000
+
 pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
     mut fi := 0 as i64
     while fi < m.funcs.len:
         mut f := &m.funcs.data[fi]
         if not f.is_extern:
-            if self.level >= 2 as u8:
+            let is_large = f.insts.len > OPT_LARGE_FUNC_THRESHOLD
+
+            if self.level >= 2 as u8 and not is_large:
                 compute_loop_depths(f)
+                licm_func(f)
+                strength_reduction_func(f)
+                loop_unroll_func(f)
+
             mut iter := 0
-            while iter < 10:
+            while iter < 6:
                 mut changed := false
-                
+
                 if fold_func(f):
+                    changed = true
+                if alg_simp_func(f):
                     changed = true
                 if copy_prop_func(f):
                     changed = true
-                if self.level >= 2 as u8:
-                    if licm_func(f):
-                        changed = true
-                    if strength_reduction_func(f):
-                        changed = true
-                    if loop_unroll_func(f):
+                if not is_large:
+                    if cse_func(f):
                         changed = true
                 if dce_func(f):
                     changed = true
@@ -14537,15 +14918,15 @@ pub fn type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size: ptr[u3
 pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> u32:
     if struct_type_id == 0 as u32:
         return field_idx * 8 as u32
-    ax_printf_local("[Debug field_offset] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
+    // ax_printf_local("[Debug field_offset] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // fflush(null as ptr[void])
     mut real_type_id := struct_type_id
     mut entry = table.entries.data[real_type_id]
     if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
         real_type_id = entry.extra
         entry = table.entries.data[real_type_id]
-    ax_printf_local("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", real_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
+    // ax_printf_local("[field_offset] struct_type_id=%d, entry.kind=%d, entry.extra=%d, entry.size=%d\n", real_type_id as i64, entry.kind as i64, entry.extra as i64, entry.size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // fflush(null as ptr[void])
     if entry.kind != 1 as u8 and entry.kind != 8 as u8: // TYPE_KIND_STRUCT = 1, TYPE_KIND_GENERIC_INST = 8
         return field_idx * 8 as u32
     
@@ -14565,8 +14946,8 @@ pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) 
         return field_idx * 8 as u32
         
     let info = table.structs.data[struct_idx]
-    ax_printf_local("[field_offset] info.fields.len=%d, info.fields.data=%x\n", info.fields.len as i64, (info.fields.data as i64) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
+    // ax_printf_local("[field_offset] info.fields.len=%d, info.fields.data=%x\n", info.fields.len as i64, (info.fields.data as i64) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // fflush(null as ptr[void])
     mut offset := 0 as u32
     mut i := 0 as i64
     while i < info.fields.len:
@@ -14578,8 +14959,8 @@ pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) 
             f_align = 8 as u32
         // Align offset
         offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
-        ax_printf_local("[field_offset]   field %d: name_id=%d, type_id=%d, f_size=%d, f_align=%d, aligned_offset=%d\n", i as i64, f.name_id as i64, f.type_id as i64, f_size as i64, f_align as i64, offset as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
+        // ax_printf_local("[field_offset]   field %d: name_id=%d, type_id=%d, f_size=%d, f_align=%d, aligned_offset=%d\n", i as i64, f.name_id as i64, f.type_id as i64, f_size as i64, f_align as i64, offset as i64, 0 as i64, 0 as i64)
+        // fflush(null as ptr[void])
         if i as u32 == field_idx:
             return offset
         offset = offset + f_size
@@ -14589,8 +14970,8 @@ pub fn field_offset(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) 
 pub fn field_size(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> u32:
     if struct_type_id == 0 as u32:
         return 8 as u32
-    ax_printf_local("[Debug field_size] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
+    // ax_printf_local("[Debug field_size] struct_type_id=%d, table.entries.len=%d\n", struct_type_id as i64, table.entries.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // fflush(null as ptr[void])
     mut real_type_id := struct_type_id
     mut entry = table.entries.data[real_type_id]
     if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
@@ -14837,8 +15218,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             mut vreg_flag := 0 as u32
             if is_str:
                 vreg_flag = 2 as u32
-            ax_printf_local("[Debug select_inst] OP_ICONST dest=%d, type_id=%d, src1=%d, is_str=%d, vreg_flag=%d\n", inst.dest as i64, inst.type_id as i64, inst.src1 as i64, is_str as i64, vreg_flag as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
+            // ax_printf_local("[Debug select_inst] OP_ICONST dest=%d, type_id=%d, src1=%d, is_str=%d, vreg_flag=%d\n", inst.dest as i64, inst.type_id as i64, inst.src1 as i64, is_str as i64, vreg_flag as i64, 0 as i64, 0 as i64, 0 as i64)
+            // fflush(null as ptr[void])
             if is_str:
                 let tmp_struct_addr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_struct_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: vreg_flag, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -15218,10 +15599,10 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             let callee_sym_idx = inst.type_id as u32
             target_name = x86_resolve_sym_name(callee_sym_idx, sel.symbols, sel.pool, sel.table)
             sym_imm = callee_sym_idx as i64
-        ax_printf_local("[Debug selector] OP_CALL target=", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        print_raw(target_name)
-        ax_printf_local(", arg_count=%d\n", arg_count as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
+        // ax_printf_local("[Debug selector] OP_CALL target=", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // print_raw(target_name)
+        // ax_printf_local(", arg_count=%d\n", arg_count as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // fflush(null as ptr[void])
 
         if target_name == "println" or target_name == "print" or target_name == "ax_println" or target_name == "ax_print":
             mut is_println := (target_name == "println" or target_name == "ax_println")
@@ -15865,11 +16246,15 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
     while idx < result.len:
         let key = result.data[idx]
         mut j := idx - 1
-        while j >= 0 and result.data[j].start > key.start:
-            result.data[j + 1] = result.data[j]
-            j = j - 1
+        while j >= 0:
+            if result.data[j].start > key.start:
+                result.data[j + 1] = result.data[j]
+                j = j - 1
+            else:
+                break
         result.data[j + 1] = key
         idx = idx + 1
+
 
     return result
 
@@ -16054,8 +16439,8 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             let iv2 = &intervals.data[j]
             if iv2.start > iv1.end:
                 break
-            adj[iv1.vreg].append_unique(iv2.vreg)
-            adj[iv2.vreg].append_unique(iv1.vreg)
+            adj[iv1.vreg].push(iv2.vreg)
+            adj[iv2.vreg].push(iv1.vreg)
             j = j + 1
         i = i + 1
 
@@ -16073,36 +16458,42 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     mut simplified_count := 0 as i64
     let target_count = intervals.len
 
+    mut simplify_worklist := new_u32_vec()
+    
+    let in_worklist = @alloc(graph_size) as ptr[bool]
+    @memset(in_worklist as ptr[u8], 0 as u8, graph_size)
+
+    mut init_i := 0 as i64
+    while init_i < intervals.len:
+        let vreg = intervals.data[init_i].vreg
+        if degrees[vreg] < K:
+            simplify_worklist.push(vreg)
+            in_worklist[vreg] = true
+        init_i = init_i + 1
+
     while simplified_count < target_count:
-        mut found := false
-        mut best_node := 0 as u32
-
-        mut iv_idx := 0 as i64
-        while iv_idx < intervals.len:
-            let vreg = intervals.data[iv_idx].vreg
-            if not removed[vreg]:
-                if degrees[vreg] < K:
-                    best_node = vreg
-                    found = true
-                    break
-            iv_idx = iv_idx + 1
-
-        if found:
-            stack.push(best_node)
-            removed[best_node] = true
-            simplified_count = simplified_count + 1
-            mut n_idx := 0 as i64
-            while n_idx < adj[best_node].len:
-                let neighbor = adj[best_node].data[n_idx]
-                if not removed[neighbor]:
-                    degrees[neighbor] = degrees[neighbor] - 1
-                n_idx = n_idx + 1
+        if simplify_worklist.len > 0:
+            let node = simplify_worklist.pop()
+            if not removed[node]:
+                stack.push(node)
+                removed[node] = true
+                simplified_count = simplified_count + 1
+                
+                mut n_idx := 0 as i64
+                while n_idx < adj[node].len:
+                    let neighbor = adj[node].data[n_idx]
+                    if not removed[neighbor]:
+                        degrees[neighbor] = degrees[neighbor] - 1
+                        if degrees[neighbor] < K and not in_worklist[neighbor]:
+                            simplify_worklist.push(neighbor)
+                            in_worklist[neighbor] = true
+                    n_idx = n_idx + 1
         else:
             mut spill_candidate := 0 as u32
             mut max_degree := -1 as i32
             mut has_candidate := false
 
-            iv_idx = 0
+            mut iv_idx := 0 as i64
             while iv_idx < intervals.len:
                 let vreg = intervals.data[iv_idx].vreg
                 if not removed[vreg]:
@@ -16124,7 +16515,11 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                 let neighbor = adj[spill_candidate].data[n_idx]
                 if not removed[neighbor]:
                     degrees[neighbor] = degrees[neighbor] - 1
+                    if degrees[neighbor] < K and not in_worklist[neighbor]:
+                        simplify_worklist.push(neighbor)
+                        in_worklist[neighbor] = true
                 n_idx = n_idx + 1
+
 
     let assigned_colors = @alloc(graph_size) as ptr[u8]
     @memset(assigned_colors, REG_NONE, graph_size)
@@ -16214,6 +16609,9 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(is_arg_vreg as ptr[u8])
     @free(param_idx_of_vreg as ptr[u8])
     @free(address_taken as ptr[u8])
+    @free(in_worklist as ptr[u8])
+    if simplify_worklist.data != null as ptr[u32]:
+        @free(simplify_worklist.data as ptr[u8])
     if stack.data != null as ptr[u32]:
         @free(stack.data as ptr[u8])
 
@@ -18328,8 +18726,8 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let imm = inst.src1.imm
-        ax_printf_local("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
+        // ax_printf_local("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // fflush(null as ptr[void])
         if dst != REG_NONE:
             if inst.src1.vreg == 1 as u32: // Symbol index!
                 let offset = buf.len + 2 as i64
@@ -19338,20 +19736,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     while scan_fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[scan_fi]
         if not fn_ptr.is_extern:
-            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            let name_nt = str_to_null_terminated(fn_name_str)
-            ax_printf_local("[Debug Scan Fn] %s has %d insts\n", name_nt as i64, fn_ptr.insts.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_nt)
             mut inst_i := 0 as i64
             while inst_i < fn_ptr.insts.len:
                 let inst = &fn_ptr.insts.data[inst_i]
-                if inst.opcode == OP_ICONST:
-                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-                    let name_nt = str_to_null_terminated(fn_name_str)
-                    ax_printf_local("[Debug Scan] OP_ICONST in %s: type_id=%d, src1=%d\n", name_nt as i64, inst.type_id as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fflush(null as ptr[void])
-                    @free(name_nt)
                 let t_id = inst.type_id as u32
                 mut is_str := (t_id == 12 as u32)
                 if t_id < table.entries.len as u32:
@@ -19440,21 +19827,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         let fn_ptr = &mod.funcs.data[fi]
         if not fn_ptr.is_extern:
             let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            let name_ptr = str_to_null_terminated(fn_name)
-            ax_printf_local("[Debug] compile_native_binary: compiling function %s\n", name_ptr as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_ptr)
             
-            ax_printf_local("[Debug]   running select_all\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
-
-            ax_printf_local("[Debug]   running compute_liveness\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
-            
-            ax_printf_local("[Debug]   running allocate_registers_orchestrator\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
             
             mut num_str_lits := 0 as i32
@@ -19473,20 +19848,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
             let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
-            ax_printf_local("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame, fn_ptr, table, symbols)
-            
             mut emitter := new_mach_emitter()
 
-            ax_printf_local("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let is_windows = not is_elf64
             mut str_lit_counter := 0 as i32
             emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
-            ax_printf_local("[Debug]   emit_function_binary done, pushing compiled info\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let current_offset = all_code.len as u32
             push_bytes(&all_code, emitter.code.data, emitter.code.len)
             
@@ -19498,45 +19866,23 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 relocs: emitter.relocs
             ))
             
-            ax_printf_local("[Debug]   freeing local resources\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            ax_printf_local("[Debug]     freeing cs_regs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(cs_regs)
-            ax_printf_local("[Debug]     freeing alloc_res.allocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(alloc_res.allocs)
             if intervals.data != null as ptr[LiveInterval]:
-                ax_printf_local("[Debug]     freeing intervals.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(intervals.data as ptr[u8])
             if mach_insts.data != null as ptr[MachInst]:
-                ax_printf_local("[Debug]     freeing mach_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(mach_insts.data as ptr[u8])
             if final_insts.data != null as ptr[MachInst]:
-                ax_printf_local("[Debug]     freeing final_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(final_insts.data as ptr[u8])
                 
             if emitter.code.data != null as ptr[u8]:
-                ax_printf_local("[Debug]     freeing emitter.code.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.code.data)
             if emitter.labels.keys != null as ptr[u32]:
-                ax_printf_local("[Debug]     freeing emitter.labels.keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.labels.keys as ptr[u8])
             if emitter.labels.values != null as ptr[i64]:
-                ax_printf_local("[Debug]     freeing emitter.labels.values\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.labels.values as ptr[u8])
             if emitter.fixups.data != null as ptr[Fixup]:
-                ax_printf_local("[Debug]     freeing emitter.fixups.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.fixups.data as ptr[u8])
-            ax_printf_local("[Debug]   freeing local resources done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
                 
         fi = fi + 1
 
@@ -19621,8 +19967,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         relocs: block_size_relocs
     ))
         
-    ax_printf_local("[Debug] compile_native_binary: compiling loop finished, populating symbols starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     let text_sec_idx = 1 as i32
     mut i := 0 as i64
     while i < func_infos.len:
@@ -19632,8 +19976,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         i = i + 1
-    ax_printf_local("[Debug] compile_native_binary: populating symbols done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
@@ -19651,10 +19993,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             if sym_idx > limit:
                 sym_idx = sym_idx - (1 as i64 << 32)
             let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool, table)
-            let name_nt = str_to_null_terminated(target_name)
-            ax_printf_local("[Debug Reloc] func=%s, offset=%d, sym_name=%d, sym_idx=%d, resolved=%s\n", (info.name as ptr[u8]) as i64, r.offset as i64, r.sym_name as i64, sym_idx, name_nt as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_nt)
             
             mut target_sym_idx := -1 as i32
             if is_elf64:
@@ -19709,67 +20047,39 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             r_i = r_i + 1
         i = i + 1
         
-    ax_printf_local("[Debug] compile_native_binary: populating relocs done, writing object file starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mut success := false
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &coff_relocs, &coff_syms)
-    ax_printf_local("[Debug] compile_native_binary: writing object file done, success=%d\n", success as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
-    ax_printf_local("[Debug] compile_native_binary: starting cleanup\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     if all_code.data != null as ptr[u8]:
-        ax_printf_local("[Debug] compile_native_binary: freeing all_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(all_code.data)
     if rdata_buf.data != null as ptr[u8]:
-        ax_printf_local("[Debug] compile_native_binary: freeing rdata_buf\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(rdata_buf.data)
     if str_keys.data != null as ptr[u32]:
-        ax_printf_local("[Debug] compile_native_binary: freeing str_keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(str_keys.data as ptr[u8])
     if str_offsets.data != null as ptr[u32]:
-        ax_printf_local("[Debug] compile_native_binary: freeing str_offsets\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(str_offsets.data as ptr[u8])
         
     i = 0
     while i < func_infos.len:
         let info = &func_infos.data[i]
         if info.relocs.data != null as ptr[Relocation]:
-            ax_printf_local("[Debug] compile_native_binary: freeing info.relocs for func %d\n", i as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(info.relocs.data as ptr[u8])
         i = i + 1
     if func_infos.data != null as ptr[CompiledFuncInfo]:
-        ax_printf_local("[Debug] compile_native_binary: freeing func_infos\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(func_infos.data as ptr[u8])
         
     if coff_syms.data != null as ptr[COFFSymbol]:
-        ax_printf_local("[Debug] compile_native_binary: freeing coff_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(coff_syms.data as ptr[u8])
     if coff_relocs.data != null as ptr[COFFReloc]:
-        ax_printf_local("[Debug] compile_native_binary: freeing coff_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(coff_relocs.data as ptr[u8])
         
     if elf_syms.data != null as ptr[ELF64Sym]:
-        ax_printf_local("[Debug] compile_native_binary: freeing elf_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(elf_syms.data as ptr[u8])
     if elf_relocs.data != null as ptr[Relocation]:
-        ax_printf_local("[Debug] compile_native_binary: freeing elf_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(elf_relocs.data as ptr[u8])
-    ax_printf_local("[Debug] compile_native_binary: cleanup done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
     return success
 
@@ -20248,7 +20558,8 @@ pub fn is_valid_runtime_dll_symbol(name: str) -> bool:
         name == "ax_scheduler_shutdown" or name == "ax_compiler_intrinsic" or
         name == "ax_get_global_state_internal" or name == "ax_str_parse_i64" or
         name == "ax_str_parse_f64" or name == "ax_sum_layout_is_pointer" or
-        name == "ax_actor_stop" or name == "ax_actor_ref_to_u64"):
+        name == "ax_actor_stop" or name == "ax_actor_ref_to_u64" or
+        name == "ax_i64_to_str"):
         return true
     return false
 
@@ -20781,7 +21092,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             ucrtbase_name_offset = cur_offset
             cur_offset = cur_offset + 13
             
-        let hint_name_start_offset = cur_offset
+        mut hint_name_start_offset := cur_offset
+        if hint_name_start_offset % 2 != 0:
+            hint_name_start_offset = hint_name_start_offset + 1
+        
         
         // Pre-fill idata_buf with zeros
         mut zero_i := 0 as i64
@@ -21856,7 +22170,7 @@ pub fn format(self: Formatter, src: str) -> str:
 extern "C" fn exit(code: i32)
 extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn puts(s: str) -> i32
-extern "C" fn snprintf(s_buf: ptr[u8], size: i64, format: str, val: i64) -> i32
+extern "C" fn ax_i64_to_str(val: i64) -> str
 
 // Global active documents cache pointer (stored as u64 to bypass CGen global type bugs)
 mut g_documents: u64 = 0 as u64
@@ -21865,17 +22179,14 @@ fn lsp_send_message(msg: str):
     let out = std.io.stdout()
     let len = msg.len
     
-    // Convert len to string using snprintf
-    let len_buf = @alloc(32) as ptr[u8]
-    snprintf(len_buf, 32, "%d", len)
-    let len_str = len_buf as str
+    // Convert len to string using ax_i64_to_str
+    let len_str = ax_i64_to_str(len)
     
     // Headers
     let header = std.string.concat("Content-Length: ", std.string.concat(std.string.concat("", len_str), "\r\n\r\n"))
     let r1 = out.write_all(header)
     let r2 = out.write_all(msg)
     
-    @free(len_buf)
     @free(get_str_ptr(header))
     fflush(null as ptr[void])
 
@@ -22923,8 +23234,9 @@ pub fn main() -> i32:
             let cmd_buf = @alloc(2048) as ptr[u8]
             let output_file_nt = str_to_null_terminated(output_file)
 
-            // Compile C to executable using gcc
-            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -g -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
+            // Compile C to executable using gcc.
+            // -g omitted: debug info triples compile time and binary size.
+            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up

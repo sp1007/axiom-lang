@@ -7,7 +7,6 @@ import std.os.linux_sys
 import std.os
 import std.result
 
-extern "C" fn printf(fmt: ptr[u8], err: u32) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
 
 /// A readable byte stream.
@@ -49,9 +48,6 @@ pub fn open(path: str) -> Result[File, str]:
         )
         @free(cpath)
         if h as i64 == -1 as i64:
-            let err = std.os.win32.GetLastError()
-            printf("CreateFileA failed: %d\n" as ptr[u8], err)
-            fflush(null as ptr[void])
             return Err("could not open file")
         return Ok(File(handle: h as i64, path: path, mode: 0 as i32))
     else:
@@ -123,9 +119,6 @@ pub fn read(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
             null as ptr[void]
         )
         if res_win == 0:
-            let err = std.os.win32.GetLastError()
-            printf("ReadFile failed: %d\n" as ptr[u8], err)
-            fflush(null as ptr[void])
             return Err("could not read from file")
         return Ok(read_bytes as i64)
     else:

@@ -364,20 +364,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     while scan_fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[scan_fi]
         if not fn_ptr.is_extern:
-            let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            let name_nt = str_to_null_terminated(fn_name_str)
-            ax_printf_local("[Debug Scan Fn] %s has %d insts\n", name_nt as i64, fn_ptr.insts.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_nt)
             mut inst_i := 0 as i64
             while inst_i < fn_ptr.insts.len:
                 let inst = &fn_ptr.insts.data[inst_i]
-                if inst.opcode == OP_ICONST:
-                    let fn_name_str = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-                    let name_nt = str_to_null_terminated(fn_name_str)
-                    ax_printf_local("[Debug Scan] OP_ICONST in %s: type_id=%d, src1=%d\n", name_nt as i64, inst.type_id as i64, inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    fflush(null as ptr[void])
-                    @free(name_nt)
                 let t_id = inst.type_id as u32
                 mut is_str := (t_id == 12 as u32)
                 if t_id < table.entries.len as u32:
@@ -466,21 +455,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         let fn_ptr = &mod.funcs.data[fi]
         if not fn_ptr.is_extern:
             let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            let name_ptr = str_to_null_terminated(fn_name)
-            ax_printf_local("[Debug] compile_native_binary: compiling function %s\n", name_ptr as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_ptr)
             
-            ax_printf_local("[Debug]   running select_all\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
-
-            ax_printf_local("[Debug]   running compute_liveness\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
-            
-            ax_printf_local("[Debug]   running allocate_registers_orchestrator\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
             
             mut num_str_lits := 0 as i32
@@ -499,20 +476,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             let cs_regs = get_used_callee_saved(abi, alloc_res.allocs, alloc_res.max_vreg, &cs_len)
             let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
-            ax_printf_local("[Debug]   running insert_spill_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame, fn_ptr, table, symbols)
-            
             mut emitter := new_mach_emitter()
 
-            ax_printf_local("[Debug]   running emit_function_binary\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let is_windows = not is_elf64
             mut str_lit_counter := 0 as i32
             emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
-            ax_printf_local("[Debug]   emit_function_binary done, pushing compiled info\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let current_offset = all_code.len as u32
             push_bytes(&all_code, emitter.code.data, emitter.code.len)
             
@@ -524,45 +494,23 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 relocs: emitter.relocs
             ))
             
-            ax_printf_local("[Debug]   freeing local resources\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            ax_printf_local("[Debug]     freeing cs_regs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(cs_regs)
-            ax_printf_local("[Debug]     freeing alloc_res.allocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(alloc_res.allocs)
             if intervals.data != null as ptr[LiveInterval]:
-                ax_printf_local("[Debug]     freeing intervals.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(intervals.data as ptr[u8])
             if mach_insts.data != null as ptr[MachInst]:
-                ax_printf_local("[Debug]     freeing mach_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(mach_insts.data as ptr[u8])
             if final_insts.data != null as ptr[MachInst]:
-                ax_printf_local("[Debug]     freeing final_insts.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(final_insts.data as ptr[u8])
                 
             if emitter.code.data != null as ptr[u8]:
-                ax_printf_local("[Debug]     freeing emitter.code.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.code.data)
             if emitter.labels.keys != null as ptr[u32]:
-                ax_printf_local("[Debug]     freeing emitter.labels.keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.labels.keys as ptr[u8])
             if emitter.labels.values != null as ptr[i64]:
-                ax_printf_local("[Debug]     freeing emitter.labels.values\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.labels.values as ptr[u8])
             if emitter.fixups.data != null as ptr[Fixup]:
-                ax_printf_local("[Debug]     freeing emitter.fixups.data\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
                 @free(emitter.fixups.data as ptr[u8])
-            ax_printf_local("[Debug]   freeing local resources done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
                 
         fi = fi + 1
 
@@ -647,8 +595,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         relocs: block_size_relocs
     ))
         
-    ax_printf_local("[Debug] compile_native_binary: compiling loop finished, populating symbols starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     let text_sec_idx = 1 as i32
     mut i := 0 as i64
     while i < func_infos.len:
@@ -658,8 +604,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         i = i + 1
-    ax_printf_local("[Debug] compile_native_binary: populating symbols done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
@@ -677,10 +621,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             if sym_idx > limit:
                 sym_idx = sym_idx - (1 as i64 << 32)
             let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool, table)
-            let name_nt = str_to_null_terminated(target_name)
-            ax_printf_local("[Debug Reloc] func=%s, offset=%d, sym_name=%d, sym_idx=%d, resolved=%s\n", (info.name as ptr[u8]) as i64, r.offset as i64, r.sym_name as i64, sym_idx, name_nt as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            @free(name_nt)
             
             mut target_sym_idx := -1 as i32
             if is_elf64:
@@ -735,67 +675,39 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             r_i = r_i + 1
         i = i + 1
         
-    ax_printf_local("[Debug] compile_native_binary: populating relocs done, writing object file starting\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mut success := false
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &coff_relocs, &coff_syms)
-    ax_printf_local("[Debug] compile_native_binary: writing object file done, success=%d\n", success as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
-    ax_printf_local("[Debug] compile_native_binary: starting cleanup\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     if all_code.data != null as ptr[u8]:
-        ax_printf_local("[Debug] compile_native_binary: freeing all_code\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(all_code.data)
     if rdata_buf.data != null as ptr[u8]:
-        ax_printf_local("[Debug] compile_native_binary: freeing rdata_buf\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(rdata_buf.data)
     if str_keys.data != null as ptr[u32]:
-        ax_printf_local("[Debug] compile_native_binary: freeing str_keys\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(str_keys.data as ptr[u8])
     if str_offsets.data != null as ptr[u32]:
-        ax_printf_local("[Debug] compile_native_binary: freeing str_offsets\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(str_offsets.data as ptr[u8])
         
     i = 0
     while i < func_infos.len:
         let info = &func_infos.data[i]
         if info.relocs.data != null as ptr[Relocation]:
-            ax_printf_local("[Debug] compile_native_binary: freeing info.relocs for func %d\n", i as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             @free(info.relocs.data as ptr[u8])
         i = i + 1
     if func_infos.data != null as ptr[CompiledFuncInfo]:
-        ax_printf_local("[Debug] compile_native_binary: freeing func_infos\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(func_infos.data as ptr[u8])
         
     if coff_syms.data != null as ptr[COFFSymbol]:
-        ax_printf_local("[Debug] compile_native_binary: freeing coff_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(coff_syms.data as ptr[u8])
     if coff_relocs.data != null as ptr[COFFReloc]:
-        ax_printf_local("[Debug] compile_native_binary: freeing coff_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(coff_relocs.data as ptr[u8])
         
     if elf_syms.data != null as ptr[ELF64Sym]:
-        ax_printf_local("[Debug] compile_native_binary: freeing elf_syms\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(elf_syms.data as ptr[u8])
     if elf_relocs.data != null as ptr[Relocation]:
-        ax_printf_local("[Debug] compile_native_binary: freeing elf_relocs\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         @free(elf_relocs.data as ptr[u8])
-    ax_printf_local("[Debug] compile_native_binary: cleanup done\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
         
     return success
 

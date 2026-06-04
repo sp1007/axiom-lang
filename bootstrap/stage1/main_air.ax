@@ -858,8 +858,9 @@ pub fn main() -> i32:
             let cmd_buf = @alloc(2048) as ptr[u8]
             let output_file_nt = str_to_null_terminated(output_file)
 
-            // Compile C to executable using gcc
-            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -g -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
+            // Compile C to executable using gcc.
+            // -g is omitted intentionally: debug info triples compile time and binary size.
+            ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 
             // Clean up

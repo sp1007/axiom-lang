@@ -174,11 +174,15 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
     while idx < result.len:
         let key = result.data[idx]
         mut j := idx - 1
-        while j >= 0 and result.data[j].start > key.start:
-            result.data[j + 1] = result.data[j]
-            j = j - 1
+        while j >= 0:
+            if result.data[j].start > key.start:
+                result.data[j + 1] = result.data[j]
+                j = j - 1
+            else:
+                break
         result.data[j + 1] = key
         idx = idx + 1
+
 
     return result
 
@@ -363,8 +367,8 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             let iv2 = &intervals.data[j]
             if iv2.start > iv1.end:
                 break
-            adj[iv1.vreg].append_unique(iv2.vreg)
-            adj[iv2.vreg].append_unique(iv1.vreg)
+            adj[iv1.vreg].push(iv2.vreg)
+            adj[iv2.vreg].push(iv1.vreg)
             j = j + 1
         i = i + 1
 
@@ -382,36 +386,42 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     mut simplified_count := 0 as i64
     let target_count = intervals.len
 
+    mut simplify_worklist := new_u32_vec()
+    
+    let in_worklist = @alloc(graph_size) as ptr[bool]
+    @memset(in_worklist as ptr[u8], 0 as u8, graph_size)
+
+    mut init_i := 0 as i64
+    while init_i < intervals.len:
+        let vreg = intervals.data[init_i].vreg
+        if degrees[vreg] < K:
+            simplify_worklist.push(vreg)
+            in_worklist[vreg] = true
+        init_i = init_i + 1
+
     while simplified_count < target_count:
-        mut found := false
-        mut best_node := 0 as u32
-
-        mut iv_idx := 0 as i64
-        while iv_idx < intervals.len:
-            let vreg = intervals.data[iv_idx].vreg
-            if not removed[vreg]:
-                if degrees[vreg] < K:
-                    best_node = vreg
-                    found = true
-                    break
-            iv_idx = iv_idx + 1
-
-        if found:
-            stack.push(best_node)
-            removed[best_node] = true
-            simplified_count = simplified_count + 1
-            mut n_idx := 0 as i64
-            while n_idx < adj[best_node].len:
-                let neighbor = adj[best_node].data[n_idx]
-                if not removed[neighbor]:
-                    degrees[neighbor] = degrees[neighbor] - 1
-                n_idx = n_idx + 1
+        if simplify_worklist.len > 0:
+            let node = simplify_worklist.pop()
+            if not removed[node]:
+                stack.push(node)
+                removed[node] = true
+                simplified_count = simplified_count + 1
+                
+                mut n_idx := 0 as i64
+                while n_idx < adj[node].len:
+                    let neighbor = adj[node].data[n_idx]
+                    if not removed[neighbor]:
+                        degrees[neighbor] = degrees[neighbor] - 1
+                        if degrees[neighbor] < K and not in_worklist[neighbor]:
+                            simplify_worklist.push(neighbor)
+                            in_worklist[neighbor] = true
+                    n_idx = n_idx + 1
         else:
             mut spill_candidate := 0 as u32
             mut max_degree := -1 as i32
             mut has_candidate := false
 
-            iv_idx = 0
+            mut iv_idx := 0 as i64
             while iv_idx < intervals.len:
                 let vreg = intervals.data[iv_idx].vreg
                 if not removed[vreg]:
@@ -433,7 +443,11 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                 let neighbor = adj[spill_candidate].data[n_idx]
                 if not removed[neighbor]:
                     degrees[neighbor] = degrees[neighbor] - 1
+                    if degrees[neighbor] < K and not in_worklist[neighbor]:
+                        simplify_worklist.push(neighbor)
+                        in_worklist[neighbor] = true
                 n_idx = n_idx + 1
+
 
     let assigned_colors = @alloc(graph_size) as ptr[u8]
     @memset(assigned_colors, REG_NONE, graph_size)
@@ -523,6 +537,9 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(is_arg_vreg as ptr[u8])
     @free(param_idx_of_vreg as ptr[u8])
     @free(address_taken as ptr[u8])
+    @free(in_worklist as ptr[u8])
+    if simplify_worklist.data != null as ptr[u32]:
+        @free(simplify_worklist.data as ptr[u8])
     if stack.data != null as ptr[u32]:
         @free(stack.data as ptr[u8])
 

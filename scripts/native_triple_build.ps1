@@ -119,7 +119,9 @@ if (Test-Path bin/axc_stage1.exe) {
     Remove-Item bin/axc_stage1.exe
 }
 
-cmd /c "bin\axc.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage1.exe > compiler_stage1.log 2>&1"
+# Stage 1 uses -O1 (not -O3): correctness matters, not speed.
+# GCC at -O3 on the 180k-line generated C takes 5-10 min; -O1 takes ~30-60 s.
+cmd /c "bin\axc.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage1.exe -O1 > compiler_stage1.log 2>&1"
 Start-Sleep -Seconds 1
 if (-not (Test-Path bin/axc_stage1.exe)) {
     Write-Error "Stage 1 compilation failed!"
@@ -186,7 +188,7 @@ Write-Host "[Stage 2] Building Stage 2 compiler using Stage 1 via native backend
 if (Test-Path bin/axc_stage2_native.exe) {
     Remove-Item bin/axc_stage2_native.exe
 }
-cmd /c "bin\axc_stage1.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage2_native.exe -self-link > compiler_stage2_native.log 2>&1"
+cmd /c "bin\axc_stage1.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage2_native.exe -self-link -O1 > compiler_stage2_native.log 2>&1"
 Start-Sleep -Seconds 1
 if (-not (Test-Path bin/axc_stage2_native.exe)) {
     Write-Error "Stage 2 native compilation failed! Check compiler_stage2_native.log"
@@ -199,7 +201,7 @@ Write-Host "[Stage 3] Building Stage 3 compiler using Stage 2 via native backend
 if (Test-Path bin/axc_stage3_native.exe) {
     Remove-Item bin/axc_stage3_native.exe
 }
-cmd /c "bin\axc_stage2_native.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage3_native.exe -self-link > compiler_stage3_native.log 2>&1"
+cmd /c "bin\axc_stage2_native.exe build bootstrap\stage1\tmp_concatenated_air.ax -o bin\axc_stage3_native.exe -self-link -O1 > compiler_stage3_native.log 2>&1"
 Start-Sleep -Seconds 1
 if (-not (Test-Path bin/axc_stage3_native.exe)) {
     Write-Error "Stage 3 native compilation failed! Check compiler_stage3_native.log"
