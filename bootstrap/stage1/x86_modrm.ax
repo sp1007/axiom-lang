@@ -35,10 +35,23 @@ pub fn push_byte(mut self: ptr[ByteVec], b: u8):
     self.len = self.len + 1
 
 pub fn push_bytes(mut self: ptr[ByteVec], bytes: ptr[u8], bytes_len: i64):
-    mut i := 0 as i64
-    while i < bytes_len:
-        push_byte(self, bytes[i])
-        i = i + 1
+    if bytes_len <= 0 as i64:
+        return
+    let needed = self.len + bytes_len
+    if needed > self.cap:
+        mut new_cap := self.cap
+        if new_cap == 0 as i64:
+            new_cap = 16 as i64
+        while new_cap < needed:
+            new_cap = new_cap * 2 as i64
+        let new_data = @alloc(new_cap) as ptr[u8]
+        if self.data != null as ptr[u8]:
+            @memcpy(new_data, self.data, self.len)
+            @free(self.data)
+        self.data = new_data
+        self.cap = new_cap
+    @memcpy(((self.data as i64) + self.len) as ptr[u8], bytes, bytes_len)
+    self.len = self.len + bytes_len
 
 pub fn push_u16_le(mut self: ptr[ByteVec], val: u16):
     push_byte(self, (val & 0xFF as u16) as u8)

@@ -115,7 +115,17 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     iv.end = i as i32
         i = i + 1
 
-    // Scan for back-edges and extend lifetimes with O(1) label lookup
+    // Collect active vregs into a compact list — avoids scanning sparse gaps
+    // in the back-edge extension loop below.
+    let active_vregs = @alloc(map_size * 4) as ptr[u32]
+    mut active_count := 0 as i64
+    mut av := 0 as i64
+    while av < map_size:
+        if interval_map[av] != null as ptr[LiveInterval]:
+            active_vregs[active_count] = av as u32
+            active_count = active_count + 1
+        av = av + 1
+
     mut max_label := 0 as u32
     mut label_scan := 0 as i64
     while label_scan < insts_len:
@@ -138,27 +148,27 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
             label_to_idx[l_id as i64] = label_scan
         label_scan = label_scan + 1
 
-    i = 0 as i64
-    while i < insts_len:
-        let inst = &insts[i]
-        if inst.op == MACH_JMP or inst.op == MACH_JCC:
-            if inst.dst.kind == OPND_LABEL:
-                let target_label = inst.dst.label
+    mut be_i := 0 as i64
+    while be_i < insts_len:
+        let be_inst = &insts[be_i]
+        if be_inst.op == MACH_JMP or be_inst.op == MACH_JCC:
+            if be_inst.dst.kind == OPND_LABEL:
+                let target_label = be_inst.dst.label
                 let target_idx = label_to_idx[target_label as i64]
-                
-                // If it is a back-edge (target_idx < i)
-                if target_idx != -1 as i64 and target_idx < i:
-                    // For any virtual register live at target_idx, extend its end to i
+                if target_idx != -1 as i64 and target_idx < be_i:
+                    // Back-edge: only scan actual active vregs, not the full map.
                     mut v_scan := 0 as i64
-                    while v_scan < map_size:
-                        let iv = interval_map[v_scan]
+                    while v_scan < active_count:
+                        let vr = active_vregs[v_scan] as i64
+                        let iv = interval_map[vr]
                         if iv != null as ptr[LiveInterval]:
                             if iv.start <= target_idx as i32 and iv.end >= target_idx as i32:
-                                if iv.end < i as i32:
-                                    iv.end = i as i32
+                                if iv.end < be_i as i32:
+                                    iv.end = be_i as i32
                         v_scan = v_scan + 1
-        i = i + 1
+        be_i = be_i + 1
     @free(label_to_idx as ptr[u8])
+    @free(active_vregs as ptr[u8])
 
     mut result := new_live_interval_vec()
     mut v := 0 as i64
@@ -170,19 +180,32 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
         v = v + 1
     @free(interval_map as ptr[u8])
 
-    mut idx := 1 as i64
-    while idx < result.len:
-        let key = result.data[idx]
-        mut j := idx - 1
-        while j >= 0:
-            if result.data[j].start > key.start:
-                result.data[j + 1] = result.data[j]
-                j = j - 1
-            else:
-                break
-        result.data[j + 1] = key
-        idx = idx + 1
-
+    // Counting sort on start positions — O(n + insts_len) vs O(n^2) insertion sort.
+    // start values are always in [0, insts_len), so insts_len is the range bound.
+    if result.len > 1 as i64 and insts_len > 0 as i64:
+        let count_arr = @alloc(insts_len * 4) as ptr[i32]
+        @memset(count_arr as ptr[void], 0 as u8, insts_len * 4)
+        mut ci := 0 as i64
+        while ci < result.len:
+            let s = result.data[ci].start
+            if s >= 0 and s < insts_len as i32:
+                count_arr[s as i64] = count_arr[s as i64] + 1
+            ci = ci + 1
+        mut pi := 1 as i64
+        while pi < insts_len:
+            count_arr[pi] = count_arr[pi] + count_arr[pi - 1 as i64]
+            pi = pi + 1
+        let sorted_buf = @alloc(result.len * 12) as ptr[LiveInterval]
+        mut ri := result.len - 1 as i64
+        while ri >= 0 as i64:
+            let s = result.data[ri].start
+            if s >= 0 and s < insts_len as i32:
+                count_arr[s as i64] = count_arr[s as i64] - 1
+                sorted_buf[count_arr[s as i64]] = result.data[ri]
+            ri = ri - 1 as i64
+        @memcpy(result.data as ptr[u8], sorted_buf as ptr[u8], result.len * 12)
+        @free(sorted_buf as ptr[u8])
+        @free(count_arr as ptr[u8])
 
     return result
 
@@ -336,22 +359,68 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                     address_taken[v] = true
         scan_idx = scan_idx + 1
 
+    // Precompute call instruction positions once so each interval check is O(log m)
+    // instead of the naive O(m) inner scan per interval.
+    let call_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
+    mut call_count := 0 as i64
+    mut ci_scan := 0 as i64
+    while ci_scan < insts_len:
+        let op2 = insts[ci_scan].op
+        if op2 == MACH_CALL or op2 == MACH_CALL_INDIRECT:
+            call_pos[call_count] = ci_scan as i32
+            call_count = call_count + 1
+        ci_scan = ci_scan + 1
+
     mut iv_idx := 0 as i64
     while iv_idx < intervals.len:
         let vreg = intervals.data[iv_idx].vreg
-        let start = intervals.data[iv_idx].start
-        let end = intervals.data[iv_idx].end
-        
-        mut k := start as i64
-        while k <= end as i64:
-            if k >= 0 and k < insts_len:
-                let op = insts[k].op
-                if op == MACH_CALL or op == MACH_CALL_INDIRECT:
-                    if start < k as i32 and end > k as i32:
-                        spans_call[vreg] = true
-                        break
-            k = k + 1
+        let istart = intervals.data[iv_idx].start
+        let iend = intervals.data[iv_idx].end
+        if call_count > 0 as i64:
+            mut lo := 0 as i64
+            mut hi := call_count - 1 as i64
+            while lo <= hi:
+                let mid = (lo + hi) / 2 as i64
+                let cp = call_pos[mid]
+                if cp <= istart:
+                    lo = mid + 1 as i64
+                elif cp >= iend:
+                    hi = mid - 1 as i64
+                else:
+                    spans_call[vreg] = true
+                    break
         iv_idx = iv_idx + 1
+    @free(call_pos as ptr[u8])
+
+    // For very large functions, the O(n^2) interference graph overflows memory.
+    // Fall back to spill-all: every vreg gets a stack slot.
+    // Correct but conservative; the emitter already handles spills.
+    // insts_len > 5000 catches huge selector functions (~10K mach insts) that
+    // would OOM even with a modest interval count.
+    let REGALLOC_GRAPH_LIMIT: i64 = 50000
+    let REGALLOC_INSTS_LIMIT: i64 = 5000
+    if intervals.len > REGALLOC_GRAPH_LIMIT or insts_len > REGALLOC_INSTS_LIMIT:
+        let allocs_s = @alloc(graph_size * 12) as ptr[RegAllocation]
+        @memset(allocs_s as ptr[u8], 0 as u8, graph_size * 12)
+        let seen_s = @alloc(graph_size) as ptr[bool]
+        @memset(seen_s as ptr[u8], 0 as u8, graph_size)
+        mut spill_count_s := 0 as i32
+        mut siv := 0 as i64
+        while siv < intervals.len:
+            let sv := intervals.data[siv].vreg
+            if not seen_s[sv]:
+                seen_s[sv] = true
+                allocs_s[sv] = RegAllocation(vreg: sv, phys: REG_NONE, spilled: true, spill_idx: spill_count_s)
+                spill_count_s = spill_count_s + 1
+            siv = siv + 1
+        @free(seen_s as ptr[u8])
+        @free(param_idx_of_vreg as ptr[u8])
+        @free(spans_call as ptr[u8])
+        @free(forbid_rax_rdx as ptr[u8])
+        @free(forbid_rcx as ptr[u8])
+        @free(is_arg_vreg as ptr[u8])
+        @free(address_taken as ptr[u8])
+        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s)
 
     let adj = @alloc(graph_size * 24) as ptr[U32Vec]
     mut vi := 0 as i64
@@ -367,8 +436,9 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             let iv2 = &intervals.data[j]
             if iv2.start > iv1.end:
                 break
-            adj[iv1.vreg].push(iv2.vreg)
-            adj[iv2.vreg].push(iv1.vreg)
+            if iv1.vreg != iv2.vreg:
+                adj[iv1.vreg].push(iv2.vreg)
+                adj[iv2.vreg].push(iv1.vreg)
             j = j + 1
         i = i + 1
 

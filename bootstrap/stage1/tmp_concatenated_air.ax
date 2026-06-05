@@ -16187,7 +16187,16 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     iv.end = i as i32
         i = i + 1
 
-    // Scan for back-edges and extend lifetimes with O(1) label lookup
+    // Collect active vregs into compact list — avoids scanning sparse gaps per back-edge.
+    let active_vregs = @alloc(map_size * 4) as ptr[u32]
+    mut active_count := 0 as i64
+    mut av := 0 as i64
+    while av < map_size:
+        if interval_map[av] != null as ptr[LiveInterval]:
+            active_vregs[active_count] = av as u32
+            active_count = active_count + 1
+        av = av + 1
+
     mut max_label := 0 as u32
     mut label_scan := 0 as i64
     while label_scan < insts_len:
@@ -16210,27 +16219,26 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
             label_to_idx[l_id as i64] = label_scan
         label_scan = label_scan + 1
 
-    i = 0 as i64
-    while i < insts_len:
-        let inst = &insts[i]
-        if inst.op == MACH_JMP or inst.op == MACH_JCC:
-            if inst.dst.kind == OPND_LABEL:
-                let target_label = inst.dst.label
+    mut be_i := 0 as i64
+    while be_i < insts_len:
+        let be_inst = &insts[be_i]
+        if be_inst.op == MACH_JMP or be_inst.op == MACH_JCC:
+            if be_inst.dst.kind == OPND_LABEL:
+                let target_label = be_inst.dst.label
                 let target_idx = label_to_idx[target_label as i64]
-                
-                // If it is a back-edge (target_idx < i)
-                if target_idx != -1 as i64 and target_idx < i:
-                    // For any virtual register live at target_idx, extend its end to i
+                if target_idx != -1 as i64 and target_idx < be_i:
                     mut v_scan := 0 as i64
-                    while v_scan < map_size:
-                        let iv = interval_map[v_scan]
+                    while v_scan < active_count:
+                        let vr = active_vregs[v_scan] as i64
+                        let iv = interval_map[vr]
                         if iv != null as ptr[LiveInterval]:
                             if iv.start <= target_idx as i32 and iv.end >= target_idx as i32:
-                                if iv.end < i as i32:
-                                    iv.end = i as i32
+                                if iv.end < be_i as i32:
+                                    iv.end = be_i as i32
                         v_scan = v_scan + 1
-        i = i + 1
+        be_i = be_i + 1
     @free(label_to_idx as ptr[u8])
+    @free(active_vregs as ptr[u8])
 
     mut result := new_live_interval_vec()
     mut v := 0 as i64
@@ -16242,19 +16250,31 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
         v = v + 1
     @free(interval_map as ptr[u8])
 
-    mut idx := 1 as i64
-    while idx < result.len:
-        let key = result.data[idx]
-        mut j := idx - 1
-        while j >= 0:
-            if result.data[j].start > key.start:
-                result.data[j + 1] = result.data[j]
-                j = j - 1
-            else:
-                break
-        result.data[j + 1] = key
-        idx = idx + 1
-
+    // Counting sort on start positions: O(n + insts_len) vs O(n^2) insertion sort.
+    if result.len > 1 as i64 and insts_len > 0 as i64:
+        let count_arr = @alloc(insts_len * 4) as ptr[i32]
+        @memset(count_arr as ptr[void], 0 as u8, insts_len * 4)
+        mut ci := 0 as i64
+        while ci < result.len:
+            let s = result.data[ci].start
+            if s >= 0 and s < insts_len as i32:
+                count_arr[s as i64] = count_arr[s as i64] + 1
+            ci = ci + 1
+        mut pi := 1 as i64
+        while pi < insts_len:
+            count_arr[pi] = count_arr[pi] + count_arr[pi - 1 as i64]
+            pi = pi + 1
+        let sorted_buf = @alloc(result.len * 12) as ptr[LiveInterval]
+        mut ri := result.len - 1 as i64
+        while ri >= 0 as i64:
+            let s = result.data[ri].start
+            if s >= 0 and s < insts_len as i32:
+                count_arr[s as i64] = count_arr[s as i64] - 1
+                sorted_buf[count_arr[s as i64]] = result.data[ri]
+            ri = ri - 1 as i64
+        @memcpy(result.data as ptr[u8], sorted_buf as ptr[u8], result.len * 12)
+        @free(sorted_buf as ptr[u8])
+        @free(count_arr as ptr[u8])
 
     return result
 
@@ -16408,22 +16428,61 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                     address_taken[v] = true
         scan_idx = scan_idx + 1
 
+    let call_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
+    mut call_count := 0 as i64
+    mut ci_scan := 0 as i64
+    while ci_scan < insts_len:
+        let op2 = insts[ci_scan].op
+        if op2 == MACH_CALL or op2 == MACH_CALL_INDIRECT:
+            call_pos[call_count] = ci_scan as i32
+            call_count = call_count + 1
+        ci_scan = ci_scan + 1
+
     mut iv_idx := 0 as i64
     while iv_idx < intervals.len:
         let vreg = intervals.data[iv_idx].vreg
-        let start = intervals.data[iv_idx].start
-        let end = intervals.data[iv_idx].end
-        
-        mut k := start as i64
-        while k <= end as i64:
-            if k >= 0 and k < insts_len:
-                let op = insts[k].op
-                if op == MACH_CALL or op == MACH_CALL_INDIRECT:
-                    if start < k as i32 and end > k as i32:
-                        spans_call[vreg] = true
-                        break
-            k = k + 1
+        let istart = intervals.data[iv_idx].start
+        let iend = intervals.data[iv_idx].end
+        if call_count > 0 as i64:
+            mut lo := 0 as i64
+            mut hi := call_count - 1 as i64
+            while lo <= hi:
+                let mid = (lo + hi) / 2 as i64
+                let cp = call_pos[mid]
+                if cp <= istart:
+                    lo = mid + 1 as i64
+                elif cp >= iend:
+                    hi = mid - 1 as i64
+                else:
+                    spans_call[vreg] = true
+                    break
         iv_idx = iv_idx + 1
+    @free(call_pos as ptr[u8])
+
+    let REGALLOC_GRAPH_LIMIT: i64 = 50000
+    let REGALLOC_INSTS_LIMIT: i64 = 5000
+    if intervals.len > REGALLOC_GRAPH_LIMIT or insts_len > REGALLOC_INSTS_LIMIT:
+        let allocs_s = @alloc(graph_size * 12) as ptr[RegAllocation]
+        @memset(allocs_s as ptr[u8], 0 as u8, graph_size * 12)
+        let seen_s = @alloc(graph_size) as ptr[bool]
+        @memset(seen_s as ptr[u8], 0 as u8, graph_size)
+        mut spill_count_s := 0 as i32
+        mut siv := 0 as i64
+        while siv < intervals.len:
+            let sv := intervals.data[siv].vreg
+            if not seen_s[sv]:
+                seen_s[sv] = true
+                allocs_s[sv] = RegAllocation(vreg: sv, phys: REG_NONE, spilled: true, spill_idx: spill_count_s)
+                spill_count_s = spill_count_s + 1
+            siv = siv + 1
+        @free(seen_s as ptr[u8])
+        @free(param_idx_of_vreg as ptr[u8])
+        @free(spans_call as ptr[u8])
+        @free(forbid_rax_rdx as ptr[u8])
+        @free(forbid_rcx as ptr[u8])
+        @free(is_arg_vreg as ptr[u8])
+        @free(address_taken as ptr[u8])
+        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s)
 
     let adj = @alloc(graph_size * 24) as ptr[U32Vec]
     mut vi := 0 as i64
@@ -16439,8 +16498,9 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             let iv2 = &intervals.data[j]
             if iv2.start > iv1.end:
                 break
-            adj[iv1.vreg].push(iv2.vreg)
-            adj[iv2.vreg].push(iv1.vreg)
+            if iv1.vreg != iv2.vreg:
+                adj[iv1.vreg].push(iv2.vreg)
+                adj[iv2.vreg].push(iv1.vreg)
             j = j + 1
         i = i + 1
 
@@ -17722,10 +17782,23 @@ pub fn push_byte(mut self: ptr[ByteVec], b: u8):
     self.len = self.len + 1
 
 pub fn push_bytes(mut self: ptr[ByteVec], bytes: ptr[u8], bytes_len: i64):
-    mut i := 0 as i64
-    while i < bytes_len:
-        push_byte(self, bytes[i])
-        i = i + 1
+    if bytes_len <= 0 as i64:
+        return
+    let needed = self.len + bytes_len
+    if needed > self.cap:
+        mut new_cap := self.cap
+        if new_cap == 0 as i64:
+            new_cap = 16 as i64
+        while new_cap < needed:
+            new_cap = new_cap * 2 as i64
+        let new_data = @alloc(new_cap) as ptr[u8]
+        if self.data != null as ptr[u8]:
+            @memcpy(new_data, self.data, self.len)
+            @free(self.data)
+        self.data = new_data
+        self.cap = new_cap
+    @memcpy(((self.data as i64) + self.len) as ptr[u8], bytes, bytes_len)
+    self.len = self.len + bytes_len
 
 pub fn push_u16_le(mut self: ptr[ByteVec], val: u16):
     push_byte(self, (val & 0xFF as u16) as u8)
@@ -19456,11 +19529,7 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
         let name_len = std.string.len(name)
         if name_len > 8:
             string_offsets[si] = strtab.len as u32
-            let name_ptr = name as ptr[u8]
-            mut char_i := 0 as i64
-            while char_i < name_len:
-                push_byte(&strtab, name_ptr[char_i])
-                char_i = char_i + 1
+            push_bytes(&strtab, name as ptr[u8], name_len)
             push_byte(&strtab, 0 as u8)
         else:
             string_offsets[si] = 0 as u32
@@ -19553,13 +19622,11 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
         let name_len = std.string.len(sym.name_str)
         if name_len <= 8:
             let name_ptr = sym.name_str as ptr[u8]
-            mut char_i := 0 as i64
-            while char_i < 8:
-                if char_i < name_len:
-                    push_byte(out_bytes, name_ptr[char_i])
-                else:
-                    push_byte(out_bytes, 0 as u8)
-                char_i = char_i + 1
+            let pad8 = @alloc(8) as ptr[u8]
+            @memset(pad8 as ptr[void], 0 as u8, 8)
+            @memcpy(pad8, name_ptr, name_len)
+            push_bytes(out_bytes, pad8, 8)
+            @free(pad8)
         else:
             let offset = string_offsets[si]
             push_u32_le(out_bytes, 0 as u32)
@@ -19730,7 +19797,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut rdata_buf := new_byte_vec()
     mut str_keys := new_u32_vec()
     mut str_offsets := new_u32_vec()
-    
+
+    let str_seen_size = pool.state.count + 2 as i64
+    let str_seen = @alloc(str_seen_size) as ptr[bool]
+    @memset(str_seen as ptr[void], 0 as u8, str_seen_size)
+
     // Scan for all string literals across all functions
     mut scan_fi := 0 as i64
     while scan_fi < mod.funcs.len:
@@ -19746,13 +19817,12 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                         is_str = true
                 if inst.opcode == OP_ICONST and is_str:
                     let str_id = inst.src1
-                    mut found := false
-                    mut j := 0 as i64
-                    while j < str_keys.len:
-                        if str_keys.data[j] == str_id:
-                            found = true
-                            break
-                        j = j + 1
+                    let str_id_i = str_id as i64
+                    mut found := true
+                    if str_id_i < str_seen_size:
+                        if not str_seen[str_id_i]:
+                            str_seen[str_id_i] = true
+                            found = false
                     if not found:
                         let offset = rdata_buf.len as u32
                         str_keys.push(str_id)
@@ -19760,15 +19830,12 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                         let raw_text = pool.get(str_id)
                         let text = unescape_string_literal(raw_text)
                         let len = std.string.len(text)
-                        let text_ptr = text as ptr[u8]
-                        mut k := 0 as i64
-                        while k < len:
-                            push_byte(&rdata_buf, text_ptr[k])
-                            k = k + 1
-                        push_byte(&rdata_buf, 0 as u8) // null-terminate
-                        @free(text_ptr)
+                        push_bytes(&rdata_buf, text as ptr[u8], len)
+                        push_byte(&rdata_buf, 0 as u8)
+                        @free(text as ptr[u8])
                 inst_i = inst_i + 1
         scan_fi = scan_fi + 1
+    @free(str_seen as ptr[u8])
 
     // Register all unique string symbols in COFF / ELF symbol table
     mut str_i := 0 as i64
@@ -19823,12 +19890,26 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         fi = fi + 1
         
     fi = 0
+    mut func_done_count := 0 as i64
     while fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[fi]
         if not fn_ptr.is_extern:
             let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            
+
+            if func_done_count % 10 as i64 == 0 as i64:
+                ax_printf_local("[codegen] func %d / %d | bytes=%d\n",
+                    func_done_count, mod.funcs.len, all_code.len as i64,
+                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
+
+            if mach_insts.len > 1000 as i64:
+                ax_printf_local("[codegen] LARGE fn %d: air=%d mach=%d\n",
+                    func_done_count, fn_ptr.insts.len, mach_insts.len,
+                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
             
@@ -19883,7 +19964,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 @free(emitter.labels.values as ptr[u8])
             if emitter.fixups.data != null as ptr[Fixup]:
                 @free(emitter.fixups.data as ptr[u8])
-                
+            func_done_count = func_done_count + 1
+
         fi = fi + 1
 
     // Append identity variant constructors for sum types (Ok, Err, Some, None)
@@ -19977,14 +20059,41 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         i = i + 1
         
+    ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
+        all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
-    
+
+    let sym_map_size = pool.state.count + 65536 as i64
+    let coff_sym_map = @alloc(sym_map_size * 4) as ptr[i32]
+    @memset(coff_sym_map as ptr[void], 0xff as u8, sym_map_size * 4)
+    let elf_sym_map = @alloc(sym_map_size * 4) as ptr[i32]
+    @memset(elf_sym_map as ptr[void], 0xff as u8, sym_map_size * 4)
+
+    mut pre_i := 0 as i64
+    while pre_i < coff_syms.len:
+        let sn = coff_syms.data[pre_i].name_str
+        let sid = pool.intern_string(sn)
+        if (sid as i64) < sym_map_size:
+            coff_sym_map[sid as i64] = pre_i as i32
+        pre_i = pre_i + 1
+
+    pre_i = 0 as i64
+    while pre_i < elf_syms.len:
+        let sn = elf_syms.data[pre_i].name_str
+        let sid = pool.intern_string(sn)
+        if (sid as i64) < sym_map_size:
+            elf_sym_map[sid as i64] = pre_i as i32
+        pre_i = pre_i + 1
+
+    mut total_relocs := 0 as i64
     i = 0
     while i < func_infos.len:
         let info = &func_infos.data[i]
         let func_offset = info.offset
-        
+
         mut r_i := 0 as i64
         while r_i < info.relocs.len:
             let r = info.relocs.data[r_i]
@@ -19993,33 +20102,31 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             if sym_idx > limit:
                 sym_idx = sym_idx - (1 as i64 << 32)
             let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool, table)
-            
+            total_relocs = total_relocs + 1
+
+            let target_id = pool.intern_string(target_name)
             mut target_sym_idx := -1 as i32
+            if (target_id as i64) < sym_map_size:
+                if is_elf64:
+                    target_sym_idx = elf_sym_map[target_id as i64]
+                else:
+                    target_sym_idx = coff_sym_map[target_id as i64]
+
             if is_elf64:
-                mut sym_search := 0 as i64
-                while sym_search < elf_syms.len:
-                    if elf_syms.data[sym_search].name_str == target_name:
-                        target_sym_idx = (sym_search + 1 as i64) as i32
-                        break
-                    sym_search = sym_search + 1
-                    
                 if target_sym_idx == -1 as i32:
                     let new_idx = elf_syms.len as i32 + 1 as i32
                     push_elf64_sym(&elf_syms, ELF64Sym(name_str: target_name, value: 0 as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: 0 as u16))
                     target_sym_idx = new_idx
+                    if (target_id as i64) < sym_map_size:
+                        elf_sym_map[target_id as i64] = new_idx
             else:
-                mut sym_search := 0 as i64
-                while sym_search < coff_syms.len:
-                    if coff_syms.data[sym_search].name_str == target_name:
-                        target_sym_idx = sym_search as i32
-                        break
-                    sym_search = sym_search + 1
-                    
                 if target_sym_idx == -1 as i32:
                     let new_idx = coff_syms.len as i32
                     push_coff_symbol(&coff_syms, COFFSymbol(name_str: target_name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
                     target_sym_idx = new_idx
-                    
+                    if (target_id as i64) < sym_map_size:
+                        coff_sym_map[target_id as i64] = new_idx
+
             let reloc_offset = func_offset + r.offset as u32
             if is_elf64:
                 push_reloc(&elf_relocs, Relocation(offset: reloc_offset as i64, kind: r.kind, padding1: 0 as u8, padding2: 0 as u16, sym_name: target_sym_idx as u32, addend: r.addend))
@@ -20043,10 +20150,16 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i32) & 0xFF as i32) as u8
                     all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i32) & 0xFF as i32) as u8
                 push_coff_reloc(&coff_relocs, COFFReloc(virt_addr: reloc_offset, sym_table_idx: target_sym_idx as u32, reloc_type: reloc_type))
-                
+
             r_i = r_i + 1
         i = i + 1
-        
+
+    ax_printf_local("[codegen] reloc table done: %d relocs, %d syms, writing object...\n",
+        total_relocs, coff_syms.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    @free(coff_sym_map as ptr[u8])
+    @free(elf_sym_map as ptr[u8])
+
     mut success := false
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)

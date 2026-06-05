@@ -84,11 +84,7 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
         let name_len = std.string.len(name)
         if name_len > 8:
             string_offsets[si] = strtab.len as u32
-            let name_ptr = name as ptr[u8]
-            mut char_i := 0 as i64
-            while char_i < name_len:
-                push_byte(&strtab, name_ptr[char_i])
-                char_i = char_i + 1
+            push_bytes(&strtab, name as ptr[u8], name_len)
             push_byte(&strtab, 0 as u8)
         else:
             string_offsets[si] = 0 as u32
@@ -181,13 +177,11 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
         let name_len = std.string.len(sym.name_str)
         if name_len <= 8:
             let name_ptr = sym.name_str as ptr[u8]
-            mut char_i := 0 as i64
-            while char_i < 8:
-                if char_i < name_len:
-                    push_byte(out_bytes, name_ptr[char_i])
-                else:
-                    push_byte(out_bytes, 0 as u8)
-                char_i = char_i + 1
+            let pad8 = @alloc(8) as ptr[u8]
+            @memset(pad8 as ptr[void], 0 as u8, 8)
+            @memcpy(pad8, name_ptr, name_len)
+            push_bytes(out_bytes, pad8, 8)
+            @free(pad8)
         else:
             let offset = string_offsets[si]
             push_u32_le(out_bytes, 0 as u32)
@@ -358,7 +352,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut rdata_buf := new_byte_vec()
     mut str_keys := new_u32_vec()
     mut str_offsets := new_u32_vec()
-    
+
+    // O(1) dedup via boolean seen-array indexed by intern-pool ID.
+    // Replaces the O(n) linear search that made the scan O(n^2) overall.
+    let str_seen_size = pool.state.count + 2 as i64
+    let str_seen = @alloc(str_seen_size) as ptr[bool]
+    @memset(str_seen as ptr[void], 0 as u8, str_seen_size)
+
     // Scan for all string literals across all functions
     mut scan_fi := 0 as i64
     while scan_fi < mod.funcs.len:
@@ -374,13 +374,12 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                         is_str = true
                 if inst.opcode == OP_ICONST and is_str:
                     let str_id = inst.src1
-                    mut found := false
-                    mut j := 0 as i64
-                    while j < str_keys.len:
-                        if str_keys.data[j] == str_id:
-                            found = true
-                            break
-                        j = j + 1
+                    let str_id_i = str_id as i64
+                    mut found := true
+                    if str_id_i < str_seen_size:
+                        if not str_seen[str_id_i]:
+                            str_seen[str_id_i] = true
+                            found = false
                     if not found:
                         let offset = rdata_buf.len as u32
                         str_keys.push(str_id)
@@ -388,15 +387,12 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                         let raw_text = pool.get(str_id)
                         let text = unescape_string_literal(raw_text)
                         let len = std.string.len(text)
-                        let text_ptr = text as ptr[u8]
-                        mut k := 0 as i64
-                        while k < len:
-                            push_byte(&rdata_buf, text_ptr[k])
-                            k = k + 1
-                        push_byte(&rdata_buf, 0 as u8) // null-terminate
-                        @free(text_ptr)
+                        push_bytes(&rdata_buf, text as ptr[u8], len)
+                        push_byte(&rdata_buf, 0 as u8)
+                        @free(text as ptr[u8])
                 inst_i = inst_i + 1
         scan_fi = scan_fi + 1
+    @free(str_seen as ptr[u8])
 
     // Register all unique string symbols in COFF / ELF symbol table
     mut str_i := 0 as i64
@@ -451,12 +447,26 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         fi = fi + 1
         
     fi = 0
+    mut func_done_count := 0 as i64
     while fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[fi]
         if not fn_ptr.is_extern:
             let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
-            
+
+            if func_done_count % 10 as i64 == 0 as i64:
+                ax_printf_local("[codegen] func %d / %d | bytes=%d\n",
+                    func_done_count, mod.funcs.len, all_code.len as i64,
+                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
+
+            if mach_insts.len > 1000 as i64:
+                ax_printf_local("[codegen] LARGE fn %d: air=%d mach=%d\n",
+                    func_done_count, fn_ptr.insts.len, mach_insts.len,
+                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                fflush(null as ptr[void])
+
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
             
@@ -511,7 +521,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 @free(emitter.labels.values as ptr[u8])
             if emitter.fixups.data != null as ptr[Fixup]:
                 @free(emitter.fixups.data as ptr[u8])
-                
+            func_done_count = func_done_count + 1
+
         fi = fi + 1
 
     // Append identity variant constructors for sum types (Ok, Err, Some, None)
@@ -605,14 +616,43 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         i = i + 1
         
+    ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
+        all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
-    
+
+    // Build O(1) symbol name→index map using intern pool IDs.
+    // The previous O(n) linear search per relocation made this O(n^2) total.
+    let sym_map_size = pool.state.count + 65536 as i64
+    let coff_sym_map = @alloc(sym_map_size * 4) as ptr[i32]
+    @memset(coff_sym_map as ptr[void], 0xff as u8, sym_map_size * 4)
+    let elf_sym_map = @alloc(sym_map_size * 4) as ptr[i32]
+    @memset(elf_sym_map as ptr[void], 0xff as u8, sym_map_size * 4)
+
+    mut pre_i := 0 as i64
+    while pre_i < coff_syms.len:
+        let sn = coff_syms.data[pre_i].name_str
+        let sid = pool.intern_string(sn)
+        if (sid as i64) < sym_map_size:
+            coff_sym_map[sid as i64] = pre_i as i32
+        pre_i = pre_i + 1
+
+    pre_i = 0 as i64
+    while pre_i < elf_syms.len:
+        let sn = elf_syms.data[pre_i].name_str
+        let sid = pool.intern_string(sn)
+        if (sid as i64) < sym_map_size:
+            elf_sym_map[sid as i64] = pre_i as i32
+        pre_i = pre_i + 1
+
+    mut total_relocs := 0 as i64
     i = 0
     while i < func_infos.len:
         let info = &func_infos.data[i]
         let func_offset = info.offset
-        
+
         mut r_i := 0 as i64
         while r_i < info.relocs.len:
             let r = info.relocs.data[r_i]
@@ -621,32 +661,30 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             if sym_idx > limit:
                 sym_idx = sym_idx - (1 as i64 << 32)
             let target_name = resolve_binary_sym_name(sym_idx, info.name, symbols, pool, table)
-            
+            total_relocs = total_relocs + 1
+
+            let target_id = pool.intern_string(target_name)
             mut target_sym_idx := -1 as i32
+            if (target_id as i64) < sym_map_size:
+                if is_elf64:
+                    target_sym_idx = elf_sym_map[target_id as i64]
+                else:
+                    target_sym_idx = coff_sym_map[target_id as i64]
+
             if is_elf64:
-                mut sym_search := 0 as i64
-                while sym_search < elf_syms.len:
-                    if elf_syms.data[sym_search].name_str == target_name:
-                        target_sym_idx = (sym_search + 1 as i64) as i32
-                        break
-                    sym_search = sym_search + 1
-                    
                 if target_sym_idx == -1 as i32:
                     let new_idx = elf_syms.len as i32 + 1 as i32
                     push_elf64_sym(&elf_syms, ELF64Sym(name_str: target_name, value: 0 as u64, size: 0 as u64, binding: STB_GLOBAL, sym_type: STT_FUNC, section: 0 as u16))
                     target_sym_idx = new_idx
+                    if (target_id as i64) < sym_map_size:
+                        elf_sym_map[target_id as i64] = new_idx
             else:
-                mut sym_search := 0 as i64
-                while sym_search < coff_syms.len:
-                    if coff_syms.data[sym_search].name_str == target_name:
-                        target_sym_idx = sym_search as i32
-                        break
-                    sym_search = sym_search + 1
-                    
                 if target_sym_idx == -1 as i32:
                     let new_idx = coff_syms.len as i32
                     push_coff_symbol(&coff_syms, COFFSymbol(name_str: target_name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
                     target_sym_idx = new_idx
+                    if (target_id as i64) < sym_map_size:
+                        coff_sym_map[target_id as i64] = new_idx
                     
             let reloc_offset = func_offset + r.offset as u32
             if is_elf64:
@@ -674,7 +712,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 
             r_i = r_i + 1
         i = i + 1
-        
+
+    ax_printf_local("[codegen] reloc table done: %d relocs, %d syms, writing object...\n",
+        total_relocs, coff_syms.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    @free(coff_sym_map as ptr[u8])
+    @free(elf_sym_map as ptr[u8])
+
     mut success := false
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
