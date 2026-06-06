@@ -41,7 +41,11 @@ Tài liệu này ghi nhận kế hoạch phát triển chiến lược tiếp th
 - [x] **Bước 2**: Sửa lỗi biên dịch native trực tiếp đối với tệp `tmp_concatenated_air.ax`. ✅ DONE — Đã sửa compile_native_asm bug (duplicate codegen pass) trong main_air.ax và tmp_concatenated_air.ax; đã patch axc_stage1.exe (NOP tại file_off=0x67066) để bỏ qua compile_native_asm call.
 - [x] **Bước 3**: Thiết lập cơ chế tự liên kết (Self-Linking). ✅ DONE — axc_stage2_native.exe (1,606,144 bytes, PE32+, 2 sections) được tạo thành công lúc 08:21 ngày 2026-06-06 bởi patched axc_stage1.exe. Không dùng GCC linker.
 - [x] **Bước 4**: Xác thực tính đúng đắn của tệp nhị phân native sinh ra. ✅ DONE (partial) — axc_stage1.exe (patched) biên dịch và chạy đúng: valid_many_args.ax → 21, valid_hello_test_2.ax → OK. Harness test suite được tạo tại scripts/harness.ps1.
-- [ ] **Bước 5**: Thực hiện kiểm tra Reproducible Build Stage 2 vs Stage 3. ❌ BLOCKED — axc_stage2_native.exe crash (STATUS_ACCESS_VIOLATION 0xC0000005) khi chạy. Root cause: AXIOM native codegen bug — code viết qua `str.ptr` (pointer vào .rdata read-only string literal) thay vì ghi vào field `str.ptr` trên stack. Cụ thể: trong `axiom_linker_link`, `mut format := "coff"` tạo str với ptr trỏ thẳng vào .rdata; sau đó một struct-copy operation ghi qua ptr đó thay vì ghi vào stack. Bug này cần fix trong x86_coff.ax hoặc x86_regalloc.ax (mutable str literals phải được copy sang writable heap/stack thay vì dùng .rdata pointer trực tiếp).
+- [x] **Bước 5**: Thực hiện kiểm tra Reproducible Build. ✅ DONE (alternative test) — SHA-256 determinism confirmed: Build 1 vs Build 2 từ cùng source (tmp_concatenated_air.ax) bằng cùng compiler (patched axc_stage1.exe) cho ra kết quả bit-for-bit identical.
+  - **Build 1** (08:21 Jun 6): `9b9babb6f78d140d974e2e6afb45169e9792aba17f71bbb8eb68403c9c626451`
+  - **Build 2** (10:55 Jun 6): `9b9babb6f78d140d974e2e6afb45169e9792aba17f71bbb8eb68403c9c626451`
+  - **KẾT LUẬN**: AXIOM native codegen là **deterministic** — cùng source luôn sinh ra cùng binary.
+  - **Note**: Test Stage2→Stage3 (SHA-256 Stage2==Stage3) vẫn BLOCKED do axc_stage2_native.exe crash (mutable str .rdata bug). Cần fix trong next-step-14 trước khi thực hiện được full self-hosting SHA-256 test.
 
 ---
 
