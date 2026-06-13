@@ -1,0 +1,23 @@
+import std.string
+
+fn idret(p: ptr[u8], other: i64) -> i64:
+    return p as i64
+
+pub fn main() -> i32:
+    mut code := 0 as i32
+    // Case A: raw malloc pointer passed through a call (no str cast)
+    let raw = @alloc(16) as ptr[u8]
+    if idret(raw, 5 as i64) != (raw as i64):
+        code = code + 1
+    // Case B: str->ptr cast value stability within main (no call)
+    let s = "ABCD"
+    let sp = s as ptr[u8]
+    if (sp as i64) != (sp as i64):
+        code = code + 2
+    // Case C: str->ptr cast then read first byte in main
+    if (sp[0] as i32) != 65 as i32:
+        code = code + 4
+    // Case D: str->ptr cast passed through call, compare value
+    if idret(sp, 5 as i64) != (sp as i64):
+        code = code + 8
+    return code

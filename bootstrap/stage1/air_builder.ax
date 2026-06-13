@@ -278,8 +278,15 @@ pub fn builder_type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size
         out_align[0] = entry.align
         return
     elif entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST:
-        mut struct_idx := entry.extra
-        if entry.kind == TYPE_KIND_GENERIC_INST:
+        // For a generic instance, find the concrete struct definition by name.
+        // If none matches (the base is a pointer-layout sum/option/result, not a
+        // struct), fall through to the 8-byte pointer default — never index the
+        // structs array with a sum index, which yields a garbage size and breaks
+        // the value-passing/return ABI (e.g. Result returned as 16 bytes).
+        mut struct_idx := 0xffffffff as u32
+        if entry.kind == TYPE_KIND_STRUCT:
+            struct_idx = entry.extra
+        else:
             mut idx := 0 as i64
             while idx < table.entries.len:
                 let e = table.entries.data[idx]
@@ -287,31 +294,35 @@ pub fn builder_type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size
                     struct_idx = e.extra
                     break
                 idx = idx + 1
-        let info = table.structs.data[struct_idx]
-        mut offset := 0 as u32
-        mut max_align := 1 as u32
-        mut i := 0 as i64
-        while i < info.fields.len:
-            let f = info.fields.data[i]
-            mut f_size := 0 as u32
-            mut f_align := 0 as u32
-            builder_type_size_and_align(table, f.type_id, &f_size, &f_align)
-            if f_align == 0 as u32:
-                f_align = 8 as u32
-            // Align offset
-            offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
-            offset = offset + f_size
-            if f_align > max_align:
-                max_align = f_align
-            i = i + 1
-        
-        mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
-        if size == 0 as u32:
-            size = 8 as u32
-        entry.size = size
-        entry.align = max_align
-        out_size[0] = size
-        out_align[0] = max_align
+        if struct_idx != 0xffffffff as u32:
+            let info = table.structs.data[struct_idx]
+            mut offset := 0 as u32
+            mut max_align := 1 as u32
+            mut i := 0 as i64
+            while i < info.fields.len:
+                let f = info.fields.data[i]
+                mut f_size := 0 as u32
+                mut f_align := 0 as u32
+                builder_type_size_and_align(table, f.type_id, &f_size, &f_align)
+                if f_align == 0 as u32:
+                    f_align = 8 as u32
+                // Align offset
+                offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
+                offset = offset + f_size
+                if f_align > max_align:
+                    max_align = f_align
+                i = i + 1
+
+            mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
+            if size == 0 as u32:
+                size = 8 as u32
+            entry.size = size
+            entry.align = max_align
+            out_size[0] = size
+            out_align[0] = max_align
+        else:
+            out_size[0] = 8 as u32
+            out_align[0] = 8 as u32
     elif entry.kind == TYPE_KIND_ARRAY:
         let elem_id = entry.extra
         let length = entry.name_id
@@ -581,6 +592,18 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     if text == "null" or text == "nil":
         @free(get_str_ptr(text))
         return self.lower_nil_lit()
+    if text == "None":
+        // Bare `None` in expression position: pointer-layout null sum value.
+        @free(get_str_ptr(text))
+        let none_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_ICONST,
+            type_id: 4 as u32,
+            dest: none_reg,
+            src1: 0 as u32,
+            src2: 0 as u32,
+        ))
+        return none_reg
     let actual_name_id = self.mb.pool.intern(text)
 
     mut is_resolved := false
@@ -1000,6 +1023,91 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                                     break
                                 i = i + 1 as i64
 
+    // Variant constructors (Ok/Err/Some/None) use the pointer-layout sum
+    // representation, matching the C backend macros ax_Result_ok/ax_Result_err:
+    // payload is boxed on the heap; Err sets tag bit 0; None is the null pointer.
+    // std/result.ax reads this layout when ax_sum_layout_is_pointer() is true.
+    // Detection is by token text: the variant symbol may come from an imported
+    // module whose intern pool differs from this module's, so the symbol's
+    // name_id cannot be compared against self.mb.pool here.
+    if not is_method_call and callee_node.kind == NODE_IDENT:
+        let v_name = self.mb.get_token_text(callee_node.token_idx)
+        mut variant_ctor := 0 as i64
+        if v_name == "Ok":
+            variant_ctor = 1
+        elif v_name == "Err":
+            variant_ctor = 2
+        elif v_name == "Some":
+            variant_ctor = 3
+        elif v_name == "None":
+            variant_ctor = 4
+        @free(get_str_ptr(v_name))
+        if variant_ctor != 0:
+            mut sym_kind := 255 as i64
+            let v_sym_idx = callee_node.payload
+            if v_sym_idx != 0 as u32 and (v_sym_idx as i64) < self.mb.symbols.symbols.len:
+                sym_kind = self.mb.symbols.symbols.data[v_sym_idx as i64].kind as i64
+            ax_printf_local("[VARCTOR2] ctor=%d symkind=%d\n", variant_ctor, sym_kind, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            if variant_ctor == 4:
+                let none_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: 4 as u32,
+                    dest: none_reg,
+                    src1: 0 as u32,
+                    src2: 0 as u32,
+                ))
+                return none_reg
+            mut payload_reg := 0 as u32
+            mut payload_t := 0 as u32
+            let payload_idx = callee_node.next_sibling
+            if payload_idx != 0 as u32:
+                payload_reg = self.lower_expr(payload_idx)
+                if self.mb.node_types != null as ptr[u32]:
+                    payload_t = self.mb.node_types[payload_idx as i64]
+            // Box is always 16 bytes (type 12 = str size) so both 8-byte
+            // payloads (scalars, struct pointers) and 16-byte str fit.
+            let box_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_ALLOC,
+                type_id: 12 as u32,
+                dest: box_reg,
+                src1: 0 as u32,
+                src2: 0 as u32,
+            ))
+            if payload_reg != 0 as u32:
+                // str payloads copy all 16 bytes; everything else stores
+                // the 8-byte value (scalars and struct heap pointers).
+                mut store_t := 4 as u32
+                if payload_t == 12 as u32:
+                    store_t = 12 as u32
+                self.fb.emit(AirInst(
+                    opcode: OP_STORE,
+                    type_id: store_t,
+                    dest: box_reg,
+                    src1: payload_reg,
+                    src2: 0 as u32,
+                ))
+            if variant_ctor == 2:
+                let one_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: 4 as u32,
+                    dest: one_reg,
+                    src1: 1 as u32,
+                    src2: 0 as u32,
+                ))
+                let tagged_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_OR,
+                    type_id: 4 as u32,
+                    dest: tagged_reg,
+                    src1: box_reg,
+                    src2: one_reg,
+                ))
+                return tagged_reg
+            return box_reg
+
     mut is_struct_constructor := false
     mut struct_type_id := 0 as u32
 
@@ -1152,8 +1260,8 @@ pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     let field_idx = node.extra_idx
 
     mut type_id := 0 as u32
-    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
-        type_id = self.mb.node_types[child as i64] as u32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -1236,6 +1344,18 @@ pub fn lower_deref_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
+
+    // Dereferencing a ptr[str] yields a 16-byte str value. The deref node's own
+    // inferred type is not always monomorphised to the concrete pointee (a
+    // generic T resolving to str stays generic in node_types), which would make
+    // both regalloc and the selector treat the result as 8 bytes and drop the
+    // str's len field. Recover the concrete type from the operand's pointee.
+    if self.mb.node_types != null as ptr[u32] and type_id != 12 as u32:
+        let child_type = self.mb.node_types[child as i64]
+        if child_type != 0 as u32 and (child_type as i64) < self.mb.typetable.entries.len:
+            let ce = self.mb.typetable.entries.data[child_type as i64]
+            if (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra == 12 as u32:
+                type_id = 12 as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(

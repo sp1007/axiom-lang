@@ -401,12 +401,17 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                                     if entry.kind == 2 as u8: // TYPE_KIND_FUNC = 2
                                         let fi = &table.funcs.data[entry.extra as i64]
                                         let ret_type_id = fi.ret
+                                        // str (12) is a 16-byte return value
+                                        if ret_type_id == 12 as u32:
+                                            return true
                                         if ret_type_id < table.entries.len as u32:
                                             let size = table.entries.data[ret_type_id].size
                                             if size == 16 as u32:
                                                 return true
                     else: // Dynamic function call
                         let type_id = inst.type_id as u32
+                        if type_id == 12 as u32:
+                            return true
                         if type_id < table.entries.len as u32:
                             let size = table.entries.data[type_id].size
                             if size == 16 as u32:
@@ -414,14 +419,57 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                     return false
                 elif op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL:
                     return false
-                elif op == OP_COPY or op == OP_MOVE or op == OP_CAST:
+                elif op == OP_COPY or op == OP_MOVE:
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
                         let size = table.entries.data[type_id].size
                         if size == 16 as u32:
                             return true
-                    // Recursively check src1 for type size
+                    // COPY/MOVE preserve the type, so the source size is
+                    // authoritative when the dest type_id is unset/generic.
                     return regalloc_is_16byte(inst.src1, fn_ptr, table, symbols)
+                elif op == OP_CAST:
+                    // A cast CHANGES the type: size strictly by the destination
+                    // type, never the source. e.g. str(16)->ptr(8) must report
+                    // 8-byte; recursing to src1 (the str) would wrongly give
+                    // the dest 2 spill slots and corrupt it on every later use.
+                    let type_id = inst.type_id as u32
+                    if type_id == 12 as u32:
+                        return true
+                    if type_id < table.entries.len as u32:
+                        let size = table.entries.data[type_id].size
+                        if size == 16 as u32:
+                            return true
+                    return false
+                elif op == OP_DEREF:
+                    // Deref of ptr[str]/ref[str] yields a 16-byte str value even
+                    // when the deref's own type_id stayed a generic param. Size
+                    // by the concrete pointee of the source pointer register.
+                    let type_id = inst.type_id as u32
+                    // str (12) is always 16 bytes; match the selector which
+                    // hardcodes this, rather than relying on entries[12].size
+                    // which may be unset in some type tables.
+                    if type_id == 12 as u32:
+                        return true
+                    if type_id < table.entries.len as u32:
+                        if table.entries.data[type_id].size == 16 as u32:
+                            return true
+                    mut src_ty := 0 as u32
+                    if inst.src1 >= 1 as u32 and inst.src1 <= fn_ptr.params.len as u32:
+                        src_ty = fn_ptr.params.data[inst.src1 as i64 - 1 as i64] as u32
+                    else:
+                        mut k := 0 as i64
+                        while k < fn_ptr.insts.len:
+                            let din = &fn_ptr.insts.data[k]
+                            if din.dest == inst.src1:
+                                src_ty = din.type_id as u32
+                                break
+                            k = k + 1
+                    if src_ty < table.entries.len as u32:
+                        let se = table.entries.data[src_ty]
+                        if (se.kind == TYPE_KIND_POINTER or se.kind == TYPE_KIND_REF) and se.extra == 12 as u32:
+                            return true
+                    return false
                 else:
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
@@ -517,10 +565,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if t_id < sel.table.entries.len as u32:
             if sel.table.entries.data[t_id].size == 16 as u32:
                 is_str = true
-        if inst.src1 == 0 as u32 and not is_str:
+        if inst.src1 == 0 as u32 and inst.src2 == 0 as u32 and not is_str:
             out_insts.push(MachInst(op: MACH_XOR_ZERO, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            let val = inst.src1 as i64
+            // ICONST carries a full 64-bit value split across src1 (low 32) and
+            // src2 (high 32) — see air_builder lower_int_lit. Reconstruct both
+            // halves; reading src1 alone truncates large constants (e.g. the
+            // 0xfffffffffffffffe Result tag mask) and corrupts 64-bit pointers.
+            let val = (inst.src1 as i64) | ((inst.src2 as i64) << (32 as i64))
             mut vreg_flag := 0 as u32
             if is_str:
                 vreg_flag = 2 as u32
@@ -819,8 +871,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if is_16byte:
                 let tmp_src_addr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                // Load the high half (RDX) BEFORE the low half (RAX): the source
+                // address (tmp_src_addr) may be allocated to RAX, so loading RAX
+                // first would clobber the base and make the RDX load read from
+                // [ptr+8] instead of [&value+8] — corrupting a 16-byte str's len.
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             else:
                 let ret_type = sel.fn_ptr.ret_type as u32
                 mut ret_phys := REG_RAX
@@ -1061,10 +1117,18 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if inst.dest != 0 as u32:
                 let is_16byte = regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols)
                 if is_16byte:
+                    // Capture the RAX:RDX return halves into vregs BEFORE taking
+                    // the address of dest: tmp_dest_addr (the LEA result) may be
+                    // allocated to RAX/RDX, and the LEA would clobber the return
+                    // value before it is stored. Saving first makes it safe.
+                    let tmp_ret_lo = next_vreg(sel)
+                    let tmp_ret_hi = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     let tmp_dest_addr = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
                 else:
                     let dest_type = get_register_type(sel, inst.dest)
                     mut ret_reg := abi_return_reg(sel.abi_name)
@@ -1133,9 +1197,20 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_IMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_size, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
         let tmp_addr = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // Indexing a str (16-byte {ptr,len}) value: the base address is the
+        // str's `ptr` field (its low 8 bytes), NOT the address of the str slot.
+        // `MOV tmp_addr = src1` on a 16-byte spilled vreg yields the slot
+        // address, so `src[i]` indexed into the str struct itself (returning a
+        // byte of the pointer value). Load the ptr field explicitly. This is the
+        // base used by the lexer (`src[pos]`) and fnv1a (`s[i]`).
+        if regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols):
+            let tmp_saddr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
+
         if size == 16 as u32:
             let tmp_dest_addr = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -1209,10 +1284,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
     elif op == OP_GET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)
-        ax_printf_local("[Debug] OP_GET_FIELD: type_id=%d, field_idx=%d\n", struct_type as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
-        ax_printf_local("[Debug]   -> disp=%d, size=%d\n", disp as i64, size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if size > 16 as u32:
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         elif size == 16 as u32:
@@ -1267,8 +1340,22 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if type_id < sel.table.entries.len as u32:
                 type_size = sel.table.entries.data[type_id].size
 
+            // str (type 12) is a 16-byte {ptr,len} value: dereferencing a
+            // ptr[str] must read all 16 bytes. Forcing 8 here dropped the len
+            // field, so Result/Option unwrap of a str payload returned a str
+            // with a garbage length.
             if type_id == 12 as u32:
-                type_size = 8 as u32
+                type_size = 16 as u32
+
+            // The deref's own type_id is not always monomorphised to the
+            // concrete pointee (a generic T resolving to str). Recover the size
+            // from the source pointer's concrete register type when it is
+            // ptr[str]/ref[str]. Limited to str because struct values are 8-byte
+            // heap references whose entry.size is the full struct size.
+            if src_type < sel.table.entries.len as u32:
+                let se = sel.table.entries.data[src_type]
+                if (se.kind == TYPE_KIND_POINTER or se.kind == TYPE_KIND_REF) and se.extra == 12 as u32:
+                    type_size = 16 as u32
 
             if type_size == 16 as u32:
                 let tmp_dest_addr = next_vreg(sel)
@@ -1318,6 +1405,84 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     else:
         out_insts.push(MachInst(op: MACH_NOP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
+// Materialize all parameters into their param vregs at function entry.
+//
+// The previous design materialized params lazily on first use. For 8-byte
+// params that emitted `MOV pvreg = arg_reg`, which the register allocator
+// detects (param_idx_of_vreg) and protects from being colored with a *later*
+// param's arg register. But 16-byte (str) params materialize via LOAD/LEA/STORE
+// with fresh scratch temps that carry no such protection, so an earlier str
+// param's scratch could grab a later param's incoming arg register (e.g. RDX),
+// clobbering it before that later param was read. The symptom: with two str
+// params, reading the 2nd returned the 1st's value.
+//
+// Fix: snapshot every integer-register-passed argument into a fresh vreg via
+// `MOV snap = arg_reg` FIRST. Those MOVs are param-tagged and mutually
+// non-clobbering, so after this phase all original arg registers are safely
+// captured and later value-loading scratch may use any register. Then load each
+// parameter's value from its snapshot. param_idx_processed is set past the end
+// so the lazy per-instruction paths are skipped.
+pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachInstVec]):
+    let nparams = sel.fn_ptr.params.len
+    if nparams <= 0 as i64:
+        return
+    let snaps = @alloc(nparams * 4 as i64) as ptr[u32]
+    // Phase 1: snapshot incoming integer arg registers (protected MOVs).
+    mut p := 0 as i64
+    while p < nparams:
+        snaps[p] = 0 as u32
+        let phys = abi_int_arg_reg(sel.abi_name, p)
+        if phys != REG_NONE:
+            let snap = next_vreg(sel)
+            snaps[p] = snap
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        p = p + 1
+    // Phase 2: store each parameter's value into its param vreg.
+    p = 0 as i64
+    while p < nparams:
+        let pvreg = (p + 1 as i64) as u32
+        mut psize := 8 as u32
+        let pty = sel.fn_ptr.params.data[p] as u32
+        if pty < sel.table.entries.len as u32:
+            psize = sel.table.entries.data[pty as i64].size
+        let phys = abi_int_arg_reg(sel.abi_name, p)
+        if phys != REG_NONE:
+            let snap = snaps[p]
+            if psize == 16 as u32:
+                // arg register held a pointer to the 16-byte value
+                let lo = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let hi = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                let addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            // stack-passed parameter (arg index >= number of register args)
+            mut offset := 0 as i64
+            if sel.abi_name == "win64":
+                offset = 48 as i64 + (p - 4 as i64) * 8 as i64
+            else:
+                offset = 16 as i64 + (p - 6 as i64) * 8 as i64
+            if psize == 16 as u32:
+                let saddr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                let lo = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let hi = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                let addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+        p = p + 1
+    @free(snaps as ptr[u8])
+
 pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr[SymbolTable], pool: ptr[InternPool]) -> MachInstVec:
     mut actual_max_vreg := 0 as u32
     mut vi := 0 as i64
@@ -1365,7 +1530,11 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
                 result.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -4 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 if abi == "win64":
                     result.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
+
+            if bi == 0 as i64:
+                emit_param_prologue(&sel, &result)
+                sel.param_idx_processed = sel.fn_ptr.params.len as i32
+
             mut i := 0 as i64
             while i < bb.instrs_len as i64:
                 let inst_idx = f.block_instrs.data[bb.instrs_start as i64 + i]
@@ -1375,6 +1544,8 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
                 i = i + 1
             bi = bi + 1
     else:
+        emit_param_prologue(&sel, &result)
+        sel.param_idx_processed = sel.fn_ptr.params.len as i32
         mut i := 0 as i64
         while i < f.insts.len:
             let inst = &f.insts.data[i]

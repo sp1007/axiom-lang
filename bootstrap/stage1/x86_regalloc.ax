@@ -411,7 +411,14 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             if not seen_s[sv]:
                 seen_s[sv] = true
                 allocs_s[sv] = RegAllocation(vreg: sv, phys: REG_NONE, spilled: true, spill_idx: spill_count_s)
-                spill_count_s = spill_count_s + 1
+                // 16-byte (str/16-byte struct) values occupy TWO 8-byte stack
+                // slots. The graph-coloring path reserves 2; this spill-all
+                // fallback (used for large functions) MUST do the same, else
+                // each spilled 16-byte value clobbers the next vreg's slot.
+                if regalloc_is_16byte(sv, fn_ptr, table, symbols):
+                    spill_count_s = spill_count_s + 2
+                else:
+                    spill_count_s = spill_count_s + 1
             siv = siv + 1
         @free(seen_s as ptr[u8])
         @free(param_idx_of_vreg as ptr[u8])
@@ -765,7 +772,11 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16:
                     add_mult = 2 as i64
                 let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
-                if inst.op == MACH_LEA and is_16:
+                if inst.op == MACH_LEA:
+                    // LEA of a spilled vreg means "address of the value": rewrite to
+                    // RBP + slot offset for ANY size. Reloading the value into a
+                    // scratch register and taking lea (reg) would yield the value
+                    // itself, not its address (broken &self / MAKE_REF semantics).
                     mut disp := 0 as i64
                     if inst.src2.kind == OPND_IMM:
                         disp = inst.src2.imm

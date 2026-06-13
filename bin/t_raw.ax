@@ -1,0 +1,13 @@
+import std.result
+
+fn ok_str(flag: i64) -> Result[str, str]:
+    if flag > 0:
+        return Ok("payload-ok")
+    return Err("payload-err")
+
+pub fn main() -> i32:
+    let s2 = ok_str(0)
+    let raw = (&s2) as ptr[u64]
+    let v = raw[0]
+    // expect tag bit set -> exit 1
+    return (v & (1 as u64)) as i32

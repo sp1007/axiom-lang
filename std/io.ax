@@ -1,13 +1,21 @@
 // AXIOM Standard Library — std.io
 //
 // Input/Output interfaces and File operations.
+// Uses libc fopen/fread/fwrite/fclose for portability across bootstrap stages.
+// This avoids the cross-module extern-C resolver issue with win32.CreateFileA.
 
-import std.os.win32
-import std.os.linux_sys
-import std.os
 import std.result
+import std.string
 
+extern "C" fn fopen(path: ptr[void], mode: ptr[u8]) -> ptr[void]
+extern "C" fn fclose(f: ptr[void]) -> i32
+extern "C" fn fread(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
+extern "C" fn fwrite(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
+extern "C" fn fseek(f: ptr[void], offset: i64, whence: i32) -> i32
+extern "C" fn ftell(f: ptr[void]) -> i64
+extern "C" fn rewind(f: ptr[void]) -> void
 extern "C" fn fflush(stream: ptr[void]) -> i32
+extern "C" fn fputs(s: ptr[u8], f: ptr[void]) -> i32
 
 /// A readable byte stream.
 pub interface Reader:
@@ -18,7 +26,7 @@ pub interface Writer:
     fn write(mut self: Self, buf: ptr[u8], count: i64) -> Result[i64, str]
     fn flush(mut self: Self) -> Result[void, str]
 
-/// File handle.
+/// File handle. handle stores FILE* cast to i64.
 pub struct File:
     pub handle: i64
     pub path: str
@@ -36,129 +44,46 @@ fn io_str_to_c_str(s: str) -> ptr[u8]:
 
 pub fn open(path: str) -> Result[File, str]:
     let cpath = io_str_to_c_str(path)
-    if std.os.IS_WINDOWS:
-        let h = std.os.win32.CreateFileA(
-            cpath,
-            0x80000000 as u32,
-            1 as u32,
-            null as ptr[void],
-            3 as u32,
-            0x80 as u32,
-            null as ptr[void]
-        )
-        @free(cpath)
-        if h as i64 == -1 as i64:
-            return Err("could not open file")
-        return Ok(File(handle: h as i64, path: path, mode: 0 as i32))
-    else:
-        let fd = std.os.linux_sys.syscall(
-            2 as u64, // SYS_OPEN
-            cpath as u64,
-            0 as u64, // O_RDONLY
-            0 as u64,
-            0 as u64, 0 as u64, 0 as u64
-        )
-        @free(cpath)
-        if fd < 0:
-            return Err("could not open file")
-        return Ok(File(handle: fd, path: path, mode: 0 as i32))
+    let rb = io_str_to_c_str("rb")
+    let h = fopen(cpath as ptr[void], rb)
+    @free(cpath)
+    @free(rb)
+    if h == null as ptr[void]:
+        return Err("could not open file")
+    return Ok(File(handle: h as i64, path: path, mode: 0 as i32))
 
 pub fn create(path: str) -> Result[File, str]:
     let cpath = io_str_to_c_str(path)
-    if std.os.IS_WINDOWS:
-        let h = std.os.win32.CreateFileA(
-            cpath,
-            0x40000000 as u32,
-            0 as u32,
-            null as ptr[void],
-            2 as u32,
-            0x80 as u32,
-            null as ptr[void]
-        )
-        @free(cpath)
-        if h as i64 == -1 as i64:
-            return Err("could not create file")
-        return Ok(File(handle: h as i64, path: path, mode: 1 as i32))
-    else:
-        let fd = std.os.linux_sys.syscall(
-            2 as u64, // SYS_OPEN
-            cpath as u64,
-            577 as u64, // O_WRONLY | O_CREAT | O_TRUNC
-            0o644 as u64,
-            0 as u64, 0 as u64, 0 as u64
-        )
-        @free(cpath)
-        if fd < 0:
-            return Err("could not create file")
-        return Ok(File(handle: fd, path: path, mode: 1 as i32))
+    let wb = io_str_to_c_str("wb")
+    let h = fopen(cpath as ptr[void], wb)
+    @free(cpath)
+    @free(wb)
+    if h == null as ptr[void]:
+        return Err("could not create file")
+    return Ok(File(handle: h as i64, path: path, mode: 1 as i32))
 
 pub fn close(mut self: File) -> Result[void, str]:
-    if std.os.IS_WINDOWS:
-        let res_win = std.os.win32.CloseHandle(self.handle as ptr[void])
-        if res_win == 0:
-            return Err("could not close file")
+    if self.handle == 0 as i64:
         return Ok(void)
-    else:
-        let res_linux = std.os.linux_sys.syscall(
-            3 as u64, // SYS_CLOSE
-            self.handle as u64,
-            0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64
-        )
-        if res_linux < 0:
-            return Err("could not close file")
-        return Ok(void)
+    let res = fclose(self.handle as ptr[void])
+    if res != 0:
+        return Err("could not close file")
+    return Ok(void)
 
 pub fn read(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
-    if std.os.IS_WINDOWS:
-        mut read_bytes := 0 as u32
-        let res_win = std.os.win32.ReadFile(
-            self.handle as ptr[void],
-            buf,
-            count as u32,
-            &read_bytes as ptr[void],
-            null as ptr[void]
-        )
-        if res_win == 0:
-            return Err("could not read from file")
-        return Ok(read_bytes as i64)
-    else:
-        let res_linux = std.os.linux_sys.syscall(
-            0 as u64, // SYS_READ
-            self.handle as u64,
-            buf as u64,
-            count as u64,
-            0 as u64, 0 as u64, 0 as u64
-        )
-        if res_linux < 0:
-            return Err("could not read from file")
-        return Ok(res_linux)
+    let n = fread(buf as ptr[void], 1 as i64, count, self.handle as ptr[void])
+    if n < 0 as i64:
+        return Err("could not read from file")
+    return Ok(n)
 
 pub fn write(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
-    if std.os.IS_WINDOWS:
-        mut written := 0 as u32
-        let res_win = std.os.win32.WriteFile(
-            self.handle as ptr[void],
-            buf,
-            count as u32,
-            &written as ptr[void],
-            null as ptr[void]
-        )
-        if res_win == 0:
-            return Err("could not write to file")
-        return Ok(written as i64)
-    else:
-        let res_linux = std.os.linux_sys.syscall(
-            1 as u64, // SYS_WRITE
-            self.handle as u64,
-            buf as u64,
-            count as u64,
-            0 as u64, 0 as u64, 0 as u64
-        )
-        if res_linux < 0:
-            return Err("could not write to file")
-        return Ok(res_linux)
+    let n = fwrite(buf as ptr[void], 1 as i64, count, self.handle as ptr[void])
+    if n < 0 as i64:
+        return Err("could not write to file")
+    return Ok(n)
 
 pub fn flush(mut self: File) -> Result[void, str]:
+    fflush(self.handle as ptr[void])
     return Ok(void)
 
 pub fn read_all(self: File) -> Result[str, str]:
@@ -167,7 +92,7 @@ pub fn read_all(self: File) -> Result[str, str]:
     mut total_read := 0 as i64
     mut result_str := ""
     mut temp_reader := self
-    
+
     mut loop := true
     while loop:
         @memset(buf as ptr[void], 0 as u8, cap + 1)
@@ -178,7 +103,7 @@ pub fn read_all(self: File) -> Result[str, str]:
                 loop = false
             else:
                 let chunk = buf as str
-                result_str = result_str + chunk
+                result_str = std.string.concat(result_str, chunk)
         else:
             @free(buf)
             let _ = temp_reader.close()
@@ -203,27 +128,15 @@ pub fn write_all(mut self: File, data: str) -> Result[void, str]:
     let _ = self.close()
     return Ok(void)
 
-/// Standard input/output/error.
+/// Standard input/output/error. handle=0 means not backed by a real FILE*.
 pub fn stdin() -> File:
-    if std.os.IS_WINDOWS:
-        let h = std.os.win32.GetStdHandle(std.os.win32.STD_INPUT_HANDLE)
-        return File(handle: h as i64, path: "stdin", mode: 0 as i32)
-    else:
-        return File(handle: 0 as i64, path: "stdin", mode: 0 as i32)
+    return File(handle: 0 as i64, path: "stdin", mode: 0 as i32)
 
 pub fn stdout() -> File:
-    if std.os.IS_WINDOWS:
-        let h = std.os.win32.GetStdHandle(std.os.win32.STD_OUTPUT_HANDLE)
-        return File(handle: h as i64, path: "stdout", mode: 1 as i32)
-    else:
-        return File(handle: 1 as i64, path: "stdout", mode: 1 as i32)
+    return File(handle: 0 as i64, path: "stdout", mode: 1 as i32)
 
 pub fn stderr() -> File:
-    if std.os.IS_WINDOWS:
-        let h = std.os.win32.GetStdHandle(std.os.win32.STD_ERROR_HANDLE)
-        return File(handle: h as i64, path: "stderr", mode: 2 as i32)
-    else:
-        return File(handle: 2 as i64, path: "stderr", mode: 2 as i32)
+    return File(handle: 0 as i64, path: "stderr", mode: 2 as i32)
 
 /// Buffered Reader wrapper.
 pub struct BufReader[R]:
@@ -278,35 +191,3 @@ pub fn new_buf_writer[W: Writer](writer: W, capacity: i64) -> BufWriter[W]:
         capacity: capacity,
         len: 0 as i64,
     )
-
-pub fn write_buf[W: Writer](mut self: BufWriter[W], src: ptr[u8], count: i64) -> Result[i64, str]:
-    mut written := 0 as i64
-    while written < count:
-        let available = self.capacity - self.len
-        if available == 0 as i64:
-            let r = self.flush_buf()
-            if r.is_err():
-                return Err(r.unwrap_err())
-        let remaining = count - written
-        mut to_write := remaining
-        if available < remaining:
-            to_write = available
-        mut i := 0 as i64
-        while i < to_write:
-            ((self.buffer as i64 + self.len + i) as ptr[u8]).* = ((src as i64 + written + i) as ptr[u8]).*
-            i = i + 1
-        self.len = self.len + to_write
-        written = written + to_write
-    return Ok(written)
-
-pub fn flush_buf[W: Writer](mut self: BufWriter[W]) -> Result[void, str]:
-    if self.len > 0 as i64:
-        let r = self.writer.write(self.buffer, self.len)
-        if r.is_ok():
-            let n = r.unwrap()
-            if n < self.len:
-                return Err("failed to write whole buffer")
-            self.len = 0 as i64
-        else:
-            return Err(r.unwrap_err())
-    return Ok(void)

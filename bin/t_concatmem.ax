@@ -1,0 +1,58 @@
+import std.io
+import std.result
+import std.string
+
+fn rd(p: str) -> str:
+    let r = std.io.open(p)
+    if not r.is_ok():
+        return ""
+    let f = r.unwrap()
+    let r2 = f.read_all()
+    if not r2.is_ok():
+        return ""
+    return r2.unwrap()
+
+pub fn main() -> i32:
+    let s0 = rd("std/result.ax")
+    let s1 = rd("std/mem/alloc.ax")
+    let s2 = rd("std/scheduler.ax")
+    let s3 = rd("std/runtime.ax")
+    let s4 = rd("std/os.ax")
+    let s5 = rd("std/string.ax")
+    let s6 = rd("std/io.ax")
+    let s7 = rd("trivial.ax")
+    let l0 = std.string.len(s0)
+    let l1 = std.string.len(s1)
+    let l2 = std.string.len(s2)
+    let l3 = std.string.len(s3)
+    let l4 = std.string.len(s4)
+    let l5 = std.string.len(s5)
+    let l6 = std.string.len(s6)
+    let l7 = std.string.len(s7)
+    let total = l0 + 1 as i64 + l1 + 1 as i64 + l2 + 1 as i64 + l3 + 1 as i64 + l4 + 1 as i64 + l5 + 1 as i64 + l6 + 1 as i64 + l7
+    let buf = @alloc(total + 1 as i64) as ptr[u8]
+    @memcpy(buf, s0 as ptr[u8], l0)
+    buf[l0] = 10 as u8
+    let o1 = l0 + 1 as i64
+    @memcpy(((buf as i64) + o1) as ptr[u8], s1 as ptr[u8], l1)
+    buf[o1 + l1] = 10 as u8
+    let o2 = o1 + l1 + 1 as i64
+    @memcpy(((buf as i64) + o2) as ptr[u8], s2 as ptr[u8], l2)
+    buf[o2 + l2] = 10 as u8
+    let o3 = o2 + l2 + 1 as i64
+    @memcpy(((buf as i64) + o3) as ptr[u8], s3 as ptr[u8], l3)
+    buf[o3 + l3] = 10 as u8
+    let o4 = o3 + l3 + 1 as i64
+    @memcpy(((buf as i64) + o4) as ptr[u8], s4 as ptr[u8], l4)
+    buf[o4 + l4] = 10 as u8
+    let o5 = o4 + l4 + 1 as i64
+    @memcpy(((buf as i64) + o5) as ptr[u8], s5 as ptr[u8], l5)
+    buf[o5 + l5] = 10 as u8
+    let o6 = o5 + l5 + 1 as i64
+    @memcpy(((buf as i64) + o6) as ptr[u8], s6 as ptr[u8], l6)
+    buf[o6 + l6] = 10 as u8
+    let o7 = o6 + l6 + 1 as i64
+    @memcpy(((buf as i64) + o7) as ptr[u8], s7 as ptr[u8], l7)
+    buf[total] = 0 as u8
+    let res = buf as str
+    return (std.string.len(res) / 1000 as i64) as i32

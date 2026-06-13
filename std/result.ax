@@ -36,10 +36,11 @@ pub fn is_none[T](self: Option[T]) -> bool:
     return raw32[0] == 1 as u32
 
 pub fn unwrap[T](self: Option[T]) -> T:
-    if not self.is_some():
-        panic("called Option.unwrap() on a None value")
+    // Precondition inlined instead of calling self.is_some() — see Result.unwrap.
     if ax_sum_layout_is_pointer():
         let raw64 = (&self) as ptr[u64]
+        if raw64[0] == 0 as u64:
+            panic("called Option.unwrap() on a None value")
         let masked = raw64[0]
         let typed_ptr = masked as ptr[T]
         return typed_ptr.*
@@ -115,10 +116,15 @@ pub fn is_err[T, E](self: Result[T, E]) -> bool:
     return raw32[0] == 1 as u32
 
 pub fn unwrap[T, E](self: Result[T, E]) -> T:
-    if not self.is_ok():
-        panic("called Result.unwrap() on an Err value")
+    // The Ok/Err precondition is inlined rather than calling self.is_ok():
+    // a generic method that calls another generic method on the same type is
+    // only correctly monomorphised when the callee is also instantiated by a
+    // direct call elsewhere. Inlining removes that fragile dependency so unwrap
+    // is self-contained regardless of whether is_ok was specialised.
     if ax_sum_layout_is_pointer():
         let raw64 = (&self) as ptr[u64]
+        if (raw64[0] & 1 as u64) != 0 as u64:
+            panic("called Result.unwrap() on an Err value")
         let masked = raw64[0] & (0xfffffffffffffffe as u64)
         let typed_ptr = masked as ptr[T]
         return typed_ptr.*
@@ -127,15 +133,19 @@ pub fn unwrap[T, E](self: Result[T, E]) -> T:
         let raw8_small = (&self) as ptr[u8]
         let typed_small = raw8_small as ptr[T]
         return typed_small.*
+    let raw32 = (&self) as ptr[u32]
+    if raw32[0] != 0 as u32:
+        panic("called Result.unwrap() on an Err value")
     let raw8_large = (&self) as ptr[u8]
     let payload_ptr = ((raw8_large as i64) + 8 as i64) as ptr[T]
     return payload_ptr.*
 
 pub fn unwrap_err[T, E](self: Result[T, E]) -> E:
-    if not self.is_err():
-        panic("called Result.unwrap_err() on an Ok value")
+    // Precondition inlined instead of calling self.is_err() — see unwrap above.
     if ax_sum_layout_is_pointer():
         let raw64 = (&self) as ptr[u64]
+        if (raw64[0] & 1 as u64) != 1 as u64:
+            panic("called Result.unwrap_err() on an Ok value")
         let masked = raw64[0] & (0xfffffffffffffffe as u64)
         let typed_ptr = masked as ptr[E]
         return typed_ptr.*

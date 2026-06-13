@@ -5,6 +5,8 @@
 import std.collections
 import std.result
 
+extern "C" fn malloc(n: u64) -> ptr[u8]
+
 /// Returns the length in bytes.
 pub fn len(s: str) -> i64:
     return s.len
@@ -14,8 +16,20 @@ pub fn char_count(s: str) -> i64:
     return @compiler_intrinsic("str_char_count")
 
 /// Concatenates two strings.
+///
+/// Implemented in AXIOM (value ABI) rather than via the `str_concat` intrinsic:
+/// the intrinsic routes to the C-runtime `ax_str_concat` whose Win64 C ABI
+/// (args by reference, 16-byte return via hidden pointer) is incompatible with
+/// the native backend's value ABI (str args by pointer, result in RAX:RDX). A
+/// real body makes the compiled `concat` itself the correct value-ABI function
+/// for both the native and C backends.
 pub fn concat(a: str, b: str) -> str:
-    return @compiler_intrinsic("str_concat")
+    let total = a.len + b.len
+    let buf = malloc((total + 1) as u64) as ptr[u8]
+    @memcpy(buf, a.ptr, a.len)
+    @memcpy(((buf as i64) + a.len) as ptr[u8], b.ptr, b.len)
+    buf[total] = 0 as u8
+    return buf as str
 
 /// Returns a substring [start, end).
 pub fn slice(s: str, start: i64, end: i64) -> str:

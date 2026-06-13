@@ -8881,8 +8881,15 @@ pub fn builder_type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size
         out_align[0] = entry.align
         return
     elif entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST:
-        mut struct_idx := entry.extra
-        if entry.kind == TYPE_KIND_GENERIC_INST:
+        // For a generic instance, find the concrete struct definition by name.
+        // If none matches (the base is a pointer-layout sum/option/result, not a
+        // struct), fall through to the 8-byte pointer default â€” never index the
+        // structs array with a sum index, which yields a garbage size and breaks
+        // the value-passing/return ABI (e.g. Result returned as 16 bytes).
+        mut struct_idx := 0xffffffff as u32
+        if entry.kind == TYPE_KIND_STRUCT:
+            struct_idx = entry.extra
+        else:
             mut idx := 0 as i64
             while idx < table.entries.len:
                 let e = table.entries.data[idx]
@@ -8890,31 +8897,35 @@ pub fn builder_type_size_and_align(table: ptr[TypeTable], type_id: u32, out_size
                     struct_idx = e.extra
                     break
                 idx = idx + 1
-        let info = table.structs.data[struct_idx]
-        mut offset := 0 as u32
-        mut max_align := 1 as u32
-        mut i := 0 as i64
-        while i < info.fields.len:
-            let f = info.fields.data[i]
-            mut f_size := 0 as u32
-            mut f_align := 0 as u32
-            builder_type_size_and_align(table, f.type_id, &f_size, &f_align)
-            if f_align == 0 as u32:
-                f_align = 8 as u32
-            // Align offset
-            offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
-            offset = offset + f_size
-            if f_align > max_align:
-                max_align = f_align
-            i = i + 1
-        
-        mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
-        if size == 0 as u32:
-            size = 8 as u32
-        entry.size = size
-        entry.align = max_align
-        out_size[0] = size
-        out_align[0] = max_align
+        if struct_idx != 0xffffffff as u32:
+            let info = table.structs.data[struct_idx]
+            mut offset := 0 as u32
+            mut max_align := 1 as u32
+            mut i := 0 as i64
+            while i < info.fields.len:
+                let f = info.fields.data[i]
+                mut f_size := 0 as u32
+                mut f_align := 0 as u32
+                builder_type_size_and_align(table, f.type_id, &f_size, &f_align)
+                if f_align == 0 as u32:
+                    f_align = 8 as u32
+                // Align offset
+                offset = (offset + f_align - 1 as u32) & ~(f_align - 1 as u32)
+                offset = offset + f_size
+                if f_align > max_align:
+                    max_align = f_align
+                i = i + 1
+
+            mut size := (offset + max_align - 1 as u32) & ~(max_align - 1 as u32)
+            if size == 0 as u32:
+                size = 8 as u32
+            entry.size = size
+            entry.align = max_align
+            out_size[0] = size
+            out_align[0] = max_align
+        else:
+            out_size[0] = 8 as u32
+            out_align[0] = 8 as u32
     elif entry.kind == TYPE_KIND_ARRAY:
         let elem_id = entry.extra
         let length = entry.name_id
@@ -9184,6 +9195,18 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
     if text == "null" or text == "nil":
         @free(get_str_ptr(text))
         return self.lower_nil_lit()
+    if text == "None":
+        // Bare `None` in expression position: pointer-layout null sum value.
+        @free(get_str_ptr(text))
+        let none_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_ICONST,
+            type_id: 4 as u32,
+            dest: none_reg,
+            src1: 0 as u32,
+            src2: 0 as u32,
+        ))
+        return none_reg
     let actual_name_id = self.mb.pool.intern(text)
 
     mut is_resolved := false
@@ -9603,6 +9626,91 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                                     break
                                 i = i + 1 as i64
 
+    // Variant constructors (Ok/Err/Some/None) use the pointer-layout sum
+    // representation, matching the C backend macros ax_Result_ok/ax_Result_err:
+    // payload is boxed on the heap; Err sets tag bit 0; None is the null pointer.
+    // std/result.ax reads this layout when ax_sum_layout_is_pointer() is true.
+    // Detection is by token text: the variant symbol may come from an imported
+    // module whose intern pool differs from this module's, so the symbol's
+    // name_id cannot be compared against self.mb.pool here.
+    if not is_method_call and callee_node.kind == NODE_IDENT:
+        let v_name = self.mb.get_token_text(callee_node.token_idx)
+        mut variant_ctor := 0 as i64
+        if v_name == "Ok":
+            variant_ctor = 1
+        elif v_name == "Err":
+            variant_ctor = 2
+        elif v_name == "Some":
+            variant_ctor = 3
+        elif v_name == "None":
+            variant_ctor = 4
+        @free(get_str_ptr(v_name))
+        if variant_ctor != 0:
+            mut sym_kind := 255 as i64
+            let v_sym_idx = callee_node.payload
+            if v_sym_idx != 0 as u32 and (v_sym_idx as i64) < self.mb.symbols.symbols.len:
+                sym_kind = self.mb.symbols.symbols.data[v_sym_idx as i64].kind as i64
+            ax_printf_local("[VARCTOR2] ctor=%d symkind=%d\n", variant_ctor, sym_kind, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            if variant_ctor == 4:
+                let none_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: 4 as u32,
+                    dest: none_reg,
+                    src1: 0 as u32,
+                    src2: 0 as u32,
+                ))
+                return none_reg
+            mut payload_reg := 0 as u32
+            mut payload_t := 0 as u32
+            let payload_idx = callee_node.next_sibling
+            if payload_idx != 0 as u32:
+                payload_reg = self.lower_expr(payload_idx)
+                if self.mb.node_types != null as ptr[u32]:
+                    payload_t = self.mb.node_types[payload_idx as i64]
+            // Box is always 16 bytes (type 12 = str size) so both 8-byte
+            // payloads (scalars, struct pointers) and 16-byte str fit.
+            let box_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_ALLOC,
+                type_id: 12 as u32,
+                dest: box_reg,
+                src1: 0 as u32,
+                src2: 0 as u32,
+            ))
+            if payload_reg != 0 as u32:
+                // str payloads copy all 16 bytes; everything else stores
+                // the 8-byte value (scalars and struct heap pointers).
+                mut store_t := 4 as u32
+                if payload_t == 12 as u32:
+                    store_t = 12 as u32
+                self.fb.emit(AirInst(
+                    opcode: OP_STORE,
+                    type_id: store_t,
+                    dest: box_reg,
+                    src1: payload_reg,
+                    src2: 0 as u32,
+                ))
+            if variant_ctor == 2:
+                let one_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: 4 as u32,
+                    dest: one_reg,
+                    src1: 1 as u32,
+                    src2: 0 as u32,
+                ))
+                let tagged_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_OR,
+                    type_id: 4 as u32,
+                    dest: tagged_reg,
+                    src1: box_reg,
+                    src2: one_reg,
+                ))
+                return tagged_reg
+            return box_reg
+
     mut is_struct_constructor := false
     mut struct_type_id := 0 as u32
 
@@ -9755,8 +9863,8 @@ pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     let field_idx = node.extra_idx
 
     mut type_id := 0 as u32
-    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
-        type_id = self.mb.node_types[child as i64] as u32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -9839,6 +9947,18 @@ pub fn lower_deref_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
+
+    // Dereferencing a ptr[str] yields a 16-byte str value. The deref node's own
+    // inferred type is not always monomorphised to the concrete pointee (a
+    // generic T resolving to str stays generic in node_types), which would make
+    // both regalloc and the selector treat the result as 8 bytes and drop the
+    // str's len field. Recover the concrete type from the operand's pointee.
+    if self.mb.node_types != null as ptr[u32] and type_id != 12 as u32:
+        let child_type = self.mb.node_types[child as i64]
+        if child_type != 0 as u32 and (child_type as i64) < self.mb.typetable.entries.len:
+            let ce = self.mb.typetable.entries.data[child_type as i64]
+            if (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra == 12 as u32:
+                type_id = 12 as u32
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -11923,6 +12043,10 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
     @free(vals as ptr[u8])
     return changed
 
+// Algebraic simplification pass:
+// Handles identity operations (x+0, x*1, x/1), zero annihilation (x*0),
+// self-ops (x-x=0, x^x=0, x&x=x), comparison tautologies (x==xâ†’1),
+// and constant branch folding (branch(const)â†’jump).
 pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
     if max_reg == 0 as u32:
@@ -11960,12 +12084,14 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
             if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
                 let v2 = vals[inst.src2]
                 if v2.known and v2.val == 0 as u64:
+                    // x + 0 = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
                 else:
                     let v1 = vals[inst.src1]
                     if v1.known and v1.val == 0 as u64:
+                        // 0 + x = x
                         inst.opcode = OP_COPY
                         inst.src1 = inst.src2
                         inst.src2 = 0 as u32
@@ -11974,6 +12100,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
         elif inst.opcode == OP_ISUB:
             if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
                 if inst.src1 == inst.src2:
+                    // x - x = 0
                     inst.opcode = OP_ICONST
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -11983,6 +12110,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
                 else:
                     let v2 = vals[inst.src2]
                     if v2.known and v2.val == 0 as u64:
+                        // x - 0 = x
                         inst.opcode = OP_COPY
                         inst.src2 = 0 as u32
                         changed = true
@@ -11992,6 +12120,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
                 let v1 = vals[inst.src1]
                 let v2 = vals[inst.src2]
                 if (v2.known and v2.val == 0 as u64) or (v1.known and v1.val == 0 as u64):
+                    // x * 0 = 0
                     inst.opcode = OP_ICONST
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -11999,10 +12128,12 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
                         vals[inst.dest] = ConstVal(known: true, val: 0 as u64)
                     changed = true
                 elif v2.known and v2.val == 1 as u64:
+                    // x * 1 = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
                 elif v1.known and v1.val == 1 as u64:
+                    // 1 * x = x
                     inst.opcode = OP_COPY
                     inst.src1 = inst.src2
                     inst.src2 = 0 as u32
@@ -12012,6 +12143,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
             if inst.src2 != 0 as u32:
                 let v2 = vals[inst.src2]
                 if v2.known and v2.val == 1 as u64:
+                    // x / 1 = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
@@ -12020,6 +12152,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
             if inst.src2 != 0 as u32:
                 let v2 = vals[inst.src2]
                 if v2.known and v2.val == 1 as u64:
+                    // x % 1 = 0
                     inst.opcode = OP_ICONST
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -12030,6 +12163,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
         elif inst.opcode == OP_AND:
             if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
                 if inst.src1 == inst.src2:
+                    // x & x = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
@@ -12037,6 +12171,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
                     let v1 = vals[inst.src1]
                     let v2 = vals[inst.src2]
                     if (v1.known and v1.val == 0 as u64) or (v2.known and v2.val == 0 as u64):
+                        // x & 0 = 0
                         inst.opcode = OP_ICONST
                         inst.src1 = 0 as u32
                         inst.src2 = 0 as u32
@@ -12047,6 +12182,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
         elif inst.opcode == OP_OR:
             if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
                 if inst.src1 == inst.src2:
+                    // x | x = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
@@ -12054,6 +12190,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
         elif inst.opcode == OP_XOR:
             if inst.src1 != 0 as u32 and inst.src2 != 0 as u32:
                 if inst.src1 == inst.src2:
+                    // x ^ x = 0
                     inst.opcode = OP_ICONST
                     inst.src1 = 0 as u32
                     inst.src2 = 0 as u32
@@ -12065,12 +12202,14 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
             if inst.src2 != 0 as u32:
                 let v2 = vals[inst.src2]
                 if v2.known and v2.val == 0 as u64:
+                    // x << 0 = x, x >> 0 = x
                     inst.opcode = OP_COPY
                     inst.src2 = 0 as u32
                     changed = true
 
         elif inst.opcode == OP_EQ:
             if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                // x == x = true
                 inst.opcode = OP_ICONST
                 inst.src1 = 1 as u32
                 inst.src2 = 0 as u32
@@ -12080,6 +12219,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
 
         elif inst.opcode == OP_NE:
             if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                // x != x = false
                 inst.opcode = OP_ICONST
                 inst.src1 = 0 as u32
                 inst.src2 = 0 as u32
@@ -12089,6 +12229,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
 
         elif inst.opcode == OP_LT or inst.opcode == OP_GT:
             if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                // x < x = false, x > x = false
                 inst.opcode = OP_ICONST
                 inst.src1 = 0 as u32
                 inst.src2 = 0 as u32
@@ -12098,6 +12239,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
 
         elif inst.opcode == OP_LE or inst.opcode == OP_GE:
             if inst.src1 != 0 as u32 and inst.src1 == inst.src2:
+                // x <= x = true, x >= x = true
                 inst.opcode = OP_ICONST
                 inst.src1 = 1 as u32
                 inst.src2 = 0 as u32
@@ -12106,6 +12248,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
                 changed = true
 
         elif inst.opcode == OP_BRANCH:
+            // Constant branch folding: branch(known_const) -> jump
             if inst.src1 != 0 as u32:
                 let cond_val = vals[inst.src1]
                 if cond_val.known:
@@ -12129,6 +12272,10 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
     @free(vals as ptr[u8])
     return changed
 
+// Per-basic-block Common Subexpression Elimination:
+// Within each block, finds duplicate pure computations and replaces later
+// occurrences with COPY of the first result, enabling DCE to remove the redundant
+// computation.
 pub fn cse_func(f: ptr[AirFunc]) -> bool:
     mut changed := false
 
@@ -12169,6 +12316,9 @@ pub fn cse_func(f: ptr[AirFunc]) -> bool:
 
     return changed
 
+// Functions exceeding this instruction count skip expensive O(nÂ²) and
+// structural passes (CSE, LICM, strength reduction, loop unrolling) to
+// avoid blowing compilation time on giant switch-dispatch functions.
 pub const OPT_LARGE_FUNC_THRESHOLD: i64 = 2000
 
 pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
@@ -12178,12 +12328,17 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
         if not f.is_extern:
             let is_large = f.insts.len > OPT_LARGE_FUNC_THRESHOLD
 
+            // Structural passes: run once before iterative value passes.
+            // LICM/strength-reduction/unrolling expose new constants that
+            // the iterative loop below will clean up.
             if self.level >= 2 as u8 and not is_large:
                 compute_loop_depths(f)
                 licm_func(f)
                 strength_reduction_func(f)
                 loop_unroll_func(f)
 
+            // Iterative value passes: fold â†’ simplify â†’ propagate â†’ eliminate.
+            // Converges in 2-4 iterations for typical functions.
             mut iter := 0
             while iter < 6:
                 mut changed := false
@@ -15095,12 +15250,17 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                                     if entry.kind == 2 as u8: // TYPE_KIND_FUNC = 2
                                         let fi = &table.funcs.data[entry.extra as i64]
                                         let ret_type_id = fi.ret
+                                        // str (12) is a 16-byte return value
+                                        if ret_type_id == 12 as u32:
+                                            return true
                                         if ret_type_id < table.entries.len as u32:
                                             let size = table.entries.data[ret_type_id].size
                                             if size == 16 as u32:
                                                 return true
                     else: // Dynamic function call
                         let type_id = inst.type_id as u32
+                        if type_id == 12 as u32:
+                            return true
                         if type_id < table.entries.len as u32:
                             let size = table.entries.data[type_id].size
                             if size == 16 as u32:
@@ -15108,14 +15268,57 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                     return false
                 elif op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL:
                     return false
-                elif op == OP_COPY or op == OP_MOVE or op == OP_CAST:
+                elif op == OP_COPY or op == OP_MOVE:
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
                         let size = table.entries.data[type_id].size
                         if size == 16 as u32:
                             return true
-                    // Recursively check src1 for type size
+                    // COPY/MOVE preserve the type, so the source size is
+                    // authoritative when the dest type_id is unset/generic.
                     return regalloc_is_16byte(inst.src1, fn_ptr, table, symbols)
+                elif op == OP_CAST:
+                    // A cast CHANGES the type: size strictly by the destination
+                    // type, never the source. e.g. str(16)->ptr(8) must report
+                    // 8-byte; recursing to src1 (the str) would wrongly give
+                    // the dest 2 spill slots and corrupt it on every later use.
+                    let type_id = inst.type_id as u32
+                    if type_id == 12 as u32:
+                        return true
+                    if type_id < table.entries.len as u32:
+                        let size = table.entries.data[type_id].size
+                        if size == 16 as u32:
+                            return true
+                    return false
+                elif op == OP_DEREF:
+                    // Deref of ptr[str]/ref[str] yields a 16-byte str value even
+                    // when the deref's own type_id stayed a generic param. Size
+                    // by the concrete pointee of the source pointer register.
+                    let type_id = inst.type_id as u32
+                    // str (12) is always 16 bytes; match the selector which
+                    // hardcodes this, rather than relying on entries[12].size
+                    // which may be unset in some type tables.
+                    if type_id == 12 as u32:
+                        return true
+                    if type_id < table.entries.len as u32:
+                        if table.entries.data[type_id].size == 16 as u32:
+                            return true
+                    mut src_ty := 0 as u32
+                    if inst.src1 >= 1 as u32 and inst.src1 <= fn_ptr.params.len as u32:
+                        src_ty = fn_ptr.params.data[inst.src1 as i64 - 1 as i64] as u32
+                    else:
+                        mut k := 0 as i64
+                        while k < fn_ptr.insts.len:
+                            let din = &fn_ptr.insts.data[k]
+                            if din.dest == inst.src1:
+                                src_ty = din.type_id as u32
+                                break
+                            k = k + 1
+                    if src_ty < table.entries.len as u32:
+                        let se = table.entries.data[src_ty]
+                        if (se.kind == TYPE_KIND_POINTER or se.kind == TYPE_KIND_REF) and se.extra == 12 as u32:
+                            return true
+                    return false
                 else:
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
@@ -15211,10 +15414,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if t_id < sel.table.entries.len as u32:
             if sel.table.entries.data[t_id].size == 16 as u32:
                 is_str = true
-        if inst.src1 == 0 as u32 and not is_str:
+        if inst.src1 == 0 as u32 and inst.src2 == 0 as u32 and not is_str:
             out_insts.push(MachInst(op: MACH_XOR_ZERO, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            let val = inst.src1 as i64
+            // ICONST carries a full 64-bit value split across src1 (low 32) and
+            // src2 (high 32) â€” see air_builder lower_int_lit. Reconstruct both
+            // halves; reading src1 alone truncates large constants (e.g. the
+            // 0xfffffffffffffffe Result tag mask) and corrupts 64-bit pointers.
+            let val = (inst.src1 as i64) | ((inst.src2 as i64) << (32 as i64))
             mut vreg_flag := 0 as u32
             if is_str:
                 vreg_flag = 2 as u32
@@ -15360,6 +15567,9 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                     if dest_size == 16 as u32:
                         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     else:
+                        // Cast from 16-byte (str) to 8-byte (ptr): load str.ptr field.
+                        // Must LEA the struct address first so the spill-slot path reads
+                        // the ptr field correctly instead of dereferencing through it.
                         let tmp_src_cast = next_vreg(sel)
                         out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_cast, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                         out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_cast, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -15510,8 +15720,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if is_16byte:
                 let tmp_src_addr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                // Load the high half (RDX) BEFORE the low half (RAX): the source
+                // address (tmp_src_addr) may be allocated to RAX, so loading RAX
+                // first would clobber the base and make the RDX load read from
+                // [ptr+8] instead of [&value+8] â€” corrupting a 16-byte str's len.
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             else:
                 let ret_type = sel.fn_ptr.ret_type as u32
                 mut ret_phys := REG_RAX
@@ -15752,10 +15966,18 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if inst.dest != 0 as u32:
                 let is_16byte = regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols)
                 if is_16byte:
+                    // Capture the RAX:RDX return halves into vregs BEFORE taking
+                    // the address of dest: tmp_dest_addr (the LEA result) may be
+                    // allocated to RAX/RDX, and the LEA would clobber the return
+                    // value before it is stored. Saving first makes it safe.
+                    let tmp_ret_lo = next_vreg(sel)
+                    let tmp_ret_hi = next_vreg(sel)
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     let tmp_dest_addr = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RDX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                    out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ret_hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
                 else:
                     let dest_type = get_register_type(sel, inst.dest)
                     mut ret_reg := abi_return_reg(sel.abi_name)
@@ -15824,9 +16046,20 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_IMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_size, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
         let tmp_addr = next_vreg(sel)
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // Indexing a str (16-byte {ptr,len}) value: the base address is the
+        // str's `ptr` field (its low 8 bytes), NOT the address of the str slot.
+        // `MOV tmp_addr = src1` on a 16-byte spilled vreg yields the slot
+        // address, so `src[i]` indexed into the str struct itself (returning a
+        // byte of the pointer value). Load the ptr field explicitly. This is the
+        // base used by the lexer (`src[pos]`) and fnv1a (`s[i]`).
+        if regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols):
+            let tmp_saddr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
+
         if size == 16 as u32:
             let tmp_dest_addr = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -15900,10 +16133,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
     elif op == OP_GET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)
-        ax_printf_local("[Debug] OP_GET_FIELD: type_id=%d, field_idx=%d\n", struct_type as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
-        ax_printf_local("[Debug]   -> disp=%d, size=%d\n", disp as i64, size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if size > 16 as u32:
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         elif size == 16 as u32:
@@ -15958,8 +16189,22 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if type_id < sel.table.entries.len as u32:
                 type_size = sel.table.entries.data[type_id].size
 
+            // str (type 12) is a 16-byte {ptr,len} value: dereferencing a
+            // ptr[str] must read all 16 bytes. Forcing 8 here dropped the len
+            // field, so Result/Option unwrap of a str payload returned a str
+            // with a garbage length.
             if type_id == 12 as u32:
-                type_size = 8 as u32
+                type_size = 16 as u32
+
+            // The deref's own type_id is not always monomorphised to the
+            // concrete pointee (a generic T resolving to str). Recover the size
+            // from the source pointer's concrete register type when it is
+            // ptr[str]/ref[str]. Limited to str because struct values are 8-byte
+            // heap references whose entry.size is the full struct size.
+            if src_type < sel.table.entries.len as u32:
+                let se = sel.table.entries.data[src_type]
+                if (se.kind == TYPE_KIND_POINTER or se.kind == TYPE_KIND_REF) and se.extra == 12 as u32:
+                    type_size = 16 as u32
 
             if type_size == 16 as u32:
                 let tmp_dest_addr = next_vreg(sel)
@@ -16009,6 +16254,84 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     else:
         out_insts.push(MachInst(op: MACH_NOP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
+// Materialize all parameters into their param vregs at function entry.
+//
+// The previous design materialized params lazily on first use. For 8-byte
+// params that emitted `MOV pvreg = arg_reg`, which the register allocator
+// detects (param_idx_of_vreg) and protects from being colored with a *later*
+// param's arg register. But 16-byte (str) params materialize via LOAD/LEA/STORE
+// with fresh scratch temps that carry no such protection, so an earlier str
+// param's scratch could grab a later param's incoming arg register (e.g. RDX),
+// clobbering it before that later param was read. The symptom: with two str
+// params, reading the 2nd returned the 1st's value.
+//
+// Fix: snapshot every integer-register-passed argument into a fresh vreg via
+// `MOV snap = arg_reg` FIRST. Those MOVs are param-tagged and mutually
+// non-clobbering, so after this phase all original arg registers are safely
+// captured and later value-loading scratch may use any register. Then load each
+// parameter's value from its snapshot. param_idx_processed is set past the end
+// so the lazy per-instruction paths are skipped.
+pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachInstVec]):
+    let nparams = sel.fn_ptr.params.len
+    if nparams <= 0 as i64:
+        return
+    let snaps = @alloc(nparams * 4 as i64) as ptr[u32]
+    // Phase 1: snapshot incoming integer arg registers (protected MOVs).
+    mut p := 0 as i64
+    while p < nparams:
+        snaps[p] = 0 as u32
+        let phys = abi_int_arg_reg(sel.abi_name, p)
+        if phys != REG_NONE:
+            let snap = next_vreg(sel)
+            snaps[p] = snap
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        p = p + 1
+    // Phase 2: store each parameter's value into its param vreg.
+    p = 0 as i64
+    while p < nparams:
+        let pvreg = (p + 1 as i64) as u32
+        mut psize := 8 as u32
+        let pty = sel.fn_ptr.params.data[p] as u32
+        if pty < sel.table.entries.len as u32:
+            psize = sel.table.entries.data[pty as i64].size
+        let phys = abi_int_arg_reg(sel.abi_name, p)
+        if phys != REG_NONE:
+            let snap = snaps[p]
+            if psize == 16 as u32:
+                // arg register held a pointer to the 16-byte value
+                let lo = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let hi = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                let addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            // stack-passed parameter (arg index >= number of register args)
+            mut offset := 0 as i64
+            if sel.abi_name == "win64":
+                offset = 48 as i64 + (p - 4 as i64) * 8 as i64
+            else:
+                offset = 16 as i64 + (p - 6 as i64) * 8 as i64
+            if psize == 16 as u32:
+                let saddr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+                let lo = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                let hi = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+                let addr = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: hi, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: pvreg, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
+        p = p + 1
+    @free(snaps as ptr[u8])
+
 pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr[SymbolTable], pool: ptr[InternPool]) -> MachInstVec:
     mut actual_max_vreg := 0 as u32
     mut vi := 0 as i64
@@ -16056,7 +16379,11 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
                 result.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -4 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 if abi == "win64":
                     result.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
+
+            if bi == 0 as i64:
+                emit_param_prologue(&sel, &result)
+                sel.param_idx_processed = sel.fn_ptr.params.len as i32
+
             mut i := 0 as i64
             while i < bb.instrs_len as i64:
                 let inst_idx = f.block_instrs.data[bb.instrs_start as i64 + i]
@@ -16066,6 +16393,8 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
                 i = i + 1
             bi = bi + 1
     else:
+        emit_param_prologue(&sel, &result)
+        sel.param_idx_processed = sel.fn_ptr.params.len as i32
         mut i := 0 as i64
         while i < f.insts.len:
             let inst = &f.insts.data[i]
@@ -16189,7 +16518,8 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     iv.end = i as i32
         i = i + 1
 
-    // Collect active vregs into compact list — avoids scanning sparse gaps per back-edge.
+    // Collect active vregs into a compact list â€” avoids scanning sparse gaps
+    // in the back-edge extension loop below.
     let active_vregs = @alloc(map_size * 4) as ptr[u32]
     mut active_count := 0 as i64
     mut av := 0 as i64
@@ -16229,6 +16559,7 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                 let target_label = be_inst.dst.label
                 let target_idx = label_to_idx[target_label as i64]
                 if target_idx != -1 as i64 and target_idx < be_i:
+                    // Back-edge: only scan actual active vregs, not the full map.
                     mut v_scan := 0 as i64
                     while v_scan < active_count:
                         let vr = active_vregs[v_scan] as i64
@@ -16252,7 +16583,8 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
         v = v + 1
     @free(interval_map as ptr[u8])
 
-    // Counting sort on start positions: O(n + insts_len) vs O(n^2) insertion sort.
+    // Counting sort on start positions â€” O(n + insts_len) vs O(n^2) insertion sort.
+    // start values are always in [0, insts_len), so insts_len is the range bound.
     if result.len > 1 as i64 and insts_len > 0 as i64:
         let count_arr = @alloc(insts_len * 4) as ptr[i32]
         @memset(count_arr as ptr[void], 0 as u8, insts_len * 4)
@@ -16430,6 +16762,8 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                     address_taken[v] = true
         scan_idx = scan_idx + 1
 
+    // Precompute call instruction positions once so each interval check is O(log m)
+    // instead of the naive O(m) inner scan per interval.
     let call_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
     mut call_count := 0 as i64
     mut ci_scan := 0 as i64
@@ -16461,6 +16795,11 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         iv_idx = iv_idx + 1
     @free(call_pos as ptr[u8])
 
+    // For very large functions, the O(n^2) interference graph overflows memory.
+    // Fall back to spill-all: every vreg gets a stack slot.
+    // Correct but conservative; the emitter already handles spills.
+    // insts_len > 5000 catches huge selector functions (~10K mach insts) that
+    // would OOM even with a modest interval count.
     let REGALLOC_GRAPH_LIMIT: i64 = 50000
     let REGALLOC_INSTS_LIMIT: i64 = 5000
     if intervals.len > REGALLOC_GRAPH_LIMIT or insts_len > REGALLOC_INSTS_LIMIT:
@@ -16475,7 +16814,14 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             if not seen_s[sv]:
                 seen_s[sv] = true
                 allocs_s[sv] = RegAllocation(vreg: sv, phys: REG_NONE, spilled: true, spill_idx: spill_count_s)
-                spill_count_s = spill_count_s + 1
+                // 16-byte (str/16-byte struct) values occupy TWO 8-byte stack
+                // slots. The graph-coloring path reserves 2; this spill-all
+                // fallback (used for large functions) MUST do the same, else
+                // each spilled 16-byte value clobbers the next vreg's slot.
+                if regalloc_is_16byte(sv, fn_ptr, table, symbols):
+                    spill_count_s = spill_count_s + 2
+                else:
+                    spill_count_s = spill_count_s + 1
             siv = siv + 1
         @free(seen_s as ptr[u8])
         @free(param_idx_of_vreg as ptr[u8])
@@ -16829,7 +17175,11 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16:
                     add_mult = 2 as i64
                 let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
-                if inst.op == MACH_LEA and is_16:
+                if inst.op == MACH_LEA:
+                    // LEA of a spilled vreg means "address of the value": rewrite to
+                    // RBP + slot offset for ANY size. Reloading the value into a
+                    // scratch register and taking lea (reg) would yield the value
+                    // itself, not its address (broken &self / MAKE_REF semantics).
                     mut disp := 0 as i64
                     if inst.src2.kind == OPND_IMM:
                         disp = inst.src2.imm
@@ -19788,8 +20138,11 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
         return "ax_free"
     if name == "std.string.len" or name == "ax_std.string.len":
         return "ax_str_len"
-    if name == "std.string.concat" or name == "ax_std.string.concat":
-        return "ax_str_concat"
+    // std.string.concat is NOT redirected to the C-runtime DLL symbol: that
+    // symbol uses the C/Win64 ABI (by-ref args, hidden-pointer 16-byte return)
+    // which is incompatible with AXIOM's value ABI (str args by pointer, result
+    // in RAX:RDX). Instead the call falls through to the in-program `concat`
+    // function (std/string.ax), which has a real value-ABI body.
     if name == "std.string.replace" or name == "ax_std.string.replace":
         return "ax_str_replace"
     if name == "std.string.slice" or name == "ax_std.string.slice":
@@ -19814,6 +20167,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut str_keys := new_u32_vec()
     mut str_offsets := new_u32_vec()
 
+    // O(1) dedup via boolean seen-array indexed by intern-pool ID.
+    // Replaces the O(n) linear search that made the scan O(n^2) overall.
     let str_seen_size = pool.state.count + 2 as i64
     let str_seen = @alloc(str_seen_size) as ptr[bool]
     @memset(str_seen as ptr[void], 0 as u8, str_seen_size)
@@ -20000,15 +20355,22 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         relocs: new_relocation_vec()
     ))
 
+    // ax_Err legacy stub: pointer-layout Err tag â€” mov rax, rcx; or rax, 1; ret.
+    // (Normal Err(...) calls are lowered inline by air_builder; this only covers
+    // any stray direct call so the tag bit is still observable by is_err.)
     let err_offset = all_code.len as u32
     push_byte(&all_code, 0x48 as u8)
     push_byte(&all_code, 0x89 as u8)
     push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0x48 as u8)
+    push_byte(&all_code, 0x83 as u8)
+    push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0x01 as u8)
     push_byte(&all_code, 0xC3 as u8)
     push_compiled_func_info(&func_infos, CompiledFuncInfo(
         name: "ax_Err",
         offset: err_offset,
-        size: 4 as u32,
+        size: 8 as u32,
         is_global: true,
         relocs: new_relocation_vec()
     ))
@@ -20026,15 +20388,35 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         relocs: new_relocation_vec()
     ))
 
+    // ax_None: pointer-layout None is the null pointer â€” xor eax, eax; ret.
     let none_offset = all_code.len as u32
-    push_byte(&all_code, 0x48 as u8)
-    push_byte(&all_code, 0x89 as u8)
-    push_byte(&all_code, 0xC8 as u8)
+    push_byte(&all_code, 0x31 as u8)
+    push_byte(&all_code, 0xC0 as u8)
     push_byte(&all_code, 0xC3 as u8)
     push_compiled_func_info(&func_infos, CompiledFuncInfo(
         name: "ax_None",
         offset: none_offset,
-        size: 4 as u32,
+        size: 3 as u32,
+        is_global: true,
+        relocs: new_relocation_vec()
+    ))
+
+    // ax_sum_layout_is_pointer: the native backend implements the pointer-layout
+    // sum representation (boxed payload, tag bit 0 on Err), matching the C
+    // backend built with -DAXIOM_SUMLAYOUT_POINTER. Defining it locally returns
+    // TRUE deterministically instead of importing from ax_runtime.dll (which was
+    // built without the define and returns FALSE) â€” mov eax, 1; ret.
+    let sum_layout_offset = all_code.len as u32
+    push_byte(&all_code, 0xB8 as u8)
+    push_byte(&all_code, 0x01 as u8)
+    push_byte(&all_code, 0x00 as u8)
+    push_byte(&all_code, 0x00 as u8)
+    push_byte(&all_code, 0x00 as u8)
+    push_byte(&all_code, 0xC3 as u8)
+    push_compiled_func_info(&func_infos, CompiledFuncInfo(
+        name: "ax_sum_layout_is_pointer",
+        offset: sum_layout_offset,
+        size: 6 as u32,
         is_global: true,
         relocs: new_relocation_vec()
     ))
@@ -20082,6 +20464,8 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
 
+    // Build O(1) symbol nameâ†’index map using intern pool IDs.
+    // The previous O(n) linear search per relocation made this O(n^2) total.
     let sym_map_size = pool.state.count + 65536 as i64
     let coff_sym_map = @alloc(sym_map_size * 4) as ptr[i32]
     @memset(coff_sym_map as ptr[void], 0xff as u8, sym_map_size * 4)
@@ -20142,7 +20526,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     target_sym_idx = new_idx
                     if (target_id as i64) < sym_map_size:
                         coff_sym_map[target_id as i64] = new_idx
-
+                    
             let reloc_offset = func_offset + r.offset as u32
             if is_elf64:
                 push_reloc(&elf_relocs, Relocation(offset: reloc_offset as i64, kind: r.kind, padding1: 0 as u8, padding2: 0 as u16, sym_name: target_sym_idx as u32, addend: r.addend))
@@ -20166,7 +20550,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     all_code.data[reloc_offset as i64 + 2] = ((val >> 16 as i32) & 0xFF as i32) as u8
                     all_code.data[reloc_offset as i64 + 3] = ((val >> 24 as i32) & 0xFF as i32) as u8
                 push_coff_reloc(&coff_relocs, COFFReloc(virt_addr: reloc_offset, sym_table_idx: target_sym_idx as u32, reloc_type: reloc_type))
-
+                
             r_i = r_i + 1
         i = i + 1
 
@@ -22898,26 +23282,26 @@ fn concatenate_stdlib(src: str) -> str:
     ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
-    
+
     @memcpy(new_buf, res_src as ptr[u8], len_res)
     new_buf[len_res] = 10 as u8
- 
+
     let off_alloc = len_res + 1 as i64
     @memcpy(((new_buf as i64) + off_alloc) as ptr[u8], alloc_src as ptr[u8], len_alloc)
     new_buf[off_alloc + len_alloc] = 10 as u8
-    
+
     let off_sched = off_alloc + len_alloc + 1 as i64
     @memcpy(((new_buf as i64) + off_sched) as ptr[u8], sched_src as ptr[u8], len_sched)
     new_buf[off_sched + len_sched] = 10 as u8
-    
+
     let off_rt = off_sched + len_sched + 1 as i64
     @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
     new_buf[off_rt + len_rt] = 10 as u8
-    
+
     let off_os = off_rt + len_rt + 1 as i64
     @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
     new_buf[off_os + len_os] = 10 as u8
- 
+
     let off_str = off_os + len_os + 1 as i64
     @memcpy(((new_buf as i64) + off_str) as ptr[u8], str_src as ptr[u8], len_str)
     new_buf[off_str + len_str] = 10 as u8
@@ -22925,13 +23309,13 @@ fn concatenate_stdlib(src: str) -> str:
     let off_io = off_str + len_str + 1 as i64
     @memcpy(((new_buf as i64) + off_io) as ptr[u8], io_src as ptr[u8], len_io)
     new_buf[off_io + len_io] = 10 as u8
-    
+
     let off_src = off_io + len_io + 1 as i64
     @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
     new_buf[total_len] = 0 as u8
-    
+
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
-    
+
     ax_puts_local("[Debug] Cleaning up...")
     fflush(null as ptr[void])
     // Commented out to prevent double-free crashes under compiler's CTGC system
@@ -23362,7 +23746,7 @@ pub fn main() -> i32:
             let output_file_nt = str_to_null_terminated(output_file)
 
             // Compile C to executable using gcc.
-            // -g omitted: debug info triples compile time and binary size.
+            // -g is omitted intentionally: debug info triples compile time and binary size.
             ax_snprintf_local(cmd_buf as ptr[void], 2048, "gcc %s -DAXIOM_SUMLAYOUT_POINTER -fno-strict-aliasing -Wno-int-conversion -Wno-incompatible-pointer-types -Wl,--no-insert-timestamp -o %s axiom_temp.c -Iruntime runtime/axalloc/axalloc_compiled.c runtime/axalloc/platform_ext.c runtime/panic/panic.c runtime/ax_assert.c runtime/ax_collections.c runtime/ax_math.c runtime/ax_print.c runtime/ax_string_ops.c runtime/actor/actor.c runtime/actor/async.c runtime/actor/ioloop.c runtime/actor/isolated.c runtime/actor/msgqueue.c runtime/actor/runtime_init.c runtime/actor/scheduler.c runtime/actor/supervisor.c" as ptr[u8], get_str_ptr(opt_str) as ptr[void], output_file_nt as ptr[void])
             let link_status = system(cmd_buf as ptr[void])
 

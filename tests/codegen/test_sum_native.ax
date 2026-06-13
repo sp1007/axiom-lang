@@ -1,0 +1,63 @@
+// Native backend sum-type test: pointer-layout Result/Option.
+// Each failing check returns a distinct exit code so the first broken
+// primitive is identifiable from the process exit code alone. Exit 0 = all pass.
+
+fn ok_i64(x: i64) -> Result[i64, str]:
+    if x > 0:
+        return Ok(x)
+    return Err("neg")
+
+fn ok_str(flag: i64) -> Result[str, str]:
+    if flag > 0:
+        return Ok("payload-ok")
+    return Err("payload-err")
+
+fn some_i64(x: i64) -> Option[i64]:
+    if x > 0:
+        return Some(x)
+    return None
+
+pub fn main() -> i32:
+    // 1-4: Result[i64,str] tag detection
+    let r1 = ok_i64(42)
+    if not r1.is_ok():
+        return 1
+    if r1.is_err():
+        return 2
+    let r2 = ok_i64(0 - 5)
+    if r2.is_ok():
+        return 3
+    if not r2.is_err():
+        return 4
+
+    // 5: Ok payload roundtrip (i64)
+    if r1.unwrap() != 42:
+        return 5
+
+    // 6-7: Result[str,str] tag detection
+    let s1 = ok_str(1)
+    if not s1.is_ok():
+        return 6
+    let s2 = ok_str(0)
+    if not s2.is_err():
+        return 7
+
+    // 8-9: str payload roundtrip (ptr+len survive boxing)
+    let ok_payload = s1.unwrap()
+    if ok_payload.len != 10:
+        return 8
+    let err_payload = s2.unwrap_err()
+    if err_payload.len != 11:
+        return 9
+
+    // 10-12: Option[i64]
+    let o1 = some_i64(7)
+    if not o1.is_some():
+        return 10
+    let o2 = some_i64(0 - 1)
+    if not o2.is_none():
+        return 11
+    if o1.unwrap() != 7:
+        return 12
+
+    return 0

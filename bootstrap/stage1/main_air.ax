@@ -393,26 +393,26 @@ fn concatenate_stdlib(src: str) -> str:
     ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
-    
+
     @memcpy(new_buf, res_src as ptr[u8], len_res)
     new_buf[len_res] = 10 as u8
- 
+
     let off_alloc = len_res + 1 as i64
     @memcpy(((new_buf as i64) + off_alloc) as ptr[u8], alloc_src as ptr[u8], len_alloc)
     new_buf[off_alloc + len_alloc] = 10 as u8
-    
+
     let off_sched = off_alloc + len_alloc + 1 as i64
     @memcpy(((new_buf as i64) + off_sched) as ptr[u8], sched_src as ptr[u8], len_sched)
     new_buf[off_sched + len_sched] = 10 as u8
-    
+
     let off_rt = off_sched + len_sched + 1 as i64
     @memcpy(((new_buf as i64) + off_rt) as ptr[u8], rt_src as ptr[u8], len_rt)
     new_buf[off_rt + len_rt] = 10 as u8
-    
+
     let off_os = off_rt + len_rt + 1 as i64
     @memcpy(((new_buf as i64) + off_os) as ptr[u8], os_src as ptr[u8], len_os)
     new_buf[off_os + len_os] = 10 as u8
- 
+
     let off_str = off_os + len_os + 1 as i64
     @memcpy(((new_buf as i64) + off_str) as ptr[u8], str_src as ptr[u8], len_str)
     new_buf[off_str + len_str] = 10 as u8
@@ -420,13 +420,13 @@ fn concatenate_stdlib(src: str) -> str:
     let off_io = off_str + len_str + 1 as i64
     @memcpy(((new_buf as i64) + off_io) as ptr[u8], io_src as ptr[u8], len_io)
     new_buf[off_io + len_io] = 10 as u8
-    
+
     let off_src = off_io + len_io + 1 as i64
     @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
     new_buf[total_len] = 0 as u8
-    
+
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
-    
+
     ax_puts_local("[Debug] Cleaning up...")
     fflush(null as ptr[void])
     // Commented out to prevent double-free crashes under compiler's CTGC system
