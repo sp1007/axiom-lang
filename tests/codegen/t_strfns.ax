@@ -1,0 +1,32 @@
+import std.string
+
+pub fn main() -> i32:
+    mut code := 0 as i32
+    // replace: pattern absent -> unchanged
+    let r0 = std.string.replace("hello world", "::", ".")
+    if std.string.len(r0) != 11 as i64 or ((r0 as ptr[u8]) as i64) == 0 as i64:
+        code = code + 1
+    // replace: present
+    let r1 = std.string.replace("std.string.foo", "std.string.", "")
+    if std.string.len(r1) != 3 as i64:
+        code = code + 2
+    // slice
+    let sl = std.string.slice("hello world", 0 as i64, 5 as i64)
+    if std.string.len(sl) != 5 as i64 or (sl as ptr[u8])[0] as i32 != 104 as i32:
+        code = code + 4
+    // starts_with
+    if not std.string.starts_with("hello world", "hello"):
+        code = code + 8
+    if std.string.starts_with("hi", "hello"):
+        code = code + 16
+    // ends_with
+    if not std.string.ends_with("hello world", "world"):
+        code = code + 32
+    // contains / index_of
+    if not std.string.contains("hello world", "lo w"):
+        code = code + 64
+    if std.string.index_of("hello world", "world") != 6 as i64:
+        code = code + 128
+    if std.string.contains("abc", "xyz"):
+        code = code + 256
+    return code

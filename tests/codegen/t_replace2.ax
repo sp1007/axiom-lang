@@ -1,0 +1,21 @@
+import std.string
+
+fn nullbit(s: str) -> i64:
+    if ((s as ptr[u8]) as i64) == 0 as i64:
+        return 1
+    return 0
+
+pub fn main() -> i32:
+    let s = "std.string.foo and std.io.bar baz"
+    let r0 = std.string.replace(s, "::", ".")
+    let r1 = std.string.replace(r0, "std.string.", "")
+    let r2 = std.string.replace(r1, "std.io.", "")
+    // bit0: s null, bit1: r0 null, bit2: r1 null, bit3: r2 null
+    mut code := 0 as i64
+    code = code + nullbit(s) * 1 as i64
+    code = code + nullbit(r0) * 2 as i64
+    code = code + nullbit(r1) * 4 as i64
+    code = code + nullbit(r2) * 8 as i64
+    // lens encoded: s,r0,r1,r2 each /1 ... just return code + lens*16
+    let l = std.string.len(r0) * 1000 as i64 + std.string.len(r1) * 100 as i64 + std.string.len(r2)
+    return (code * 1000000 as i64 + l) as i32

@@ -32,48 +32,218 @@ pub fn concat(a: str, b: str) -> str:
     return buf as str
 
 /// Returns a substring [start, end).
+///
+/// Implemented in AXIOM (value ABI); the `str_slice` intrinsic is not lowered
+/// by the native backend.
 pub fn slice(s: str, start: i64, end: i64) -> str:
-    return @compiler_intrinsic("str_slice")
+    mut st := start
+    mut en := end
+    if st < 0 as i64:
+        st = 0 as i64
+    if en > s.len:
+        en = s.len
+    mut n := en - st
+    if n < 0 as i64:
+        n = 0 as i64
+    let buf = malloc((n + 1 as i64) as u64) as ptr[u8]
+    if n > 0 as i64:
+        @memcpy(buf, ((s.ptr as i64) + st) as ptr[u8], n)
+    buf[n] = 0 as u8
+    return buf as str
+
+/// Finds first occurrence of sub, or -1.
+///
+/// Implemented in AXIOM (value ABI); the `str_index_of` intrinsic is not
+/// lowered by the native backend.
+pub fn index_of(s: str, sub: str) -> i64:
+    let sublen = sub.len
+    if sublen == 0 as i64:
+        return 0 as i64
+    let sp = s.ptr
+    let bp = sub.ptr
+    mut i := 0 as i64
+    while i + sublen <= s.len:
+        mut j := 0 as i64
+        mut matched := true
+        while j < sublen:
+            if sp[i + j] != bp[j]:
+                matched = false
+                break
+            j = j + 1
+        if matched:
+            return i
+        i = i + 1 as i64
+    return -1 as i64
 
 /// Checks if s contains substring sub.
 pub fn contains(s: str, sub: str) -> bool:
-    return @compiler_intrinsic("str_contains")
+    return index_of(s, sub) >= 0 as i64
 
 /// Checks if s starts with prefix.
 pub fn starts_with(s: str, prefix: str) -> bool:
-    return @compiler_intrinsic("str_starts_with")
+    if prefix.len > s.len:
+        return false
+    let sp = s.ptr
+    let pp = prefix.ptr
+    mut i := 0 as i64
+    while i < prefix.len:
+        if sp[i] != pp[i]:
+            return false
+        i = i + 1 as i64
+    return true
 
 /// Checks if s ends with suffix.
 pub fn ends_with(s: str, suffix: str) -> bool:
-    return @compiler_intrinsic("str_ends_with")
-
-/// Finds first occurrence of sub, or -1.
-pub fn index_of(s: str, sub: str) -> i64:
-    return @compiler_intrinsic("str_index_of")
+    if suffix.len > s.len:
+        return false
+    let sp = s.ptr
+    let fp = suffix.ptr
+    let off = s.len - suffix.len
+    mut i := 0 as i64
+    while i < suffix.len:
+        if sp[off + i] != fp[i]:
+            return false
+        i = i + 1 as i64
+    return true
 
 /// Splits string by separator.
 pub fn split(s: str, sep: str) -> Vec[str]:
     return @compiler_intrinsic("str_split")
 
-/// Trims whitespace from both ends.
+/// Trims whitespace (space, tab, CR, LF) from both ends.
+///
+/// Implemented in AXIOM (value ABI); the `str_trim` intrinsic is not lowered
+/// by the native backend.
 pub fn trim(s: str) -> str:
-    return @compiler_intrinsic("str_trim")
+    let sp = s.ptr
+    mut st := 0 as i64
+    while st < s.len:
+        let c = sp[st]
+        if c != 32 as u8 and c != 9 as u8 and c != 13 as u8 and c != 10 as u8:
+            break
+        st = st + 1 as i64
+    mut en := s.len
+    while en > st:
+        let c = sp[en - 1 as i64]
+        if c != 32 as u8 and c != 9 as u8 and c != 13 as u8 and c != 10 as u8:
+            break
+        en = en - 1 as i64
+    return slice(s, st, en)
 
-/// Converts to uppercase.
+/// Converts ASCII letters to uppercase.
+///
+/// Implemented in AXIOM (value ABI); the `str_to_upper` intrinsic is not
+/// lowered by the native backend.
 pub fn to_upper(s: str) -> str:
-    return @compiler_intrinsic("str_to_upper")
+    let n = s.len
+    let sp = s.ptr
+    let buf = malloc((n + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        mut c := sp[i]
+        if c >= 97 as u8 and c <= 122 as u8:
+            c = (c - 32 as u8) as u8
+        buf[i] = c
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    return buf as str
 
-/// Converts to lowercase.
+/// Converts ASCII letters to lowercase.
+///
+/// Implemented in AXIOM (value ABI); the `str_to_lower` intrinsic is not
+/// lowered by the native backend.
 pub fn to_lower(s: str) -> str:
-    return @compiler_intrinsic("str_to_lower")
+    let n = s.len
+    let sp = s.ptr
+    let buf = malloc((n + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        mut c := sp[i]
+        if c >= 65 as u8 and c <= 90 as u8:
+            c = (c + 32 as u8) as u8
+        buf[i] = c
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    return buf as str
 
 /// Repeats string n times.
+///
+/// Implemented in AXIOM (value ABI); the `str_repeat` intrinsic is not lowered
+/// by the native backend.
 pub fn repeat(s: str, n: i64) -> str:
-    return @compiler_intrinsic("str_repeat")
+    mut count := n
+    if count < 0 as i64:
+        count = 0 as i64
+    let slen = s.len
+    let total = slen * count
+    let buf = malloc((total + 1 as i64) as u64) as ptr[u8]
+    mut k := 0 as i64
+    while k < count:
+        @memcpy(((buf as i64) + k * slen) as ptr[u8], s.ptr, slen)
+        k = k + 1 as i64
+    buf[total] = 0 as u8
+    return buf as str
 
 /// Replaces occurrences of old with new.
+///
+/// Implemented in AXIOM (value ABI) rather than via the `str_replace`
+/// intrinsic, which the native backend does not lower (it would return an
+/// uninitialised str with a NULL .ptr). A real body works for both backends.
 pub fn replace(s: str, old: str, new: str) -> str:
-    return @compiler_intrinsic("str_replace")
+    let slen = s.len
+    let olen = old.len
+    let nlen = new.len
+    if olen == 0 as i64:
+        return s
+    let sp = s.ptr
+    let op = old.ptr
+    let np = new.ptr
+    // Pass 1: count non-overlapping occurrences of `old` in `s`.
+    mut count := 0 as i64
+    mut i := 0 as i64
+    while i + olen <= slen:
+        mut j := 0 as i64
+        mut matched := true
+        while j < olen:
+            if sp[i + j] != op[j]:
+                matched = false
+                break
+            j = j + 1
+        if matched:
+            count = count + 1 as i64
+            i = i + olen
+        else:
+            i = i + 1 as i64
+    if count == 0 as i64:
+        return s
+    let total = slen + count * (nlen - olen)
+    let buf = malloc((total + 1 as i64) as u64) as ptr[u8]
+    // Pass 2: copy `s` into `buf`, substituting `new` for each `old`.
+    mut out := 0 as i64
+    i = 0 as i64
+    while i < slen:
+        mut matched := false
+        if i + olen <= slen:
+            mut j := 0 as i64
+            matched = true
+            while j < olen:
+                if sp[i + j] != op[j]:
+                    matched = false
+                    break
+                j = j + 1
+        if matched:
+            mut k := 0 as i64
+            while k < nlen:
+                buf[out] = np[k]
+                out = out + 1 as i64
+                k = k + 1 as i64
+            i = i + olen
+        else:
+            buf[out] = sp[i]
+            out = out + 1 as i64
+            i = i + 1 as i64
+    buf[total] = 0 as u8
+    return buf as str
 
 extern "C" fn ax_str_parse_i64(s: str, out_val: ptr[i64]) -> bool
 extern "C" fn ax_str_parse_f64(s: str, out_val: ptr[f64]) -> bool
