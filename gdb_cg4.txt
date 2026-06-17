@@ -1,0 +1,12 @@
+set pagination off
+file bin/axc_stage2_cg.exe
+set args build bin/t_std.ax -o bin/t_std_x.exe -self-link -O1
+run
+set $e = 0x879ef88
+printf "fixups.data=0x%lx len=%ld cap=%ld\n", *(long*)($e+0x50), *(long*)($e+0x58), *(long*)($e+0x60)
+set $fd = *(long*)($e+0x50)
+printf "fix[0]: off=%ld lbl=%u sz=%d\n", *(long*)($fd+0), *(unsigned*)($fd+8), *(int*)($fd+12)
+printf "fix[1]: off=%ld lbl=%u sz=%d\n", *(long*)($fd+16), *(unsigned*)($fd+24), *(int*)($fd+28)
+printf "code.data=0x%lx len=%ld cap=%ld\n", *(long*)($e+0), *(long*)($e+8), *(long*)($e+16)
+printf "labels.len=%ld\n", *(long*)($e+0x30+16)
+quit

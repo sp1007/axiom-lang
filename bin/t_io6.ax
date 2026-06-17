@@ -1,0 +1,44 @@
+import std.result
+
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn p(v: i64):
+    if v == 0 as i64:
+        putchar('0' as i32)
+        putchar(10 as i32)
+        fflush(null as ptr[void])
+        return
+    mut x := v
+    let buf = @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut i := n - 1 as i64
+    while i >= 0 as i64:
+        putchar(buf[i] as i32)
+        i = i - 1 as i64
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+
+fn mki() -> Result[i64, str]:
+    return Ok(42 as i64)
+
+pub fn main() -> i32:
+    let r = mki()
+    p(10 as i64)
+    let raw = (&r) as ptr[u64]
+    p(20 as i64)
+    let boxptr = raw[0]
+    p(boxptr as i64)
+    let masked = boxptr & (0xfffffffffffffffe as u64)
+    p(30 as i64)
+    let stored = (masked as ptr[u64])[0]
+    p(stored as i64)
+    p(40 as i64)
+    let ip = masked as ptr[i64]
+    let v = ip.*
+    p(v)
+    return 0

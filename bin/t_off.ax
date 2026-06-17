@@ -1,0 +1,58 @@
+struct MyVec:
+    data: ptr[i32]
+    len: i64
+    cap: i64
+
+struct S1:
+    x: i64
+    y: i64
+    z: i64
+    a: MyVec
+
+struct S2:
+    a: MyVec
+    b: MyVec
+
+fn new_myvec() -> MyVec:
+    return MyVec(data: null as ptr[i32], len: 0, cap: 0)
+
+fn push(mut self: MyVec, val: i32):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 4 as i64) as ptr[i32]
+        if self.data != null as ptr[i32]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 4 as i64)
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = val
+    self.len = self.len + 1
+
+fn fill(mut v: MyVec) -> i64:
+    mut i := 0 as i64
+    while i < 20 as i64:
+        v.push(i as i32)
+        i = i + 1 as i64
+    return v.len
+
+pub fn main() -> i32:
+    // Test A: single vec at offset 24
+    let s1 = @alloc(64) as ptr[S1]
+    s1[0] = S1(x: 1, y: 2, z: 3, a: new_myvec())
+    mut i := 0 as i64
+    while i < 20 as i64:
+        s1.a.push(i as i32)
+        i = i + 1 as i64
+    if s1.a.len != 20 as i64:
+        return 10
+    // Test B: two vecs, push to second (offset 24)
+    let s2 = @alloc(64) as ptr[S2]
+    s2[0] = S2(a: new_myvec(), b: new_myvec())
+    mut j := 0 as i64
+    while j < 20 as i64:
+        s2.b.push(j as i32)
+        j = j + 1 as i64
+    if s2.b.len != 20 as i64:
+        return 20
+    return 99

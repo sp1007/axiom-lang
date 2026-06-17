@@ -1,0 +1,53 @@
+// Replicate print_i64_raw (print_helpers.ax) exactly to test if it works standalone.
+import std.string
+
+fn print_raw(s: str):
+    print(s)
+
+fn print_raw_ptr(c_ptr: ptr[u8], len: i64):
+    // build str from {ptr,len}
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, c_ptr, len)
+    buf[len] = 0 as u8
+    print(buf as str)
+
+fn print_i64_raw(val: i64):
+    if val == -9223372036854775808 as i64:
+        print_raw("-9223372036854775808")
+        return
+    if val == 0:
+        print_raw("0")
+        return
+    mut v := val
+    mut is_neg := false
+    if v < 0:
+        is_neg = true
+        v = -v
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        let digit = (v % 10) as u8
+        buf[len] = '0' as u8 + digit
+        len = len + 1
+        v = v / 10
+    if is_neg:
+        buf[len] = '-' as u8
+        len = len + 1
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+    buf[len] = 0 as u8
+    print_raw_ptr(buf, len as i64)
+    @free(buf)
+
+pub fn main() -> i32:
+    print_i64_raw(0 as i64)
+    print_raw("\n")
+    print_i64_raw(12345 as i64)
+    print_raw("\n")
+    print_i64_raw(-678 as i64)
+    print_raw("\n")
+    return 0

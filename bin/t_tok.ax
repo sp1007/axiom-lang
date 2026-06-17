@@ -1,0 +1,43 @@
+// Repro: Token-like 8-byte struct (u16 at offset 2) returned BY VALUE from a
+// helper that indexes ptr[Tok], then field-accessed. Mirrors parser peek().
+
+struct Tok:
+    kind: u8
+    pad: u8
+    len: u16
+    offset: u32
+
+struct Vec:
+    data: ptr[Tok]
+    n: i64
+    cap: i64
+
+fn peek(v: ptr[Vec], i: i64) -> Tok:
+    return v.data[i]
+
+pub fn main() -> i32:
+    let v = @alloc(24) as ptr[Vec]
+    let arr = @alloc(8 * 4) as ptr[Tok]
+    arr[0] = Tok(kind: 5 as u8, pad: 0 as u8, len: 7 as u16, offset: 100)
+    arr[1] = Tok(kind: 9 as u8, pad: 0 as u8, len: 3 as u16, offset: 200)
+    v.data = arr
+    v.n = 2
+
+    // A: direct index field read
+    if v.data[0].kind as i32 != 5 as i32:
+        return 1
+    if v.data[1].len as i32 != 3 as i32:
+        return 2
+
+    // B: return-by-value then field read (peek pattern)
+    let t = peek(v, 0)
+    if t.kind as i32 != 5 as i32:
+        return 3
+    if t.len as i32 != 7 as i32:
+        return 4
+
+    let t2 = peek(v, 1)
+    if t2.kind as i32 != 9 as i32:
+        return 5
+
+    return 99

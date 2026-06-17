@@ -1,0 +1,27 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn memcmp(a: ptr[void], b: ptr[void], n: i64) -> i32
+
+fn pc(c: i64):
+    putchar(c as i32)
+
+pub fn main() -> i32:
+    let a = @alloc(4) as ptr[u8]
+    let b = @alloc(4) as ptr[u8]
+    a[0] = 'a' as u8
+    a[1] = '1' as u8
+    b[0] = 'a' as u8
+    b[1] = 's' as u8
+    let r = memcmp(a as ptr[void], b as ptr[void], 2 as i64)
+    // r should be nonzero (a1 != as)
+    if r == 0 as i32:
+        pc('Z' as i64)   // BUG: memcmp says equal
+    else:
+        pc('D' as i64)   // OK: different
+    // same content
+    let r2 = memcmp(a as ptr[void], a as ptr[void], 2 as i64)
+    if r2 == 0 as i32:
+        pc('S' as i64)   // OK: same
+    else:
+        pc('?' as i64)
+    pc(10 as i64)
+    return 0

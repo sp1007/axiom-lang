@@ -1,0 +1,72 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn pc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn slice_to_str(data: ptr[u8], len: i64) -> str:
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, data, len)
+    buf[len] = 0 as u8
+    return buf as str
+
+struct LSym:
+    name: str
+    section: i64
+    offset: u64
+    defined: bool
+
+struct LSymVec:
+    data: ptr[LSym]
+    len: i64
+    cap: i64
+
+fn pushsym(mut self: ptr[LSymVec], s: LSym):
+    if self.len == self.cap:
+        mut nc := 8 as i64
+        if self.cap != 0 as i64:
+            nc = self.cap * 2 as i64
+        let nd = @alloc(nc * 48) as ptr[LSym]
+        if self.data != null as ptr[LSym]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 48)
+        self.data = nd
+        self.cap = nc
+    self.data[self.len] = s
+    self.len = self.len + 1
+
+pub fn main() -> i32:
+    let long = "ax__AX_std_Result__i64__string__AX_std_unwrap__i64__string"
+    let lp = long as ptr[u8]
+    let cp = slice_to_str(lp, std.string.len(long))
+    pc('1' as i64)
+    if cp == long:
+        pc('Y' as i64)
+    else:
+        pc('N' as i64)
+    pc(' ' as i64)
+    mut v := LSymVec(data: null as ptr[LSym], len: 0 as i64, cap: 0 as i64)
+    pushsym(&v, LSym(name: cp, section: 1 as i64, offset: 0 as u64, defined: true))
+    pushsym(&v, LSym(name: "other", section: 0 as i64, offset: 0 as u64, defined: false))
+    let s0 = &v.data[0]
+    pc('2' as i64)
+    if s0.defined:
+        pc('Y' as i64)
+    else:
+        pc('N' as i64)
+    pc(' ' as i64)
+    let target = slice_to_str(lp, std.string.len(long))
+    mut found := 0 as i64
+    mut k := 0 as i64
+    while k < v.len:
+        if v.data[k].defined:
+            if v.data[k].name == target:
+                found = 1 as i64
+        k = k + 1
+    pc('3' as i64)
+    if found == 1 as i64:
+        pc('Y' as i64)
+    else:
+        pc('N' as i64)
+    pc(10 as i64)
+    return 0

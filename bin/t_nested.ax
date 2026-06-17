@@ -1,0 +1,37 @@
+// Repro: nested SMALL struct field accessed for sub-field (read+write),
+// element in an array of >16-byte structs. Matches stage2 crash:
+//   arr[i].inner.b  where inner is an 8-byte struct, b a u16 at offset 2.
+
+struct Inner:
+    a: i16
+    b: i16
+    c: i32
+
+struct Outer:
+    inner: Inner
+    p: i64
+    q: i64
+
+fn touch(arr: ptr[Outer], i: i64, val: i16):
+    arr[i].inner.b = (arr[i].inner.b | val)
+
+pub fn main() -> i32:
+    let arr = @alloc(24 * 4) as ptr[Outer]
+    arr[0] = Outer(inner: Inner(a: 1 as i16, b: 2 as i16, c: 3), p: 0, q: 0)
+
+    // A: direct nested sub-field read
+    if arr[0].inner.b as i32 != 2 as i32:
+        return 1
+
+    // B: nested sub-field read+write (the crashing pattern, in a helper taking ptr)
+    touch(arr, 0, 4 as i16)              // b = 2 | 4 = 6
+    if arr[0].inner.b as i32 != 6 as i32:
+        return 2
+
+    // C: other inner fields intact
+    if arr[0].inner.a as i32 != 1 as i32:
+        return 3
+    if arr[0].inner.c != 3 as i32:
+        return 4
+
+    return 99

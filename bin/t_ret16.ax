@@ -1,0 +1,52 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(buf[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+// 16-byte struct {ptr, u32, i32} — mirrors the buggy RegAllocResult layout
+struct R16:
+    p: ptr[u8]
+    mv: u32
+    sc: i32
+
+fn mk16(p: ptr[u8], mv: u32, sc: i32) -> R16:
+    return R16(p: p, mv: mv, sc: sc)
+
+// 24-byte padded variant (the fix)
+struct R24:
+    p: ptr[u8]
+    mv: u32
+    sc: i32
+    pad: i64
+
+fn mk24(p: ptr[u8], mv: u32, sc: i32) -> R24:
+    return R24(p: p, mv: mv, sc: sc, pad: 0 as i64)
+
+pub fn main() -> i32:
+    let buf = @alloc(64) as ptr[u8]
+    let r = mk16(buf, 21 as u32, 3 as i32)
+    zpn('A' as i64, r.mv as i64)   // expect 21; BUG -> huge (ptr value)
+    zpn('B' as i64, r.sc as i64)   // expect 3
+    let q = mk24(buf, 21 as u32, 3 as i32)
+    zpn('C' as i64, q.mv as i64)   // expect 21
+    zpn('D' as i64, q.sc as i64)   // expect 3
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

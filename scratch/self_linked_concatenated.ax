@@ -2190,21 +2190,79 @@ pub fn ends_with(s: str, suffix: str) -> bool:
 pub fn split(s: str, sep: str) -> Vec[str]:
     return @compiler_intrinsic("str_split")
 
-/// Trims whitespace from both ends.
+/// Trims whitespace (space, tab, CR, LF) from both ends.
+///
+/// Implemented in AXIOM (value ABI); the `str_trim` intrinsic is not lowered
+/// by the native backend.
 pub fn trim(s: str) -> str:
-    return @compiler_intrinsic("str_trim")
+    let sp = s.ptr
+    mut st := 0 as i64
+    while st < s.len:
+        let c = sp[st]
+        if c != 32 as u8 and c != 9 as u8 and c != 13 as u8 and c != 10 as u8:
+            break
+        st = st + 1 as i64
+    mut en := s.len
+    while en > st:
+        let c = sp[en - 1 as i64]
+        if c != 32 as u8 and c != 9 as u8 and c != 13 as u8 and c != 10 as u8:
+            break
+        en = en - 1 as i64
+    return slice(s, st, en)
 
-/// Converts to uppercase.
+/// Converts ASCII letters to uppercase.
+///
+/// Implemented in AXIOM (value ABI); the `str_to_upper` intrinsic is not
+/// lowered by the native backend.
 pub fn to_upper(s: str) -> str:
-    return @compiler_intrinsic("str_to_upper")
+    let n = s.len
+    let sp = s.ptr
+    let buf = malloc((n + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        mut c := sp[i]
+        if c >= 97 as u8 and c <= 122 as u8:
+            c = (c - 32 as u8) as u8
+        buf[i] = c
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    return buf as str
 
-/// Converts to lowercase.
+/// Converts ASCII letters to lowercase.
+///
+/// Implemented in AXIOM (value ABI); the `str_to_lower` intrinsic is not
+/// lowered by the native backend.
 pub fn to_lower(s: str) -> str:
-    return @compiler_intrinsic("str_to_lower")
+    let n = s.len
+    let sp = s.ptr
+    let buf = malloc((n + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        mut c := sp[i]
+        if c >= 65 as u8 and c <= 90 as u8:
+            c = (c + 32 as u8) as u8
+        buf[i] = c
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    return buf as str
 
 /// Repeats string n times.
+///
+/// Implemented in AXIOM (value ABI); the `str_repeat` intrinsic is not lowered
+/// by the native backend.
 pub fn repeat(s: str, n: i64) -> str:
-    return @compiler_intrinsic("str_repeat")
+    mut count := n
+    if count < 0 as i64:
+        count = 0 as i64
+    let slen = s.len
+    let total = slen * count
+    let buf = malloc((total + 1 as i64) as u64) as ptr[u8]
+    mut k := 0 as i64
+    while k < count:
+        @memcpy(((buf as i64) + k * slen) as ptr[u8], s.ptr, slen)
+        k = k + 1 as i64
+    buf[total] = 0 as u8
+    return buf as str
 
 /// Replaces occurrences of old with new.
 ///
@@ -4128,7 +4186,11 @@ pub fn fnv1a(s: str) -> u32:
         h = h ^ (s[i] as u32)
         h = h * 16777619 as u32
         i = i + 1
-    return h
+    // BUG#16: native backend does u32 multiply with 64-bit imul, leaving garbage
+    // in the upper 32 bits. The hash is later COMPARED (entry.hash == h) in 64-bit,
+    // so garbage upper bits cause false-negatives -> duplicate interns -> wrong
+    // name_ids -> resolver crash. Mask to a clean u32 so equality compares hold.
+    return h & 4294967295 as u32
 
 pub struct InternState:
     pub arena_len: i64
@@ -6064,7 +6126,7 @@ pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, de
     (&self.symbol_trees).push(self.current_tree)
     let scope2 = &self.scopes.data[scope_idx]
     scope2.scope_put(name_id, sym_idx)
-    
+
     // Prelude support
     let pool = self.intern as ptr[InternPool]
     let name_str = pool.get(name_id)
@@ -12440,6 +12502,15 @@ pub fn lower_deref_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             let ce = self.mb.typetable.entries.data[child_type as i64]
             if (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra == 12 as u32:
                 type_id = 12 as u32
+            elif (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra != 0 as u32 and (ce.extra as i64) < self.mb.typetable.entries.len:
+                // Recover concrete aggregate pointee so the selector treats `p.*`
+                // (p: ptr[Struct/Sum/etc]) as a by-address aggregate value (returns
+                // the pointer) instead of loading the full struct size. The deref's
+                // own inferred type stays generic when p came from `masked as ptr[T]`
+                // in Result/Option.unwrap. Mirrors the str (12) recovery above.
+                let pe = self.mb.typetable.entries.data[ce.extra as i64]
+                if pe.kind == TYPE_KIND_STRUCT or pe.kind == TYPE_KIND_ARRAY or pe.kind == TYPE_KIND_TUPLE or pe.kind == TYPE_KIND_SUM or pe.kind == TYPE_KIND_GENERIC_INST or pe.kind == TYPE_KIND_OPTION or pe.kind == TYPE_KIND_RESULT:
+                    type_id = ce.extra
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
@@ -13690,7 +13761,12 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                 inst.src1 = curr
                 changed = true
 
-        if inst.src2 != 0 as u32 and not opcode_is_control(inst.opcode):
+        // BUG#15: GET_FIELD/SET_FIELD encode the FIELD INDEX (an immediate) in
+        // src2, not a value vreg. Copy-propagating it corrupts the field selector
+        // whenever the index numerically collides with a vreg id that is in a
+        // copy chain (e.g. field 6 "count" rewritten to vreg 1). src2 here must be
+        // left untouched; only true value operands may be propagated.
+        if inst.src2 != 0 as u32 and not opcode_is_control(inst.opcode) and inst.opcode != OP_GET_FIELD and inst.opcode != OP_SET_FIELD:
             mut curr := inst.src2
             mut depth := 0
             while curr != 0 as u32 and depth < 100:
@@ -13699,7 +13775,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                     break
                 curr = parent
                 depth = depth + 1
-            
+
             if curr != inst.src2:
                 inst.src2 = curr
                 changed = true
@@ -17642,6 +17718,66 @@ pub fn field_size(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) ->
         return 8 as u32
     return f_size
 
+// Returns true if `type_id` is a value-aggregate held BY ADDRESS in this backend:
+// struct(1), array(3), tuple(5), sum(6), generic-inst(8), option(11), result(12).
+// Scalars (primitive 0, func 2, generic 7, pointer 9, ref 10, interface 13) are not.
+// Used by OP_INDEX: indexing an array of aggregates must yield the element ADDRESS
+// (the by-address convention), not load the element bytes as a scalar value.
+pub fn type_is_aggregate(table: ptr[TypeTable], type_id: u32) -> bool:
+    if type_id as i64 >= table.entries.len:
+        return false
+    let k = table.entries.data[type_id].kind
+    if k == 1 as u8 or k == 3 as u8 or k == 5 as u8 or k == 6 as u8 or k == 8 as u8 or k == 11 as u8 or k == 12 as u8:
+        return true
+    return false
+
+// Returns true if field `field_idx` of `struct_type_id` is itself an aggregate
+// (a struct / generic-inst), i.e. a nested value struct. Such a field is held
+// BY ADDRESS (like every small struct value in this backend), so GET_FIELD must
+// return the field's ADDRESS (LEA base+disp), NOT load its bytes as a scalar â€”
+// otherwise a sub-field access (`outer.inner.x`) would deref the inline value as
+// a pointer and fault. Mirrors field_size's navigation. `str` (a 16-byte builtin)
+// is NOT reported here and is handled by the size==16 copy path.
+pub fn field_is_aggregate(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> bool:
+    if struct_type_id == 0 as u32:
+        return false
+    mut real_type_id := struct_type_id
+    mut entry = table.entries.data[real_type_id]
+    if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
+        real_type_id = entry.extra
+        entry = table.entries.data[real_type_id]
+    if entry.kind != 1 as u8 and entry.kind != 8 as u8: // STRUCT=1, GENERIC_INST=8
+        return false
+    mut struct_idx := 0xffffffff as u32
+    if entry.kind == 1 as u8:
+        struct_idx = entry.extra
+    else:
+        mut idx := 0 as i64
+        while idx < table.entries.len:
+            let e = table.entries.data[idx]
+            if e.kind == 1 as u8 and e.name_id == entry.name_id:
+                struct_idx = e.extra
+                break
+            idx = idx + 1
+    if struct_idx == 0xffffffff as u32:
+        return false
+    let info = table.structs.data[struct_idx]
+    if field_idx as i64 >= info.fields.len:
+        return false
+    let f = info.fields.data[field_idx]
+    // Is the field's own type a value-aggregate held BY ADDRESS? That covers
+    // struct(1), array(3), tuple(5), sum(6), generic-inst(8), option(11),
+    // result(12). Scalars (primitive 0, func 2, pointer 9, ref 10) are NOT â€”
+    // they are loaded by value. A small tagged type (sum/option/result, e.g. an
+    // 8-byte enum) is the case that crashed stage2->stage3: its tag/payload sub-
+    // field needs the field ADDRESS, not the inline bytes deref'd as a pointer.
+    if f.type_id as i64 >= table.entries.len:
+        return false
+    let fk = table.entries.data[f.type_id].kind
+    if fk == 1 as u8 or fk == 3 as u8 or fk == 5 as u8 or fk == 6 as u8 or fk == 8 as u8 or fk == 11 as u8 or fk == 12 as u8:
+        return true
+    return false
+
 pub fn abi_int_arg_reg(abi: str, idx: i64) -> u8:
     if abi == "win64":
         return get_win64_arg_reg(idx)
@@ -18151,7 +18287,17 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             
             if sel.abi_name == "win64":
                 out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                
+
+            // ax_str_eq returns `ax_bool` = C `_Bool` = 1 BYTE in AL; the upper bits
+            // of RAX are UNDEFINED (garbage from the memcmp-path return). Reading the
+            // full RAX (`MOV dest, RAX` / `CMP RAX, 0`) sees that garbage â†’ str `==`
+            // wrongly returns true for distinct same-length strings (the len-mismatch
+            // path happens to `xor eax,eax` clean, which is why only memcmp-path
+            // comparisons broke). This corrupted keyword lookup in the lexer â†’
+            // identifiers misclassified as keywords â†’ stage3 parser token misread.
+            // Zero-extend AL before any use.
+            out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
             if op == OP_NE:
                 out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 out_insts.push(MachInst(op: MACH_SETCC, cc: CC_E, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -18544,29 +18690,36 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if size == 16 as u32:
             let tmp_dest_addr = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
+
             let tmp_val1 = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
+
             let tmp_val2 = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
             out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+        elif type_is_aggregate(sel.table, inst.type_id as u32):
+            // Aggregate element (struct/sum/etc, any size != 16): yield the element
+            // ADDRESS (base + i*size), NOT a load of its bytes. Aggregates are held
+            // by-address in this backend; a subsequent `.field` access expects a
+            // pointer base. Loading the element's first 8 bytes and treating them as
+            // a struct base is what crashed Parser.set_flags (data[node].flags).
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        
-        if size == 1 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 255 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        elif size == 2 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        elif size == 4 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+            if size == 1 as u32:
+                let tmp_mask = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 255 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif size == 2 as u32:
+                let tmp_mask = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif size == 4 as u32:
+                let tmp_mask = next_vreg(sel)
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_STORE:
         mut size := 0 as u32
@@ -18574,7 +18727,11 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         type_size_and_align(sel.table, inst.type_id as u32, &size, &align)
         if size == 0 as u32:
             size = 8 as u32
-            
+        // An aggregate value (struct/sum/etc) is held by its ADDRESS in src1, so it
+        // must be block-copied (contents), not stored as an 8-byte pointer â€” same
+        // inline convention as OP_SET_FIELD. Scalars (<=8B, value in reg) are stored.
+        let store_is_agg = type_is_aggregate(sel.table, inst.type_id as u32)
+
         if inst.src2 != 0 as u32:
             let tmp_offset = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -18591,12 +18748,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
-            if size > 8 as u32:
+            if size > 8 as u32 or store_is_agg:
                 emit_block_copy(sel, tmp_addr, 0 as u32, inst.src1, size, out_insts)
             else:
                 out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            if size > 8 as u32:
+            if size > 8 as u32 or store_is_agg:
                 if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
                     let tmp_dest_addr = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -18629,22 +18786,56 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             let tmp_val2 = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: (disp as i64 + 8))))
             out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+        elif field_is_aggregate(sel.table, struct_type, inst.src2):
+            // Nested value struct (<=15 bytes, not str): held BY ADDRESS like every
+            // small struct in this backend. Return the field's ADDRESS so a sub-field
+            // access (outer.inner.x) computes &inner+sub_off instead of dereferencing
+            // the inline struct bytes as a pointer (which faults). src2=OPND_IMM marks
+            // this as a pointer+disp LEA for the spill rewrite (see x86_regalloc).
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         else:
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
 
     elif op == OP_SET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)
-        ax_printf_local("[Debug] OP_SET_FIELD: type_id=%d, field_idx=%d\n", struct_type as i64, inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
-        ax_printf_local("[Debug]   -> disp=%d, size=%d\n", disp as i64, size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        if size > 8 as u32:
+        if size > 8 as u32 or field_is_aggregate(sel.table, struct_type, inst.src2):
+            // Aggregate field (incl. nested struct <=8B): the source vreg holds the
+            // aggregate's ADDRESS, so copy its CONTENTS inline (size bytes), NOT the
+            // 8-byte address. Storing the address would make the field hold a pointer
+            // while every reader treats it as inline (getfld/index return addresses) â€”
+            // the inconsistency that broke t_nested once OP_INDEX stopped loading.
             emit_block_copy(sel, inst.src1, disp, inst.dest, size, out_insts)
         else:
             out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
 
     elif op == OP_MAKE_REF:
-        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // `&x`. For a SCALAR, x lives in its stack slot, so &x = slot home address
+        // (LEA [src1], which the spill rewrite turns into LEA [RBP+slot]).
+        // For a multi-byte by-address AGGREGATE (struct/array/tuple/generic-inst/str),
+        // the value vreg ALREADY holds the address where the aggregate data lives, so
+        // &agg = that value â€” emit MOV (which the spill rewrite loads from the slot).
+        // Using LEA on a spilled aggregate would yield &slot not the data address,
+        // breaking idioms like `(&s as ptr[str])[0]` (print_raw_ptr / reinterpret).
+        //
+        // EXCEPTION: sum/option/result (kind 6/11/12) use the pointer-layout
+        // representation â€” the VALUE is an 8-byte (tagged) box pointer that lives in
+        // its slot like a scalar. std/result.ax reads `(&self) as ptr[u64]; raw[0]`
+        // expecting raw[0] to BE that box pointer, i.e. &self must be the SLOT address
+        // (LEA), not the box pointer itself. Treating them as multi-byte aggregates
+        // here (MOV) made `&self` yield the box pointer, so raw[0] read the boxed
+        // PAYLOAD instead of the pointer â†’ Result/Option.unwrap() corruption â†’ the
+        // read_all()/fread() crash that blocked stage2->stage3.
+        let ref_src_type = get_register_type(sel, inst.src1)
+        mut ref_src_kind := 0 as u8
+        if (ref_src_type as i64) < sel.table.entries.len:
+            ref_src_kind = sel.table.entries.data[ref_src_type].kind
+        let ref_is_ptr_sum = ref_src_kind == 6 as u8 or ref_src_kind == 11 as u8 or ref_src_kind == 12 as u8
+        if type_is_aggregate(sel.table, ref_src_type) and not ref_is_ptr_sum:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_DEREF:
         mut type_size := 8 as u32
@@ -18686,6 +18877,26 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 let se = sel.table.entries.data[src_type]
                 if (se.kind == TYPE_KIND_POINTER or se.kind == TYPE_KIND_REF) and se.extra == 12 as u32:
                     type_size = 16 as u32
+
+            // Deref of ptr[aggregate] (`p.*` where p: ptr[Struct/Sum/etc], not str):
+            // aggregate VALUES are 8-byte heap references in this backend (e.g.
+            // Ok(Struct(..)) stores the 8-byte struct reference into its box, so
+            // [box] = the struct's heap pointer). `entry.size` is the FULL struct
+            // size, so MACH_LOAD of that many bytes is wrong â€” load the 8-byte
+            // reference. The deref's own type_id (T) is often left generic when p
+            // came from `masked as ptr[T]` in Result/Option.unwrap, so detect
+            // aggregateness from both the (build-time recovered) dest type and the
+            // operand's concrete pointee. Root cause of Result.unwrap() of a struct
+            // payload (`typed_ptr.*`) returning a corrupt struct â†’ fread crash.
+            mut deref_is_agg := false
+            if type_size != 16 as u32 and type_is_aggregate(sel.table, type_id):
+                deref_is_agg = true
+            if type_size != 16 as u32 and src_type < sel.table.entries.len as u32:
+                let se2 = sel.table.entries.data[src_type]
+                if (se2.kind == TYPE_KIND_POINTER or se2.kind == TYPE_KIND_REF) and type_is_aggregate(sel.table, se2.extra):
+                    deref_is_agg = true
+            if deref_is_agg:
+                type_size = 8 as u32
 
             if type_size == 16 as u32:
                 let tmp_dest_addr = next_vreg(sel)
@@ -19103,6 +19314,13 @@ pub struct RegAllocResult:
     pub allocs: ptr[RegAllocation]
     pub max_vreg: u32
     pub spill_count: i32
+    // BUG#18: with exactly {ptr@0, u32@8, i32@12} this struct is 16 bytes and the
+    // native backend returns it by value via the str-like RAX:RDX path (which
+    // assumes a {ptr, i64} layout), so reads of max_vreg/spill_count come back
+    // wrong (max_vreg read returned the `allocs` pointer value -> giant loop
+    // bound -> allocs[] OOB segfault). Pad to >16 bytes so it is returned
+    // by-address (sret), the heavily-tested aggregate path (cf. LiveIntervalVec).
+    pub pad0: i64
 
 pub fn get_allocatable_gprs(out_len: ptr[i64]) -> ptr[u8]:
     let arr = @alloc(12) as ptr[u8]
@@ -19142,7 +19360,7 @@ pub fn reg_is_parameter_reg(abi: str, r: u8) -> bool:
 
 pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], avail_regs_len: i64, insts: ptr[MachInst], insts_len: i64, abi: str, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> RegAllocResult:
     if intervals.len == 0 or avail_regs_len == 0:
-        return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32)
+        return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32, pad0: 0 as i64)
 
     mut max_vreg := 0 as u32
     mut scan_v := 0 as i64
@@ -19276,6 +19494,43 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         iv_idx = iv_idx + 1
     @free(call_pos as ptr[u8])
 
+    // MACH_IDIV clobbers RAX and RDX (the `cqo; idiv` sequence). Any vreg whose
+    // live range SPANS an idiv â€” not just the dividend (handled above) â€” must not
+    // be assigned RAX/RDX, otherwise the division silently destroys it. This bit
+    // the reverse-loop counter `i` (held in RDX) across `len / 2`: `cqo` wiped RDX
+    // â†’ infinite loop; and any function doing `/`/`%` with a live RDX/RAX value
+    // (incl. the parser â†’ stage3 token misread). Mirror the spans_call logic.
+    let idiv_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
+    mut idiv_count := 0 as i64
+    mut di_scan := 0 as i64
+    while di_scan < insts_len:
+        if insts[di_scan].op == MACH_IDIV:
+            idiv_pos[idiv_count] = di_scan as i32
+            idiv_count = idiv_count + 1
+        di_scan = di_scan + 1
+
+    if idiv_count > 0 as i64:
+        mut iv2 := 0 as i64
+        while iv2 < intervals.len:
+            let vreg2 = intervals.data[iv2].vreg
+            let istart2 = intervals.data[iv2].start
+            let iend2 = intervals.data[iv2].end
+            mut lo2 := 0 as i64
+            mut hi2 := idiv_count - 1 as i64
+            while lo2 <= hi2:
+                let mid2 = (lo2 + hi2) / 2 as i64
+                let dp = idiv_pos[mid2]
+                if dp <= istart2:
+                    lo2 = mid2 + 1 as i64
+                elif dp >= iend2:
+                    hi2 = mid2 - 1 as i64
+                else:
+                    if vreg2 < graph_size as u32:
+                        forbid_rax_rdx[vreg2] = true
+                    break
+            iv2 = iv2 + 1
+    @free(idiv_pos as ptr[u8])
+
     // For very large functions, the O(n^2) interference graph overflows memory.
     // Fall back to spill-all: every vreg gets a stack slot.
     // Correct but conservative; the emitter already handles spills.
@@ -19311,7 +19566,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         @free(forbid_rcx as ptr[u8])
         @free(is_arg_vreg as ptr[u8])
         @free(address_taken as ptr[u8])
-        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s)
+        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s, pad0: 0 as i64)
 
     let adj = @alloc(graph_size * 24) as ptr[U32Vec]
     mut vi := 0 as i64
@@ -19511,14 +19766,18 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         f_idx = f_idx + 1
     @free(adj as ptr[u8])
 
-    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count)
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count, pad0: 0 as i64)
 
 pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32, out_len: ptr[i64]) -> ptr[u8]:
     let used = @alloc(16) as ptr[bool]
     @memset(used as ptr[u8], 0 as u8, 16)
 
+    // BUG#17: `max_vreg as i64` (u32->i64 zero-extend) is mis-compiled by the
+    // native backend, leaving garbage in the upper 32 bits -> garbage-large
+    // bound -> allocs[] OOB. Mask to a clean u32 so the loop stays in range.
+    let mv_bound = (max_vreg as i64) & (4294967295 as i64)
     mut i := 0 as i64
-    while i <= max_vreg as i64:
+    while i <= mv_bound:
         let phys = allocs[i].phys
         if phys != REG_NONE:
             if abi == "win64":
@@ -19656,16 +19915,23 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16:
                     add_mult = 2 as i64
                 let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
-                if inst.op == MACH_LEA:
-                    // LEA of a spilled vreg means "address of the value": rewrite to
-                    // RBP + slot offset for ANY size. Reloading the value into a
-                    // scratch register and taking lea (reg) would yield the value
-                    // itself, not its address (broken &self / MAKE_REF semantics).
-                    mut disp := 0 as i64
-                    if inst.src2.kind == OPND_IMM:
-                        disp = inst.src2.imm
+                if inst.op == MACH_LEA and inst.src2.kind == OPND_IMM:
+                    // GET_FIELD on a pointer / by-ref struct base (the only LEA whose
+                    // src2 is an IMM disp): the spilled vreg's SLOT holds a pointer
+                    // VALUE (a heap address), not inline data. We want value(src1)+disp,
+                    // so LOAD the pointer from the slot into a scratch register and keep
+                    // the field disp. Rewriting to RBP+slot+disp (the home-address path
+                    // below) would point at this frame's stack slot instead of the heap
+                    // object â€” silently losing through-pointer field mutation.
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                elif inst.op == MACH_LEA:
+                    // LEA of a spilled vreg with no disp means "address of the value"
+                    // (&self / MAKE_REF / 16-byte value address): rewrite to RBP + slot
+                    // offset. Loading the value and taking lea (reg) would yield the
+                    // value itself, not its address.
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                    inst.src2 = MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset + disp)
+                    inst.src2 = MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)
                 elif is_16:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
@@ -19802,8 +20068,14 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
         v = v + 1
 
     if gpr_alloc.allocs != null as ptr[RegAllocation]:
+        // BUG#17: `gpr_alloc.max_vreg as i64` is mis-compiled by the native
+        // backend (u32 struct-field zero-extend reads the adjacent spill_count
+        // into the upper 32 bits -> garbage-large bound -> allocs[] OOB scan ->
+        // segfault). gpr_alloc.allocs is sized graph_size (== max_vreg+1, same
+        // insts) with indices 0..graph_size-1 all initialized, so bound by the
+        // clean local graph_size instead of the corrupt field read.
         mut idx := 0 as i64
-        while idx <= gpr_alloc.max_vreg as i64:
+        while idx < graph_size:
             let al = gpr_alloc.allocs[idx]
             if al.vreg < graph_size as u32:
                 allocs[al.vreg] = al
@@ -19811,8 +20083,10 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
         @free(gpr_alloc.allocs as ptr[u8])
 
     if xmm_alloc.allocs != null as ptr[RegAllocation]:
+        // BUG#17: same garbage-bound issue as the gpr loop above; bound by the
+        // clean local graph_size (xmm_alloc.allocs is also sized graph_size).
         mut idx := 0 as i64
-        while idx <= xmm_alloc.max_vreg as i64:
+        while idx < graph_size:
             mut al := xmm_alloc.allocs[idx]
             if al.vreg < graph_size as u32:
                 if al.spilled:
@@ -19830,7 +20104,7 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
     @free(avail_gprs)
     @free(avail_xmms)
 
-    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_total)
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_total, pad0: 0 as i64)
 // bootstrap/stage1/x86_asm_emitter.ax
 // Assembly Text Emitter for NASM, FASM, and WinAsm/MASM in self-hosted AXIOM.
 
@@ -21520,6 +21794,12 @@ pub struct Fixup:
     pub offset: i64
     pub label_id: u32
     pub inst_size: i32
+    // BUG#19: {i64, u32, i32} is exactly 16 bytes, so a freshly-constructed
+    // Fixup(...) literal passed by value (push_fixup) is mis-marshalled by the
+    // native backend via the str-like {ptr,i64} RAX:RDX path -> the second
+    // 8-byte word (label_id|inst_size) and even offset come back garbage.
+    // Pad to >16 bytes to force by-address passing (same fix as RegAllocResult).
+    pub pad0: i64
 
 pub struct FixupVec:
     pub data: ptr[Fixup]
@@ -21534,9 +21814,9 @@ pub fn push_fixup(mut self: ptr[FixupVec], f: Fixup):
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 16) as ptr[Fixup]
+        let new_data = @alloc(new_cap * 24) as ptr[Fixup]
         if self.data != null as ptr[Fixup]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -21794,11 +22074,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         x86_encode_pop(dst, buf)
     elif op == MACH_JMP:
         if inst.dst.kind == OPND_LABEL:
-            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.dst.label, inst_size: 5))
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.dst.label, inst_size: 5, pad0: 0 as i64))
             x86_encode_jmp_rel32(0 as i32, buf)
     elif op == MACH_JCC:
         if inst.dst.kind == OPND_LABEL:
-            push_fixup(&e.fixups, Fixup(offset: buf.len + 2, label_id: inst.dst.label, inst_size: 6))
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 2, label_id: inst.dst.label, inst_size: 6, pad0: 0 as i64))
             x86_encode_jcc_rel32(inst.cc, 0 as i32, buf)
     elif op == MACH_CALL:
         mut disp := 0 as i32
@@ -21807,9 +22087,9 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             disp = -(buf.len + 5) as i32
         else:
             if inst.src1.imm > 0 as i64:
-                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: (inst.src1.imm as u32) | 0x80000000 as u32, inst_size: 5))
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: (inst.src1.imm as u32) | 0x80000000 as u32, inst_size: 5, pad0: 0 as i64))
             else:
-                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5))
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5, pad0: 0 as i64))
         x86_encode_call_rel32(disp, buf)
     elif op == MACH_SYSCALL:
         x86_encode_syscall(buf)
@@ -22754,7 +23034,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 fflush(null as ptr[void])
 
+            ax_printf_local("AXCG fn=%d SEL\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
+            ax_printf_local("AXCG fn=%d mach=%d LIVE\n", func_done_count, mach_insts.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
 
             if mach_insts.len > 1000 as i64:
                 ax_printf_local("[codegen] LARGE fn %d: air=%d mach=%d\n",
@@ -22763,7 +23047,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 fflush(null as ptr[void])
 
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
+            ax_printf_local("AXCG fn=%d intervals=%d RA\n", func_done_count, intervals.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
+            ax_printf_local("AXCG fn=%d DONE\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
             
             mut num_str_lits := 0 as i32
             mut loop_i := 0 as i64
@@ -23103,23 +23391,30 @@ pub fn read_u16_le(data: ptr[u8], off: i64) -> u16:
     let b1 = data[off + 1] as u16
     return b0 | (b1 << 8 as u16)
 
+// BUG#20: the native backend miscompiles an OR-chain of 3+ shifted operands
+// (e.g. `b0 | (b1<<8) | (b2<<16) | (b3<<24)`) under register pressure â€” the b0/b1
+// terms come back wrong (verified at -O0 and -O1; the 2-operand read_u16_le is
+// fine, a single-accumulator form is fine). This corrupted every COFF field read
+// at self-link time -> empty symbol names -> "Unresolved external symbol ''".
+// Rewrite as a single-accumulator fold (low register pressure) which compiles
+// correctly. (Root fix belongs in the selector/regalloc for wide OR trees.)
 pub fn read_u32_le(data: ptr[u8], off: i64) -> u32:
-    let b0 = data[off] as u32
-    let b1 = data[off + 1] as u32
-    let b2 = data[off + 2] as u32
-    let b3 = data[off + 3] as u32
-    return b0 | (b1 << 8 as u32) | (b2 << 16 as u32) | (b3 << 24 as u32)
+    mut r := data[off] as u32
+    r = r | ((data[off + 1] as u32) << 8 as u32)
+    r = r | ((data[off + 2] as u32) << 16 as u32)
+    r = r | ((data[off + 3] as u32) << 24 as u32)
+    return r
 
 pub fn read_u64_le(data: ptr[u8], off: i64) -> u64:
-    let b0 = data[off] as u64
-    let b1 = data[off + 1] as u64
-    let b2 = data[off + 2] as u64
-    let b3 = data[off + 3] as u64
-    let b4 = data[off + 4] as u64
-    let b5 = data[off + 5] as u64
-    let b6 = data[off + 6] as u64
-    let b7 = data[off + 7] as u64
-    return b0 | (b1 << 8 as u64) | (b2 << 16 as u64) | (b3 << 24 as u64) | (b4 << 32 as u64) | (b5 << 40 as u64) | (b6 << 48 as u64) | (b7 << 56 as u64)
+    mut r := data[off] as u64
+    r = r | ((data[off + 1] as u64) << 8 as u64)
+    r = r | ((data[off + 2] as u64) << 16 as u64)
+    r = r | ((data[off + 3] as u64) << 24 as u64)
+    r = r | ((data[off + 4] as u64) << 32 as u64)
+    r = r | ((data[off + 5] as u64) << 40 as u64)
+    r = r | ((data[off + 6] as u64) << 48 as u64)
+    r = r | ((data[off + 7] as u64) << 56 as u64)
+    return r
 
 pub fn write_u32_le(data: ptr[u8], off: i64, val: u32):
     data[off] = (val & 0xFF as u32) as u8
@@ -23446,10 +23741,17 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             @free(name_nt)
 
         push_linker_str(&sym_names, name_str)
+        // BUG#21: lower_struct_constructor_call (native air_builder) assigns
+        // named args POSITIONALLY, ignoring field names. Omitting `size` here
+        // made `defined` land in the `size` slot and left `defined` zeroed ->
+        // every parsed symbol read as undefined -> defined funcs never entered
+        // func_names -> "Unresolved external symbol" for all internal calls.
+        // List ALL fields in declaration order so positional lowering is correct.
         push_linker_symbol(&symbols, LinkerSymbol(
             name: name_str,
             section: sec_num as i64,
             offset: val as u64,
+            size: 0 as u64,
             defined: is_def_sym
         ))
         
@@ -23458,7 +23760,7 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
         mut k := 0 as u8
         while k < aux_count:
             push_linker_str(&sym_names, "")
-            push_linker_symbol(&symbols, LinkerSymbol(name: "", section: 0, offset: 0 as u64, defined: false))
+            push_linker_symbol(&symbols, LinkerSymbol(name: "", section: 0, offset: 0 as u64, size: 0 as u64, defined: false))
             sym_i = sym_i + 1
             k = k + 1 as u8
             

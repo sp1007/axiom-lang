@@ -1356,6 +1356,15 @@ pub fn lower_deref_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             let ce = self.mb.typetable.entries.data[child_type as i64]
             if (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra == 12 as u32:
                 type_id = 12 as u32
+            elif (ce.kind == TYPE_KIND_POINTER or ce.kind == TYPE_KIND_REF) and ce.extra != 0 as u32 and (ce.extra as i64) < self.mb.typetable.entries.len:
+                // Recover concrete aggregate pointee so the selector treats `p.*`
+                // (p: ptr[Struct/Sum/etc]) as a by-address aggregate value (returns
+                // the pointer) instead of loading the full struct size. The deref's
+                // own inferred type stays generic when p came from `masked as ptr[T]`
+                // in Result/Option.unwrap. Mirrors the str (12) recovery above.
+                let pe = self.mb.typetable.entries.data[ce.extra as i64]
+                if pe.kind == TYPE_KIND_STRUCT or pe.kind == TYPE_KIND_ARRAY or pe.kind == TYPE_KIND_TUPLE or pe.kind == TYPE_KIND_SUM or pe.kind == TYPE_KIND_GENERIC_INST or pe.kind == TYPE_KIND_OPTION or pe.kind == TYPE_KIND_RESULT:
+                    type_id = ce.extra
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(

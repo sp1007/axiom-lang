@@ -1,0 +1,105 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    zpc(tag)
+    zpc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        zpc('0' as i64)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        zpc(buf[j] as i64)
+        j = j - 1 as i64
+    zpc(' ' as i64)
+
+struct ZSym:
+    name_id: u32
+    kind: u8
+    padding: u8
+    flags: u16
+    type_id: u32
+    decl_node: u32
+    scope_id: u32
+    next_overload: u32
+
+struct ZSymVec:
+    data: ptr[ZSym]
+    len: i64
+    cap: i64
+
+fn zsympush(mut self: ptr[ZSymVec], s: ZSym) -> u32:
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0:
+            nc = self.cap * 2
+        let nd = @alloc(nc * 24) as ptr[ZSym]
+        if self.data != null as ptr[ZSym]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = nd
+        self.cap = nc
+    let idx = self.len as u32
+    self.data[self.len] = s
+    self.len = self.len + 1
+    return idx
+
+struct ZSymTable:
+    symbols: ZSymVec
+    extra: u32
+
+struct ZResolver:
+    symtable: ptr[ZSymTable]
+    lazy: ptr[void]
+
+// mimic resolve(): returns an index (>0)
+fn zresolve(self: ptr[ZResolver], name_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.symtable.symbols.len:
+        if self.symtable.symbols.data[i].name_id == name_id:
+            return i as u32
+        i = i + 1
+    return 0 as u32
+
+// mimic resolve_node NODE_FIELD_EXPR module path
+fn zresolve_field(self: ptr[ZResolver], name_id: u32) -> i64:
+    if self.lazy != null as ptr[void]:
+        let lhs_sym_idx = self.zresolve(name_id)
+        if lhs_sym_idx != 0 as u32:
+            let lhs_sym = self.symtable.symbols.data[lhs_sym_idx]
+            if lhs_sym.kind == 9 as u8:
+                return 100 as i64
+            return lhs_sym.kind as i64
+    return -1 as i64
+
+pub fn main() -> i32:
+    let st = @alloc(@compiler_intrinsic("size_of")[ZSymTable]()) as ptr[ZSymTable]
+    st.symbols = ZSymVec(data: null as ptr[ZSym], len: 0, cap: 0)
+    st.extra = 0 as u32
+    let rs = @alloc(@compiler_intrinsic("size_of")[ZResolver]()) as ptr[ZResolver]
+    rs.symtable = st
+    rs.lazy = st as ptr[void]  // non-null so the branch runs
+    // populate some symbols
+    mut k := 1 as u32
+    while k < 40 as u32:
+        mut knd := 1 as u8
+        if k == 7 as u32:
+            knd = 9 as u8  // SYM_MODULE
+        let _ = (&st.symbols).zsympush(ZSym(name_id: k, kind: knd, padding: 0 as u8, flags: 0 as u16, type_id: 0 as u32, decl_node: 0 as u32, scope_id: 0 as u32, next_overload: 0 as u32))
+        k = k + 1 as u32
+    // resolve field for name 7 (module) and name 5 (kind 1)
+    zpn('M' as i64, rs.zresolve_field(7 as u32))
+    zpn('K' as i64, rs.zresolve_field(5 as u32))
+    zpn('X' as i64, rs.zresolve_field(999 as u32))
+    zpc(10 as i64)
+    return 0

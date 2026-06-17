@@ -1,0 +1,50 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+struct MyHandle:
+    h: i64
+    pth: str
+    md: i32
+
+fn p(v: i64):
+    if v == 0 as i64:
+        putchar('0' as i32)
+        putchar(10 as i32)
+        fflush(null as ptr[void])
+        return
+    mut x := v
+    let buf = @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut i := n - 1 as i64
+    while i >= 0 as i64:
+        putchar(buf[i] as i32)
+        i = i - 1 as i64
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+
+fn get_h(self: MyHandle) -> i64:
+    return self.h
+
+fn load_all(self: MyHandle) -> i64:
+    p(901 as i64)
+    mut temp := self
+    p(902 as i64)
+    let r = get_h(temp)
+    p(903 as i64)
+    return r
+
+pub fn main() -> i32:
+    p(111 as i64)
+    let f = MyHandle(h: 123456 as i64, pth: "hi", md: 1 as i32)
+    p(222 as i64)
+    p(f.h)
+    p(333 as i64)
+    p(get_h(f))
+    p(444 as i64)
+    p(load_all(f))
+    p(555 as i64)
+    return 0

@@ -219,6 +219,13 @@ pub struct RegAllocResult:
     pub allocs: ptr[RegAllocation]
     pub max_vreg: u32
     pub spill_count: i32
+    // BUG#18: with exactly {ptr@0, u32@8, i32@12} this struct is 16 bytes and the
+    // native backend returns it by value via the str-like RAX:RDX path (which
+    // assumes a {ptr, i64} layout), so reads of max_vreg/spill_count come back
+    // wrong (max_vreg read returned the `allocs` pointer value -> giant loop
+    // bound -> allocs[] OOB segfault). Pad to >16 bytes so it is returned
+    // by-address (sret), the heavily-tested aggregate path (cf. LiveIntervalVec).
+    pub pad0: i64
 
 pub fn get_allocatable_gprs(out_len: ptr[i64]) -> ptr[u8]:
     let arr = @alloc(12) as ptr[u8]
@@ -258,7 +265,7 @@ pub fn reg_is_parameter_reg(abi: str, r: u8) -> bool:
 
 pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], avail_regs_len: i64, insts: ptr[MachInst], insts_len: i64, abi: str, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> RegAllocResult:
     if intervals.len == 0 or avail_regs_len == 0:
-        return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32)
+        return RegAllocResult(allocs: null as ptr[RegAllocation], max_vreg: 0 as u32, spill_count: 0 as i32, pad0: 0 as i64)
 
     mut max_vreg := 0 as u32
     mut scan_v := 0 as i64
@@ -392,6 +399,43 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         iv_idx = iv_idx + 1
     @free(call_pos as ptr[u8])
 
+    // MACH_IDIV clobbers RAX and RDX (the `cqo; idiv` sequence). Any vreg whose
+    // live range SPANS an idiv — not just the dividend (handled above) — must not
+    // be assigned RAX/RDX, otherwise the division silently destroys it. This bit
+    // the reverse-loop counter `i` (held in RDX) across `len / 2`: `cqo` wiped RDX
+    // → infinite loop; and any function doing `/`/`%` with a live RDX/RAX value
+    // (incl. the parser → stage3 token misread). Mirror the spans_call logic.
+    let idiv_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
+    mut idiv_count := 0 as i64
+    mut di_scan := 0 as i64
+    while di_scan < insts_len:
+        if insts[di_scan].op == MACH_IDIV:
+            idiv_pos[idiv_count] = di_scan as i32
+            idiv_count = idiv_count + 1
+        di_scan = di_scan + 1
+
+    if idiv_count > 0 as i64:
+        mut iv2 := 0 as i64
+        while iv2 < intervals.len:
+            let vreg2 = intervals.data[iv2].vreg
+            let istart2 = intervals.data[iv2].start
+            let iend2 = intervals.data[iv2].end
+            mut lo2 := 0 as i64
+            mut hi2 := idiv_count - 1 as i64
+            while lo2 <= hi2:
+                let mid2 = (lo2 + hi2) / 2 as i64
+                let dp = idiv_pos[mid2]
+                if dp <= istart2:
+                    lo2 = mid2 + 1 as i64
+                elif dp >= iend2:
+                    hi2 = mid2 - 1 as i64
+                else:
+                    if vreg2 < graph_size as u32:
+                        forbid_rax_rdx[vreg2] = true
+                    break
+            iv2 = iv2 + 1
+    @free(idiv_pos as ptr[u8])
+
     // For very large functions, the O(n^2) interference graph overflows memory.
     // Fall back to spill-all: every vreg gets a stack slot.
     // Correct but conservative; the emitter already handles spills.
@@ -427,7 +471,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         @free(forbid_rcx as ptr[u8])
         @free(is_arg_vreg as ptr[u8])
         @free(address_taken as ptr[u8])
-        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s)
+        return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s, pad0: 0 as i64)
 
     let adj = @alloc(graph_size * 24) as ptr[U32Vec]
     mut vi := 0 as i64
@@ -627,14 +671,18 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         f_idx = f_idx + 1
     @free(adj as ptr[u8])
 
-    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count)
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count, pad0: 0 as i64)
 
 pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32, out_len: ptr[i64]) -> ptr[u8]:
     let used = @alloc(16) as ptr[bool]
     @memset(used as ptr[u8], 0 as u8, 16)
 
+    // BUG#17: `max_vreg as i64` (u32->i64 zero-extend) is mis-compiled by the
+    // native backend, leaving garbage in the upper 32 bits -> garbage-large
+    // bound -> allocs[] OOB. Mask to a clean u32 so the loop stays in range.
+    let mv_bound = (max_vreg as i64) & (4294967295 as i64)
     mut i := 0 as i64
-    while i <= max_vreg as i64:
+    while i <= mv_bound:
         let phys = allocs[i].phys
         if phys != REG_NONE:
             if abi == "win64":
@@ -772,16 +820,23 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16:
                     add_mult = 2 as i64
                 let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
-                if inst.op == MACH_LEA:
-                    // LEA of a spilled vreg means "address of the value": rewrite to
-                    // RBP + slot offset for ANY size. Reloading the value into a
-                    // scratch register and taking lea (reg) would yield the value
-                    // itself, not its address (broken &self / MAKE_REF semantics).
-                    mut disp := 0 as i64
-                    if inst.src2.kind == OPND_IMM:
-                        disp = inst.src2.imm
+                if inst.op == MACH_LEA and inst.src2.kind == OPND_IMM:
+                    // GET_FIELD on a pointer / by-ref struct base (the only LEA whose
+                    // src2 is an IMM disp): the spilled vreg's SLOT holds a pointer
+                    // VALUE (a heap address), not inline data. We want value(src1)+disp,
+                    // so LOAD the pointer from the slot into a scratch register and keep
+                    // the field disp. Rewriting to RBP+slot+disp (the home-address path
+                    // below) would point at this frame's stack slot instead of the heap
+                    // object — silently losing through-pointer field mutation.
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                elif inst.op == MACH_LEA:
+                    // LEA of a spilled vreg with no disp means "address of the value"
+                    // (&self / MAKE_REF / 16-byte value address): rewrite to RBP + slot
+                    // offset. Loading the value and taking lea (reg) would yield the
+                    // value itself, not its address.
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                    inst.src2 = MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset + disp)
+                    inst.src2 = MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)
                 elif is_16:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
@@ -918,8 +973,14 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
         v = v + 1
 
     if gpr_alloc.allocs != null as ptr[RegAllocation]:
+        // BUG#17: `gpr_alloc.max_vreg as i64` is mis-compiled by the native
+        // backend (u32 struct-field zero-extend reads the adjacent spill_count
+        // into the upper 32 bits -> garbage-large bound -> allocs[] OOB scan ->
+        // segfault). gpr_alloc.allocs is sized graph_size (== max_vreg+1, same
+        // insts) with indices 0..graph_size-1 all initialized, so bound by the
+        // clean local graph_size instead of the corrupt field read.
         mut idx := 0 as i64
-        while idx <= gpr_alloc.max_vreg as i64:
+        while idx < graph_size:
             let al = gpr_alloc.allocs[idx]
             if al.vreg < graph_size as u32:
                 allocs[al.vreg] = al
@@ -927,8 +988,10 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
         @free(gpr_alloc.allocs as ptr[u8])
 
     if xmm_alloc.allocs != null as ptr[RegAllocation]:
+        // BUG#17: same garbage-bound issue as the gpr loop above; bound by the
+        // clean local graph_size (xmm_alloc.allocs is also sized graph_size).
         mut idx := 0 as i64
-        while idx <= xmm_alloc.max_vreg as i64:
+        while idx < graph_size:
             mut al := xmm_alloc.allocs[idx]
             if al.vreg < graph_size as u32:
                 if al.spilled:
@@ -946,4 +1009,4 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
     @free(avail_gprs)
     @free(avail_xmms)
 
-    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_total)
+    return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_total, pad0: 0 as i64)

@@ -1,0 +1,30 @@
+import std.string
+
+pub struct AxiomString:
+    pub ptr: ptr[u8]
+    pub len: i64
+
+pub fn main() -> i32:
+    let buf = @alloc(8) as ptr[u8]
+    buf[0] = 'h' as u8
+    buf[1] = 'i' as u8
+    buf[2] = 0 as u8
+
+    // Method 1: `buf as str`
+    print("m1:")
+    print(buf as str)
+    print("\n")
+
+    // Method 2: AxiomString + reinterpret (the print_raw_ptr way)
+    let s = AxiomString(ptr: buf, len: 2)
+    let s_str = (&s as ptr[str])[0]
+    print("m2:")
+    print(s_str)
+    print("\n")
+
+    // Method 3: std.string.slice of a literal (constructed str via slice)
+    print("m3:")
+    print(std.string.slice("hello", 0, 2))
+    print("\n")
+
+    return 0

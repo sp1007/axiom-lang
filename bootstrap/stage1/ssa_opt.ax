@@ -290,7 +290,12 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                 inst.src1 = curr
                 changed = true
 
-        if inst.src2 != 0 as u32 and not opcode_is_control(inst.opcode):
+        // BUG#15: GET_FIELD/SET_FIELD encode the FIELD INDEX (an immediate) in
+        // src2, not a value vreg. Copy-propagating it corrupts the field selector
+        // whenever the index numerically collides with a vreg id that is in a
+        // copy chain (e.g. field 6 "count" rewritten to vreg 1). src2 here must be
+        // left untouched; only true value operands may be propagated.
+        if inst.src2 != 0 as u32 and not opcode_is_control(inst.opcode) and inst.opcode != OP_GET_FIELD and inst.opcode != OP_SET_FIELD:
             mut curr := inst.src2
             mut depth := 0
             while curr != 0 as u32 and depth < 100:
@@ -299,7 +304,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                     break
                 curr = parent
                 depth = depth + 1
-            
+
             if curr != inst.src2:
                 inst.src2 = curr
                 changed = true

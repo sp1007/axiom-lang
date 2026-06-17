@@ -1,0 +1,189 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+struct ZSym:
+    name_id: u32
+    kind: u8
+    padding: u8
+    flags: u16
+    type_id: u32
+    decl_node: u32
+    scope_id: u32
+    next_overload: u32
+
+struct ZSymVec:
+    data: ptr[ZSym]
+    len: i64
+    cap: i64
+
+fn zsympush(mut self: ptr[ZSymVec], s: ZSym) -> u32:
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0:
+            nc = self.cap * 2
+        let nd = @alloc(nc * 24) as ptr[ZSym]
+        if self.data != null as ptr[ZSym]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = nd
+        self.cap = nc
+    let idx = self.len as u32
+    self.data[self.len] = s
+    self.len = self.len + 1
+    return idx
+
+struct ZSE:
+    name_id: u32
+    symbol_idx: u32
+
+struct ZScope:
+    kind: u8
+    padding1: u8
+    padding2: u16
+    parent_id: u32
+    depth: u32
+    entries: ptr[ZSE]
+    count: u32
+    capacity: u32
+
+fn zpc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    zpc(tag)
+    zpc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        zpc('0' as i64)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        zpc(buf[j] as i64)
+        j = j - 1 as i64
+    zpc(' ' as i64)
+
+fn zh(v: u32) -> u32:
+    mut hash := 2166136261 as u32
+    hash = hash ^ (v & 255 as u32)
+    hash = hash * 16777619 as u32
+    hash = hash ^ ((v >> 8 as u32) & 255 as u32)
+    hash = hash * 16777619 as u32
+    return hash
+
+fn zinit(mut self: ptr[ZScope], capacity: u32):
+    self.capacity = capacity
+    self.count = 0 as u32
+    self.entries = @alloc(capacity as i64 * 8) as ptr[ZSE]
+    mut i := 0 as i64
+    while i < capacity as i64:
+        self.entries[i] = ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+        i = i + 1
+
+fn zinsert(self: ptr[ZScope], name_id: u32, symbol_idx: u32) -> bool:
+    let mask = self.capacity - 1 as u32
+    mut idx = zh(name_id) & mask
+    while true:
+        if self.entries[idx].name_id == name_id:
+            self.entries[idx].symbol_idx = symbol_idx
+            return false
+        if self.entries[idx].name_id == 0 as u32:
+            self.entries[idx].name_id = name_id
+            self.entries[idx].symbol_idx = symbol_idx
+            return true
+        idx = (idx + 1 as u32) & mask
+
+fn zgrow(mut self: ptr[ZScope]):
+    let old_entries = self.entries
+    let old_capacity = self.capacity
+    let new_cap = old_capacity * 2 as u32
+    self.capacity = new_cap
+    self.entries = @alloc(new_cap as i64 * 8) as ptr[ZSE]
+    mut i := 0 as i64
+    while i < new_cap as i64:
+        self.entries[i] = ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+        i = i + 1
+    i = 0 as i64
+    while i < old_capacity as i64:
+        let entry = old_entries[i]
+        if entry.name_id != 0 as u32:
+            let _ = zinsert(self, entry.name_id, entry.symbol_idx)
+        i = i + 1
+    @free(old_entries as ptr[u8])
+
+fn zput(mut self: ptr[ZScope], name_id: u32, symbol_idx: u32):
+    if self.count * 4 as u32 > self.capacity * 3 as u32:
+        self.zgrow()
+    let is_new = zinsert(self, name_id, symbol_idx)
+    if is_new:
+        self.count = self.count + 1 as u32
+
+struct ZScopeVec:
+    data: ptr[ZScope]
+    len: i64
+    cap: i64
+
+fn zscpush(mut self: ptr[ZScopeVec], sc: ZScope) -> u32:
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0:
+            nc = self.cap * 2
+        let nd = @alloc(nc * 32) as ptr[ZScope]
+        if self.data != null as ptr[ZScope]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @free(self.data as ptr[u8])
+        self.data = nd
+        self.cap = nc
+    let idx = self.len as u32
+    self.data[self.len] = sc
+    self.len = self.len + 1
+    return idx
+
+// mirror define(): push 24-byte sym, scope_put on &scopes.data[0], str== prelude
+fn zdefine(mut syms: ptr[ZSymVec], mut scopes: ptr[ZScopeVec], name_id: u32, nm: str):
+    let sym_idx = syms.len as u32
+    let _ = zsympush(syms, ZSym(name_id: name_id, kind: 1 as u8, padding: 0 as u8, flags: 0 as u16, type_id: 0 as u32, decl_node: 0 as u32, scope_id: 0 as u32, next_overload: 0 as u32))
+    let sc = &scopes.data[0]
+    sc.zput(name_id, sym_idx)
+    if nm == "Result" or nm == "Option" or nm == "Vec" or nm == "Ok" or nm == "Err" or nm == "Some" or nm == "None":
+        let gsc = &scopes.data[0]
+        gsc.zput(name_id, sym_idx)
+
+pub fn main() -> i32:
+    mut syms := ZSymVec(data: null as ptr[ZSym], len: 0, cap: 0)
+    mut scopes := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut gs := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    (&gs).zinit(64 as u32)
+    let _ = (&scopes).zscpush(gs)
+    // pre-populate 39 "builtins" then 11 top-levels => grow at 11th (count 49)
+    mut k := 1 as u32
+    while k < 51 as u32:
+        zdefine(&syms, &scopes, k * 7 as u32 + 3 as u32, "zzz")
+        k = k + 1 as u32
+    let sp = &scopes.data[0]
+    zpn('C' as i64, sp.capacity as i64)
+    zpn('N' as i64, sp.count as i64)
+    zpn('S' as i64, syms.len)
+    // verify all 50 readable
+    mut found := 0 as i64
+    mut q := 1 as u32
+    while q < 51 as u32:
+        let m2 = sp.capacity - 1 as u32
+        mut ix = zh(q * 7 as u32 + 3 as u32) & m2
+        mut hops := 0 as u32
+        while hops < sp.capacity:
+            if sp.entries[ix].name_id == (q * 7 as u32 + 3 as u32):
+                found = found + 1
+                hops = sp.capacity
+            else:
+                ix = (ix + 1 as u32) & m2
+                hops = hops + 1 as u32
+        q = q + 1 as u32
+    zpn('F' as i64, found)
+    zpc(10 as i64)
+    return 0

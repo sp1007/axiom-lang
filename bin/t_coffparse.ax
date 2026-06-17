@@ -1,0 +1,109 @@
+extern "C" fn fopen(filename: ptr[u8], mode: ptr[u8]) -> ptr[void]
+extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
+extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
+extern "C" fn ftell(stream: ptr[void]) -> i64
+extern "C" fn fclose(stream: ptr[void]) -> i32
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn pc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    pc(tag)
+    pc('=' as i64)
+    mut x := v
+    if x < 0 as i64:
+        pc('-' as i64)
+        x = 0 as i64 - x
+    if x == 0 as i64:
+        pc('0' as i64)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        pc(b[j] as i64)
+        j = j - 1 as i64
+    pc(' ' as i64)
+
+fn read_u32_le(data: ptr[u8], off: i64) -> u32:
+    let b0 = data[off] as u32
+    let b1 = data[off + 1] as u32
+    let b2 = data[off + 2] as u32
+    let b3 = data[off + 3] as u32
+    return b0 | (b1 << 8 as u32) | (b2 << 16 as u32) | (b3 << 24 as u32)
+
+fn mkname() -> ptr[u8]:
+    let p = @alloc(20) as ptr[u8]
+    p[0] = 'a' as u8
+    p[1] = 'x' as u8
+    p[2] = 'i' as u8
+    p[3] = 'o' as u8
+    p[4] = 'm' as u8
+    p[5] = '_' as u8
+    p[6] = 't' as u8
+    p[7] = 'e' as u8
+    p[8] = 'm' as u8
+    p[9] = 'p' as u8
+    p[10] = '.' as u8
+    p[11] = 'o' as u8
+    p[12] = 'b' as u8
+    p[13] = 'j' as u8
+    p[14] = 0 as u8
+    return p
+
+fn mkrb() -> ptr[u8]:
+    let p = @alloc(4) as ptr[u8]
+    p[0] = 'r' as u8
+    p[1] = 'b' as u8
+    p[2] = 0 as u8
+    return p
+
+pub fn main() -> i32:
+    pc('A' as i64)
+    let file = fopen(mkname(), mkrb())
+    if file == null as ptr[void]:
+        pc('X' as i64)
+        return 1
+    pc('B' as i64)
+    fseek(file, 0 as i64, 2 as i32)
+    let size = ftell(file)
+    zpn('S' as i64, size)
+    let buffer = @alloc(size) as ptr[u8]
+    fseek(file, 0 as i64, 0 as i32)
+    fread(buffer as ptr[void], 1 as i64, size, file)
+    fclose(file)
+    pc('C' as i64)
+
+    // raw bytes 8..15 (expect: 235 31 1 0 246 0 0 0)
+    mut bi := 8 as i64
+    while bi < 16 as i64:
+        zpn('b' as i64, buffer[bi] as i64)
+        bi = bi + 1 as i64
+    pc(10 as i64)
+
+    let symtab_off = read_u32_le(buffer, 8) as i64
+    let sym_count = read_u32_le(buffer, 12) as i64
+    zpn('O' as i64, symtab_off)
+    zpn('N' as i64, sym_count)
+    let strtab_off = symtab_off + sym_count * 18 as i64
+    let strtab_size = size - strtab_off
+    zpn('T' as i64, strtab_off)
+    zpn('Z' as i64, strtab_size)
+
+    let off0 = symtab_off
+    let first4 = read_u32_le(buffer, off0) as i64
+    zpn('F' as i64, first4)
+    let str_off = read_u32_le(buffer, off0 + 4) as i64
+    zpn('R' as i64, str_off)
+    mut lt := 0 as i64
+    if str_off < strtab_size:
+        lt = 1 as i64
+    zpn('L' as i64, lt)
+    pc(10 as i64)
+    return 0

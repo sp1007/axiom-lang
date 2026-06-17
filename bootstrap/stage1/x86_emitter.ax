@@ -39,6 +39,12 @@ pub struct Fixup:
     pub offset: i64
     pub label_id: u32
     pub inst_size: i32
+    // BUG#19: {i64, u32, i32} is exactly 16 bytes, so a freshly-constructed
+    // Fixup(...) literal passed by value (push_fixup) is mis-marshalled by the
+    // native backend via the str-like {ptr,i64} RAX:RDX path -> the second
+    // 8-byte word (label_id|inst_size) and even offset come back garbage.
+    // Pad to >16 bytes to force by-address passing (same fix as RegAllocResult).
+    pub pad0: i64
 
 pub struct FixupVec:
     pub data: ptr[Fixup]
@@ -53,9 +59,9 @@ pub fn push_fixup(mut self: ptr[FixupVec], f: Fixup):
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 16) as ptr[Fixup]
+        let new_data = @alloc(new_cap * 24) as ptr[Fixup]
         if self.data != null as ptr[Fixup]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 16)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
@@ -313,11 +319,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         x86_encode_pop(dst, buf)
     elif op == MACH_JMP:
         if inst.dst.kind == OPND_LABEL:
-            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.dst.label, inst_size: 5))
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.dst.label, inst_size: 5, pad0: 0 as i64))
             x86_encode_jmp_rel32(0 as i32, buf)
     elif op == MACH_JCC:
         if inst.dst.kind == OPND_LABEL:
-            push_fixup(&e.fixups, Fixup(offset: buf.len + 2, label_id: inst.dst.label, inst_size: 6))
+            push_fixup(&e.fixups, Fixup(offset: buf.len + 2, label_id: inst.dst.label, inst_size: 6, pad0: 0 as i64))
             x86_encode_jcc_rel32(inst.cc, 0 as i32, buf)
     elif op == MACH_CALL:
         mut disp := 0 as i32
@@ -326,9 +332,9 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             disp = -(buf.len + 5) as i32
         else:
             if inst.src1.imm > 0 as i64:
-                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: (inst.src1.imm as u32) | 0x80000000 as u32, inst_size: 5))
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: (inst.src1.imm as u32) | 0x80000000 as u32, inst_size: 5, pad0: 0 as i64))
             else:
-                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5))
+                push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5, pad0: 0 as i64))
         x86_encode_call_rel32(disp, buf)
     elif op == MACH_SYSCALL:
         x86_encode_syscall(buf)

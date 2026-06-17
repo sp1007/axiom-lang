@@ -1,0 +1,43 @@
+import std.string
+
+extern "C" fn putchar(c: i32) -> i32
+
+fn print_int(val: i64):
+    if val == 0 as i64:
+        putchar('0' as i32)
+        return
+    mut v := val
+    let buf = @alloc(32) as ptr[u8]
+    mut len := 0 as i64
+    while v > 0 as i64:
+        buf[len] = ('0' as u8) + (v % 10 as i64) as u8
+        len = len + 1 as i64
+        v = v / 10 as i64
+    mut i := len - 1 as i64
+    while i >= 0 as i64:
+        putchar(buf[i] as i32)
+        i = i - 1 as i64
+
+fn myprintf(fmt: str, a1: i64, a2: i64, a3: i64):
+    let p = fmt as ptr[u8]
+    let n = std.string.len(fmt)
+    mut i := 0 as i64
+    mut ai := 0 as i64
+    while i < n:
+        if p[i] == '%' as u8 and i + 1 as i64 < n and p[i + 1] == 'd' as u8:
+            mut v := a1
+            if ai == 1 as i64:
+                v = a2
+            elif ai == 2 as i64:
+                v = a3
+            print_int(v)
+            ai = ai + 1 as i64
+            i = i + 2 as i64
+        else:
+            putchar(p[i] as i32)
+            i = i + 1 as i64
+
+pub fn main() -> i32:
+    myprintf("a=%d b=%d c=%d\n", 5 as i64, 7 as i64, 9 as i64)
+    myprintf("big=%d neg=%d z=%d\n", 12345 as i64, -678 as i64, 0 as i64)
+    return 0

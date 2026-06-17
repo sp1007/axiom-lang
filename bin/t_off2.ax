@@ -1,0 +1,54 @@
+struct MyVec:
+    data: ptr[i32]
+    len: i64
+    cap: i64
+
+struct A8:
+    p0: i64
+    v: MyVec
+
+struct A16:
+    p0: i64
+    p1: i64
+    v: MyVec
+
+fn new_myvec() -> MyVec:
+    return MyVec(data: null as ptr[i32], len: 0, cap: 0)
+
+fn push(mut self: MyVec, val: i32):
+    if self.len == self.cap:
+        mut new_cap := 16 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * 4 as i64) as ptr[i32]
+        if self.data != null as ptr[i32]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 4 as i64)
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = val
+    self.len = self.len + 1
+
+fn fill8(s: ptr[A8]):
+    mut i := 0 as i64
+    while i < 20 as i64:
+        s.v.push(i as i32)
+        i = i + 1 as i64
+
+fn fill16(s: ptr[A16]):
+    mut i := 0 as i64
+    while i < 20 as i64:
+        s.v.push(i as i32)
+        i = i + 1 as i64
+
+pub fn main() -> i32:
+    let s8 = @alloc(64) as ptr[A8]
+    s8[0] = A8(p0: 0, v: new_myvec())
+    fill8(s8)
+    if s8.v.len != 20 as i64:
+        return 8
+    let s16 = @alloc(64) as ptr[A16]
+    s16[0] = A16(p0: 0, p1: 0, v: new_myvec())
+    fill16(s16)
+    if s16.v.len != 20 as i64:
+        return 16
+    return 99

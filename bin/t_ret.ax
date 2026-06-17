@@ -1,0 +1,113 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    zpc(tag)
+    zpc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        zpc('0' as i64)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        zpc(buf[j] as i64)
+        j = j - 1 as i64
+    zpc(' ' as i64)
+
+struct ZSE:
+    name_id: u32
+    symbol_idx: u32
+
+struct ZScope:
+    kind: u8
+    padding1: u8
+    padding2: u16
+    parent_id: u32
+    depth: u32
+    entries: ptr[ZSE]
+    count: u32
+    capacity: u32
+
+// return ScopeEntry BY VALUE (8-byte struct), mirror scope_get
+fn zget(self: ptr[ZScope], name_id: u32) -> ZSE:
+    if self.capacity == 0 as u32:
+        return ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+    mut idx = name_id & (self.capacity - 1 as u32)
+    let start = idx
+    while true:
+        let entry = self.entries[idx]
+        if entry.name_id == 0 as u32:
+            return ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+        if entry.name_id == name_id:
+            return entry
+        idx = (idx + 1 as u32) & (self.capacity - 1 as u32)
+        if idx == start:
+            break
+    return ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+
+struct ZScopeVec:
+    data: ptr[ZScope]
+    len: i64
+    cap: i64
+
+struct ZStack:
+    data: ptr[u32]
+    len: i64
+    cap: i64
+
+struct ZTab:
+    scopes: ZScopeVec
+    stack: ZStack
+
+// mirror resolve(): walk stack, scope_get, return entry.symbol_idx
+fn zresolve(self: ptr[ZTab], name_id: u32) -> u32:
+    mut i := self.stack.len - 1
+    while i >= 0:
+        let scope_idx = self.stack.data[i]
+        let scope = &self.scopes.data[scope_idx]
+        let entry = scope.zget(name_id)
+        if entry.name_id != 0 as u32:
+            return entry.symbol_idx
+        i = i - 1
+    return 0 as u32
+
+pub fn main() -> i32:
+    let tab = @alloc(@compiler_intrinsic("size_of")[ZTab]()) as ptr[ZTab]
+    tab.scopes = ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    tab.stack = ZStack(data: null as ptr[u32], len: 0, cap: 0)
+    // one scope
+    mut sc := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 16 as u32)
+    let ents = @alloc(16 * 8) as ptr[ZSE]
+    mut z := 0 as i64
+    while z < 16:
+        ents[z] = ZSE(name_id: 0 as u32, symbol_idx: 0 as u32)
+        z = z + 1
+    sc.entries = ents
+    // insert: name_id=1075 -> symbol_idx=316
+    let slot = (1075 as u32) & 15 as u32
+    ents[slot] = ZSE(name_id: 1075 as u32, symbol_idx: 316 as u32)
+    // push scope into vec
+    let scd = @alloc(32) as ptr[ZScope]
+    scd[0] = sc
+    tab.scopes.data = scd
+    tab.scopes.len = 1
+    tab.scopes.cap = 1
+    // push 0 into stack
+    let std = @alloc(4) as ptr[u32]
+    std[0] = 0 as u32
+    tab.stack.data = std
+    tab.stack.len = 1
+    tab.stack.cap = 1
+    // resolve name_id 1075 -> should return symbol_idx 316 (NOT name_id 1075)
+    zpn('R' as i64, tab.zresolve(1075 as u32) as i64)
+    zpc(10 as i64)
+    return 0

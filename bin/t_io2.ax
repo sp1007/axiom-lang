@@ -1,0 +1,44 @@
+import std.io
+import std.string
+
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn p(v: i64):
+    if v == 0 as i64:
+        putchar('0' as i32)
+        putchar(10 as i32)
+        fflush(null as ptr[void])
+        return
+    mut x := v
+    let buf = @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut i := n - 1 as i64
+    while i >= 0 as i64:
+        putchar(buf[i] as i32)
+        i = i - 1 as i64
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+
+pub fn main() -> i32:
+    p(111 as i64)
+    let r = std.io.open("bin/t_min.ax")
+    p(222 as i64)
+    if r.is_ok():
+        p(333 as i64)
+        mut file = r.unwrap()
+        p(444 as i64)
+        p(file.handle)
+        p(700 as i64)
+        let buf = @alloc(4096) as ptr[u8]
+        let rr = file.read(buf, 16 as i64)
+        p(701 as i64)
+        if rr.is_ok():
+            p(rr.unwrap())
+    else:
+        p(999 as i64)
+    return 0

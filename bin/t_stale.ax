@@ -1,0 +1,93 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    zpc(tag)
+    zpc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        zpc('0' as i64)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        zpc(buf[j] as i64)
+        j = j - 1 as i64
+    zpc(' ' as i64)
+
+struct ZNode:
+    kind: u8
+    pad1: u8
+    pad2: u16
+    first_child: u32
+    next_sibling: u32
+    payload: u32
+    flags: u16
+    pad3: u16
+    extra_idx: u32
+
+struct ZNodeVec:
+    data: ptr[ZNode]
+    len: i64
+    cap: i64
+
+struct ZTree:
+    nodes: ZNodeVec
+
+struct ZRes:
+    tree: ptr[ZTree]
+    other: u32
+
+fn znpush(mut self: ptr[ZNodeVec], nd: ZNode) -> u32:
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0:
+            nc = self.cap * 2
+        let ndp = @alloc(nc * 24) as ptr[ZNode]
+        if self.data != null as ptr[ZNode]:
+            @memcpy(ndp as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @free(self.data as ptr[u8])
+        self.data = ndp
+        self.cap = nc
+    let idx = self.len as u32
+    self.data[self.len] = nd
+    self.len = self.len + 1
+    return idx
+
+// mimic resolve_node: mutates tree.nodes.data[i].payload via a CALL
+fn zresolve_node(self: ptr[ZRes], i: u32):
+    self.tree.nodes.data[i].payload = 42 as u32
+
+// mimic the FIELD_EXPR pattern: read node, then call resolve_node, then RE-READ node
+fn zfield(self: ptr[ZRes], lhs_idx: u32) -> i64:
+    let lhs_node = self.tree.nodes.data[lhs_idx]
+    if lhs_node.kind == 99 as u8:
+        return -2 as i64
+    // intervening call that mutates nodes.data[lhs_idx].payload
+    self.zresolve_node(lhs_idx)
+    let updated_lhs_node = self.tree.nodes.data[lhs_idx]
+    if updated_lhs_node.kind == 30 as u8 or updated_lhs_node.kind == 1 as u8:
+        let sym_idx = updated_lhs_node.payload
+        return sym_idx as i64
+    return -1 as i64
+
+pub fn main() -> i32:
+    let t = @alloc(@compiler_intrinsic("size_of")[ZTree]()) as ptr[ZTree]
+    t.nodes = ZNodeVec(data: null as ptr[ZNode], len: 0, cap: 0)
+    let rs = @alloc(@compiler_intrinsic("size_of")[ZRes]()) as ptr[ZRes]
+    rs.tree = t
+    rs.other = 0 as u32
+    // push a node with kind=1, payload=1075 (the "stale" original value)
+    let _ = (&t.nodes).znpush(ZNode(kind: 1 as u8, pad1: 0 as u8, pad2: 0 as u16, first_child: 0 as u32, next_sibling: 0 as u32, payload: 1075 as u32, flags: 0 as u16, pad3: 0 as u16, extra_idx: 0 as u32))
+    // expected: zresolve_node sets payload=42, so zfield should return 42 (NOT 1075)
+    zpn('P' as i64, rs.zfield(0 as u32))
+    zpc(10 as i64)
+    return 0

@@ -1,0 +1,58 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32)
+        x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+fn three(d: ptr[u8], o: i64) -> i64:
+    let b0 = d[o] as i64
+    let b1 = d[o + 1] as i64
+    let b2 = d[o + 2] as i64
+    return b0 | (b1 << 8 as i64) | (b2 << 16 as i64)
+
+fn four(d: ptr[u8], o: i64) -> i64:
+    let b0 = d[o] as i64
+    let b1 = d[o + 1] as i64
+    let b2 = d[o + 2] as i64
+    let b3 = d[o + 3] as i64
+    return b0 | (b1 << 8 as i64) | (b2 << 16 as i64) | (b3 << 24 as i64)
+
+// four with single-accumulator (low register pressure)
+fn four_acc(d: ptr[u8], o: i64) -> i64:
+    mut r := d[o] as i64
+    r = r | ((d[o + 1] as i64) << 8 as i64)
+    r = r | ((d[o + 2] as i64) << 16 as i64)
+    r = r | ((d[o + 3] as i64) << 24 as i64)
+    return r
+
+pub fn main() -> i32:
+    let buf = @alloc(8) as ptr[u8]
+    buf[0] = 174 as u8
+    buf[1] = 32 as u8
+    buf[2] = 1 as u8
+    buf[3] = 0 as u8
+    zpn('3' as i64, three(buf, 0 as i64))     // expect 174|8192|65536 = 73902
+    zpn('4' as i64, four(buf, 0 as i64))      // expect 73902
+    zpn('5' as i64, four_acc(buf, 0 as i64))  // expect 73902
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

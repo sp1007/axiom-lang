@@ -1,0 +1,48 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(buf[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+// Mirrors Fixup: 16-byte {i64, u32, i32}
+struct Fx:
+    off: i64
+    lbl: u32
+    sz: i32
+
+// pass-by-value test
+fn take(f: Fx) -> i64:
+    return f.off + f.lbl as i64 + f.sz as i64
+
+pub fn main() -> i32:
+    // heap array of Fx, store then read back by value (mirrors vec.data[i])
+    let arr = @alloc(4 * 16) as ptr[Fx]
+    arr[0] = Fx(off: 100 as i64, lbl: 7 as u32, sz: 5 as i32)
+    arr[1] = Fx(off: 200 as i64, lbl: 9 as u32, sz: 6 as i32)
+    let f0 = arr[0]
+    zpn('O' as i64, f0.off)       // expect 100
+    zpn('L' as i64, f0.lbl as i64) // expect 7
+    zpn('S' as i64, f0.sz as i64)  // expect 5
+    let f1 = arr[1]
+    zpn('P' as i64, f1.off)       // expect 200
+    // pass-by-value
+    zpn('T' as i64, take(arr[0])) // expect 112
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

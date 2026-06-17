@@ -1,0 +1,46 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn pc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    pc(tag)
+    pc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        pc('0' as i64)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        pc(b[j] as i64)
+        j = j - 1 as i64
+    pc(' ' as i64)
+
+struct LSym:
+    name: str
+    section: i64
+    offset: u64
+    size: u64
+    defined: bool
+
+pub fn main() -> i32:
+    // construct OMITTING `size` (named) — mirrors linker.ax LinkerSymbol(...)
+    let s = LSym(name: "foo", section: 1 as i64, offset: 99 as u64, defined: true)
+    zpn('S' as i64, s.section)        // expect 1
+    zpn('O' as i64, s.offset as i64)  // expect 99
+    zpn('Z' as i64, s.size as i64)    // expect 0
+    pc('D' as i64)
+    pc('=' as i64)
+    if s.defined:
+        pc('Y' as i64)                // expect Y
+    else:
+        pc('N' as i64)
+    pc(10 as i64)
+    return 0

@@ -1,0 +1,72 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32)
+        x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+// original (u32 arithmetic)
+fn ru32_a(data: ptr[u8], off: i64) -> u32:
+    let b0 = data[off] as u32
+    let b1 = data[off + 1] as u32
+    let b2 = data[off + 2] as u32
+    let b3 = data[off + 3] as u32
+    return b0 | (b1 << 8 as u32) | (b2 << 16 as u32) | (b3 << 24 as u32)
+
+// i64 arithmetic, return i64
+fn ru32_b(data: ptr[u8], off: i64) -> i64:
+    let b0 = data[off] as i64
+    let b1 = data[off + 1] as i64
+    let b2 = data[off + 2] as i64
+    let b3 = data[off + 3] as i64
+    return b0 | (b1 << 8 as i64) | (b2 << 16 as i64) | (b3 << 24 as i64)
+
+// u32 with explicit parens on shifts
+fn ru32_c(data: ptr[u8], off: i64) -> u32:
+    let b0 = data[off] as u32
+    let b1 = data[off + 1] as u32
+    let b2 = data[off + 2] as u32
+    let b3 = data[off + 3] as u32
+    let s1 = b1 << (8 as u32)
+    let s2 = b2 << (16 as u32)
+    let s3 = b3 << (24 as u32)
+    return b0 | s1 | s2 | s3
+
+pub fn main() -> i32:
+    let buf = @alloc(8) as ptr[u8]
+    buf[0] = 174 as u8
+    buf[1] = 32 as u8
+    buf[2] = 1 as u8
+    buf[3] = 0 as u8
+    buf[4] = 246 as u8
+    buf[5] = 0 as u8
+    buf[6] = 0 as u8
+    buf[7] = 0 as u8
+    // expect A=73902 B=73902 C=73902, and *4 => 246
+    zpn('A' as i64, ru32_a(buf, 0 as i64) as i64)
+    zpn('B' as i64, ru32_b(buf, 0 as i64))
+    zpn('C' as i64, ru32_c(buf, 0 as i64) as i64)
+    zpn('a' as i64, ru32_a(buf, 4 as i64) as i64)
+    zpn('b' as i64, ru32_b(buf, 4 as i64))
+    zpn('c' as i64, ru32_c(buf, 4 as i64) as i64)
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

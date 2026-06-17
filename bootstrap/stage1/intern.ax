@@ -21,7 +21,11 @@ pub fn fnv1a(s: str) -> u32:
         h = h ^ (s[i] as u32)
         h = h * 16777619 as u32
         i = i + 1
-    return h
+    // BUG#16: native backend does u32 multiply with 64-bit imul, leaving garbage
+    // in the upper 32 bits. The hash is later COMPARED (entry.hash == h) in 64-bit,
+    // so garbage upper bits cause false-negatives -> duplicate interns -> wrong
+    // name_ids -> resolver crash. Mask to a clean u32 so equality compares hold.
+    return h & 4294967295 as u32
 
 pub struct InternState:
     pub arena_len: i64

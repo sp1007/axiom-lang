@@ -1,0 +1,31 @@
+// Repro candidates for the small (<=8 byte) value-struct by-value vs pointer bug.
+// Stage2 SIGSEGV deref'd an inline-held small struct (rax=0x500000007 = {5,7}).
+
+struct Pair:
+    a: i32
+    b: i32
+
+fn make_pair() -> Pair:
+    return Pair(a: 5, b: 7)
+
+fn sum_byval(p: Pair) -> i32:
+    return (p.a + p.b) as i32
+
+pub fn main() -> i32:
+    // A: return small struct, then field-access
+    let p = make_pair()
+    let ra = (p.a + p.b) as i32        // expect 12
+    if ra != 12 as i32:
+        return 1
+
+    // B: pass small struct by value, field-access inside callee
+    let rb = sum_byval(p)              // expect 12
+    if rb != 12 as i32:
+        return 2
+
+    // C: pass freshly-returned struct directly by value
+    let rc = sum_byval(make_pair())   // expect 12
+    if rc != 12 as i32:
+        return 3
+
+    return 99

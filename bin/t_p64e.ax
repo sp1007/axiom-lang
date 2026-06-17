@@ -1,0 +1,38 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn show(c_ptr: ptr[u8], len: i64):
+    mut k := 0 as i64
+    while k < len:
+        putchar(c_ptr[k] as i32)
+        k = k + 1
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+
+fn print_via_str(c_ptr: ptr[u8], len: i64):
+    let buf = @alloc(len + 1) as ptr[u8]
+    @memcpy(buf, c_ptr, len)
+    buf[len] = 0 as u8
+    print(buf as str)
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+
+pub fn main() -> i32:
+    mut v := 12345 as i64
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        buf[len] = '0' as u8 + (v % 10) as u8
+        len = len + 1
+        v = v / 10
+    show(buf, len as i64)
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+    buf[len] = 0 as u8
+    show(buf, len as i64)
+    print_via_str(buf, len as i64)
+    return 0

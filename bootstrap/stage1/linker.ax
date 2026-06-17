@@ -25,23 +25,30 @@ pub fn read_u16_le(data: ptr[u8], off: i64) -> u16:
     let b1 = data[off + 1] as u16
     return b0 | (b1 << 8 as u16)
 
+// BUG#20: the native backend miscompiles an OR-chain of 3+ shifted operands
+// (e.g. `b0 | (b1<<8) | (b2<<16) | (b3<<24)`) under register pressure — the b0/b1
+// terms come back wrong (verified at -O0 and -O1; the 2-operand read_u16_le is
+// fine, a single-accumulator form is fine). This corrupted every COFF field read
+// at self-link time -> empty symbol names -> "Unresolved external symbol ''".
+// Rewrite as a single-accumulator fold (low register pressure) which compiles
+// correctly. (Root fix belongs in the selector/regalloc for wide OR trees.)
 pub fn read_u32_le(data: ptr[u8], off: i64) -> u32:
-    let b0 = data[off] as u32
-    let b1 = data[off + 1] as u32
-    let b2 = data[off + 2] as u32
-    let b3 = data[off + 3] as u32
-    return b0 | (b1 << 8 as u32) | (b2 << 16 as u32) | (b3 << 24 as u32)
+    mut r := data[off] as u32
+    r = r | ((data[off + 1] as u32) << 8 as u32)
+    r = r | ((data[off + 2] as u32) << 16 as u32)
+    r = r | ((data[off + 3] as u32) << 24 as u32)
+    return r
 
 pub fn read_u64_le(data: ptr[u8], off: i64) -> u64:
-    let b0 = data[off] as u64
-    let b1 = data[off + 1] as u64
-    let b2 = data[off + 2] as u64
-    let b3 = data[off + 3] as u64
-    let b4 = data[off + 4] as u64
-    let b5 = data[off + 5] as u64
-    let b6 = data[off + 6] as u64
-    let b7 = data[off + 7] as u64
-    return b0 | (b1 << 8 as u64) | (b2 << 16 as u64) | (b3 << 24 as u64) | (b4 << 32 as u64) | (b5 << 40 as u64) | (b6 << 48 as u64) | (b7 << 56 as u64)
+    mut r := data[off] as u64
+    r = r | ((data[off + 1] as u64) << 8 as u64)
+    r = r | ((data[off + 2] as u64) << 16 as u64)
+    r = r | ((data[off + 3] as u64) << 24 as u64)
+    r = r | ((data[off + 4] as u64) << 32 as u64)
+    r = r | ((data[off + 5] as u64) << 40 as u64)
+    r = r | ((data[off + 6] as u64) << 48 as u64)
+    r = r | ((data[off + 7] as u64) << 56 as u64)
+    return r
 
 pub fn write_u32_le(data: ptr[u8], off: i64, val: u32):
     data[off] = (val & 0xFF as u32) as u8
@@ -368,10 +375,17 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             @free(name_nt)
 
         push_linker_str(&sym_names, name_str)
+        // BUG#21: lower_struct_constructor_call (native air_builder) assigns
+        // named args POSITIONALLY, ignoring field names. Omitting `size` here
+        // made `defined` land in the `size` slot and left `defined` zeroed ->
+        // every parsed symbol read as undefined -> defined funcs never entered
+        // func_names -> "Unresolved external symbol" for all internal calls.
+        // List ALL fields in declaration order so positional lowering is correct.
         push_linker_symbol(&symbols, LinkerSymbol(
             name: name_str,
             section: sec_num as i64,
             offset: val as u64,
+            size: 0 as u64,
             defined: is_def_sym
         ))
         
@@ -380,7 +394,7 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
         mut k := 0 as u8
         while k < aux_count:
             push_linker_str(&sym_names, "")
-            push_linker_symbol(&symbols, LinkerSymbol(name: "", section: 0, offset: 0 as u64, defined: false))
+            push_linker_symbol(&symbols, LinkerSymbol(name: "", section: 0, offset: 0 as u64, size: 0 as u64, defined: false))
             sym_i = sym_i + 1
             k = k + 1 as u8
             

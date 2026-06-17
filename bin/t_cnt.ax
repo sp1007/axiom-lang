@@ -1,0 +1,154 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+struct ZSE:
+    name_id: u32
+    symbol_idx: u32
+
+struct ZScope:
+    kind: u8
+    padding1: u8
+    padding2: u16
+    parent_id: u32
+    depth: u32
+    entries: ptr[ZSE]
+    count: u32
+    capacity: u32
+
+fn zpc(c: i64):
+    putchar(c as i32)
+    fflush(null as ptr[void])
+
+fn zpn(tag: i64, v: i64):
+    zpc(tag)
+    zpc('=' as i64)
+    mut x := v
+    if x == 0 as i64:
+        zpc('0' as i64)
+    mut buf := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        buf[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        zpc(buf[j] as i64)
+        j = j - 1 as i64
+    zpc(' ' as i64)
+
+fn zbump(mut self: ptr[ZScope]):
+    self.count = self.count + 1 as u32
+
+// reader takes ptr[aggregate] as an EXPLICIT call argument
+fn zreader(p: ptr[ZScope]) -> u32:
+    return p.count
+
+// 3-arg version returning bool (mirror zinsert signature) - param named self
+fn zreader3(self: ptr[ZScope], a: u32, b: u32) -> bool:
+    return true
+
+fn ebump(mut self: ptr[ZScope]):
+    let _ = zreader(self)
+    self.count = self.count + 1 as u32
+    let _ = zreader(self)
+    self.count = self.count + 1 as u32
+
+struct ZScopeVec:
+    data: ptr[ZScope]
+    len: i64
+    cap: i64
+
+fn zscpush(mut self: ptr[ZScopeVec], sc: ZScope) -> u32:
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0:
+            nc = self.cap * 2
+        let nd = @alloc(nc * 32) as ptr[ZScope]
+        if self.data != null as ptr[ZScope]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 32)
+            @free(self.data as ptr[u8])
+        self.data = nd
+        self.cap = nc
+    let idx = self.len as u32
+    self.data[self.len] = sc
+    self.len = self.len + 1
+    return idx
+
+fn fput(mut self: ptr[ZScope], name_id: u32, symbol_idx: u32):
+    let is_new = zreader3(self, name_id, symbol_idx)
+    if is_new:
+        self.count = self.count + 1 as u32
+
+fn fbump(mut syms: ptr[ZScopeVec], mut scopes: ptr[ZScopeVec], name_id: u32, nm: str):
+    let sc = &scopes.data[0]
+    sc.fput(7 as u32, 8 as u32)
+    sc.fput(9 as u32, 10 as u32)
+    sc.fput(11 as u32, 12 as u32)
+
+fn cbump(mut scopes: ptr[ZScopeVec]):
+    let sc = &scopes.data[0]
+    sc.zbump()
+    sc.zbump()
+    sc.zbump()
+
+// mirror zdefine signature: 2 ptr params + str param
+fn dbump(mut syms: ptr[ZScopeVec], mut scopes: ptr[ZScopeVec], name_id: u32, nm: str):
+    let sc = &scopes.data[0]
+    sc.zbump()
+    sc.zbump()
+    sc.zbump()
+
+pub fn main() -> i32:
+    // CASE A: standalone struct via local pointer
+    mut a := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let pa = &a
+    pa.zbump()
+    pa.zbump()
+    pa.zbump()
+    zpn('A' as i64, a.count as i64)
+
+    // CASE B: struct inside a Vec, bump via &vec.data[0]
+    mut v := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut b := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let _ = (&v).zscpush(b)
+    let pb = &v.data[0]
+    pb.zbump()
+    pb.zbump()
+    pb.zbump()
+    let pb2 = &v.data[0]
+    zpn('B' as i64, pb2.count as i64)
+
+    // CASE C: bump via fn taking ptr[ZScopeVec] param, &scopes.data[0]
+    mut w := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut c := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let _ = (&w).zscpush(c)
+    (&w).cbump()
+    let pc = &w.data[0]
+    zpn('C' as i64, pc.count as i64)
+
+    // CASE D: mirror zdefine: 2 ptr params + str param
+    mut sdummy := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut wd := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut d := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let _ = (&wd).zscpush(d)
+    dbump(&sdummy, &wd, 7 as u32, "zzz")
+    let pd = &wd.data[0]
+    zpn('D' as i64, pd.count as i64)
+
+    // CASE E: explicit ptr[aggregate] arg via zreader(self)
+    mut e := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let pe = &e
+    pe.ebump()
+    zpn('E' as i64, e.count as i64)
+
+    // CASE F: Vec-element via param-ptr + method that calls zreader(self) explicit arg
+    mut wf := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    mut f := ZScope(kind: 0 as u8, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ZSE], count: 0 as u32, capacity: 0 as u32)
+    let _ = (&wf).zscpush(f)
+    mut fdummy := ZScopeVec(data: null as ptr[ZScope], len: 0, cap: 0)
+    fbump(&fdummy, &wf, 7 as u32, "zzz")
+    let pf = &wf.data[0]
+    zpn('F' as i64, pf.count as i64)
+    zpc(10 as i64)
+    return 0

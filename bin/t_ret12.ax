@@ -1,0 +1,50 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zp(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+struct Iv:
+    a: u32
+    b: i32
+    c: i32
+struct IvVec:
+    data: ptr[Iv]
+    len: i64
+    cap: i64
+fn push12(mut self: ptr[IvVec], v: Iv):
+    if self.len == self.cap:
+        mut nc := 16 as i64
+        if self.cap != 0 as i64:
+            nc = self.cap * 2 as i64
+        let nd = @alloc(nc * 12) as ptr[Iv]
+        if self.data != null as ptr[Iv]:
+            @memcpy(nd as ptr[u8], self.data as ptr[u8], self.len * 12)
+        self.data = nd
+        self.cap = nc
+    self.data[self.len] = v
+    self.len = self.len + 1
+pub fn main() -> i32:
+    mut v := IvVec(data: null as ptr[Iv], len: 0 as i64, cap: 0 as i64)
+    push12(&v, Iv(a: 11 as u32, b: 22 as i32, c: 33 as i32))
+    let g = v.data[0]
+    zp('A' as i64, g.a as i64)
+    zp('B' as i64, g.b as i64)
+    zp('C' as i64, g.c as i64)
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

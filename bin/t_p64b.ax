@@ -1,0 +1,41 @@
+extern "C" fn putchar(c: i32) -> i32
+
+fn show(c_ptr: ptr[u8], len: i64):
+    // print via putchar (known-good)
+    mut k := 0 as i64
+    while k < len:
+        putchar(c_ptr[k] as i32)
+        k = k + 1
+    putchar(10 as i32)
+
+fn pstr(c_ptr: ptr[u8], len: i64):
+    // replicate print_raw_ptr: reinterpret as str then print
+    print(c_ptr as str)
+    putchar(10 as i32)
+
+fn doit(val: i64):
+    mut v := val
+    mut buf := @alloc(32) as ptr[u8]
+    mut len := 0
+    while v > 0:
+        let digit = (v % 10) as u8
+        buf[len] = '0' as u8 + digit
+        len = len + 1
+        v = v / 10
+    // before reverse
+    show(buf, len as i64)
+    mut i := 0
+    while i < len / 2:
+        let tmp = buf[i]
+        buf[i] = buf[len - 1 - i]
+        buf[len - 1 - i] = tmp
+        i = i + 1
+    buf[len] = 0 as u8
+    // after reverse, via putchar
+    show(buf, len as i64)
+    // after reverse, via str print
+    pstr(buf, len as i64)
+
+pub fn main() -> i32:
+    doit(12345 as i64)
+    return 0
