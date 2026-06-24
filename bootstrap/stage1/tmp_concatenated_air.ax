@@ -11076,6 +11076,26 @@ pub fn eval_unary(op: u16, a: u64, out_val: ptr[u64]) -> bool:
     // it unfolded; the type-aware selector (x86_selector OP_NOT) lowers it right.
     return false
 
+// A register whose address is taken (the operand of OP_MAKE_REF) can be mutated
+// through that pointer later â€” by a store, or by a call that receives the
+// pointer. Such a register must NOT be treated as a compile-time constant by the
+// value-folding passes even if it was defined by an ICONST: folding a use like
+// `if flag` after `set(&flag)` to its initial constant skips the memory reload
+// that actually observes the mutation. (The backend already spills address-taken
+// vregs to a stack slot, so at -O0 the reload happens correctly; this only guards
+// the optimizer from short-circuiting it.) Returns a bool[max_reg+1] marking each
+// such register; caller frees it.
+pub fn mark_addr_taken_regs(f: ptr[AirFunc], max_reg: u32) -> ptr[bool]:
+    let arr = @alloc(max_reg as i64 + 1 as i64) as ptr[bool]
+    @memset(arr as ptr[void], 0 as u8, max_reg as i64 + 1 as i64)
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode == OP_MAKE_REF and inst.src1 != 0 as u32 and inst.src1 <= max_reg:
+            arr[inst.src1] = true
+        i = i + 1 as i64
+    return arr
+
 pub fn fold_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
     if max_reg == 0 as u32:
@@ -11099,14 +11119,15 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
 
     mut changed := false
     let out_val = @alloc(8 as i64) as ptr[u64]
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
 
     i = 0 as i64
     while i < f.insts.len:
         mut inst := &f.insts.data[i]
-        
+
         if inst.opcode == OP_ICONST or inst.opcode == OP_FCONST:
             if inst.dest != 0 as u32:
-                if def_counts[inst.dest] <= 1 as u32:
+                if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                     if inst.opcode == OP_ICONST:
                         let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
                         vals[inst.dest] = ConstVal(known: true, val: full_val)
@@ -11132,7 +11153,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
-                    if def_counts[inst.dest] <= 1 as u32:
+                    if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
                         vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
@@ -11148,7 +11169,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
-                    if def_counts[inst.dest] <= 1 as u32:
+                    if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
                         vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
@@ -11163,6 +11184,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
     @free(def_counts as ptr[u8])
     @free(vals as ptr[u8])
     @free(out_val as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
@@ -12078,11 +12100,12 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
     while reg_idx <= max_reg:
         vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
     i = 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
         if inst.opcode == OP_ICONST and inst.dest != 0 as u32:
-            if def_counts[inst.dest] <= 1 as u32:
+            if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                 let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
                 vals[inst.dest] = ConstVal(known: true, val: full_val)
         i = i + 1 as i64
@@ -12282,6 +12305,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
 
     @free(def_counts as ptr[u8])
     @free(vals as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 // Per-basic-block Common Subexpression Elimination:

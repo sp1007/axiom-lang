@@ -1,0 +1,33 @@
+// Repro: a local whose ADDRESS is passed to a function that writes through it
+// must NOT be const-propagated to its init value. Mirrors x86_encode_mov_rr's
+// `mut need_rex := false; modrm_rr(..., &need_rex); if need_rex: ...`.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn pn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    putchar(('0' as i32) + (v as i32)); putchar(' ' as i32); fflush(null as ptr[void])
+
+fn set_outs(a: u8, b: u8, out_x: ptr[u8], out_y: ptr[u8], out_flag: ptr[bool]):
+    out_x[0] = a
+    out_y[0] = b
+    if a >= 8 as u8 or b >= 8 as u8:
+        out_flag[0] = true
+    else:
+        out_flag[0] = false
+
+fn enc(dst: u8, src: u8) -> i64:
+    mut x := 0 as u8
+    mut y := 0 as u8
+    mut flag := false
+    set_outs(src, dst, &x, &y, &flag)
+    if flag:
+        return 1 as i64      // need_rex true
+    return 0 as i64          // else
+
+pub fn main() -> i32:
+    // dst=12 (r12) -> flag must be true -> expect 1
+    pn('A' as i64, enc(12 as u8, 0 as u8))   // expect 1
+    // dst=3, src=1 -> both <8 -> flag false -> expect 0
+    pn('B' as i64, enc(3 as u8, 1 as u8))    // expect 0
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0

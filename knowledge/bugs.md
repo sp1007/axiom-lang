@@ -680,6 +680,16 @@ Các lệnh dùng register cố định ngầm phải được allocator model: 
 
 ---
 
+## BUG #25 — SSA optimizer (-O1) const-fold biến ADDRESS-TAKEN → bỏ `if flag` sau `f(&flag)` → mất REX.B ở mov_rr → stage2 segfault (rbp=4) ✅ FIXED
+**Triệu chứng:** sau khi v4 sửa modrm shift, stage2-v4 BUILD ok nhưng binary nó sinh vẫn segfault (gdb: `rbp=0x4`, `rsp` tí xíu, crash tại `call`). Prologue đã đúng (e5). 
+**Định vị (vàng, KHÔNG cần build 2h):** crash ở `ax_std_mem_alloc_get_slab` (allocator, gọi bởi `@alloc`). Diff disasm hàm này stage1(đúng) vs stage2-v4(lỗi): stage1 `mov %rax,%r12; mov %rax,%r13; mov %r12,%r8; mov %r13,%r9`; stage2-v4 `mov %rax,%rsp; mov %rax,%rbp; mov %rsp,%rax; mov %rbp,%rcx`. → **mất REX.R/REX.B** (giữ W): `mov %r12,%r8`(4d 89 e0)→`mov %rsp,%rax`(48 89 e0), `mov %r13,%r9`→`mov %rbp,%rcx`. `mov %rax,%rsp` phá stack → crash.
+**Truy nguồn:** allocator gán r12/r13 ĐÚNG (get_allocatable_gprs, reg_hw_reg, reg_needs_rex, emitter_resolve_reg trong stage2-v4 đều disasm ĐÚNG). Bug ở `x86_encode_mov_rr`: `mut need_rex:=false; x86_encode_modrm_rr(...,&need_rex); if need_rex: push(rex|W) else push(0x48)`. Disasm stage2-v4: sau call modrm_rr là **`jmp` vô điều kiện thẳng nhánh else** — `if need_rex` BỊ XÓA. Optimizer const-fold `need_rex=false` (giá trị init), KHÔNG biết `&need_rex` escape vào call (callee ghi qua con trỏ).
+**Repro vàng:** `bin/t_alias.ax` — `mut flag:=false; set_outs(...,&flag); if flag: return 1; return 0`. stage1 build: **-O0 → A=1 (đúng), -O1 → A=0 (SAI)**. `dump-air -O1`: `%9=iconst(false); %13=mkref %9; call; jump`(branch bị fold). Ở -O0 đúng vì regalloc spill vreg address-taken ra slot (x86_selector graph_coloring `elif address_taken[vreg]: spilled`) → reload đúng; -O1 fold TRƯỚC codegen nên bỏ qua reload.
+**FIX (ssa_opt.ax):** helper `mark_addr_taken_regs(f, max_reg) -> ptr[bool]` quét OP_MAKE_REF(0x0108), đánh dấu `src1`. Trong `fold_func` + `alg_simp_func`: khi ghi `vals[dest]=known` từ ICONST (và binary/unary trong fold_func) → thêm điều kiện `and not addr_taken[dest]`. ⇒ register address-taken KHÔNG bao giờ bị coi là const → branch-fold/const-fold bỏ qua. An toàn (chỉ giảm tối ưu, đã có backend spill). Verified t_alias -O1 → A=1, branch `branch %9` giữ nguyên; 7/7 repro pass.
+**⚠️ Lớp lỗi tổng quát:** bất kỳ pass tối ưu nào dùng giá trị const của biến có `&` (OP_MAKE_REF) hoặc bị STORE qua con trỏ đều phải coi là escaped/unknown. Đây là alias-analysis còn thiếu; nếu thêm pass forward giá trị (GVN/store-forwarding) phải tôn trọng addr_taken.
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):
