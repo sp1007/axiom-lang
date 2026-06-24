@@ -690,6 +690,18 @@ Các lệnh dùng register cố định ngầm phải được allocator model: 
 
 ---
 
+## BUG #26 — stage2 resolver KHÔNG resolve `std.string.*` (cross-module) → type_id=0 → emitter coi là self-call → đệ quy vô hạn → STACK_OVERFLOW 🔍 ĐÃ ĐỊNH VỊ, CHƯA FIX
+**Triệu chứng:** sau khi fix BUG#24+#25, stage2-v5 BUILD ok, prologue đúng (148 e5/0 e3, không mất REX) NHƯNG binary nó sinh crash khi chạy: `EXITCODE=0xC00000FD` (STACK_OVERFLOW), không in gì. (Crash này lộ ra SAU khi BUG#25 — vốn crash sớm hơn ở get_slab — đã được sửa.)
+**Định vị (gdb + diff disasm):** gdb `t_field_s2v5.exe`: crash tại `call` đầu trong `ax_ax_os_alloc_report_error`, rbp chain đệ quy hoàn hảo (mọi frame 0xC0 byte, cùng return addr). `x/120a` cho thấy report_error tự gọi chính nó vô hạn. Disasm `-dr obj_s2v5.obj` (obj stage2-v5 sinh khi build t_field):
+- report_error: call `std.string.len(msg)` tại 0x126d ra `e8 50 ff ff ff` = **direct rel -0xb0 = đầu report_error (self)**, KHÔNG có relocation.
+- So stage1 (obj_s1e): cùng chỗ là `e8 00000000` + **IMAGE_REL_AMD64_REL32 ax_len** (đúng).
+**Cơ chế:** emitter `x86_emitter.ax` MACH_CALL: `if inst.src1.imm == 0: disp = -(buf.len+5)` (coi là self-call); else push_fixup theo symbol index. Selector `x86_selector.ax` OP_CALL (~L1128): `sym_imm = callee_sym_idx = inst.type_id` (cho direct call inst.src1==0), push MACH_CALL imm=sym_imm (L1275). ⇒ stage2-v5 có `inst.type_id == 0` cho các call này (symbol CHƯA resolve) → emitter self-call → đệ quy.
+**Phạm vi (đếm reloc obj_s1e vs obj_s2v5):** stage1 527 reloc / stage2-v5 511 (thiếu 16). Symbol stage2-v5 KHÔNG resolve được (đều `std.string.*`): **ax_len×7, ax_slice×8, ax_starts_with×1, ax_concat×1, ax_str_slice×1**. Các call nội-module khác (ax_print_hex_freestanding...) vẫn reloc ĐÚNG.
+**Bản chất:** bug FRONTEND/RESOLVER của stage2 (lazy-module) — resolve cross-module `std.string.*` ra symbol index 0. KHÔNG repro được bằng stage1 build (stage1 C-built resolve đúng); phải diff hàm resolver trong obj_stage2_v5.obj (có symbol) hoặc dump symbol table stage2 sinh. ⚠️ Emitter heuristic `imm==0 → self-call` quá nguy hiểm: biến symbol-unresolved thành đệ quy âm thầm thay vì lỗi link — cân nhắc đổi thành sentinel/asserts.
+**HƯỚNG TIẾP:** (1) tìm trong resolver/symbol-table cách `std.string.*` được gán index khi gọi từ module khác (os/alloc gọi std.string.len); so logic stage1 vs cách nó compile trong stage2. (2) Hoặc check air_builder lower OP_CALL: callee sym_idx vào type_id — có thể u16 type_id tràn nếu symbol index của std.string.* > 65535? Kiểm tra symbol index thực của ax_len. (3) Repro vàng: cp axiom_temp.obj khi stage2-v5 build chương trình NHỎ có dùng `std.string.len` → objdump -dr xem self-call.
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):
