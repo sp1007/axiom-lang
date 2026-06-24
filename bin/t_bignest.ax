@@ -1,0 +1,97 @@
+// Repro: nested 24-byte struct (Op) inside 80-byte struct (Inst), passed by-value,
+// read inside a LARGE function (forces spilling) — mirrors emit_mach_inst reading
+// inst.dst (offset 8) and inst.src1 (offset 32).
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32); x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8; n = n + 1 as i64; x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32); j = j - 1 as i64
+    putchar(' ' as i32); fflush(null as ptr[void])
+
+struct Op:
+    kind: u8
+    phys: u8
+    pad: u16
+    vreg: u32
+    label: u32
+    imm: i64
+
+struct Inst:
+    op: u16
+    cc: u8
+    pad: u8
+    dst: Op
+    src1: Op
+    src2: Op
+
+fn resolve(op: Op) -> u8:
+    if op.kind == 0 as u8:
+        return op.phys
+    return 99 as u8
+
+fn big(inst: Inst, sel: i64) -> i64:
+    mut a := sel + 1
+    mut b := sel + 2
+    mut c := sel + 3
+    mut d := sel + 4
+    mut e := sel + 5
+    mut f := sel + 6
+    mut g := sel + 7
+    mut h := sel + 8
+    mut i := sel + 9
+    mut j := sel + 10
+    mut k := sel + 11
+    mut l := sel + 12
+    mut m := sel + 13
+    mut n := sel + 14
+    mut o := sel + 15
+    mut p := sel + 16
+    mut acc := 0 as i64
+    if sel == 0 as i64:
+        acc = acc + a + b
+    elif sel == 1 as i64:
+        acc = acc + c + d
+    elif sel == 2 as i64:
+        acc = acc + e + f
+    elif sel == 3 as i64:
+        acc = acc + g + h
+    elif sel == 4 as i64:
+        acc = acc + i + j
+    elif sel == 5 as i64:
+        acc = acc + k + l
+    elif sel == 6 as i64:
+        acc = acc + m + n
+    elif sel == 7 as i64:
+        acc = acc + o + p
+    else:
+        acc = acc + a + p
+    let dst = resolve(inst.dst)
+    let src = resolve(inst.src1)
+    acc = acc + (dst as i64) * 1000 + (src as i64)
+    acc = acc + a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p
+    return acc
+
+pub fn main() -> i32:
+    let inst = Inst(
+        op: 5 as u16, cc: 0 as u8, pad: 0 as u8,
+        dst:  Op(kind: 0 as u8, phys: 5 as u8, pad: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64),
+        src1: Op(kind: 0 as u8, phys: 4 as u8, pad: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64),
+        src2: Op(kind: 0 as u8, phys: 0 as u8, pad: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+    )
+    let r = big(inst, 3 as i64)
+    zpn('R' as i64, r)              // dst.phys=5,src1.phys=4 -> +5004 inside acc
+    zpn('D' as i64, resolve(inst.dst) as i64)   // expect 5
+    zpn('S' as i64, resolve(inst.src1) as i64)  // expect 4
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0

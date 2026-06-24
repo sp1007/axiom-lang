@@ -1,0 +1,40 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+fn add3_u32(a: u32, b: u32, c: u32) -> u32:
+    return (a + b + c) & 0xFFFFF000 as u32
+
+fn add3_acc(a: u32, b: u32, c: u32) -> u32:
+    mut r := a
+    r = r + b
+    r = r + c
+    return r & 0xFFFFF000 as u32
+
+pub fn main() -> i32:
+    let idata_rva = 0xe000 as u32
+    let idata_raw = 0 as u32
+    // expect (0xe000 + 0 + 0xFFF) & 0xFFFFF000 = 0xe000 = 57344
+    zpn('A' as i64, add3_u32(idata_rva, idata_raw, 0xFFF as u32) as i64)
+    zpn('B' as i64, add3_acc(idata_rva, idata_raw, 0xFFF as u32) as i64)
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

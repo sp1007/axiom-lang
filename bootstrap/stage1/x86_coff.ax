@@ -462,25 +462,10 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 fflush(null as ptr[void])
 
-            ax_printf_local("AXCG fn=%d SEL\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
-            ax_printf_local("AXCG fn=%d mach=%d LIVE\n", func_done_count, mach_insts.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-
-            if mach_insts.len > 1000 as i64:
-                ax_printf_local("[codegen] LARGE fn %d: air=%d mach=%d\n",
-                    func_done_count, fn_ptr.insts.len, mach_insts.len,
-                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
-
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
-            ax_printf_local("AXCG fn=%d intervals=%d RA\n", func_done_count, intervals.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
-            ax_printf_local("AXCG fn=%d DONE\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            
+
             mut num_str_lits := 0 as i32
             mut loop_i := 0 as i64
             while loop_i < mach_insts.len:

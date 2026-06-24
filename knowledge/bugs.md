@@ -588,6 +588,98 @@ Thêm `size: 0 as u64` (đúng thứ tự khai báo) vào CẢ 2 `LinkerSymbol(.
 
 ---
 
+## BUG #22 — native backend lower `~` (bitwise NOT) thành LOGICAL not (`x==0`) → `~N`=0 → `& ~(align-1)`=0 → SizeOfImage=0 → PE INVALID ✅ FIX (CHƯA build được: axc.exe bị WDAC chặn)
+
+**Bối cảnh:** Sau #21, stage2 compile+link t_std **0 unresolved** + ra t_std_x.exe (57856B) — nhưng exe **KHÔNG phải PE hợp lệ** ("not a valid application for this OS platform").
+
+### Định vị (so byte PE header stage1-valid vs stage2-invalid)
+- DOS header giống. PE optional header: stage2 **SizeOfImage=0x00000000** (stage1=0x13000) + SizeOfInitializedData=0 → Windows từ chối.
+- size_of_image (linker.ax:609) = `(idata_rva + idata_raw_size + 0xFFF) & 0xFFFFF000`. idata_rva (L929) = `(...) & ~4095`.
+- **Repro `bin/t_not.ax`**: `~4095`=**0** (đáng lẽ -4096); `v & ~4095`=0; `(0x1000+0+4095) & ~4095`=0 (đáng lẽ 4096). → `~` trả 0. (3-operand add `(a+b+c)&mask` ĐÚNG — `t_add3.ax` A=B=57344 — nên KHÔNG phải họ #20.)
+
+### Root cause (x86_selector.ax:863)
+`OP_NOT` (air_builder map CẢ logical `not`/`!` LẪN bitwise `~` → OP_NOT, phân biệt bằng type) chỉ được native lower **MỘT dạng = logical** (`CMP src,0; SETcc E; MOVZX` ⇒ `src==0`). cgen (C backend) phân biệt: `type_id==11(bool)→ !`, else `~`. Native bỏ nhánh bitwise → `~<int>` = `(int==0)` = 0. ⇒ mọi `& ~(align-1)` (struct layout air_builder/selector; PE section RVA/size linker) cho 0/sai.
+
+### Fix (x86_selector.ax) — đã áp dụng vào source
+Thêm điều kiện như cgen: `if inst.type_id == 11 as u32:` giữ logical (CMP/SETcc/MOVZX); `else:` emit bitwise = `MACH_MOV dest,src1` + `MACH_NOT dest`. (MACH_NOT=9 đã có; is_two_operand_read đã gồm.)
+
+### ⚠️ CHẶN: không rebuild được — `bin/axc.exe` (Go stage0 C-backend) bị **Application Control/WDAC policy chặn** (2026-06-22). Các exe AXIOM-native chạy bình thường; chỉ axc.exe bị chặn → `rebuild_stage1.ps1` fail ("blocked by Device Guard policy"). CẦN: org whitelist axc.exe; HOẶC rebuild stage0 từ Go source. Verify fix #22 bằng t_not sau khi rebuild được (kỳ vọng N=-4096 A=4096 B=4096).
+
+---
+
+## BUG #23 — native backend ZERO-extend giá trị SIGNED nhỏ hơn 64-bit khi LOAD từ memory (đáng lẽ SIGN-extend) → `coff_sym_map[k] == -1 as i32` luôn FALSE → KHÔNG tạo extern symbol → binary native ra **0 imports** (extern call → `*ABS*`) ✅ FIX (verified)
+
+**Bối cảnh:** Sau #22, stage2 compile t_std ra PE hợp lệ nhưng binary do **stage2 (native)** tạo có **0 imports**: mọi lời gọi extern (putchar/fflush/malloc…) reloc về `*ABS*` thay vì external symbol sec-0. stage1 (C-backend) luôn đúng (putchar→sym_idx 285, fflush→263, tạo external sec-0) → bug CHỈ ở logic native codegen, chỉ hiện khi stage2 chạy.
+
+### Định vị (repro nhanh, KHÔNG cần build stage2 2h)
+- `x86_coff.ax` reloc loop: `coff_sym_map` được `@alloc + @memset(…, 0xff, …)` (mỗi i32 = -1 = "chưa có"). Khi tra `target_sym_idx = coff_sym_map[target_id]`; `if target_sym_idx == -1 as i32:` thì mới `push_coff_symbol(section_num: 0)` (external chưa định nghĩa → import).
+- **Repro `bin/t_memset.ax`** (build `-self-link -O1` = backend native): `@memset(p,0xff,n*4)` rồi đọc `p[0] as i64` → ra **4294967295** (đáng lẽ -1); `p[0] == -1 as i32` → **false**. ⇒ memset ĐÚNG (byte = 0xFFFFFFFF) nhưng LOAD i32 từ memory **zero-extend** thay vì sign-extend.
+- **Repro `bin/t_sext.ax`** cô lập: literal i32 -1→i64 (`C=-1`) OK; i32 từ phép tính (`D=-1`) OK; **i32 LOAD từ memory `M=4294967295` SAI**; so sánh `c==-1`(`E=1`) OK nhưng `p[0]==-1`(`P=0`) SAI. ⇒ bug đúng ở đường LOAD-từ-memory của type signed.
+- **Repro `bin/t_field.ax`**: field `i32=-1`→`A=-1` (sau fix), field `u32=0xFFFFFFFF`→`B=4294967295` (PHẢI giữ zero-extend), field `i16=-1`→`C=-1`, `s.a==-1`→`Q=1`.
+
+### Root cause (x86_selector.ax — 4 đường load)
+`mov r32,[mem]` của x86 zero-extend 32 bit cao. Backend sau khi MACH_LOAD (size 1/2/4) **luôn** zero-extend: OP_INDEX/OP_DEREF dùng `AND mask` (255/65535/0xFFFFFFFF); OP_LOAD/OP_GET_FIELD không mask (dựa luôn vào zero-extend của CPU). Với type SIGNED (i8/i16/i32) giá trị ÂM mất dấu. Latent vì i32 hầu hết KHÔNG âm — chỉ lộ ở sentinel -1 trong `coff_sym_map`. (cgen C backend đúng vì C tự sign-extend `(int64_t)i32`.) Cast i32→i64 (OP_CAST) chỉ MOV 64-bit nên DỰA VÀO việc giá trị đã sign-extend sẵn trong reg ⇒ phải sửa ở LOAD.
+
+### Fix (x86_selector.ax) — đã áp dụng + verified
+Thêm helper `emit_load_extend(sel, dest, size, type_id, out_insts)`: nếu `type_id ∈ {TYPE_I8,I16,I32}` → SIGN-extend bằng `MACH_SHL dest, (64-bits); MACH_SAR dest, (64-bits)` (shift imm: size4→32, size2→48, size1→56; MACH_SHL/SAR hỗ trợ OPND_IMM trong x86_emitter.ax:278-289); ngược lại (u8/u16/u32/bool/char) giữ `MOV_IMM mask + AND` zero-extend như cũ. Gọi ở CẢ 4 site: OP_LOAD, OP_INDEX, OP_GET_FIELD (nhánh scalar else), OP_DEREF — cho size 1/2/4. (i64/u64/isize/usize = 8 byte: không đụng.)
+Verified (stage1 rebuilt 1823124B, repro qua backend native): t_sext `C=-1 D=-1 M=-1 E=1 P=1`; t_memset `A=-1 B=-1 F=1`; t_field `A=-1 B=4294967295 C=-1 Q=1`; regression t_not `N=-4096 A=4096 B=4096`, t_dec `R=4294967274 H=4294967296 D=-22` (u32 vẫn zero-extend đúng).
+
+### ⚠️ Ghi chú
+- Fix này đổi codegen của MỌI load scalar nhỏ hơn 8 byte trong toàn compiler ⇒ phải verify bằng full stage2→stage3 SHA (i32 field âm/sentinel ở data structure khác có thể từng latent).
+- Trước build SHA cuối: GỠ diagnostic `RZ sym_idx=…` (x86_coff.ax reloc loop) + mọi marker AXCG/[codegen].
+
+---
+
+## BUG #24 — stage2 đọc SAI `inst.dst.phys` (nested MachOperand field) → mọi prologue `mov %rsp,%rbp` thành `mov %rsp,%rbx`, regalloc loạn → binary do stage2 sinh ra SEGFAULT + stage2 crash typecheck source lớn 🔍 ĐANG ĐIỀU TRA
+
+**Bối cảnh:** Sau #23, stage2 BUILD THÀNH CÔNG (1769984B) + CHẠY ĐƯỢC (lần đầu — PE hợp lệ, có imports). Nhưng: (a) stage3 fail — stage2 crash trong `checker.run_type_checker()` (log dừng ở "Finished Resolving", trước "Finished Typechecking", hard crash không error); (b) binary nhỏ do stage2 sinh (t_field_s2.exe) **SEGFAULT**.
+
+### Định vị (so disasm obj do stage1 vs stage2 sinh — KHÔNG cần build 2h)
+- `cp axiom_temp.obj` sau khi build t_field bằng stage1 (obj_s1) và stage2 (obj_s2); `objdump -d` so sánh `main`.
+- **100% SYSTEMATIC**: stage2 sinh `mov %rsp,%rbx` (48 89 **e3**) ở CẢ 278 hàm; stage1 sinh `mov %rsp,%rbp` (48 89 **e5**) ở 148 hàm. Toàn bộ register allocation của stage2 loạn (mọi dst dồn về %rbx, có `neg` thừa, giá trị sai).
+- **Tách biệt nguyên nhân:** `push %rbp` (0x55) stage2 sinh ĐÚNG ⇒ const REG_RBP=5 OK. `mov_imm` dst (VREG) ĐÚNG. CHỈ `mov_rr` với dst = OPND_PHYS REG_RBP đọc `inst.dst.phys` ra **3 (RBX)** thay vì 5 (RBP). PUSH đọc `inst.src1.phys` → ĐÚNG (5). ⇒ Lỗi ở việc đọc field `dst` (MachOperand lồng, offset trong MachInst) — `inst.dst.phys` sai, `inst.src1.phys` đúng.
+- MachOperand chứa i64 → align 8, size 24. MachInst: op(u16)+cc+padding=4, +pad → dst@8, src1@32, src2@56. emitter_resolve_reg nhận `op: MachOperand` BY VALUE (24B).
+
+### Quan trọng: KHÔNG repro được bằng hàm nhỏ
+`bin/t_nestfield.ax` (mô phỏng Opnd có i64 lồng trong Inst, đọc `inst.dst.phys` + `read_phys(inst.dst)` by-value) build bằng stage1 → ĐÚNG `D=5 S=4 R=5 T=4`. ⇒ native backend của stage1 xử lý nested-field/by-value ĐÚNG ở hàm nhỏ. Bug CHỈ hiện ở **hàm LỚN** (emit_mach_inst/emitter_resolve_reg — register pressure cao, SPILLING). Khớp ghi chú cũ "bug parser hàm LỚN (spilling)". ⇒ stage1 mis-compile truy cập `inst.dst` (spill/reload sai offset) trong hàm codegen lớn → stage2 đọc dst.phys sai.
+
+### HƯỚNG ĐIỀU TRA TIẾP
+1. Cô lập: tạo repro hàm LỚN (nhiều biến/spill) đọc `.dst.phys` từ struct lồng, build bằng stage1, xem có ra sai như stage2 không.
+2. Hoặc dump spill code của emitter_resolve_reg / emit_mach_inst (insert_spill_code có debug print bị comment ~L787) để xem reload `inst.dst` sai offset.
+3. Nghi can: spill/reload của aggregate-by-value 24B, hoặc field_offset của MachOperand lồng khi vreg bị spill. So x86_regalloc.ax insert_spill_code + cách load 16/24-byte spilled (regalloc_is_16byte chỉ check 16, KHÔNG check 24?).
+
+---
+
+## BUG #24 — register allocator gán biến SỐNG vào RCX, bị `SHL/SAR/SHR` (dùng CL) clobber → x86_encode_modrm_rr sinh modrm/REX sai → mọi prologue `mov %rsp,%rbp`→`mov %rsp,%rbx` + `mov rax,r12/r13` mất REX.B → stage2 regalloc loạn, binary segfault 🔧 FIX v2 (reserve RCX) — đang verify
+
+**Bối cảnh:** Sau #23, stage2 BUILD OK + CHẠY (lần đầu) nhưng stage3 crash trong run_type_checker (sau "Finished Resolving") + binary nhỏ do stage2 sinh SEGFAULT. Lỗi CHỈ ở native backend (stage1 C-built sinh đúng).
+
+### Định vị (vàng — diff disasm, KHÔNG cần build lại)
+- `cp axiom_temp.obj` sau build t_field bằng stage1 (obj_s1c, ĐÚNG) và stage2 (obj_s2c, LỖI); `objdump -d` so `main`.
+- Triệu chứng: stage2 sinh `mov %rsp,%rbx` (48 89 **e3**) ở 100% hàm thay vì `mov %rsp,%rbp` (48 89 **e5**).
+- **Build full obj bằng stage1 (`-self-link`, có symbol) → disasm `ax_x86_encode_modrm_rr`** thấy chính xác: biến `rm_field`(=5=RBP) bị gán RCX; phép `out_modrm = (3<<6)|((reg&7)<<3)|(rm&7)` lower `<<6`/`<<3` thành `MOV RCX,count; SHL dst,%cl` → RCX bị ghi đè bằng shift count (3) → `(rm_field&7)` đọc 3 → modrm rm=3=RBX. CL form của shift clobber RCX mà allocator KHÔNG model.
+- Tương tự `mov rax,r12` (cần REX.B vì r12≥8): giá trị `rm` cho `reg_needs_rex(rm)` bị clobber → REX.B mất → `49 89 c4`→`48 89 c4` = `mov rax,rsp` → phá stack (gdb: `mov $const,%rsp`+`mov $const,%rbp`, rbp=4 rsp nhỏ → crash trong allocator path của t_field).
+
+### Fix v1 (span-forbid_rcx) — ĐÃ BỎ vì regression
+Thêm logic "vreg span qua SHL/SAR/SHR → forbid_rcx" (sao chép pattern IDIV span forbid_rax_rdx). Sửa được 150/153 prologue NHƯNG thay đổi allocation làm hỏng `rm_need` (REX.B) → r12/r13→rsp/rbp → vẫn crash. Cách forbid theo span quá mong manh.
+
+### Fix v2 (reserve RCX khỏi pool) — ĐÃ BỎ vì regression khác
+Loại RCX khỏi get_allocatable_gprs (12→11 reg). Prologue đúng (main `e5`) NHƯNG tăng register pressure → **lộ bug spill** trong frontend của stage2 → stage2 build t_field chỉ codegen 2 hàm (drop hết lazy-module/stdlib functions) → segfault. ⇒ tăng spill là nguy hiểm (có bug spill latent riêng).
+
+### Fix v3 (immediate-form shift cho hằng số) — ❌ KHÔNG ĐỦ (CHỈ fix được 1 phần)
+Sửa **selector** (x86_selector.ax OP_SHL/OP_SHR): helper `const_shift_amount(fn_ptr, vreg)` quét defining-inst của count vreg; nếu là `OP_ICONST` (0x0201, value=src1|src2<<32) với value 0..63 → emit `MACH_SHL dst, OPND_IMM`. Verified `1<<32`→`shl $0x20` (vì count i64 không có cast). NHƯNG **stage2-v3 VẪN sinh `mov %rsp,%rbx` (e3) 277/277, t_field crash** ⇒ v3 chưa fix. Lý do ở v4.
+
+### Fix v4 (const_shift_amount NHÌN XUYÊN OP_CAST/COPY/MOVE) — ✅ ROOT CAUSE THẬT
+**Tại sao v3 trượt:** `x86_encode_modrm_rr` viết `(3 as u8 << 6 as u8)` và `((reg_field & 7 as u8) << 3 as u8)`. Literal `6 as u8`/`3 as u8` lower thành `ICONST → OP_CAST(u8)`, nên `inst.src2` của OP_SHL trỏ tới **OP_CAST**, KHÔNG phải OP_ICONST. v3 chỉ khớp ICONST trực tiếp → trả -1 → rơi vào CL-form `MOV RCX,count; SHL dst,%cl` → clobber RCX (giữ rm_field) → modrm rm 5→3 → mọi `mov %rsp,%rbp`→`%rbx` ở stage2.
+**Bằng chứng định vị (vàng, KHÔNG cần build 2h):** repro `bin/t_modrm.ax` = `enc_modrm(reg,rm) = (3<<6)|((reg&7)<<3)|(rm&7)`. Build bằng stage1, `cp axiom_temp.obj`, `objdump -d ax_enc_modrm`: v3 sinh `mov $0x6,%rcx; shl %cl,%rbx` + `shl %cl,%rax` (CL-form ⚠️). Sau v4: `shl $0x6,%rbx` + `shl $0x3,%rax` (immediate ✅).
+**Fix:** const_shift_amount (x86_selector.ax ~L654) đổi từ "khớp 1 lần ICONST" sang **vòng chase** (depth≤16): nếu defining-inst là OP_ICONST(0x0201) value∈[0,64) → trả value; nếu là OP_CAST(0x0223)/OP_COPY(0x0106)/OP_MOVE(0x0107) → `cur = inst.src1`, lặp; else -1. AN TOÀN: chỉ chấp nhận khi ICONST nguồn đã ∈[0,64) nên cast thu hẹp không bao giờ làm sai. Verified: t_modrm `M=229 N=227` + immediate-form; 5/5 repro (t_field/t_sext/t_memset/t_not/t_bignest) PASS không regression. Rebuild stage1 1821654B. Đang build stage2-v4 verify (prologue e5 + stage3 SHA).
+**Repro spill nested-struct (loại trừ giả thuyết sai):** `bin/t_bignest.ax` (Op 24B lồng trong Inst 80B, pass by-value, hàm lớn). stage1 compile ĐÚNG: `inst` spill `-0xa0(%rbp)`, reload `mov -0xa0(%rbp),%r10` rồi `lea 0x8(%r10)`/`lea 0x20(%r10)` (offset dst@8, src1@32 ĐÚNG). ⇒ bug KHÔNG phải spill aggregate như từng nghi; là RCX clobber bởi cast-wrapped const shift.
+
+### ⚠️ Lưu ý lớp lỗi "implicit fixed-register clobber"
+Các lệnh dùng register cố định ngầm phải được allocator model: IDIV/CQO→RAX/RDX (đã có span forbid), SHL/SAR/SHR→RCX, CALL→caller-saved (spans_call). Với SHL/SAR/SHR: cách hiện tại (v4) là **né CL-form cho shift HẰNG** (const_shift_amount nhìn xuyên cast → immediate `shl $imm`). ⚠️ Shift VARIABLE (count runtime) VẪN dùng CL-form và allocator VẪN KHÔNG model RCX-clobber → nếu compiler có shift biến mà allocator đặt giá trị sống vào RCX qua đó thì sẽ lỗi tương tự. Hiện compiler hầu hết shift hằng nên an toàn; nếu sau này lỗi lại → cần model RCX-clobber cho CL-form (forbid_rcx theo span, cẩn thận regression REX.B như v1).
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):

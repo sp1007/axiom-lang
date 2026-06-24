@@ -1,0 +1,49 @@
+// BUG#24 repro attempt: read u8 field (offset 1) of a 24-byte by-value struct
+// under high register pressure (force spilling), mimicking emitter_resolve_reg.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32); x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8; n = n + 1 as i64; x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32); j = j - 1 as i64
+    putchar(' ' as i32); fflush(null as ptr[void])
+
+struct Opnd:
+    kind: u8
+    phys: u8
+    padding: u16
+    vreg: u32
+    label: u32
+    imm: i64
+
+// 24-byte struct by value + lots of live locals to force spilling
+fn resolve(op: Opnd, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64:
+    let k = op.kind as i64
+    let p = op.phys as i64
+    // keep many values live across the field reads
+    let s1 = a + b + c + d + e + f + g + h
+    let s2 = a*2 + b*3 + c*5 + d*7 + e*11 + f*13 + g*17 + h*19
+    let s3 = a - b + c - d + e - f + g - h
+    let s4 = (a^b) + (c^d) + (e^f) + (g^h)
+    mut acc := 0 as i64
+    acc = acc + s1 + s2 + s3 + s4
+    if op.kind as i64 == 2:
+        acc = acc + p   // p must be op.phys
+    return p * 100000 + (acc - acc)   // isolate p (acc cancels)
+
+pub fn main() -> i32:
+    let o = Opnd(kind: 2 as u8, phys: 5 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+    let r = resolve(o, 1,2,3,4,5,6,7,8)
+    zpn('P' as i64, r / 100000)   // expect 5
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0

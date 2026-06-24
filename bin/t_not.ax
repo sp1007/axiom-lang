@@ -1,0 +1,32 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32)
+        x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8
+        n = n + 1 as i64
+        x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+pub fn main() -> i32:
+    let m = ~4095
+    zpn('N' as i64, m)                          // expect -4096
+    let v = 0x1FFF as i64
+    zpn('A' as i64, v & ~4095)                   // expect 4096 (0x1000)
+    zpn('B' as i64, (0x1000 + 0 + 4095) & ~4095) // expect 4096
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

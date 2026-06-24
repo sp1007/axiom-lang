@@ -1,0 +1,29 @@
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32); x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8; n = n + 1 as i64; x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32); j = j - 1 as i64
+    putchar(' ' as i32); fflush(null as ptr[void])
+pub fn main() -> i32:
+    let sym_name = 4294967274 as u32   // 0xFFFFFFEA = -22 encoded
+    mut sym_idx := sym_name as i64
+    zpn('R' as i64, sym_idx)            // expect 4294967274
+    let limit = 4026531840 as i64
+    let sh = 1 as i64 << 32             // expect 4294967296
+    zpn('H' as i64, sh)
+    if sym_idx > limit:
+        sym_idx = sym_idx - sh
+    zpn('D' as i64, sym_idx)            // expect -22
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0

@@ -1,0 +1,31 @@
+// Mirror x86_encode_modrm_rr exactly: does v3 emit immediate-form shifts
+// for the constant <<6 and <<3, avoiding the RCX clobber?
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32); x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8; n = n + 1 as i64; x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32); j = j - 1 as i64
+    putchar(' ' as i32); fflush(null as ptr[void])
+
+fn enc_modrm(reg_field: u8, rm_field: u8) -> u8:
+    let r = (3 as u8 << 6 as u8) | ((reg_field & 7 as u8) << 3 as u8) | (rm_field & 7 as u8)
+    return r
+
+pub fn main() -> i32:
+    // reg=RSP(4), rm=RBP(5) -> 0xe5 = 229
+    zpn('M' as i64, enc_modrm(4 as u8, 5 as u8) as i64)   // expect 229 (0xe5)
+    // reg=RSP(4), rm=RBX(3) -> 0xe3 = 227
+    zpn('N' as i64, enc_modrm(4 as u8, 3 as u8) as i64)   // expect 227 (0xe3)
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0

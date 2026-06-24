@@ -1043,11 +1043,6 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             variant_ctor = 4
         @free(get_str_ptr(v_name))
         if variant_ctor != 0:
-            mut sym_kind := 255 as i64
-            let v_sym_idx = callee_node.payload
-            if v_sym_idx != 0 as u32 and (v_sym_idx as i64) < self.mb.symbols.symbols.len:
-                sym_kind = self.mb.symbols.symbols.data[v_sym_idx as i64].kind as i64
-            ax_printf_local("[VARCTOR2] ctor=%d symkind=%d\n", variant_ctor, sym_kind, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if variant_ctor == 4:
                 let none_reg = self.fb.fresh_reg()
                 self.fb.emit(AirInst(

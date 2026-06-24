@@ -142,12 +142,11 @@ pub fn eval_unary(op: u16, a: u64, out_val: ptr[u64]) -> bool:
     if op == OP_NEG:
         out_val[0] = (-(a as i64)) as u64
         return true
-    elif op == OP_NOT:
-        mut res := 0 as u64
-        if a == 0 as u64:
-            res = 1 as u64
-        out_val[0] = res
-        return true
+    // BUG#22: do NOT const-fold OP_NOT here. eval_unary has no operand type, and
+    // OP_NOT is overloaded (bool logical `!` vs integer bitwise `~`). Folding it as
+    // logical (a==0) corrupted bitwise `~const` (e.g. `~4095` -> 0), which broke
+    // every `& ~(align-1)` idiom (struct layout, PE RVAs -> SizeOfImage=0). Leave
+    // it unfolded; the type-aware selector (x86_selector OP_NOT) lowers it right.
     return false
 
 pub fn fold_func(f: ptr[AirFunc]) -> bool:

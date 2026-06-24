@@ -1,0 +1,30 @@
+// BUG#23 repro: does native @memset(p, 0xff, n) fill i32 sentinels = -1 ?
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+fn zpn(tag: i64, v: i64):
+    putchar(tag as i32); putchar('=' as i32)
+    mut x := v
+    if x < 0 as i64:
+        putchar('-' as i32); x = 0 as i64 - x
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut b := @alloc(32) as ptr[u8]
+    mut n := 0 as i64
+    while x > 0 as i64:
+        b[n] = ('0' as u8) + (x % 10 as i64) as u8; n = n + 1 as i64; x = x / 10 as i64
+    mut j := n - 1 as i64
+    while j >= 0 as i64:
+        putchar(b[j] as i32); j = j - 1 as i64
+    putchar(' ' as i32); fflush(null as ptr[void])
+pub fn main() -> i32:
+    let n = 8 as i64
+    let p = @alloc(n * 4) as ptr[i32]
+    @memset(p as ptr[void], 0xff as u8, n * 4)
+    zpn('A' as i64, p[0] as i64)   // expect -1
+    zpn('B' as i64, p[3] as i64)   // expect -1
+    mut found := 0 as i64
+    if p[0] == -1 as i32:
+        found = 1 as i64
+    zpn('F' as i64, found)         // expect 1
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0
