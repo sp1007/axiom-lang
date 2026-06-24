@@ -473,10 +473,18 @@ pub fn x86_encode_mov_store_sized(base: u8, disp: i32, src: u8, size: u8, buf: p
             final_rex = final_rex | (first_byte & 0x0F as u8)
             start_idx = 1
             
-    let needs_rex_prefix = w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    mut needs_rex_prefix := w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    // BUG#27: an 8-bit store from SPL/BPL/SIL/DIL (hw regs 4-7) REQUIRES a REX
+    // prefix. Without it the modrm reg field 4-7 decodes as the legacy high-byte
+    // registers AH/CH/DH/BH, so e.g. `mov %sil,m` silently becomes `mov %dh,m`
+    // and stores garbage. encode_rex already yields a 0x40-based REX here.
+    if size == 1 as u8:
+        let src_hw = reg_hw_reg(src)
+        if src_hw >= 4 as u8 and src_hw <= 7 as u8:
+            needs_rex_prefix = true
     if needs_rex_prefix:
         push_byte(buf, final_rex)
-        
+
     push_byte(buf, op_byte)
     
     mut i := start_idx

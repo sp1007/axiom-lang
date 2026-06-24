@@ -704,7 +704,19 @@ Build pattern lúc RUNTIME bằng concat để literal prefix KHÔNG xuất hi�
 
 ---
 
-## BUG #27 — stage2 backend native-miscompile: `ax_actor_send` prologue hỏng (mov %rsp,%rbx/%rdx thay %rbp) → crash 🔍 ĐỊNH VỊ (BUG#24-family), CHƯA FIX (2026-06-25)
+## BUG #27 — byte-store encoder BỎ REX cho src byte-reg 4-7 (sil/dil) → `mov %sil,m` thành `mov %dh,m` (lưu rác) ✅ FIXED (2026-06-25)
+
+### ROOT CAUSE (REX-loss, BUG#25 family — 8-bit store)
+`x86_encode_mov_store_sized` (x86_encoding.ax:445): `needs_rex_prefix = w_bit or reg_needs_rex(src) or reg_needs_rex(base)`. `reg_needs_rex(r) = (r&15) >= 8`. Với store 8-bit (size==1) mà src là reg 4-7 (rsp/rbp/rsi/rdi → byte spl/bpl/sil/dil), CẦN REX prefix bắt buộc; thiếu REX thì modrm reg field 4-7 giải mã thành high-byte LEGACY ah/ch/dh/bh. ⇒ `mov %sil,m` (40 88..) bị emit thành `mov %dh,m` (88..) → lưu RÁC (dh = byte cao của con trỏ heap).
+**Cách lộ:** `emit_param_prologue` build `MachOperand(kind:OPND_PHYS, phys: phys, ...)`; `phys`(u8) sống qua call `next_vreg` nên regalloc đặt vào callee-saved rsi(sil); store `q.phys = phys` → `88 72 01 mov %dh,0x1(%rdx)` (thiếu REX) → src1.phys = rác (13/14 = byte cao con trỏ alloc). ⇒ stage2's emit_param_prologue set phys param-reg = rác → param load `mov %r13/%r14,...` thay rcx/rdx/r8/r9 → đọc tham số rác → crash. (Chỉ lộ khi regalloc đặt u8 vào rsi/rdi/rbp/rsp — nên hiếm/khó thấy.)
+**Chứng minh:** obj_stage2_diag.obj ax_emit_param_prologue @1414cc: `88 72 01 mov %dh,0x1(%rdx)` (đáng lẽ `40 88 72 01 mov %sil`). t_param5 (5-param fn) repro: stage1→A38, stage2→crash. arg_reg/local-across-call compile đúng natively (loại trừ).
+
+### FIX (x86_encoding.ax:445)
+Trong x86_encode_mov_store_sized: nếu `size==1` và `reg_hw_reg(src) ∈ [4,7]` → `needs_rex_prefix = true` (encode_rex trả 0x40-based REX sẵn). VERIFIED: stage1+fix compile t_bytestore → `40 88 71 01 mov %sil,0x1(%rcx)` (có REX), chạy in 006 007 013 ✓; t_param5/t_strlen không regress. Đang build stage2→stage3 verify + SHA.
+**Lớp lỗi:** REX-loss cho 8-bit access reg 4-7 — kiểm tra các encoder byte khác (mov_rr 8-bit, setcc, movzx src reg) có cùng thiếu sót không.
+
+### (lịch sử định vị — đã sửa nhãn)
+## BUG #27 (cũ nhãn) — ax_actor_send param-load miscompile
 **Lộ ra SAU khi fix BUG#26** (self-call hết): stage2 compile t_strlen → obj reloc ĐÚNG (518=518) NHƯNG binary crash exit 139 (rip rác 0x..40a4, rax=rcx=0, bt rác) + in byte rác; stage2 build stage3 crash ở typecheck (log dừng "Finished Resolving", exit 127).
 **Định vị (THẬT — không phải prologue):** prologue ax_actor_send ĐÚNG cả 2 (`382c 48 89 e5`). Cái `48 89 e3` mình grep được là 1 lệnh PARAM-MOVE bị hỏng, không phải prologue. Diff vùng load tham số (sau push callee-saved + sub rsp):
 - **stage1 (ĐÚNG):** `mov %rcx,%r11`/`mov %rdx,%r11`/`mov %r8,%rbx`/`mov %r9,%rsi` — load param từ ĐÚNG win64 param-regs (rcx,rdx,r8,r9), frame `sub $0x58`, SPILL param ra stack (-0x68/-0x50(rbp)).
