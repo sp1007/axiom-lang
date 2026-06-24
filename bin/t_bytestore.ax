@@ -1,0 +1,42 @@
+// BUG#27 fix probe: store a u8 held across calls (-> callee-saved reg, maybe
+// sil/dil) into a heap struct's u8 field. Pre-fix: mov %dh (garbage); post-fix:
+// mov %sil with REX. Mirrors emit_param_prologue's MachOperand(phys: phys) build.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub struct Op:
+    kind: u8
+    phys: u8
+    pad: u16
+    vreg: u32
+    label: u32
+    imm: i64
+
+fn sideeffect(x: i64) -> u32:
+    return (x + 1 as i64) as u32
+
+fn build(phys: u8) -> ptr[Op]:
+    let snap = sideeffect(phys as i64)          // call: phys must survive -> callee-saved
+    let q = @alloc(24 as i64) as ptr[Op]        // another call
+    q.kind = 2 as u8
+    q.phys = phys                                // <-- the byte store under test
+    q.vreg = snap
+    return q
+
+fn pr(v: u8):
+    let n = v as i64
+    putchar(('0' as i32) + ((n as i32) / 100 as i32))
+    putchar(('0' as i32) + (((n as i32) / 10 as i32) % 10 as i32))
+    putchar(('0' as i32) + ((n as i32) % 10 as i32))
+    putchar(32 as i32)
+
+pub fn main() -> i32:
+    let a = build(6 as u8)
+    let b = build(7 as u8)
+    let c = build(13 as u8)
+    pr(a.phys)   // expect 006
+    pr(b.phys)   // 007
+    pr(c.phys)   // 013
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

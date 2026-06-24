@@ -1,0 +1,17 @@
+// Probe: do ALL std.string.* module-qualified calls self-call under stage2,
+// or just some? Compile with stage2_diag and objdump for ax_len/ax_concat/
+// ax_starts_with relocs vs <main> self-calls.
+import std.string
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub fn main() -> i32:
+    let s = "hello"
+    let n = std.string.len(s)
+    let c = std.string.concat(s, " world")
+    let m = std.string.len(c)
+    putchar(('0' as i32) + (n as i32))
+    putchar(('0' as i32) + ((m as i32) - 10 as i32))
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

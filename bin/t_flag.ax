@@ -1,0 +1,50 @@
+// BUG#26 hypothesis (B): does stage1 native codegen mis-evaluate the
+// air_builder branch  `elif kind == NODE_FIELD_EXPR and (flags & 2048) != 0`
+// for a value-copy struct loaded from an array? Mirror AstNode exactly.
+extern "C" fn putchar(c: i32) -> i32
+
+pub const NODE_FIELD_EXPR: u8 = 30
+pub const NODE_IDENT: u8 = 42
+
+pub struct AstNode:
+    kind: u8
+    padding: u8
+    flags: u16
+    token_idx: u32
+    first_child: u32
+    next_sibling: u32
+    payload: u32
+    extra_idx: u32
+
+pub struct NodeVec:
+    data: ptr[AstNode]
+    len: i64
+    cap: i64
+
+pub fn classify(nodes: ptr[NodeVec], child: i64) -> i64:
+    let callee_node = nodes.data[child]
+    if callee_node.kind == NODE_IDENT:
+        return 1            // IDENT branch
+    elif callee_node.kind == NODE_FIELD_EXPR and (callee_node.flags & 2048 as u16) != 0 as u16:
+        return 2            // FIELD_EXPR + flag2048 branch (CORRECT for std.string.len)
+    else:
+        return 3            // else branch (callee_reg = lower_expr -> self-call bug)
+
+pub fn main() -> i32:
+    let buf = @alloc(4 * 24) as ptr[AstNode]
+    mut v := NodeVec(data: buf, len: 4 as i64, cap: 4 as i64)
+    // node 0: a resolved module field call, like std.string.len
+    v.data[0] = AstNode(kind: NODE_FIELD_EXPR, padding: 0 as u8, flags: 2048 as u16, token_idx: 0 as u32, first_child: 0 as u32, next_sibling: 0 as u32, payload: 159 as u32, extra_idx: 0 as u32)
+    // node 1: an ident call
+    v.data[1] = AstNode(kind: NODE_IDENT, padding: 0 as u8, flags: 0 as u16, token_idx: 0 as u32, first_child: 0 as u32, next_sibling: 0 as u32, payload: 7 as u32, extra_idx: 0 as u32)
+    // node 2: unresolved field (flag not set)
+    v.data[2] = AstNode(kind: NODE_FIELD_EXPR, padding: 0 as u8, flags: 0 as u16, token_idx: 0 as u32, first_child: 0 as u32, next_sibling: 0 as u32, payload: 99 as u32, extra_idx: 0 as u32)
+
+    let r0 = classify(&v, 0 as i64)   // expect 2
+    let r1 = classify(&v, 1 as i64)   // expect 1
+    let r2 = classify(&v, 2 as i64)   // expect 3
+    putchar(('0' as i32) + (r0 as i32))
+    putchar(('0' as i32) + (r1 as i32))
+    putchar(('0' as i32) + (r2 as i32))
+    putchar(10 as i32)
+    return 0

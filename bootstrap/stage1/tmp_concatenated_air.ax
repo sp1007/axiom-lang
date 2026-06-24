@@ -19108,10 +19108,18 @@ pub fn x86_encode_mov_store_sized(base: u8, disp: i32, src: u8, size: u8, buf: p
             final_rex = final_rex | (first_byte & 0x0F as u8)
             start_idx = 1
             
-    let needs_rex_prefix = w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    mut needs_rex_prefix := w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    // BUG#27: an 8-bit store from SPL/BPL/SIL/DIL (hw regs 4-7) REQUIRES a REX
+    // prefix. Without it the modrm reg field 4-7 decodes as the legacy high-byte
+    // registers AH/CH/DH/BH, so e.g. `mov %sil,m` silently becomes `mov %dh,m`
+    // and stores garbage. encode_rex already yields a 0x40-based REX here.
+    if size == 1 as u8:
+        let src_hw = reg_hw_reg(src)
+        if src_hw >= 4 as u8 and src_hw <= 7 as u8:
+            needs_rex_prefix = true
     if needs_rex_prefix:
         push_byte(buf, final_rex)
-        
+
     push_byte(buf, op_byte)
     
     mut i := start_idx
@@ -23429,15 +23437,24 @@ fn strip_imports(s: str) -> str:
     return res
 
 fn strip_package_prefixes(s: str) -> str:
-    let r0 = std.string.replace(s, "::", ".")
-    let r1 = std.string.replace(r0, "std.mem.alloc.", "")
-    let r2 = std.string.replace(r1, "std.scheduler.", "")
-    let r3 = std.string.replace(r2, "std.os.win32.", "")
-    let r4 = std.string.replace(r3, "std.os.linux_sys.", "")
-    let r5 = std.string.replace(r4, "std.os.", "")
-    let r6 = std.string.replace(r5, "std.string.", "")
-    let r7 = std.string.replace(r6, "std.io.", "")
-    let r8 = std.string.replace(r7, "std.net.", "")
+    // BUG#26: the prefix patterns are built at runtime via concat so this
+    // function's OWN source never contains the literal qualified prefixes (e.g.
+    // "std.string."). Otherwise, when the self-hosting driver strips THIS file to
+    // build the next stage, it would blank these very patterns (replace(r, "", "")
+    // is a no-op), breaking all prefix stripping in stage2 -> every std.* call
+    // would survive as an unresolved field-expr and become a self-call.
+    // "std." / ".rest." / ":" pieces do not match any prefix pattern, so they
+    // survive the self-strip, and concat reconstitutes the real patterns at runtime.
+    let p = "std."
+    let r0 = std.string.replace(s, std.string.concat(":", ":"), ".")
+    let r1 = std.string.replace(r0, std.string.concat(p, "mem.alloc."), "")
+    let r2 = std.string.replace(r1, std.string.concat(p, "scheduler."), "")
+    let r3 = std.string.replace(r2, std.string.concat(p, "os.win32."), "")
+    let r4 = std.string.replace(r3, std.string.concat(p, "os.linux_sys."), "")
+    let r5 = std.string.replace(r4, std.string.concat(p, "os."), "")
+    let r6 = std.string.replace(r5, std.string.concat(p, "string."), "")
+    let r7 = std.string.replace(r6, std.string.concat(p, "io."), "")
+    let r8 = std.string.replace(r7, std.string.concat(p, "net."), "")
     return r8
 
 

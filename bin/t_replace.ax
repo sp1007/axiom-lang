@@ -1,0 +1,29 @@
+// BUG#26 root test: is std.string.replace miscompiled natively?
+// strip_package_prefixes uses replace(s, "<prefix>.", "") to strip module
+// prefixes. Test the same shape with neutral literals (avoid "std." which the
+// strip pass itself would mangle).
+import std.string
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn show(label: i32, out: str):
+    let n = std.string.len(out)
+    putchar(label)
+    putchar(('0' as i32) + ((n as i32) / 10 as i32))
+    putchar(('0' as i32) + ((n as i32) % 10 as i32))
+    putchar(58 as i32)  // ':'
+    mut i := 0 as i64
+    while i < n:
+        putchar(out.ptr[i] as i32)
+        i = i + 1 as i64
+    putchar(10 as i32)
+
+pub fn main() -> i32:
+    // empty-new strip pattern: expect "len(s)" (6)
+    show(65 as i32, std.string.replace("QXYZ.len(s)QXYZ.", "QXYZ.", ""))
+    // non-empty replace: expect "a_b_c" (5)
+    show(66 as i32, std.string.replace("aXXbXXc", "XX", "_"))
+    // no match: expect "hello" (5)
+    show(67 as i32, std.string.replace("hello", "zz", "_"))
+    fflush(null as ptr[void])
+    return 0

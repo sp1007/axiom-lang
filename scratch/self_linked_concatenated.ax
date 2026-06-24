@@ -12189,11 +12189,6 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             variant_ctor = 4
         @free(get_str_ptr(v_name))
         if variant_ctor != 0:
-            mut sym_kind := 255 as i64
-            let v_sym_idx = callee_node.payload
-            if v_sym_idx != 0 as u32 and (v_sym_idx as i64) < self.mb.symbols.symbols.len:
-                sym_kind = self.mb.symbols.symbols.data[v_sym_idx as i64].kind as i64
-            ax_printf_local("[VARCTOR2] ctor=%d symkind=%d\n", variant_ctor, sym_kind, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if variant_ctor == 4:
                 let none_reg = self.fb.fresh_reg()
                 self.fb.emit(AirInst(
@@ -13613,13 +13608,32 @@ pub fn eval_unary(op: u16, a: u64, out_val: ptr[u64]) -> bool:
     if op == OP_NEG:
         out_val[0] = (-(a as i64)) as u64
         return true
-    elif op == OP_NOT:
-        mut res := 0 as u64
-        if a == 0 as u64:
-            res = 1 as u64
-        out_val[0] = res
-        return true
+    // BUG#22: do NOT const-fold OP_NOT here. eval_unary has no operand type, and
+    // OP_NOT is overloaded (bool logical `!` vs integer bitwise `~`). Folding it as
+    // logical (a==0) corrupted bitwise `~const` (e.g. `~4095` -> 0), which broke
+    // every `& ~(align-1)` idiom (struct layout, PE RVAs -> SizeOfImage=0). Leave
+    // it unfolded; the type-aware selector (x86_selector OP_NOT) lowers it right.
     return false
+
+// A register whose address is taken (the operand of OP_MAKE_REF) can be mutated
+// through that pointer later â€” by a store, or by a call that receives the
+// pointer. Such a register must NOT be treated as a compile-time constant by the
+// value-folding passes even if it was defined by an ICONST: folding a use like
+// `if flag` after `set(&flag)` to its initial constant skips the memory reload
+// that actually observes the mutation. (The backend already spills address-taken
+// vregs to a stack slot, so at -O0 the reload happens correctly; this only guards
+// the optimizer from short-circuiting it.) Returns a bool[max_reg+1] marking each
+// such register; caller frees it.
+pub fn mark_addr_taken_regs(f: ptr[AirFunc], max_reg: u32) -> ptr[bool]:
+    let arr = @alloc(max_reg as i64 + 1 as i64) as ptr[bool]
+    @memset(arr as ptr[void], 0 as u8, max_reg as i64 + 1 as i64)
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = f.insts.data[i]
+        if inst.opcode == OP_MAKE_REF and inst.src1 != 0 as u32 and inst.src1 <= max_reg:
+            arr[inst.src1] = true
+        i = i + 1 as i64
+    return arr
 
 pub fn fold_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
@@ -13644,14 +13658,15 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
 
     mut changed := false
     let out_val = @alloc(8 as i64) as ptr[u64]
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
 
     i = 0 as i64
     while i < f.insts.len:
         mut inst := &f.insts.data[i]
-        
+
         if inst.opcode == OP_ICONST or inst.opcode == OP_FCONST:
             if inst.dest != 0 as u32:
-                if def_counts[inst.dest] <= 1 as u32:
+                if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                     if inst.opcode == OP_ICONST:
                         let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
                         vals[inst.dest] = ConstVal(known: true, val: full_val)
@@ -13677,7 +13692,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
-                    if def_counts[inst.dest] <= 1 as u32:
+                    if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
                         vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
@@ -13693,7 +13708,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
-                    if def_counts[inst.dest] <= 1 as u32:
+                    if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                         vals[inst.dest] = ConstVal(known: true, val: out_val[0])
                     else:
                         vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
@@ -13708,6 +13723,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
     @free(def_counts as ptr[u8])
     @free(vals as ptr[u8])
     @free(out_val as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
@@ -14623,11 +14639,12 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
     while reg_idx <= max_reg:
         vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
     i = 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
         if inst.opcode == OP_ICONST and inst.dest != 0 as u32:
-            if def_counts[inst.dest] <= 1 as u32:
+            if def_counts[inst.dest] <= 1 as u32 and not addr_taken[inst.dest]:
                 let full_val = ((inst.src2 as u64) << 32 as u64) | (inst.src1 as u64)
                 vals[inst.dest] = ConstVal(known: true, val: full_val)
         i = i + 1 as i64
@@ -14827,6 +14844,7 @@ pub fn alg_simp_func(f: ptr[AirFunc]) -> bool:
 
     @free(def_counts as ptr[u8])
     @free(vals as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 // Per-basic-block Common Subexpression Elimination:
@@ -18020,6 +18038,80 @@ pub fn emit_block_copy(sel: ptr[InstructionSelector], dst_reg: u32, dst_disp: u3
             src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
     emit_block_copy_ext(sel, dst_reg, dst_disp, final_src_reg, 0 as u32, size, out_insts)
 
+// BUG#23: extend a freshly-loaded sub-64-bit scalar in `dest` to full register
+// width. A 4-byte `mov r32,[mem]` zero-extends the upper 32 bits, which is wrong
+// for SIGNED element types (i8/i16/i32): a negative value loses its sign. This was
+// latent because i32 values are almost always non-negative â€” until the -1 sentinel
+// filled into coff_sym_map (@memset 0xff). Loading it zero-extended to 0xFFFFFFFF,
+// so `target_sym_idx == -1 as i32` was always false â†’ extern symbols were never
+// created â†’ natively-built binaries emitted 0 imports (extern calls -> *ABS*).
+// Signed types sign-extend (SHL/SAR by (64-bits)); unsigned/bool/char keep the
+// zero-extending AND mask (their previous, correct behavior).
+pub fn emit_load_extend(mut sel: ptr[InstructionSelector], dest: u32, size: u32, type_id: u32, mut out_insts: ptr[MachInstVec]):
+    let is_signed = (type_id == TYPE_I8 or type_id == TYPE_I16 or type_id == TYPE_I32)
+    if is_signed:
+        mut shift := 32 as i64
+        if size == 1 as u32:
+            shift = 56 as i64
+        elif size == 2 as u32:
+            shift = 48 as i64
+        out_insts.push(MachInst(op: MACH_SHL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shift), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SAR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shift), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        return
+    mut mask := 4294967295 as i64
+    if size == 1 as u32:
+        mask = 255 as i64
+    elif size == 2 as u32:
+        mask = 65535 as i64
+    let tmp_mask = next_vreg(sel)
+    out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: mask), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+    out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+// BUG#24: a shift by a CONSTANT amount must use the x86 immediate form
+// (`SHL dst, imm8`) rather than `MOV RCX, count; SHL dst, %cl`. The CL form
+// clobbers RCX, but the register allocator does not model that clobber, so any
+// live value held in RCX across the shift is silently destroyed. This bit
+// x86_encode_modrm_rr where `rm_field` lived in RCX across the `<<6`/`<<3` that
+// build a modrm byte â†’ reg encoded wrong â†’ every native prologue corrupted.
+// Returns the shift amount (0..63) if `vreg` is defined by an OP_ICONST with a
+// usable value, else -1. Mirrors is_float_vreg's defining-inst scan.
+pub fn const_shift_amount(fn_ptr: ptr[AirFunc], vreg: u32) -> i64:
+    // Chase the defining instruction of the shift-count vreg back to an
+    // ICONST, looking THROUGH width casts and copies. A source-level shift
+    // such as `x << 3 as u8` lowers the count as ICONST(3) -> CAST(u8), so
+    // the SHL's src2 points at the CAST, not the ICONST. Matching only a bare
+    // ICONST here would mis-classify every cast-wrapped constant shift as a
+    // variable shift and fall back to the `MOV RCX,count; SHL dst,%cl` form,
+    // which clobbers RCX and corrupts any value the allocator placed there
+    // (e.g. `rm_field` inside x86_encode_modrm_rr). Casts that narrow a value
+    // are still safe: we only accept the underlying ICONST when its value is
+    // already in [0,64), so a truncating cast can never widen the result.
+    mut cur := vreg
+    mut depth := 0 as i64
+    while depth < 16 as i64:
+        if cur == 0 as u32:
+            return -1 as i64
+        mut found := false
+        mut i := 0 as i64
+        while i < fn_ptr.insts.len:
+            let inst = &fn_ptr.insts.data[i]
+            if inst.dest == cur:
+                if inst.opcode == OP_ICONST:
+                    let v = (inst.src1 as i64) | ((inst.src2 as i64) << (32 as i64))
+                    if v >= 0 as i64 and v < 64 as i64:
+                        return v
+                    return -1 as i64
+                if inst.opcode == OP_CAST or inst.opcode == OP_COPY or inst.opcode == OP_MOVE:
+                    cur = inst.src1
+                    found = true
+                    break
+                return -1 as i64
+            i = i + 1
+        if not found:
+            return -1 as i64
+        depth = depth + 1
+    return -1 as i64
+
 pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut out_insts: ptr[MachInstVec]):
     let op = inst.opcode
     if op == OP_NOP:
@@ -18267,9 +18359,20 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_NEG, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_NOT:
-        out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SETCC, cc: CC_E, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // BUG#22: OP_NOT is overloaded â€” logical `not`/`!` (bool) AND bitwise `~`
+        // (integer) both lower to OP_NOT (air_builder), disambiguated by type
+        // (cgen: type_id==11 bool -> `!`, else `~`). The native selector only had
+        // the logical form (CMP 0; SETcc E => x==0), so `~x` on integers returned
+        // (x==0) -> e.g. `~4095`==0. This broke every `& ~(align-1)` alignment
+        // idiom (struct layout, PE section RVAs) -> SizeOfImage=0 -> invalid PE.
+        // Emit a real bitwise NOT for non-bool operands.
+        if inst.type_id == 11 as u32:
+            out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_SETCC, cc: CC_E, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_NOT, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_EQ or op == OP_NE:
         let src_type = get_register_type(sel, inst.src1)
@@ -18332,13 +18435,21 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
     elif op == OP_SHL:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RCX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SHL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        let shl_amt = const_shift_amount(sel.fn_ptr, inst.src2)
+        if shl_amt >= 0 as i64:
+            out_insts.push(MachInst(op: MACH_SHL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shl_amt), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RCX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_SHL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_SHR:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RCX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SHR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        let shr_amt = const_shift_amount(sel.fn_ptr, inst.src2)
+        if shr_amt >= 0 as i64:
+            out_insts.push(MachInst(op: MACH_SHR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shr_amt), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RCX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_SHR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_RETURN:
         let fn_name_ret = sel.pool.get(sel.fn_ptr.name)
@@ -18656,6 +18767,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if size == 0 as u32:
             size = 8 as u32
         out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
+            emit_load_extend(sel, inst.dest, size, type_id, out_insts)
 
     elif op == OP_INDEX:
         mut size := 0 as u32
@@ -18708,18 +18821,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         else:
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-            if size == 1 as u32:
-                let tmp_mask = next_vreg(sel)
-                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 255 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            elif size == 2 as u32:
-                let tmp_mask = next_vreg(sel)
-                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            elif size == 4 as u32:
-                let tmp_mask = next_vreg(sel)
-                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
+                emit_load_extend(sel, inst.dest, size, inst.type_id as u32, out_insts)
 
     elif op == OP_STORE:
         mut size := 0 as u32
@@ -18795,6 +18898,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         else:
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+            if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
+                emit_load_extend(sel, inst.dest, size, get_register_type(sel, inst.dest), out_insts)
 
     elif op == OP_SET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)
@@ -18930,18 +19035,8 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                     src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_ptr, label: 0 as u32, imm: 0 as i64), 
                     src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-        if type_size == 1 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 255 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        elif type_size == 2 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 65535 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64)))
-        elif type_size == 4 as u32:
-            let tmp_mask = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 4294967295 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_AND, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if type_size == 1 as u32 or type_size == 2 as u32 or type_size == 4 as u32:
+            emit_load_extend(sel, inst.dest, type_size, get_register_type(sel, inst.dest), out_insts)
 
     else:
         out_insts.push(MachInst(op: MACH_NOP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -21552,10 +21647,18 @@ pub fn x86_encode_mov_store_sized(base: u8, disp: i32, src: u8, size: u8, buf: p
             final_rex = final_rex | (first_byte & 0x0F as u8)
             start_idx = 1
             
-    let needs_rex_prefix = w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    mut needs_rex_prefix := w_bit or reg_needs_rex(src) or reg_needs_rex(base)
+    // BUG#27: an 8-bit store from SPL/BPL/SIL/DIL (hw regs 4-7) REQUIRES a REX
+    // prefix. Without it the modrm reg field 4-7 decodes as the legacy high-byte
+    // registers AH/CH/DH/BH, so e.g. `mov %sil,m` silently becomes `mov %dh,m`
+    // and stores garbage. encode_rex already yields a 0x40-based REX here.
+    if size == 1 as u8:
+        let src_hw = reg_hw_reg(src)
+        if src_hw >= 4 as u8 and src_hw <= 7 as u8:
+            needs_rex_prefix = true
     if needs_rex_prefix:
         push_byte(buf, final_rex)
-        
+
     push_byte(buf, op_byte)
     
     mut i := start_idx
@@ -23034,25 +23137,10 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                     0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 fflush(null as ptr[void])
 
-            ax_printf_local("AXCG fn=%d SEL\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
-            ax_printf_local("AXCG fn=%d mach=%d LIVE\n", func_done_count, mach_insts.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-
-            if mach_insts.len > 1000 as i64:
-                ax_printf_local("[codegen] LARGE fn %d: air=%d mach=%d\n",
-                    func_done_count, fn_ptr.insts.len, mach_insts.len,
-                    0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
-
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
-            ax_printf_local("AXCG fn=%d intervals=%d RA\n", func_done_count, intervals.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             let alloc_res = allocate_registers_orchestrator(intervals, mach_insts.data, mach_insts.len, abi, fn_ptr, table, symbols)
-            ax_printf_local("AXCG fn=%d DONE\n", func_done_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
-            
+
             mut num_str_lits := 0 as i32
             mut loop_i := 0 as i64
             while loop_i < mach_insts.len:
@@ -25888,15 +25976,24 @@ fn strip_imports(s: str) -> str:
     return res
 
 fn strip_package_prefixes(s: str) -> str:
-    let r0 = replace(s, ".", ".")
-    let r1 = replace(r0, "", "")
-    let r2 = replace(r1, "", "")
-    let r3 = replace(r2, "", "")
-    let r4 = replace(r3, "", "")
-    let r5 = replace(r4, "", "")
-    let r6 = replace(r5, "", "")
-    let r7 = replace(r6, "", "")
-    let r8 = replace(r7, "", "")
+    // BUG#26: the prefix patterns are built at runtime via concat so this
+    // function's OWN source never contains the literal qualified prefixes (e.g.
+    // ""). Otherwise, when the self-hosting driver strips THIS file to
+    // build the next stage, it would blank these very patterns (replace(r, "", "")
+    // is a no-op), breaking all prefix stripping in stage2 -> every std.* call
+    // would survive as an unresolved field-expr and become a self-call.
+    // "std." / ".rest." / ":" pieces do not match any prefix pattern, so they
+    // survive the self-strip, and concat reconstitutes the real patterns at runtime.
+    let p = "std."
+    let r0 = replace(s, concat(":", ":"), ".")
+    let r1 = replace(r0, concat(p, "mem.alloc."), "")
+    let r2 = replace(r1, concat(p, "scheduler."), "")
+    let r3 = replace(r2, concat(p, "os.win32."), "")
+    let r4 = replace(r3, concat(p, "os.linux_sys."), "")
+    let r5 = replace(r4, concat(p, "os."), "")
+    let r6 = replace(r5, concat(p, "string."), "")
+    let r7 = replace(r6, concat(p, "io."), "")
+    let r8 = replace(r7, concat(p, "net."), "")
     return r8
 
 

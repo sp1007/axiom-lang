@@ -1,0 +1,14 @@
+// Minimal repro for BUG#26: a cross-module std.string.* call.
+// stage1 resolves std.string.len -> reloc ax_len; stage2-v5 (suspected) -> self-call.
+import std.string
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub fn main() -> i32:
+    let s = "hello"
+    let n = std.string.len(s)        // qualified cross-module call
+    // print n as a single digit (len=5)
+    putchar(('0' as i32) + (n as i32))
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

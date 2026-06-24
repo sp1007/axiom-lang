@@ -1,0 +1,23 @@
+// Probe: does native concat build "std.string" exactly (len 11)?
+// resolver.ax:764 builds full_name = concat(lhs, concat(".", rhs)).
+import std.string
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub fn main() -> i32:
+    let inner = std.string.concat(".", "string")    // ".string"
+    let full = std.string.concat("std", inner)       // "std.string"
+    let n = std.string.len(full)                      // expect 11
+    // print length as two digits
+    putchar(('0' as i32) + ((n as i32) / 10 as i32))
+    putchar(('0' as i32) + ((n as i32) % 10 as i32))
+    putchar(58 as i32)  // ':'
+    // print each byte of full
+    mut i := 0 as i64
+    while i < n:
+        let b = full.ptr[i]
+        putchar(b as i32)
+        i = i + 1 as i64
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

@@ -1,0 +1,38 @@
+// BUG#27 root probe: does stage1's NATIVE backend miscompile this if-chain
+// returning u8 constants? (get_win64_arg_reg replica). Expect 1 2 8 9 255.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub const REG_RCX: u8 = 1
+pub const REG_RDX: u8 = 2
+pub const REG_R8:  u8 = 8
+pub const REG_R9:  u8 = 9
+pub const REG_NONE: u8 = 255
+
+fn get_win64_arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_RCX
+    if idx == 1:
+        return REG_RDX
+    if idx == 2:
+        return REG_R8
+    if idx == 3:
+        return REG_R9
+    return REG_NONE
+
+fn pr(v: u8):
+    let n = v as i64
+    putchar(('0' as i32) + ((n as i32) / 100 as i32))
+    putchar(('0' as i32) + (((n as i32) / 10 as i32) % 10 as i32))
+    putchar(('0' as i32) + ((n as i32) % 10 as i32))
+    putchar(32 as i32)
+
+pub fn main() -> i32:
+    pr(get_win64_arg_reg(0 as i64))   // expect 001
+    pr(get_win64_arg_reg(1 as i64))   // 002
+    pr(get_win64_arg_reg(2 as i64))   // 008
+    pr(get_win64_arg_reg(3 as i64))   // 009
+    pr(get_win64_arg_reg(4 as i64))   // 255
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

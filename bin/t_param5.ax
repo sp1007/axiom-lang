@@ -1,0 +1,20 @@
+// BUG#27 minimal repro: 5-param function (mirrors ax_actor_send signature).
+// stage2 suspected to drop param-lowering -> params read from wrong regs.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn pick5(target: u64, sender: u64, msg_type: u32, payload: ptr[void], size: u32) -> u64:
+    return target + sender + (msg_type as u64) + (size as u64)
+
+fn pr(label: i32, v: u64):
+    putchar(label)
+    // print v as 2 digits
+    putchar(('0' as i32) + ((v as i32) / 10 as i32))
+    putchar(('0' as i32) + ((v as i32) % 10 as i32))
+    putchar(10 as i32)
+
+pub fn main() -> i32:
+    let r = pick5(10 as u64, 20 as u64, 3 as u32, null as ptr[void], 5 as u32)
+    pr(65 as i32, r)        // expect A38
+    fflush(null as ptr[void])
+    return 0

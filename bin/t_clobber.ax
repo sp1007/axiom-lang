@@ -1,0 +1,46 @@
+// BUG#27 hypothesis: a local computed before a CALL, then used after, gets
+// clobbered by the call (regalloc fails to preserve live value across call).
+// Mirrors emit_param_prologue: phys=abi(p); snap=next_vreg(sel); use phys.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+pub const REG_RCX: u8 = 1
+pub const REG_RDX: u8 = 2
+pub const REG_R8:  u8 = 8
+pub const REG_R9:  u8 = 9
+pub const REG_NONE: u8 = 255
+
+fn arg_reg(idx: i64) -> u8:
+    if idx == 0:
+        return REG_RCX
+    if idx == 1:
+        return REG_RDX
+    if idx == 2:
+        return REG_R8
+    if idx == 3:
+        return REG_R9
+    return REG_NONE
+
+fn next_vreg(c: ptr[i64]) -> u32:
+    c[0] = c[0] + 1 as i64
+    return c[0] as u32
+
+fn pr(v: u8):
+    let n = v as i64
+    putchar(('0' as i32) + ((n as i32) / 100 as i32))
+    putchar(('0' as i32) + (((n as i32) / 10 as i32) % 10 as i32))
+    putchar(('0' as i32) + ((n as i32) % 10 as i32))
+    putchar(32 as i32)
+
+pub fn main() -> i32:
+    mut counter := 12 as i64
+    mut p := 0 as i64
+    while p < 4 as i64:
+        let phys = arg_reg(p)              // 1,2,8,9
+        let snap = next_vreg(&counter)     // call between compute and use
+        if phys != REG_NONE:
+            pr(phys)                        // must still be 1,2,8,9
+        p = p + 1 as i64
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0
