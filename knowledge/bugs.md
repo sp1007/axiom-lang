@@ -698,8 +698,20 @@ Driver self-link (`main_air.ax`) gọi `strip_package_prefixes(src)` để xóa 
 **Bằng chứng:** mô phỏng strip trên tmp_concatenated_air.ax (perl s///): tất cả 8 dòng `r1..r8 = replace(rX, "", "")` (rỗng). stage1 (chưa bị strip vì PowerShell concat chỉ strip import) → callee là IDENT 'len' resolve type_id=237=ax_len (đúng). stage2-diag2 `[B26 main 30 0. 0 4 4 182]` (FIELD_EXPR, type_id=0/4, self-call) vs stage1 `[B26 main 42 0. 0 0 237 237]` (IDENT, ax_len). `std.string.replace/concat/len` ĐỀU OK natively (t_replace/t_concat) — KHÔNG phải codegen bug.
 
 ### FIX (main_air.ax strip_package_prefixes)
-Build pattern lúc RUNTIME bằng concat để literal prefix KHÔNG xuất hiện liền mạch trong source: `let p = "std."`; `replace(r, std.string.concat(p, "string."), "")`. Mảnh `"std."`, `"string."`, `":"` không khớp pattern nào nên SỐNG SÓT qua self-strip; concat dựng lại pattern thật ("std.string.") lúc chạy. Mô phỏng self-strip trên source đã-fix: `let p = "std."` + mọi `concat(p, "...")` còn nguyên ✅. stage1+fix: t_strlen → `call ax_len` + chạy in "5" ✅. Đang build stage2 verify end-to-end.
+Build pattern lúc RUNTIME bằng concat để literal prefix KHÔNG xuất hiện liền mạch trong source: `let p = "std."`; `replace(r, std.string.concat(p, "string."), "")`. Mảnh `"std."`, `"string."`, `":"` không khớp pattern nào nên SỐNG SÓT qua self-strip; concat dựng lại pattern thật ("std.string.") lúc chạy. (commit 6a31427)
+**VERIFIED ✅:** rebuild stage2 (stage1+fix) → compile t_strlen: **reloc 518 = 518 (stage1), KHÔNG còn self-call, strip ĐẦY ĐỦ**. BUG#26 GIẢI QUYẾT TRIỆT ĐỂ.
 **Lớp lỗi:** self-referential source transform — bất kỳ pass nào biến đổi text dựa trên literal mà CŨNG chạy trên chính nó sẽ tự phá. Tương tự rủi ro cho mọi text-rewrite trong self-hosting.
+
+---
+
+## BUG #27 — stage2 backend native-miscompile: `ax_actor_send` prologue hỏng (mov %rsp,%rbx/%rdx thay %rbp) → crash 🔍 ĐỊNH VỊ (BUG#24-family), CHƯA FIX (2026-06-25)
+**Lộ ra SAU khi fix BUG#26** (self-call hết): stage2 compile t_strlen → obj reloc ĐÚNG (518=518) NHƯNG binary crash exit 139 (rip rác 0x..40a4, rax=rcx=0, bt rác) + in byte rác; stage2 build stage3 crash ở typecheck (log dừng "Finished Resolving", exit 127).
+**Định vị:** obj t_strlen do stage2 compile có **1 prologue e3** (`48 89 e3` mov %rsp,%rbx) trong khi stage1 compile cùng t_strlen có **0 e3** (147 e5 cả 2). Hàm lỗi = `ax_ax_actor_send` (scheduler, concat vào). Diff prologue:
+- stage1 ax_actor_send: `382c 48 89 e5 mov %rsp,%rbp` (1 dòng đúng).
+- stage2 ax_actor_send: `382c e5` + **`3847 48 89 e2 mov %rsp,%rdx`** + **`384a 48 89 e3 mov %rsp,%rbx`** (rm-field 5→2→3 bị clobber) — ĐÚNG triệu chứng BUG#24 (RCX clobber từ shift đè rm-field của modrm `mov %rsp,%rbp`).
+**Bản chất:** stage1 native-miscompile MỘT hàm backend (const_shift_amount / regalloc / modrm) → stage2's backend bị RCX-clobber bug khi codegen ax_actor_send → modrm rm hỏng. BUG#24 v4 (immediate cho CONST shift, chase OP_CAST) FIX trong stage1 (C) nhưng bản native của nó trong stage2 vẫn sai cho hàm này. Có thể: (a) stage2's const_shift_amount native miss được const → CL-form clobber RCX; (b) regalloc đặt giá trị sống vào RCX.
+**REPRO NHANH (vàng):** `bin/axc_stage2.exe` ĐÃ build (1775616B) — compile chương trình nhỏ trong vài giây rồi `cp axiom_temp.obj` → objdump đếm `48 89 e3`. So với stage1 obj. Khả năng: viết hàm nhỏ giống ax_actor_send (có shift + nhiều biến sống) build bằng stage2 → tái hiện e3.
+**HƯỚNG TIẾP:** (1) objdump ax_actor_send đầy đủ trong stage1 vs stage2 obj, tìm chỗ shift dùng CL-form (MOV RCX+SHL %cl) ở stage2 mà stage1 dùng immediate (SHL $imm) → xác nhận const_shift_amount native fail. (2) Disasm const_shift_amount trong obj_stage2 (axc_stage2 obj nếu lưu) tìm miscompile. (3) Cân nhắc fix gốc class: regalloc reserve/avoid RCX cho rm-field khi có shift, HOẶC spill-safe CL-form. Xem BUG#24 lịch sử (v2 reserve RCX bị revert do tăng spill).
 
 ### (lịch sử điều tra — sai hướng codegen)
 **Triệu chứng:** sau khi fix BUG#24+#25, stage2-v5 BUILD ok, prologue đúng (148 e5/0 e3, không mất REX) NHƯNG binary nó sinh crash khi chạy: `EXITCODE=0xC00000FD` (STACK_OVERFLOW), không in gì. (Crash này lộ ra SAU khi BUG#25 — vốn crash sớm hơn ở get_slab — đã được sửa.)
