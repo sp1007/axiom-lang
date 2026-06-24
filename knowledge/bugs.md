@@ -690,7 +690,18 @@ Các lệnh dùng register cố định ngầm phải được allocator model: 
 
 ---
 
-## BUG #26 — stage2 resolver KHÔNG resolve `std.string.*` (cross-module) → type_id=0 → emitter coi là self-call → đệ quy vô hạn → STACK_OVERFLOW 🔍 ĐÃ ĐỊNH VỊ, CHƯA FIX
+## BUG #26 — `strip_package_prefixes` TỰ XÓA literal prefix của chính nó → stage2 KHÔNG strip `std.*` → call thành field-expr unresolved → emitter self-call → STACK_OVERFLOW ✅ FIXED (2026-06-25)
+
+### ROOT CAUSE THẬT (không phải codegen!)
+Driver self-link (`main_air.ax`) gọi `strip_package_prefixes(src)` để xóa prefix module (`std.string.len(s)` → `len(s)`) ở MỨC TEXT trước khi lex/parse, để qualified call resolve về hàm top-level đã concat. Hàm này dùng `std.string.replace(s, "std.string.", "")` v.v. với 9 literal prefix.
+**Vòng tự tham chiếu:** khi stage1 build stage2, driver stage1 chạy `strip_package_prefixes` TRÊN CHÍNH source compiler (`tmp_concatenated_air.ax`, áp ở main_air.ax:378 cho user src). Nó xóa luôn các LITERAL `"std.string."`, `"std.os."`, ... NẰM TRONG thân `strip_package_prefixes`. Kết quả stage2 thấy `r6 = replace(r5, "", "")` (old="") → no-op (replace return s khi old.len==0). → stage2's strip KHÔNG làm gì → mọi `std.*` qualified call sống sót → parser tạo FIELD_EXPR → resolver KHÔNG resolve (flags 0) → air_builder else-branch (1199): callee_reg=lower_expr(field), type_id=return-type → selector OP_CALL (1128) `if src1==0` FALSE (src1=callee_reg≠0) → sym_imm GIỮ 0 → MACH_CALL imm=0 → emitter self-call.
+**Bằng chứng:** mô phỏng strip trên tmp_concatenated_air.ax (perl s///): tất cả 8 dòng `r1..r8 = replace(rX, "", "")` (rỗng). stage1 (chưa bị strip vì PowerShell concat chỉ strip import) → callee là IDENT 'len' resolve type_id=237=ax_len (đúng). stage2-diag2 `[B26 main 30 0. 0 4 4 182]` (FIELD_EXPR, type_id=0/4, self-call) vs stage1 `[B26 main 42 0. 0 0 237 237]` (IDENT, ax_len). `std.string.replace/concat/len` ĐỀU OK natively (t_replace/t_concat) — KHÔNG phải codegen bug.
+
+### FIX (main_air.ax strip_package_prefixes)
+Build pattern lúc RUNTIME bằng concat để literal prefix KHÔNG xuất hiện liền mạch trong source: `let p = "std."`; `replace(r, std.string.concat(p, "string."), "")`. Mảnh `"std."`, `"string."`, `":"` không khớp pattern nào nên SỐNG SÓT qua self-strip; concat dựng lại pattern thật ("std.string.") lúc chạy. Mô phỏng self-strip trên source đã-fix: `let p = "std."` + mọi `concat(p, "...")` còn nguyên ✅. stage1+fix: t_strlen → `call ax_len` + chạy in "5" ✅. Đang build stage2 verify end-to-end.
+**Lớp lỗi:** self-referential source transform — bất kỳ pass nào biến đổi text dựa trên literal mà CŨNG chạy trên chính nó sẽ tự phá. Tương tự rủi ro cho mọi text-rewrite trong self-hosting.
+
+### (lịch sử điều tra — sai hướng codegen)
 **Triệu chứng:** sau khi fix BUG#24+#25, stage2-v5 BUILD ok, prologue đúng (148 e5/0 e3, không mất REX) NHƯNG binary nó sinh crash khi chạy: `EXITCODE=0xC00000FD` (STACK_OVERFLOW), không in gì. (Crash này lộ ra SAU khi BUG#25 — vốn crash sớm hơn ở get_slab — đã được sửa.)
 **Định vị (gdb + diff disasm):** gdb `t_field_s2v5.exe`: crash tại `call` đầu trong `ax_ax_os_alloc_report_error`, rbp chain đệ quy hoàn hảo (mọi frame 0xC0 byte, cùng return addr). `x/120a` cho thấy report_error tự gọi chính nó vô hạn. Disasm `-dr obj_s2v5.obj` (obj stage2-v5 sinh khi build t_field):
 - report_error: call `std.string.len(msg)` tại 0x126d ra `e8 50 ff ff ff` = **direct rel -0xb0 = đầu report_error (self)**, KHÔNG có relocation.

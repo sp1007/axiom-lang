@@ -216,15 +216,24 @@ fn strip_imports(s: str) -> str:
     return res
 
 fn strip_package_prefixes(s: str) -> str:
-    let r0 = std.string.replace(s, "::", ".")
-    let r1 = std.string.replace(r0, "std.mem.alloc.", "")
-    let r2 = std.string.replace(r1, "std.scheduler.", "")
-    let r3 = std.string.replace(r2, "std.os.win32.", "")
-    let r4 = std.string.replace(r3, "std.os.linux_sys.", "")
-    let r5 = std.string.replace(r4, "std.os.", "")
-    let r6 = std.string.replace(r5, "std.string.", "")
-    let r7 = std.string.replace(r6, "std.io.", "")
-    let r8 = std.string.replace(r7, "std.net.", "")
+    // BUG#26: the prefix patterns are built at runtime via concat so this
+    // function's OWN source never contains the literal qualified prefixes (e.g.
+    // "std.string."). Otherwise, when the self-hosting driver strips THIS file to
+    // build the next stage, it would blank these very patterns (replace(r, "", "")
+    // is a no-op), breaking all prefix stripping in stage2 -> every std.* call
+    // would survive as an unresolved field-expr and become a self-call.
+    // "std." / ".rest." / ":" pieces do not match any prefix pattern, so they
+    // survive the self-strip, and concat reconstitutes the real patterns at runtime.
+    let p = "std."
+    let r0 = std.string.replace(s, std.string.concat(":", ":"), ".")
+    let r1 = std.string.replace(r0, std.string.concat(p, "mem.alloc."), "")
+    let r2 = std.string.replace(r1, std.string.concat(p, "scheduler."), "")
+    let r3 = std.string.replace(r2, std.string.concat(p, "os.win32."), "")
+    let r4 = std.string.replace(r3, std.string.concat(p, "os.linux_sys."), "")
+    let r5 = std.string.replace(r4, std.string.concat(p, "os."), "")
+    let r6 = std.string.replace(r5, std.string.concat(p, "string."), "")
+    let r7 = std.string.replace(r6, std.string.concat(p, "io."), "")
+    let r8 = std.string.replace(r7, std.string.concat(p, "net."), "")
     return r8
 
 
