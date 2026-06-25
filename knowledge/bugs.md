@@ -864,6 +864,7 @@ Quét theo HỌ bug (vì #24-31 tái diễn theo lớp). Kết quả:
 - **CONFIRMED broken (latent):** struct 16-byte BY-VALUE làm param+return → `bin/tsp.ax` sai (stage1 O1→16, O0→127, want 7). KHÔNG block self-host vì compiler truyền struct qua ptr, hiếm by-value.
 - ⚠️ FIX RỦI RO (chạm ABI 16-byte gồm cả `str` truyền/return hợp lệ inline-16): phải thêm `not type_is_aggregate` từng case + TEST tsp=7 VÀ str param/return vẫn đúng, rồi verify 2.5h. Nên gộp vào RFC representation 16-byte (cùng BUG#30), KHÔNG sửa vội trước BUG#31.
 - Site OP_GET_FIELD/SET_FIELD/MAKE_REF (1389/1467/1526/1583...) ĐÃ dùng `type_is_aggregate` đúng (lịch sử fix nested struct).
+- **THỬ FIX 1-DÒNG (2026-06-26) → THẤT BẠI, ĐÃ REVERT:** thêm `not type_is_aggregate` vào param(442)+call-return(469/477) làm tsp ĐỔI từ wrong-value 16 → **SEGFAULT** (str regression vẫn OK). Lý do: return struct by-value KHÔNG phải 8-byte pointer — pointer trỏ stack đã chết của mk → deref crash. Cần ABI sret (caller cấp chỗ, callee copy 16 byte) HOẶC inline-register copy NHẤT QUÁN cả 3 phía (call-arg lowering + param receipt + return). ⇒ ĐÚNG là việc của RFC ABI 16-byte (CLAUDE.md: ABI change cần RFC). KHÔNG fix bằng guard regalloc đơn lẻ. Để defer.
 
 **Kết luận:** A & B sạch. C có 1 latent thật (struct by-value param/return, repro tsp) nhưng KHÔNG block self-host → defer. Blocker self-host vẫn là BUG#31 (meta-level optimizer miscompile).
 
