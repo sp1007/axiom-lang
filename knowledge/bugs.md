@@ -792,12 +792,19 @@ Bỏ redirect CẢ `std.string.replace` LẪN `std.string.slice` → rơi xuốn
 - ⇒ **(1) LATENT bug ở selector**: `select_inst` OP_COPY/OP_MOVE (x86_selector.ax:764) khi `regalloc_is_16byte(dest)` true → `emit_block_copy(LEA dest, LEA src1, 16)`. Đúng cho `str` (INLINE 16B) nhưng SAI cho struct by-address (src1 chứa con trỏ → phải MOV con trỏ / deep-copy, không block-copy slot). `regalloc_is_16byte` (x86_selector.ax:435) trả true cho MỌI size==16, gộp nhầm `str` (inline) với struct (by-address).
 - ⇒ **(2)** stage1's optimizer (O1) ELIDE được copy thừa nên che lỗi (1); stage2's optimizer KHÔNG elide (vì optimizer của stage2 bị stage1 miscompile) → lộ lỗi (1).
 
-**HƯỚNG FIX (cần cẩn thận — chạm value-ABI/representation, RFC-worthy):**
-- Cách A (robust, ưu tiên): sửa lowering OP_COPY ở x86_selector.ax:764 để PHÂN BIỆT `str` inline (type_id 12 → block-copy) vs struct by-address (size==16 nhưng là struct → MOV con trỏ, alias như stage1-O1). Làm compiler đúng BẤT KỂ optimizer có elide hay không. Rủi ro: ngữ nghĩa value-copy khi x bị mutate sau đó (alias vs deep-copy) — cần kiểm tra.
-- Cách B: sửa optimizer copy-elimination của stage2 cho khớp stage1 — nhưng phải tìm chỗ stage1 miscompile optimizer (sâu, đệ quy).
-- ⚠️ Mọi fix phải test bằng full rebuild stage2 (~2.5h) → stage3 → stage4, so SHA. Repro nhanh tpi/tprp/tf3 verify ở mức stage2 trước khi tốn 2.5h.
+**Bản chất SÂU HƠN (đã xác nhận bằng disasm O0):** đây là MISMATCH REPRESENTATION.
+- `%1 = alloc` (struct literal) → `regalloc_is_16byte(alloc)` = FALSE → %1 là POINTER-repr (8-byte, vreg chứa địa chỉ heap). `getfld %1` (khi %1 ở thanh ghi) deref đúng.
+- `%6 = copy %1` (type struct size16) → `regalloc_is_16byte` (case OP_COPY) trả TRUE chỉ vì size==16 → %6 bị coi là INLINE-16 (home = 16 byte dữ liệu, "giá trị" = &home). 
+- ⇒ copy 8-byte-pointer (%1) vào ô 16-byte-inline (%6) → lệch repr. `getfld %6` đọc `home[disp]` (= con trỏ) thay vì deref. (`str` thì home ĐÚNG là 16-byte data nên ok.)
+- stage1-O1 sống vì optimizer ELIDE copy → %6 ≡ %1 (pointer-repr) → getfld deref đúng. stage2 không elide → lộ mismatch.
 
-**Trạng thái:** stage2 chạy chương trình thường ĐÚNG (struct >16B, str qua value-ABID replace/slice OK) nên build được stage3; chỉ struct ĐÚNG-16-byte by-address (hiếm, nhưng `print_i64_raw`/reloc dùng) mới hỏng → phá fixpoint stage2==stage3 (stage2 1775104 ≠ stage3 1814528).
+### FIX (x86_selector.ax `regalloc_is_16byte`, case OP_COPY/OP_MOVE ~485)
+`if size == 16 and not type_is_aggregate(table, type_id): return true` — chỉ `str` (PRIMITIVE size16) mới inline-16; aggregate by-address size16 rơi xuống `regalloc_is_16byte(src1)` ⇒ khớp repr của nguồn (alloc → pointer 8-byte). Khi đó copy = MOV con trỏ (alias, đúng ngữ nghĩa tham chiếu của struct — verified `let x=y; x.a=9` ⇒ y.a==9), getfld deref đúng. `type_is_aggregate` (theo KIND) tách `str`(primitive) khỏi struct/sum/option/result/array/tuple. KHÔNG đụng case param/return/call (giữ nguyên).
+
+**VERIFIED (stage1, CẢ -O0 lẫn -O1 — O0 = proxy cho stage2 KHÔNG elide):**
+tf3 80→**79**, tff_a 127→**7**, tpi/`print_i64_raw` rỗng→**0/753/1213284**, tprp/`print_raw_ptr` `[]`→**[ABC]**, t_strip/tslice ĐÚNG. Đang full rebuild stage2→stage3→stage4 so SHA.
+
+**Trạng thái trước fix:** stage2 build stage3 (exit0) nhưng stage3 crash (print %d rỗng + segfault pha reloc); stage2 1775104 ≠ stage3 1814528.
 
 ---
 

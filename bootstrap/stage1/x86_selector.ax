@@ -483,7 +483,17 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
                         let size = table.entries.data[type_id].size
-                        if size == 16 as u32:
+                        // BUG#30: only `str` (an INLINE 16-byte primitive) is held
+                        // 16-byte-inline (home = the data). A by-address aggregate
+                        // (struct/sum/option/result/array/tuple) of size 16 is
+                        // POINTER-repr (8-byte): its vreg holds the heap address,
+                        // exactly like the alloc/source it is copied from. Reporting
+                        // it 16-byte here gave the copy result a 16-byte inline home
+                        // while the source was an 8-byte pointer -> copy stored the
+                        // pointer into the inline home and getfld then read the home
+                        // (=pointer) instead of dereferencing. Fall through to the
+                        // source so the copy matches the source representation.
+                        if size == 16 as u32 and not type_is_aggregate(table, type_id):
                             return true
                     // COPY/MOVE preserve the type, so the source size is
                     // authoritative when the dest type_id is unset/generic.
