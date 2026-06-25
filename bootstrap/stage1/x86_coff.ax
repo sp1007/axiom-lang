@@ -327,23 +327,24 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
         return "ax_free"
     if name == "std.string.len" or name == "ax_std.string.len":
         return "ax_str_len"
-    // std.string.concat is NOT redirected to the C-runtime DLL symbol: that
-    // symbol uses the C/Win64 ABI (by-ref args, hidden-pointer 16-byte return)
-    // which is incompatible with AXIOM's value ABI (str args by pointer, result
-    // in RAX:RDX). Instead the call falls through to the in-program `concat`
-    // function (std/string.ax), which has a real value-ABI body.
+    // std.string.{concat,replace,slice} are NOT redirected to the C-runtime DLL
+    // symbols: those use the C/Win64 ABI (str args by-ref, 16-byte struct return
+    // via a hidden sret pointer) which is incompatible with AXIOM's value ABI
+    // (str args by pointer, result in RAX:RDX). Each falls through to its
+    // value-ABI in-program body in std/string.ax.
     //
-    // BUG#29: std.string.replace had the SAME C/Win64-ABI incompatibility but was
-    // (wrongly) still redirected here. With 3 str args it fills all 4 integer arg
-    // regs (sret + &s + &old + &new); the by-ref str-arg setup is miscompiled by
-    // the stage1-built backend, so stage2's emitted ax_str_replace calls passed
-    // corrupt ptr/len -> OOM (bad len) / segfault (bad ptr) when stage3 ran. This
-    // broke the stage2==stage3 self-host fixpoint. Fix: do NOT redirect replace;
-    // let it fall through to the value-ABI in-program `replace` (std/string.ax),
-    // exactly like concat. (slice = 1 str + 2 ints stays redirected: its call is
-    // compiled correctly by stage2 and is used heavily in the self-host path.)
-    if name == "std.string.slice" or name == "ax_std.string.slice":
-        return "ax_str_slice"
+    // BUG#29 (self-host fixpoint blocker): the str-RETURNING redirects (replace,
+    // slice) were miscompiled by the stage1-built backend. The exact class is the
+    // hidden-sret return-pointer setup of a C-ABI call that returns a 16-byte str:
+    // stage1's native backend miscompiles the emitter for that sret setup, so
+    // stage2 emitted ax_str_replace / ax_str_slice calls with a corrupt sret/ptr
+    // -> OOM (bad len) / segfault (bad ptr) when stage3 ran. (len->i64 and
+    // eq->bool have NO sret and stayed correct, which is why stage2 itself ran;
+    // only the calls stage2 EMITTED into stage3 were broken.) concat was already
+    // value-ABI for the same reason. Fix: do not redirect replace or slice; use
+    // the value-ABI in-program functions. NB: the `-30` path in
+    // resolve_binary_sym_name and the ax_block_size alias below still reference
+    // ax_str_slice — those are separate machinery, not the std.string.slice call.
     return name
 
 

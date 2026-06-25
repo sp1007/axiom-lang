@@ -756,12 +756,14 @@ Sau fix BUG#27, stage2 compile+chạy chương trình nhỏ ĐÚNG (t_param5→A
 ### ROOT CAUSE
 [x86_coff.ax](../bootstrap/stage1/x86_coff.ax) `x86_resolve_call_target` redirect `std.string.replace` → symbol C-runtime `ax_str_replace` (giống concat CŨ). `ax_str_replace` dùng **C/Win64 ABI** (str args by-ref, 16-byte return qua hidden sret pointer) — KHÔNG tương thích AXIOM value ABI. Với **3 str args**, call lấp đủ 4 thanh ghi int (sret + &s + &old + &new); phần setup by-ref str-arg bị backend (do stage1 sinh) miscompile → stage2 phát call `ax_str_replace` truyền ptr/len rác → OOM (len sai)/segfault (ptr sai). Comment ngay trên đó đã ghi rõ concat KHÔNG redirect vì chính lý do ABI này — replace bị bỏ sót.
 
-`slice` (1 str + 2 int) cũng redirect nhưng stage2 compile call ĐÚNG (slice dùng nhiều trong self-host path, stage2 build stage3 chạy slice ok) → ĐỂ NGUYÊN.
+**Bản chất chính xác (lớp lỗi):** không phải số lượng str-arg, mà là **C-ABI call TRẢ VỀ str (struct 16-byte qua hidden sret pointer)**. stage1's backend miscompile phần SETUP sret return-pointer của C-ABI call → stage2 phát call với sret/ptr rác. `len`→i64 và `eq`→bool KHÔNG có sret nên ĐÚNG (vì vậy stage2 tự chạy ok); chỉ các call stage2 PHÁT RA vào stage3 bị hỏng. `replace` và `slice` đều trả str → đều hỏng.
 
-### FIX (x86_coff.ax)
-Bỏ redirect `std.string.replace` → để rơi xuống hàm `replace` value-ABI in-program (std/string.ax:192), Y HỆT cách xử lý concat. Giữ slice redirect.
+⚠️ **Lần fix đầu chỉ bỏ replace, GIỮ slice (sai)** → stage2 chạy ok nhưng stage3 vẫn segfault, lần này trong `ax_str_slice` (gdb). Repro: `bin/tslice.ax` build bằng stage2(fixed-replace) → segfault; `myslice` value-ABI → ok. ⇒ slice CÙNG lớp lỗi sret. Vì sao tưởng slice ok: stage2 TỰ chạy slice (call do stage1 phát, đúng) nhưng call stage2 phát vào stage3 thì hỏng — y hệt replace.
 
-**VERIFIED (stage1-level):** rebuild_stage1 + fix → stage1 compile t_strip → chạy ĐÚNG, **KHÔNG còn import `ax_str_replace`** (replace = value-ABI). Đang chạy full verify stage2→stage3→stage4 để xác nhận fixpoint SHA(stage3)==SHA(stage4).
+### FIX (x86_coff.ax `x86_resolve_call_target`)
+Bỏ redirect CẢ `std.string.replace` LẪN `std.string.slice` → rơi xuống hàm value-ABI in-program (std/string.ax:192 replace, :38 slice), Y HỆT concat. Giữ nguyên path `-30` trong `resolve_binary_sym_name` + alias `ax_block_size`→`ax_str_slice` (machinery riêng, không phải call std.string.slice).
+
+**VERIFIED (stage1-level):** rebuild_stage1 + fix → stage1 compile t_strip (`a.b len exit print`) + tslice (`hello`/`world`) → ĐÚNG, **0 thunk `jmp ax_str_replace`, 0 `jmp ax_str_slice`** (cả hai = value-ABI). Đang chạy full verify stage2→stage3→stage4 xác nhận fixpoint SHA.
 
 ---
 
