@@ -271,6 +271,20 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
     let copy_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
     @memset(copy_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
 
+    // BUG#31: an ADDRESS-TAKEN vreg must never participate in a copy chain. For
+    // `mut modrm := 0; &modrm; ...; use modrm`, the front end emits
+    // `%6 = copy %5; mkref %6` (the variable %6 is the addr-taken cell). The
+    // callee writes %6's stack slot through the pointer, so %6 is NOT a true copy
+    // of %5 — its value changes invisibly. If we record copy_map[%6]=%5 and then
+    // rewrite the data read of %6 to %5 (its stale init) while the mkref/store
+    // stays on %6, the read observes the pre-call value -> every `mov reg,reg`
+    // collapsed to modrm=0 in self-host stage3 (the backend already force-spills
+    // addr-taken vregs; this only stops the optimizer from short-circuiting the
+    // reload). Mirror fold_func's `not addr_taken[...]` guard. Guard BOTH ends:
+    // dest addr-taken (its memory mutates) and src addr-taken (the snapshot
+    // diverges from the live cell after a later through-pointer write).
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
+
     mut i := 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
@@ -285,7 +299,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
         if inst.opcode != OP_NOP:
             if (inst.opcode == OP_COPY or inst.opcode == OP_MOVE) and inst.dest != 0 as u32 and inst.src1 != 0 as u32:
                 if inst.dest <= max_reg and inst.src1 <= max_reg:
-                    if def_counts[inst.dest] == 1 as u32 and def_counts[inst.src1] == 1 as u32:
+                    if def_counts[inst.dest] == 1 as u32 and def_counts[inst.src1] == 1 as u32 and not addr_taken[inst.dest] and not addr_taken[inst.src1]:
                         copy_map[inst.dest] = inst.src1
         i = i + 1 as i64
 
@@ -401,6 +415,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
 
     @free(def_counts as ptr[u8])
     @free(copy_map as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 pub fn remove_unreachable_blocks(f: ptr[AirFunc]) -> bool:

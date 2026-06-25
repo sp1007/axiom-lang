@@ -869,6 +869,33 @@ Quét theo HỌ bug (vì #24-31 tái diễn theo lớp). Kết quả:
 
 ---
 
+## BUG#31 — ROOT CAUSE THẬT + FIX (2026-06-25): copy_prop thiếu guard addr_taken
+
+**Repro NHANH (KHÔNG cần build 2.5h):** `bin/t_movrr.ax` = copy nguyên văn `x86_encode_mov_rr` + call chain (modrm encoder, encode_rex, push_byte, ByteVec). Emit `mov %rsp,%rbp` phải = `48 89 e5` → in `072 137 229`.
+- `axc_stage1 build t_movrr.ax -O1` → **072 137 229** ✓
+- `axc_stage2 build t_movrr.ax -O1` → **072 137 000** ✗ (modrm byte = 0)
+- `axc_stage2 build t_movrr.ax -O0` → 072 137 229 ✓ (optimizer tắt → đúng)
+→ Lỗi ở OPTIMIZER (-O1), và stage1 đúng / stage2 SAI trên CÙNG source ⇒ META miscompile.
+
+**Cô lập bằng dump-air (vàng):** `axc_stage1 dump-air t_movrr.ax -O1` vs `axc_stage2 dump-air ...`, diff hàm `x86_encode_mov_rr`:
+```
+stage1 (đúng):            stage2 (sai):
+  %5 = cast %4 (modrm)      %5 = cast %4 (modrm)
+                            %6 = copy %5        <-- COPY thừa của biến addr-taken
+  %12 = mkref %5            %12 = mkref %6      <-- &modrm trỏ vào BẢN COPY %6
+```
+`%6 = copy %5` là CELL của biến `modrm` (addr-taken). callee ghi slot %6 qua con trỏ. Nhưng read modrm bị copy_prop đổi tên %6→%5 (init 0) trong khi mkref/store vẫn ở %6 → read đọc giá trị init cũ = STALE.
+
+**ROOT CAUSE:** `copy_prop_func` (ssa_opt.ax) THIẾU guard `addr_taken` mà `fold_func` đã có. Nó lập `copy_map[%6]=%5` cho `%6=copy %5` dù %6 addr-taken, rồi propagate read trong khi địa chỉ vẫn ở %6. stage1 (gcc-compiled) tình cờ propagate NHẤT QUÁN (cả mkref) nên đúng; stage2 (native, bị stage1 build) propagate KHÔNG nhất quán (chỉ read) → sai. Backend ĐÃ force-spill addr-taken vreg (x86_regalloc address_taken→spill); guard này chỉ chặn optimizer short-circuit reload (đúng intent ghi ở ssa_opt.ax:155-159).
+
+**FIX (ssa_opt.ax `copy_prop_func`):** thêm `let addr_taken = mark_addr_taken_regs(f, max_reg)`; khi lập copy_map: `... and not addr_taken[inst.dest] and not addr_taken[inst.src1]`; free cuối hàm. Guard CẢ 2 đầu: dest addr-taken (memory đổi) + src addr-taken (snapshot phân kỳ sau ghi qua con trỏ). Robust theo construction: copy_prop KHÔNG đụng addr-taken vreg → không thể propagate sai dù stage2's optimizer có bị miscompile.
+
+**Validate stage1 (no regression):** t_movrr=072 137 229, t_cp2=7, t_cpaddr=7, t_cse=98, t_modrm=229 — tất cả ĐÚNG. Verify fixpoint 2.5h: đang chạy.
+
+**Lưu ý môi trường:** Windows Defender realtime ON → mỗi build self-link scan exe/obj ~51s (build tiny program tốn ~51s wall, CPU ~0). KHÔNG phải hang; đừng đặt timeout < 90s. Build compiler đầy đủ thì 51s này là nhiễu nhỏ so với ~3h compile stage1→stage2.
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):

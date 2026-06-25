@@ -1,0 +1,19 @@
+// modrm-shape repro: addr-taken local initialized via a CAST (creating a COPY
+// chain from the const), address passed to a callee that writes through it,
+// then read. copy_prop must NOT rename the read to the const-0 source vreg.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+fn setv(p: ptr[u8]):
+    p[0] = 7 as u8
+
+fn f() -> u8:
+    mut modrm := 0 as u8    // COPY from cast of const 0
+    setv(&modrm)            // writes 7 through pointer
+    return modrm            // want 7; if copy-propagated to const 0 -> 0 (BUG)
+
+pub fn main() -> i32:
+    let v = f()
+    putchar(('0' as i32) + (v as i32))
+    putchar(10 as i32); fflush(null as ptr[void])
+    return 0
