@@ -890,7 +890,18 @@ stage1 (đúng):            stage2 (sai):
 
 **FIX (ssa_opt.ax `copy_prop_func`):** thêm `let addr_taken = mark_addr_taken_regs(f, max_reg)`; khi lập copy_map: `... and not addr_taken[inst.dest] and not addr_taken[inst.src1]`; free cuối hàm. Guard CẢ 2 đầu: dest addr-taken (memory đổi) + src addr-taken (snapshot phân kỳ sau ghi qua con trỏ). Robust theo construction: copy_prop KHÔNG đụng addr-taken vreg → không thể propagate sai dù stage2's optimizer có bị miscompile.
 
-**Validate stage1 (no regression):** t_movrr=072 137 229, t_cp2=7, t_cpaddr=7, t_cse=98, t_modrm=229 — tất cả ĐÚNG. Verify fixpoint 2.5h: đang chạy.
+**Validate stage1 (no regression):** t_movrr=072 137 229, t_cp2=7, t_cpaddr=7, t_cse=98, t_modrm=229 — tất cả ĐÚNG.
+
+**✅ VERIFIED — SELF-HOST FIXPOINT (2026-06-26, verify_bug29_selfhost.sh):**
+```
+stage2: bef3522d… (1776128, build by stage1/gcc)
+stage3: cf5a7c6a… (1814528, build by stage2/native)
+stage4: cf5a7c6a… (1814528, build by stage3/native)
+SELF-HOST OK: stage3 == stage4 (CONVERGED FIXPOINT)
+```
+Trước fix: stage4=656384 segfault. Sau fix: stage4 byte-identical stage3 (SHA khớp). Compiler native compile chính nó tái tạo bit-for-bit. Xác nhận trực tiếp: stage2 MỚI build t_movrr → **072 137 229** (cũ: 072 137 000); stage3 build t_movrr → 072 137 229. **BUG#31 ĐÓNG.** Backup golden binaries: bin/axc_stage{2,3}_selfhost_fixpoint.exe.
+
+(stage2≠stage3 là BÌNH THƯỜNG: builder của stage2 là stage1/gcc khác codegen native; tiêu chí self-host đúng là native→native fixpoint stage3==stage4.)
 
 **Lưu ý môi trường:** Windows Defender realtime ON → mỗi build self-link scan exe/obj ~51s (build tiny program tốn ~51s wall, CPU ~0). KHÔNG phải hang; đừng đặt timeout < 90s. Build compiler đầy đủ thì 51s này là nhiễu nhỏ so với ~3h compile stage1→stage2.
 
