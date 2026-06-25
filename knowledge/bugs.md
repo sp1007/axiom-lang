@@ -767,6 +767,40 @@ Bỏ redirect CẢ `std.string.replace` LẪN `std.string.slice` → rơi xuốn
 
 ---
 
+## BUG #30 — `copy` của struct VALUE 16-byte (by-address) bị lower thành block-copy INLINE → đọc con trỏ thành dữ liệu → str/struct 16B hỏng trong stage3 🔬 ROOT-CAUSED (chưa fix, cần thiết kế cẩn thận)
+
+**Đây là ROOT CAUSE THẬT đứng sau BUG#29.** replace/slice/print_raw_ptr chỉ là triệu chứng vì `str` = struct 16-byte.
+
+**Triệu chứng:** Sau khi fix BUG#29 (bỏ redirect replace+slice), stage2 build stage3 OK, nhưng stage3 chạy:
+- printf in số `%d` ra RỖNG (literal in được, số nguyên ≠0 mất) — `print_i64_raw` hỏng.
+- crash ở pha "building reloc table".
+
+**Repro nhanh (vàng):**
+- `bin/tpi.ax` (chép y `print_i64_raw`): stage1→`0/753/1213284`, stage2→`0` rồi 2 dòng rỗng.
+- `bin/tprp.ax` (chép `print_raw_ptr`): stage1→`[ABC]`, stage2→`[]`.
+- `bin/tf3.ax`: `struct S2{a,b:i64}; let x=S2(7,9); return x.a*10+x.b` → stage1=**79**, stage2=**80**.
+- **`S2` 2×i64 = 16 byte → HỎNG; `S3` 3×i64 = 24 byte → ĐÚNG (123).** ⇒ lỗi đặc thù struct ĐÚNG 16 byte (= cùng size với `str`).
+
+**Cơ chế (objdump `main` của tf3/tff_a, obj = `axiom_temp.obj` còn lại sau -self-link):**
+`let x = S2(...)`: struct literal heap-alloc → kết quả là CON TRỎ (trong slot -0x18). Khi materialize `let x`:
+- stage1 (đúng): KHÔNG copy, x = con trỏ heap, `x.a` = `mov (heapptr)` → 7.
+- stage2 (sai): block-copy 16 byte từ `lea -0x18` (ĐỊA CHỈ của slot chứa con trỏ) → `(-0x18)` = con trỏ, không phải `*(-0x18)` = struct. ⇒ x[0] = con trỏ (rác), x.a = con trỏ.
+
+**Phân tầng (dump-air tff_a):**
+- `dump-air -O0`: stage1 == stage2, CẢ HAI có `%6: t22 = copy %1` rồi `getfld %6` (air_builder luôn phát copy).
+- `dump-air -O1`: stage1 XÓA copy → `getfld %1` (đúng); stage2 GIỮ copy → `copy %1; getfld %6` (sai).
+- ⇒ **(1) LATENT bug ở selector**: `select_inst` OP_COPY/OP_MOVE (x86_selector.ax:764) khi `regalloc_is_16byte(dest)` true → `emit_block_copy(LEA dest, LEA src1, 16)`. Đúng cho `str` (INLINE 16B) nhưng SAI cho struct by-address (src1 chứa con trỏ → phải MOV con trỏ / deep-copy, không block-copy slot). `regalloc_is_16byte` (x86_selector.ax:435) trả true cho MỌI size==16, gộp nhầm `str` (inline) với struct (by-address).
+- ⇒ **(2)** stage1's optimizer (O1) ELIDE được copy thừa nên che lỗi (1); stage2's optimizer KHÔNG elide (vì optimizer của stage2 bị stage1 miscompile) → lộ lỗi (1).
+
+**HƯỚNG FIX (cần cẩn thận — chạm value-ABI/representation, RFC-worthy):**
+- Cách A (robust, ưu tiên): sửa lowering OP_COPY ở x86_selector.ax:764 để PHÂN BIỆT `str` inline (type_id 12 → block-copy) vs struct by-address (size==16 nhưng là struct → MOV con trỏ, alias như stage1-O1). Làm compiler đúng BẤT KỂ optimizer có elide hay không. Rủi ro: ngữ nghĩa value-copy khi x bị mutate sau đó (alias vs deep-copy) — cần kiểm tra.
+- Cách B: sửa optimizer copy-elimination của stage2 cho khớp stage1 — nhưng phải tìm chỗ stage1 miscompile optimizer (sâu, đệ quy).
+- ⚠️ Mọi fix phải test bằng full rebuild stage2 (~2.5h) → stage3 → stage4, so SHA. Repro nhanh tpi/tprp/tf3 verify ở mức stage2 trước khi tốn 2.5h.
+
+**Trạng thái:** stage2 chạy chương trình thường ĐÚNG (struct >16B, str qua value-ABID replace/slice OK) nên build được stage3; chỉ struct ĐÚNG-16-byte by-address (hiếm, nhưng `print_i64_raw`/reloc dùng) mới hỏng → phá fixpoint stage2==stage3 (stage2 1775104 ≠ stage3 1814528).
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):
