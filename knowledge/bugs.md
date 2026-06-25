@@ -742,6 +742,29 @@ Sau fix BUG#27, stage2 compile+chạy chương trình nhỏ ĐÚNG (t_param5→A
 
 ---
 
+## BUG #29 — `std.string.replace` redirect → C-ABI `ax_str_replace` bị stage2 miscompile (3 str-arg by-ref setup) → stage3 crash, phá fixpoint stage2==stage3 ✅ FIXED (2026-06-25)
+
+**Bối cảnh:** Sau fix BUG#27+#28, stage2 BUILD ok, chạy chương trình nhỏ ĐÚNG (t_param5→A38, t_strlen→5), và **build stage3 đầy đủ exit=0** (753 funcs, qua typecheck nhờ 16MB stack). NHƯNG `SHA(stage2) != SHA(stage3)` (1776128 vs 1815040, lệch 38912 byte). Build stage4 = stage3 compile S → **stage3 SEGFAULT (exit 139) ngay**. ⇒ stage2 miscompile stage3 (stage3 là binary hỏng).
+
+**Định vị (fast repro qua bin/axc_stage2.exe + gdb):**
+- gdb stage3: crash trong `ax_str_replace` (ax_runtime.dll), gọi từ `strip_package_prefixes` (replace đầu tiên), ngay sau "Stripping imports from result.ax...". Stack có nhiều int nhỏ (0xf,0x14,0x11...) = length args spill.
+- Repro nhỏ `bin/t_strip.ax` (chained replace + concat): **stage1 build → chạy ĐÚNG (`a.b len exit print`); stage2 build → segfault.** ⇒ lỗi native codegen, KHÔNG phải logic.
+- Bisect: `concat` đơn lẻ OK (tcA); `replace` literal → OOM `ax_alloc` (len rác); `replace` var/nested-arg → segfault (ptr rác). ⇒ **`replace` nhận args hỏng.**
+- `myreplace` (thân value-ABI Y HỆT std/string.ax nhưng TÊN KHÁC, không bị redirect) build bằng stage2 → chạy ĐÚNG `a.b.c`. ⇒ khác biệt DUY NHẤT = cái redirect tên.
+- `strings t_strip_s2.exe` import `ax_str_replace` (crash); `tmyrep_s2.exe` KHÔNG (chạy ok).
+
+### ROOT CAUSE
+[x86_coff.ax](../bootstrap/stage1/x86_coff.ax) `x86_resolve_call_target` redirect `std.string.replace` → symbol C-runtime `ax_str_replace` (giống concat CŨ). `ax_str_replace` dùng **C/Win64 ABI** (str args by-ref, 16-byte return qua hidden sret pointer) — KHÔNG tương thích AXIOM value ABI. Với **3 str args**, call lấp đủ 4 thanh ghi int (sret + &s + &old + &new); phần setup by-ref str-arg bị backend (do stage1 sinh) miscompile → stage2 phát call `ax_str_replace` truyền ptr/len rác → OOM (len sai)/segfault (ptr sai). Comment ngay trên đó đã ghi rõ concat KHÔNG redirect vì chính lý do ABI này — replace bị bỏ sót.
+
+`slice` (1 str + 2 int) cũng redirect nhưng stage2 compile call ĐÚNG (slice dùng nhiều trong self-host path, stage2 build stage3 chạy slice ok) → ĐỂ NGUYÊN.
+
+### FIX (x86_coff.ax)
+Bỏ redirect `std.string.replace` → để rơi xuống hàm `replace` value-ABI in-program (std/string.ax:192), Y HỆT cách xử lý concat. Giữ slice redirect.
+
+**VERIFIED (stage1-level):** rebuild_stage1 + fix → stage1 compile t_strip → chạy ĐÚNG, **KHÔNG còn import `ax_str_replace`** (replace = value-ABI). Đang chạy full verify stage2→stage3→stage4 để xác nhận fixpoint SHA(stage3)==SHA(stage4).
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):

@@ -332,8 +332,16 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
     // which is incompatible with AXIOM's value ABI (str args by pointer, result
     // in RAX:RDX). Instead the call falls through to the in-program `concat`
     // function (std/string.ax), which has a real value-ABI body.
-    if name == "std.string.replace" or name == "ax_std.string.replace":
-        return "ax_str_replace"
+    //
+    // BUG#29: std.string.replace had the SAME C/Win64-ABI incompatibility but was
+    // (wrongly) still redirected here. With 3 str args it fills all 4 integer arg
+    // regs (sret + &s + &old + &new); the by-ref str-arg setup is miscompiled by
+    // the stage1-built backend, so stage2's emitted ax_str_replace calls passed
+    // corrupt ptr/len -> OOM (bad len) / segfault (bad ptr) when stage3 ran. This
+    // broke the stage2==stage3 self-host fixpoint. Fix: do NOT redirect replace;
+    // let it fall through to the value-ABI in-program `replace` (std/string.ax),
+    // exactly like concat. (slice = 1 str + 2 ints stays redirected: its call is
+    // compiled correctly by stage2 and is used heavily in the self-host path.)
     if name == "std.string.slice" or name == "ax_std.string.slice":
         return "ax_str_slice"
     return name
