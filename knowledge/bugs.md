@@ -806,6 +806,25 @@ tf3 80→**79**, tff_a 127→**7**, tpi/`print_i64_raw` rỗng→**0/753/1213284
 
 **Trạng thái trước fix:** stage2 build stage3 (exit0) nhưng stage3 crash (print %d rỗng + segfault pha reloc); stage2 1775104 ≠ stage3 1814528.
 
+**✅ KẾT QUẢ sau fix (verify đầy đủ blga6v6wi):** stage3 KHÔNG còn crash — chạy TOÀN BỘ pipeline, **print %d ĐÚNG** (total_len=1214955, func 660/753...), build được stage4 (exit 0). **Cột mốc lớn: stage3 từ crash → chạy.** Nhưng CHƯA fixpoint: stage2(1775616) ≠ stage3(1814528), và stage4 chỉ 656384 byte → lộ BUG#31.
+
+---
+
+## BUG #31 — stage3 sinh PROLOGUE hỏng: `mov %rsp,%rbp` (48 89 e5) → `48 89 00` (mov %rax,(%rax)) + MẤT push callee-saved → mọi chương trình stage3-compiled hỏng 🔬 ROOT-CAUSED (chưa fix)
+
+**Triệu chứng:** Sau BUG#30, stage3 CHẠY nhưng compile chương trình ra binary HỎNG: exe nhỏ ~60% (t_param5: stage2=71168 vs stage3=43520), chạy KHÔNG in gì (exit 0 nhưng rỗng). stage4 (656384) segfault. Differential stage2-vs-stage3 trên t_param5/t_strip/tf3/tpi: stage2 ĐÚNG, stage3 ra rỗng hết.
+
+**Định vị (objdump main của t_param5, obj=axiom_temp.obj):**
+- stage2 prologue (ĐÚNG): `55 push rbp` / `48 89 e5 mov rsp,rbp` / `push rbx,rsi,rdi,r12` / `sub rsp`.
+- stage3 prologue (HỎNG): `55 push rbp` / **`48 89 00` = mov %rax,(%rax)** (đáng lẽ `48 89 e5`) / THIẾU HẲN push rbx/rsi/rdi/r12 / `sub rsp`.
+- ⇒ ModRM của `mov rsp,rbp` bị ZERO (reg=rsp(4)/rm=rbp(5) → 0/0, mod 11→00) VÀ các push callee-saved bị bỏ. Frame hỏng → crash/không chạy.
+
+**Bản chất:** stage2 miscompile EMITTER PROLOGUE của stage3 (emit_prologue / mã hoá `mov rsp,rbp` + push callee-saved). Lớp lỗi ModRM/REG-field bị mất (họ BUG#24/#27 nhưng ở mov frame-setup 64-bit, regs 4/5 = rsp/rbp). Cần soi `emit_prologue` (x86_selector/x86_emitter) + mã hoá MACH_MOV reg→reg cho rsp/rbp, và phần push callee-saved, tìm chỗ stage2 sinh sai.
+
+⚠️ **Cũng phát hiện latent bug (KHÔNG phải blocker)**: struct 16-byte truyền BY-VALUE làm param + return (`bin/tsp.ax`) sai ngay ở stage1 (O1→16, O0→127, want 7). Có ở stage1 (reference) nên là latent cũ; compiler tránh truyền struct by-value (dùng ptr) nên không chặn self-host. Cùng họ size==16 với BUG#30 nhưng ở case param/return của regalloc_is_16byte — để sau.
+
+**Trạng thái:** stage2≠stage3≠stage4, chưa fixpoint. Chain bug: #24→#25→#26→#27→#28→#29→#30(✅ stage3 chạy)→#31(prologue). Mỗi fix lộ lớp tiếp.
+
 ---
 
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
