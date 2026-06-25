@@ -841,6 +841,34 @@ Tìm vì sao stage1 miscompile addr-taken tracking của stage2 (ssa_opt.ax `mar
 
 ---
 
+## AUDIT lỗi đã biết trên toàn source (2026-06-25, trước khi fix BUG#31)
+
+Quét theo HỌ bug (vì #24-31 tái diễn theo lớp). Kết quả:
+
+### Họ A — REX/ModRM mất cho byte-reg 4-7 (spl/bpl/sil/dil) [#24/#27/#31] → ✅ SẠCH
+- `x86_encode_setcc` (x86_encoding.ax:233): `if reg_needs_rex(dst) or reg_hw_reg(dst) >= 4` → force REX. ĐÚNG.
+- `x86_encode_movzx_br` (244): `encode_rex(true,...)` REX.W=1 luôn có REX. ĐÚNG.
+- `x86_encode_mov_store_sized` (445): đã có fix BUG#27 (size==1, src_hw 4-7 → force REX). ĐÚNG.
+- KHÔNG còn instance latent. (Op 64-bit luôn có REX.W nên reg 4-7 an toàn.)
+
+### Họ B — addr-taken const-fold [#25/#31] → ✅ SOURCE SẠCH
+- `mark_addr_taken_regs` (ssa_opt.ax:161) quét OP_MAKE_REF → mark src1. ĐÚNG & đầy đủ.
+- Chỉ `fold_func` (195) + `alg_simp_func` (1176) fold giá trị → CẢ HAI đã guard `not addr_taken[dest]`. ĐÚNG.
+- `copy_prop_func` (263) chỉ đổi tên vreg (dest→src1, def_count==1), KHÔNG fold hằng → an toàn. Verified `bin/t_cpaddr.ax` O0/O1 = 7.
+- `cse_func` (1388) — verified `bin/t_cse.ax` O0/O1 = 98 (KHÔNG CSE nhầm qua mutation). An toàn.
+- ⇒ BUG#31 KHÔNG phải lỗ hổng source; là stage2's optimizer bị stage1 miscompile dưới register pressure (CLASS#3). Fix ở meta-level (xem BUG#31).
+
+### Họ C — str(inline-16) vs struct by-address(pointer-8) lẫn lộn [#29/#30] → ⚠️ CÒN LATENT
+`regalloc_is_16byte` (x86_selector.ax:435) còn NHIỀU case `size==16` CHƯA guard `not type_is_aggregate` (chỉ case OP_COPY:496 đã fix ở BUG#30):
+- **param (442)**, **call-return direct (469) + dynamic (477)**, **cast (511/525)**, **case ~547** — đều `if size==16: return true` cho MỌI aggregate.
+- **CONFIRMED broken (latent):** struct 16-byte BY-VALUE làm param+return → `bin/tsp.ax` sai (stage1 O1→16, O0→127, want 7). KHÔNG block self-host vì compiler truyền struct qua ptr, hiếm by-value.
+- ⚠️ FIX RỦI RO (chạm ABI 16-byte gồm cả `str` truyền/return hợp lệ inline-16): phải thêm `not type_is_aggregate` từng case + TEST tsp=7 VÀ str param/return vẫn đúng, rồi verify 2.5h. Nên gộp vào RFC representation 16-byte (cùng BUG#30), KHÔNG sửa vội trước BUG#31.
+- Site OP_GET_FIELD/SET_FIELD/MAKE_REF (1389/1467/1526/1583...) ĐÃ dùng `type_is_aggregate` đúng (lịch sử fix nested struct).
+
+**Kết luận:** A & B sạch. C có 1 latent thật (struct by-value param/return, repro tsp) nhưng KHÔNG block self-host → defer. Blocker self-host vẫn là BUG#31 (meta-level optimizer miscompile).
+
+---
+
 ## PLAYBOOK — Quy trình debug stage2 self-compile crash
 
 Đây là cách làm hiệu quả nhất đã rút ra (tránh mò mẫm):
