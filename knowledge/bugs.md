@@ -715,7 +715,12 @@ Build pattern lúc RUNTIME bằng concat để literal prefix KHÔNG xuất hi�
 Trong x86_encode_mov_store_sized: nếu `size==1` và `reg_hw_reg(src) ∈ [4,7]` → `needs_rex_prefix = true` (encode_rex trả 0x40-based REX sẵn). VERIFIED: stage1+fix compile t_bytestore → `40 88 71 01 mov %sil,0x1(%rcx)` (có REX), chạy in 006 007 013 ✓; t_param5/t_strlen không regress. Đang build stage2→stage3 verify + SHA.
 **Lớp lỗi:** REX-loss cho 8-bit access reg 4-7 — kiểm tra các encoder byte khác (mov_rr 8-bit, setcc, movzx src reg) có cùng thiếu sót không.
 
-### (lịch sử định vị — đã sửa nhãn)
+---
+
+## BUG #28 — stage2 PE stack reserve 1MB quá nhỏ → stack overflow khi typecheck compiler đầy đủ ✅ FIXED (2026-06-25)
+Sau fix BUG#27, stage2 compile+chạy chương trình nhỏ ĐÚNG (t_param5→A38, t_strlen→5) NHƯNG build stage3 (typecheck compiler 1.2MB) crash exit 127, log dừng ở "Finished Resolving" (vào typecheck). gdb: rsp=0x63400, rbp=0x6a400 (RẤT thấp), rip rác, bt gãy = STACK OVERFLOW (đệ quy sâu infer_node trên input lớn). So PE: stage1 SizeOfStackReserve=**0x200000 (2MB)** (C-linked) vs stage2=**0x100000 (1MB)** (self-linker). Self-linker đặt 1MB cứng → đệ quy typecheck compiler cần >1MB → overflow (stage1 2MB sống). KHÔNG phải đệ quy vô hạn (stage1 2MB typecheck xong). FIX: linker.ax:615 `SizeOfStackReserve = 0x1000000` (16MB, headroom rộng; commit vẫn 0x1000, Windows auto-grow). VERIFIED: stage1+fix self-link → PE reserve 0x1000000. Đang build stage2→stage3 verify+SHA.
+
+### (lịch sử định vị BUG#27 — đã sửa nhãn)
 ## BUG #27 (cũ nhãn) — ax_actor_send param-load miscompile
 **Lộ ra SAU khi fix BUG#26** (self-call hết): stage2 compile t_strlen → obj reloc ĐÚNG (518=518) NHƯNG binary crash exit 139 (rip rác 0x..40a4, rax=rcx=0, bt rác) + in byte rác; stage2 build stage3 crash ở typecheck (log dừng "Finished Resolving", exit 127).
 **Định vị (THẬT — không phải prologue):** prologue ax_actor_send ĐÚNG cả 2 (`382c 48 89 e5`). Cái `48 89 e3` mình grep được là 1 lệnh PARAM-MOVE bị hỏng, không phải prologue. Diff vùng load tham số (sau push callee-saved + sub rsp):

@@ -612,8 +612,11 @@ pub fn linker_build_pe_headers(
     push_u32_le(out, 0 as u32) // CheckSum
     push_u16_le(out, 3 as u16) // Subsystem (Console)
     push_u16_le(out, 0x0160 as u16) // DllCharacteristics
-    push_u64_le(out, 0x100000 as u64) // SizeOfStackReserve
-    push_u64_le(out, 0x1000 as u64) // SizeOfStackCommit
+    push_u64_le(out, 0x1000000 as u64) // SizeOfStackReserve (16MB) — BUG#28: 1MB
+                                       // overflowed when stage2 typechecks the
+                                       // full compiler (deep recursion); stage1
+                                       // had 2MB. 16MB gives ample headroom.
+    push_u64_le(out, 0x1000 as u64) // SizeOfStackCommit (OS auto-grows to reserve)
     push_u64_le(out, 0x100000 as u64) // SizeOfHeapReserve
     push_u64_le(out, 0x1000 as u64) // SizeOfHeapCommit
     push_u32_le(out, 0 as u32) // LoaderFlags
