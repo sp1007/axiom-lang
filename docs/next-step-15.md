@@ -48,9 +48,15 @@ trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[Str
 - [ ] Resolver/typecheck: gán self type = ptr[struct cha].
 - [ ] Test `bin/t_method.ax` + regression gate + fixpoint giữ.
 
-### T2 — (Cân nhắc) `Self` type / `enum` sugar / associated type  [cần RFC riêng]
-Chỉ làm khi có nhu cầu rõ; mỗi cái 1 RFC cập nhật grammar. `enum`/braces đi NGƯỢC
-triết lý indent-based — cân nhắc kỹ, có thể KHÔNG làm.
+### T2 — `enum` + ADT codegen ✅ DONE (RFC 0003+0004, BUG#32 FIXED, fixpoint 692ba8e9)
+- [x] RFC 0003: `enum Name:` indent-style sugar, desugar PARSER → sum type AST.
+- [x] RFC 0004: codegen native cho user sum type (construct + match). Phát hiện BUG#32:
+      trước đó match KHÔNG được lower + chỉ Ok/Err/Some/None hard-code → enum/sum vô dụng
+      runtime. Fix: box [tag@0, payload@8], lower_variant_construct + lower_match (air_builder).
+- [x] Test 5 ADT + built-in Option/Result; regression 19/19; fixpoint giữ.
+- Chi tiết theo dõi: docs/next-step-15-sub-1.md.
+- **Còn lại của T2:** `Self` type (RFC riêng); hạn chế v1 ADT (multi-field variant, str
+  payload, generic user sum + match Option/Result) — follow-up.
 
 ### T3 — Triage nợ dialect (iter/json/log/net/fmt + suites)  [dọn nợ] ✅ DONE (triage+document)
 - [x] Đo toàn bộ std/: build chỉ import std.string/io/collections (đều 0 lỗi). ~13 file
