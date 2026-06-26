@@ -995,8 +995,13 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 - `let a: u64 = (b + 2.0) * 3` (b: f64) → KHÔNG lỗi; AIR: `imul` ra t10(f64) rồi `copy` t10→t8(u64) — gán f64 vào u64 thầm lặng (reinterpret bit, không convert). **PHẢI báo lỗi.**
 - `let a: u64 = ((b + 2.0) as u32) * 3` → đúng: `cast` f64→u32, `imul` u32, `copy` u32→u64 (widening). KHÔNG lỗi. ✓
 
-**Quy tắc RFC 0006 (conversion policy):** CẤM chuyển ngầm giữa int-family và float-family ở mọi điểm gán: let-binding có annotation, assignment, arg truyền hàm, return. Rule: `is_float(target) != is_float(expr_type)` → **lỗi typecheck** `E####: không thể chuyển ngầm giữa int và float — dùng 'as'`. Explicit `as` đổi category nên hợp lệ (case 2). Float literal luôn f64 (NODE_FLOAT_LIT) nên `let x: i32 = 3.0` → lỗi (đúng); `let x: f64 = 3` → 3 adopt f64 (RFC 0005) → OK.
+**Quy tắc RFC 0006 (conversion policy) — BẤT ĐỐI XỨNG (user chốt 2026-06-26):**
+- **float → int: CẤM ngầm, phải `as`** (lossy/truncation). `let a: i32 = 3.0` → LỖI; `let a: u64 = (b+2.0)*3` (b:f64) → LỖI (case 1). Có `as` → OK (case 2).
+- **int → float: NGẦM OK** (widening, không cần cast). `let b: f64 = a/3 + 20` (a:i32) → hợp lệ, b là float; chèn cvt int→float tại chỗ gán.
+  - Giá trị `a/3+20` (user CHỐT 2026-06-26): operands quyết định op → `a/3` là **int division** (10/3=3), +20=23 (i32), rồi convert int→float tại chỗ gán → **b = 23.0** (KHÔNG phải 23.333). expected float KHÔNG lan xuống làm a/3 thành float-div (giống C/Go/Rust, nhất quán RFC 0005). Muốn float-div: viết `a/3.0` hoặc `(a as f64)/3`.
+- Float literal luôn f64 (NODE_FLOAT_LIT); `let x: f64 = 3` → 3 adopt f64 (RFC 0005) → OK.
+- Rule cài: let/assign/arg/return — target int-family & expr float-family → **LỖI**; target float-family & expr int-family → chèn cvt int→float (implicit, KHÔNG lỗi).
 
-**Liên quan:** đây là phần (d) của RFC 0006 (narrowing/conversion policy). Cần thêm: int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định cho phép widening / cảnh báo hoặc cấm narrowing. Float↔int thì DỨT KHOÁT lỗi (yêu cầu user).
+**Liên quan:** phần (d)+(e) RFC 0006. int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định (widening OK / cảnh báo narrowing). float↔int: float→int LỖI, int→float NGẦM.
 
 **An toàn self-host:** compiler tự host integer-only, không gán int↔float → thêm rule này KHÔNG sinh lỗi mới trong source compiler → fixpoint giữ. (Verify lại khi implement.)
