@@ -12,7 +12,7 @@ cd "$(dirname "$0")/../.."
 AXC="${AXC:-bin/axc_stage1.exe}"
 N="${N:-100000}"
 SEED="${SEED:-1}"
-MODE="${MODE:-int}"   # int | float | mixed
+MODE="${MODE:-int}"   # int | float | mixed | imix
 TIMEOUT="${TIMEOUT:-1200}"
 PY=python; command -v python >/dev/null 2>&1 || PY=python3
 

@@ -1002,6 +1002,12 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 - Float literal luôn f64 (NODE_FLOAT_LIT); `let x: f64 = 3` → 3 adopt f64 (RFC 0005) → OK.
 - Rule cài: let/assign/arg/return — target int-family & expr float-family → **LỖI**; target float-family & expr int-family → chèn cvt int→float (implicit, KHÔNG lỗi).
 
+**Promote ngầm int→float TRONG biểu thức nhị phân (mixed operand):** một toán hạng float làm cả phép thành float, toán hạng int được ngầm convert int→float. VD tương phản (a:i32):
+- `a/3 + 20` → `3` int literal → **int division** 10/3=3, +20=23, cvt → **b=23.0**.
+- `a/3.0 + 20` → `3.0` float literal → **float division**, a ngầm→f64 → 10.0/3.0=3.333, +20.0 → **b=23.333…**.
+AIR hiện tại SAI cả hai phần float: `a/3.0` ra `idiv` trên i32+f64 (không cvt a, không FDIV), `20` ra `iconst` (BUG#33). RFC 0006 phải: typecheck mixed→float + đánh dấu toán hạng int cần cvt; codegen chèn cvtsi2sd + dùng OP_FADD/FDIV.
+**Harness:** mode `mixed` hiện dùng cast tường minh; cần thêm ca **promote ngầm** (int-var + float-literal không cast) để phủ đúng ngữ nghĩa này.
+
 **Liên quan:** phần (d)+(e) RFC 0006. int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định (widening OK / cảnh báo narrowing). float↔int: float→int LỖI, int→float NGẦM.
 
 **An toàn self-host:** compiler tự host integer-only, không gán int↔float → thêm rule này KHÔNG sinh lỗi mới trong source compiler → fixpoint giữ. (Verify lại khi implement.)

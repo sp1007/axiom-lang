@@ -141,6 +141,33 @@ def gen_mixed_expr(rng):
     res = rnd(res)
     return f"({a_src} {op} {b_src})", fbits(res, rty), rty
 
+def gen_imix_expr(rng):
+    """IMPLICIT mixed: an int operand (NOT cast to float) combined with an f64
+    operand — tests implicit int->float promotion in a binary op (e.g. a/3.0).
+    Result is f64. (Run AFTER float arithmetic + promotion is fixed — RFC 0006.)"""
+    op = rng.choice(FOPS)
+    # int operand (no float cast), value promoted to float by the oracle
+    ity = rng.choice([t[0] for t in ITYPES])
+    iv = rand_val(ity, rng)
+    int_src = f"({lit(iv)} as {ity})"
+    fv = frand(rng)
+    flt_src = f"({flit(fv)} as f64)"
+    # random operand order (int OP float) or (float OP int)
+    if rng.random() < 0.5:
+        a, b = float(iv), fv
+        a_src, b_src = int_src, flt_src
+    else:
+        a, b = fv, float(iv)
+        a_src, b_src = flt_src, int_src
+    if op == "/":
+        if b == 0.0:
+            b = 1.0; b_src = "(1.0 as f64)"
+    if op == "+": res = a + b
+    elif op == "-": res = a - b
+    elif op == "*": res = a * b
+    else: res = a / b
+    return f"({a_src} {op} {b_src})", fbits(res, "f64"), "f64"
+
 def gen_expr(rng):
     """Return (axiom_src, expected_i64, result_type)."""
     rty = rng.choice([t[0] for t in ITYPES])
@@ -250,8 +277,13 @@ def main():
         for _ in range(CHUNK):
             if idx >= n:
                 break
-            if mode in ("float", "mixed"):
-                src, exp, rty = gen_fexpr(rng) if mode == "float" else gen_mixed_expr(rng)
+            if mode in ("float", "mixed", "imix"):
+                if mode == "float":
+                    src, exp, rty = gen_fexpr(rng)
+                elif mode == "mixed":
+                    src, exp, rty = gen_mixed_expr(rng)
+                else:
+                    src, exp, rty = gen_imix_expr(rng)
                 bptr = "ptr[i64]" if rty == "f64" else "ptr[i32]"
                 out.append(f'    mut g{idx}: {rty} = {src}')
                 out.append(f'    let bits{idx}: i64 = ((&g{idx} as {bptr})[0]) as i64')
