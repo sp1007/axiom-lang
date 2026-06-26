@@ -1050,6 +1050,52 @@ pub fn parse_type_variant(mut self: ptr[Parser]) -> u32:
         self.expect(TK_R_PAREN)
     return node
 
+// RFC 0003: `enum Name:` indent-style sugar. Desugars to the SAME AST as a sum
+// type `type Name = A | B(T) | ...` (NODE_TYPE_ALIAS_DECL + NODE_SUM_TYPE +
+// NODE_VARIANT_DECL), so resolver/typecheck/codegen/match see no new node kinds.
+pub fn parse_enum_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
+    let tok = self.expect(TK_ENUM)
+    let node = self.tree.add_node(NODE_TYPE_ALIAS_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_COLON)
+
+    let sum_node = self.tree.add_node(NODE_SUM_TYPE, self.token_idx(name_tok))
+
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after enum declaration")
+        self.append_child(node, sum_node)
+        return node
+    self.consume() // consume INDENT
+
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let v = self.parse_type_variant()
+        if v != 0 as u32:
+            self.append_child(sum_node, v)
+        self.expect_newline()
+        if self.pos == prev_pos:
+            self.consume()
+
+    if self.check(TK_DEDENT):
+        self.consume()
+
+    self.append_child(node, sum_node)
+    return node
+
 pub fn parse_program(mut self: ptr[Parser]):
     while not self.check(TK_EOF):
         let prev_pos = self.pos
@@ -1068,6 +1114,8 @@ pub fn parse_program(mut self: ptr[Parser]):
                 decl = self.parse_interface_decl(true)
             elif next.kind == TK_TYPE:
                 decl = self.parse_type_alias_decl(true)
+            elif next.kind == TK_ENUM:
+                decl = self.parse_enum_decl(true)
             elif next.kind == TK_CONST:
                 decl = self.parse_const_decl(true)
             elif next.kind == TK_EXTERN:
@@ -1083,6 +1131,8 @@ pub fn parse_program(mut self: ptr[Parser]):
             decl = self.parse_interface_decl(false)
         elif tok.kind == TK_TYPE:
             decl = self.parse_type_alias_decl(false)
+        elif tok.kind == TK_ENUM:
+            decl = self.parse_enum_decl(false)
         elif tok.kind == TK_CONST:
             decl = self.parse_const_decl(false)
         elif tok.kind == TK_EXTERN:

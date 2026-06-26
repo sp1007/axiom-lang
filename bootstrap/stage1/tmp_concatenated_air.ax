@@ -703,6 +703,7 @@ pub const TK_DOT_DOT: u8 = 82
 pub const TK_HASH: u8 = 83
 pub const TK_BREAK: u8 = 84
 pub const TK_CONTINUE: u8 = 85
+pub const TK_ENUM: u8 = 86
 
 
 pub struct Token:
@@ -839,6 +840,8 @@ fn lookup_keyword(s: str) -> u8:
         return TK_FOR
     if s == "Future":
         return TK_FUTURE
+    if s == "enum":
+        return TK_ENUM
     if s == "if":
         return TK_IF
     if s == "import":
@@ -1850,6 +1853,8 @@ pub struct Parser:
     pool: ptr[InternPool]
     src: str
     diags_count: i64
+    current_struct: u32       // RFC 0002: intern id of struct being parsed (0 = none); for untyped `self`
+    current_struct_tok: u32   // RFC 0002: token idx of that struct's name (for synthesized self type node)
 
 pub fn new_parser(tokens: TokenVec, src: str, pool: ptr[InternPool]) -> ptr[Parser]:
     let parser = @alloc(512) as ptr[Parser]
@@ -1860,6 +1865,8 @@ pub fn new_parser(tokens: TokenVec, src: str, pool: ptr[InternPool]) -> ptr[Pars
         pool: pool,
         src: src,
         diags_count: 0,
+        current_struct: 0 as u32,
+        current_struct_tok: 0 as u32,
     )
     return parser
 
@@ -2594,12 +2601,23 @@ pub fn parse_func_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
             self.set_flags(param, FLAG_IS_MUT as u16)
         let param_name = self.expect(TK_IDENT)
         let param_text = self.token_text(param_name)
+        let is_self = (param_text == "self")
         self.set_payload(param, self.pool.intern(param_text))
         @free(param_text as ptr[u8])
-        self.expect(TK_COLON)
-        let t = self.parse_type_expr()
-        if t != 0 as u32:
-            self.append_child(param, t)
+        if is_self and not self.check(TK_COLON) and self.current_struct != 0 as u32:
+            // RFC 0002: untyped `self` -> synthesize the enclosing struct type, i.e. the
+            // exact node `self: Struct` produces (verified to run identically since struct
+            // values are by-address 8-byte pointers, BUG#30). The synthesized NODE_TYPE_EXPR
+            // points its token at the STRUCT NAME token so type resolution (node_text_in_tree,
+            // which reads token bytes â€” NOT payload) sees the struct name and resolves it.
+            let self_ty = self.tree.add_node(NODE_TYPE_EXPR, self.current_struct_tok)
+            self.set_payload(self_ty, self.current_struct)
+            self.append_child(param, self_ty)
+        else:
+            self.expect(TK_COLON)
+            let t = self.parse_type_expr()
+            if t != 0 as u32:
+                self.append_child(param, t)
         self.append_child(node, param)
 
         if not self.check(TK_R_PAREN):
@@ -2715,7 +2733,8 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
 
     let name_tok = self.expect(TK_IDENT)
     let name_text = self.token_text(name_tok)
-    self.set_payload(node, self.pool.intern(name_text))
+    let struct_name_id = self.pool.intern(name_text)
+    self.set_payload(node, struct_name_id)
     @free(name_text as ptr[u8])
 
     if self.check(TK_L_BRACKET):
@@ -2731,6 +2750,12 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
         self.errorf(p, "expected INDENT after struct declaration")
         return node
     self.consume() // consume INDENT
+
+    // RFC 0002: methods in this body may use untyped `self` -> the struct type.
+    let prev_struct = self.current_struct
+    let prev_struct_tok = self.current_struct_tok
+    self.current_struct = struct_name_id
+    self.current_struct_tok = self.token_idx(name_tok)
 
     while not self.check(TK_DEDENT) and not self.check(TK_EOF):
         let prev_pos = self.pos
@@ -2759,6 +2784,8 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
 
     if self.check(TK_DEDENT):
         self.consume()
+    self.current_struct = prev_struct           // RFC 0002: restore
+    self.current_struct_tok = prev_struct_tok
     return node
 
 pub fn parse_field_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
@@ -2846,6 +2873,52 @@ pub fn parse_type_variant(mut self: ptr[Parser]) -> u32:
         self.expect(TK_R_PAREN)
     return node
 
+// RFC 0003: `enum Name:` indent-style sugar. Desugars to the SAME AST as a sum
+// type `type Name = A | B(T) | ...` (NODE_TYPE_ALIAS_DECL + NODE_SUM_TYPE +
+// NODE_VARIANT_DECL), so resolver/typecheck/codegen/match see no new node kinds.
+pub fn parse_enum_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
+    let tok = self.expect(TK_ENUM)
+    let node = self.tree.add_node(NODE_TYPE_ALIAS_DECL, self.token_idx(tok))
+    if is_pub:
+        self.set_flags(node, FLAG_IS_PUB as u16)
+
+    let name_tok = self.expect(TK_IDENT)
+    let name_text = self.token_text(name_tok)
+    self.set_payload(node, self.pool.intern(name_text))
+    @free(name_text as ptr[u8])
+
+    if self.check(TK_L_BRACKET):
+        self.set_flags(node, FLAG_IS_GENERIC as u16)
+        let gp = self.parse_generic_params()
+        if gp != 0 as u32:
+            self.append_child(node, gp)
+
+    self.expect(TK_COLON)
+
+    let sum_node = self.tree.add_node(NODE_SUM_TYPE, self.token_idx(name_tok))
+
+    if not self.check(TK_INDENT):
+        let p = self.peek()
+        self.errorf(p, "expected INDENT after enum declaration")
+        self.append_child(node, sum_node)
+        return node
+    self.consume() // consume INDENT
+
+    while not self.check(TK_DEDENT) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let v = self.parse_type_variant()
+        if v != 0 as u32:
+            self.append_child(sum_node, v)
+        self.expect_newline()
+        if self.pos == prev_pos:
+            self.consume()
+
+    if self.check(TK_DEDENT):
+        self.consume()
+
+    self.append_child(node, sum_node)
+    return node
+
 pub fn parse_program(mut self: ptr[Parser]):
     while not self.check(TK_EOF):
         let prev_pos = self.pos
@@ -2864,6 +2937,8 @@ pub fn parse_program(mut self: ptr[Parser]):
                 decl = self.parse_interface_decl(true)
             elif next.kind == TK_TYPE:
                 decl = self.parse_type_alias_decl(true)
+            elif next.kind == TK_ENUM:
+                decl = self.parse_enum_decl(true)
             elif next.kind == TK_CONST:
                 decl = self.parse_const_decl(true)
             elif next.kind == TK_EXTERN:
@@ -2879,6 +2954,8 @@ pub fn parse_program(mut self: ptr[Parser]):
             decl = self.parse_interface_decl(false)
         elif tok.kind == TK_TYPE:
             decl = self.parse_type_alias_decl(false)
+        elif tok.kind == TK_ENUM:
+            decl = self.parse_enum_decl(false)
         elif tok.kind == TK_CONST:
             decl = self.parse_const_decl(false)
         elif tok.kind == TK_EXTERN:
@@ -11198,6 +11275,20 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
     let copy_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
     @memset(copy_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
 
+    // BUG#31: an ADDRESS-TAKEN vreg must never participate in a copy chain. For
+    // `mut modrm := 0; &modrm; ...; use modrm`, the front end emits
+    // `%6 = copy %5; mkref %6` (the variable %6 is the addr-taken cell). The
+    // callee writes %6's stack slot through the pointer, so %6 is NOT a true copy
+    // of %5 â€” its value changes invisibly. If we record copy_map[%6]=%5 and then
+    // rewrite the data read of %6 to %5 (its stale init) while the mkref/store
+    // stays on %6, the read observes the pre-call value -> every `mov reg,reg`
+    // collapsed to modrm=0 in self-host stage3 (the backend already force-spills
+    // addr-taken vregs; this only stops the optimizer from short-circuiting the
+    // reload). Mirror fold_func's `not addr_taken[...]` guard. Guard BOTH ends:
+    // dest addr-taken (its memory mutates) and src addr-taken (the snapshot
+    // diverges from the live cell after a later through-pointer write).
+    let addr_taken = mark_addr_taken_regs(f, max_reg)
+
     mut i := 0 as i64
     while i < f.insts.len:
         let inst = f.insts.data[i]
@@ -11212,7 +11303,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
         if inst.opcode != OP_NOP:
             if (inst.opcode == OP_COPY or inst.opcode == OP_MOVE) and inst.dest != 0 as u32 and inst.src1 != 0 as u32:
                 if inst.dest <= max_reg and inst.src1 <= max_reg:
-                    if def_counts[inst.dest] == 1 as u32 and def_counts[inst.src1] == 1 as u32:
+                    if def_counts[inst.dest] == 1 as u32 and def_counts[inst.src1] == 1 as u32 and not addr_taken[inst.dest] and not addr_taken[inst.src1]:
                         copy_map[inst.dest] = inst.src1
         i = i + 1 as i64
 
@@ -11328,6 +11419,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
 
     @free(def_counts as ptr[u8])
     @free(copy_map as ptr[u8])
+    @free(addr_taken as ptr[u8])
     return changed
 
 pub fn remove_unreachable_blocks(f: ptr[AirFunc]) -> bool:
@@ -15324,7 +15416,9 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
         let type_id = fn_ptr.params.data[vreg as i64 - 1 as i64] as u32
         if type_id < table.entries.len as u32:
             let size = table.entries.data[type_id].size
-            if size == 16 as u32:
+            // RFC 0001 / Family C: only `str` (PRIMITIVE) is inline-16; a 16-byte
+            // by-address aggregate param is an 8-byte pointer.
+            if size == 16 as u32 and not type_is_aggregate(table, type_id):
                 return true
         return false
     mut i := 0 as i64
@@ -15351,7 +15445,8 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                                             return true
                                         if ret_type_id < table.entries.len as u32:
                                             let size = table.entries.data[ret_type_id].size
-                                            if size == 16 as u32:
+                                            // RFC 0001: 16-byte aggregate return = 8-byte pointer
+                                            if size == 16 as u32 and not type_is_aggregate(table, ret_type_id):
                                                 return true
                     else: // Dynamic function call
                         let type_id = inst.type_id as u32
@@ -15359,7 +15454,8 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                             return true
                         if type_id < table.entries.len as u32:
                             let size = table.entries.data[type_id].size
-                            if size == 16 as u32:
+                            // RFC 0001: 16-byte aggregate return = 8-byte pointer
+                            if size == 16 as u32 and not type_is_aggregate(table, type_id):
                                 return true
                     return false
                 elif op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL:
@@ -15368,7 +15464,17 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
                         let size = table.entries.data[type_id].size
-                        if size == 16 as u32:
+                        // BUG#30: only `str` (an INLINE 16-byte primitive) is held
+                        // 16-byte-inline (home = the data). A by-address aggregate
+                        // (struct/sum/option/result/array/tuple) of size 16 is
+                        // POINTER-repr (8-byte): its vreg holds the heap address,
+                        // exactly like the alloc/source it is copied from. Reporting
+                        // it 16-byte here gave the copy result a 16-byte inline home
+                        // while the source was an 8-byte pointer -> copy stored the
+                        // pointer into the inline home and getfld then read the home
+                        // (=pointer) instead of dereferencing. Fall through to the
+                        // source so the copy matches the source representation.
+                        if size == 16 as u32 and not type_is_aggregate(table, type_id):
                             return true
                     // COPY/MOVE preserve the type, so the source size is
                     // authoritative when the dest type_id is unset/generic.
@@ -15622,8 +15728,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 mut dest_size := 8 as u32
                 if dest_type < sel.table.entries.len as u32:
                     dest_size = sel.table.entries.data[dest_type].size
-                
-                if dest_size == 16 as u32:
+
+                // RFC 0001: only `str` (PRIMITIVE) is passed by-pointer + copied
+                // 16-byte-inline into the callee's home. A by-address aggregate
+                // param IS already a pointer in the arg register; just store the
+                // 8-byte pointer (the else branch) â€” derefing it as str (load 16)
+                // made the home hold the DATA while getfld treated it as a pointer.
+                if dest_size == 16 as u32 and not type_is_aggregate(sel.table, dest_type):
                     let tmp_val1 = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     
@@ -16545,7 +16656,12 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
         let phys = abi_int_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = snaps[p]
-            if psize == 16 as u32:
+            // RFC 0001: `str` (16-byte PRIMITIVE) is passed as a pointer and copied
+            // 16-byte-inline into its param home. A by-address aggregate param is
+            // ITSELF an 8-byte pointer in the arg register â€” store it directly (the
+            // else branch); copying 16 bytes made the home hold the data while
+            // getfld then derefs it -> deref of the field value (segfault, tsp).
+            if psize == 16 as u32 and not type_is_aggregate(sel.table, pty):
                 // arg register held a pointer to the 16-byte value
                 let lo = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -16564,7 +16680,8 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
                 offset = 48 as i64 + (p - 4 as i64) * 8 as i64
             else:
                 offset = 16 as i64 + (p - 6 as i64) * 8 as i64
-            if psize == 16 as u32:
+            // RFC 0001: see register-passed case above â€” aggregate = 8-byte pointer.
+            if psize == 16 as u32 and not type_is_aggregate(sel.table, pty):
                 let saddr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
                 let lo = next_vreg(sel)
@@ -20463,15 +20580,24 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
         return "ax_free"
     if name == "std.string.len" or name == "ax_std.string.len":
         return "ax_str_len"
-    // std.string.concat is NOT redirected to the C-runtime DLL symbol: that
-    // symbol uses the C/Win64 ABI (by-ref args, hidden-pointer 16-byte return)
-    // which is incompatible with AXIOM's value ABI (str args by pointer, result
-    // in RAX:RDX). Instead the call falls through to the in-program `concat`
-    // function (std/string.ax), which has a real value-ABI body.
-    if name == "std.string.replace" or name == "ax_std.string.replace":
-        return "ax_str_replace"
-    if name == "std.string.slice" or name == "ax_std.string.slice":
-        return "ax_str_slice"
+    // std.string.{concat,replace,slice} are NOT redirected to the C-runtime DLL
+    // symbols: those use the C/Win64 ABI (str args by-ref, 16-byte struct return
+    // via a hidden sret pointer) which is incompatible with AXIOM's value ABI
+    // (str args by pointer, result in RAX:RDX). Each falls through to its
+    // value-ABI in-program body in std/string.ax.
+    //
+    // BUG#29 (self-host fixpoint blocker): the str-RETURNING redirects (replace,
+    // slice) were miscompiled by the stage1-built backend. The exact class is the
+    // hidden-sret return-pointer setup of a C-ABI call that returns a 16-byte str:
+    // stage1's native backend miscompiles the emitter for that sret setup, so
+    // stage2 emitted ax_str_replace / ax_str_slice calls with a corrupt sret/ptr
+    // -> OOM (bad len) / segfault (bad ptr) when stage3 ran. (len->i64 and
+    // eq->bool have NO sret and stayed correct, which is why stage2 itself ran;
+    // only the calls stage2 EMITTED into stage3 were broken.) concat was already
+    // value-ABI for the same reason. Fix: do not redirect replace or slice; use
+    // the value-ABI in-program functions. NB: the `-30` path in
+    // resolve_binary_sym_name and the ax_block_size alias below still reference
+    // ax_str_slice â€” those are separate machinery, not the std.string.slice call.
     return name
 
 
@@ -21527,8 +21653,11 @@ pub fn linker_build_pe_headers(
     push_u32_le(out, 0 as u32) // CheckSum
     push_u16_le(out, 3 as u16) // Subsystem (Console)
     push_u16_le(out, 0x0160 as u16) // DllCharacteristics
-    push_u64_le(out, 0x100000 as u64) // SizeOfStackReserve
-    push_u64_le(out, 0x1000 as u64) // SizeOfStackCommit
+    push_u64_le(out, 0x1000000 as u64) // SizeOfStackReserve (16MB) â€” BUG#28: 1MB
+                                       // overflowed when stage2 typechecks the
+                                       // full compiler (deep recursion); stage1
+                                       // had 2MB. 16MB gives ample headroom.
+    push_u64_le(out, 0x1000 as u64) // SizeOfStackCommit (OS auto-grows to reserve)
     push_u64_le(out, 0x100000 as u64) // SizeOfHeapReserve
     push_u64_le(out, 0x1000 as u64) // SizeOfHeapCommit
     push_u32_le(out, 0 as u32) // LoaderFlags

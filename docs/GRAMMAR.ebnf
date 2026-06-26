@@ -36,6 +36,7 @@ TopLevelDecl = FnDecl
              | StructDecl
              | InterfaceDecl
              | TypeAliasDecl
+             | EnumDecl
              | ConstDecl ;
 
 (* =================================================================== *)
@@ -113,6 +114,11 @@ TypeAliasDecl = [ 'pub' ] , 'type' , IDENT , [ GenericParams ] ,
 
 SumTypeExpr   = TypeVariant , { '|' , TypeVariant } ;
 TypeVariant   = IDENT , [ '(' , TypeList , ')' ] ;
+
+(* RFC 0003: `enum` indent-style sugar; desugars to TypeAliasDecl + SumTypeExpr. *)
+EnumDecl      = [ 'pub' ] , 'enum' , IDENT , [ GenericParams ] , ':' ,
+                NEWLINE , INDENT , TypeVariant , { NEWLINE , TypeVariant } ,
+                [ NEWLINE ] , DEDENT ;
 TypeList      = TypeExpr , { ',' , TypeExpr } ;
 
 (* --- Const declarations --- *)

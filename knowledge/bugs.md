@@ -940,3 +940,19 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 ### 5. Lưu ý vận hành
 - Tiến trình `axc_stage1.exe`/`axc_stage2_native.exe` mồ côi giữ khóa file exe → "process cannot access the file". Kiểm tra `Get-Process *axc*`, kill trước khi build lại.
 - Determinism: `tmp_concatenated_air.ax` regen từ source nên markers tự biến mất ở build sạch. Đảm bảo source sạch trước khi so SHA-256(stage2)==SHA-256(stage3).
+
+---
+
+## BUG#32 (GAP, phát hiện 2026-06-26) — User-defined sum type / enum: KHÔNG có codegen native (construct + match)
+
+**Triệu chứng:** `type Color = Red|Green|Blue` (và `enum` RFC 0003 desugar về cùng AST) build được nhưng SAI runtime. Variant no-payload + match → exit 0 (mọi arm bị bỏ). Variant có payload `Circle(i64)` → linker error `Unresolved external symbol 'ax_Circle'`. dump-air main = `iconst; ret` RỖNG.
+
+**Root cause (kép, đều ở native pipeline):**
+1. **match KHÔNG được lower:** `lower_stmt` (air_builder.ax:1686) THIẾU nhánh `NODE_MATCH_STMT` (21) → rơi vào `else: lower_expr` → lower_expr cũng không có NODE_MATCH → match sinh 0 AIR. (NODE_MATCH_STMT/ARM CÓ trong parser+resolver+typecheck, nhưng air_builder bỏ sót.)
+2. **Variant constructor user-defined KHÔNG được lower:** air_builder.ax:1033 CHỈ hard-code Ok/Err/Some/None (pointer-layout box, tag bit0). Mọi variant khác (`Red`/`Circle`) rơi vào struct-ctor/func-call → `ax_<Variant>` unresolved hoặc bỏ.
+
+**Vì sao self-host vẫn OK:** compiler tự host KHÔNG dùng `match` / sum-type-do-người-dùng (chỉ Result/Option + if/elif). Nên gap này không phá fixpoint — nhưng khiến enum/sum type vô dụng lúc runtime.
+
+**Để dùng enum/sum type thật cần (RFC backend, lớn):** (a) biểu diễn runtime tagged-union tổng quát (tag + payload), (b) lower constructor mọi variant (gán tag, box payload), (c) lower NODE_MATCH_STMT (đọc tag, nhánh theo arm, bind payload, exhaustiveness), (d) typetable lưu tag/layout variant. Rủi ro fixpoint: trung bình (đụng air_builder + typetable). KHÔNG phải parser sugar.
+
+**RFC 0003 (enum) trạng thái:** parser sugar ĐÚNG (enum desugar == sum type, exit byte-identical). Nhưng giá trị thực tế bị chặn bởi BUG#32. Enum chỉ usable sau khi có ADT codegen.
