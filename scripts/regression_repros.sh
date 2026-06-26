@@ -28,6 +28,11 @@ rows=(
   "t_alias|out|A=1 B=0 "
   "t_mutstr|exit|9"
   "t_method|exit|24"
+  "t_enum_np|exit|6"
+  "t_enum|exit|42"
+  "t_adt2|exit|104"
+  "t_adt3|exit|19"
+  "t_builtin_opt|exit|15"
 )
 
 for row in "${rows[@]}"; do

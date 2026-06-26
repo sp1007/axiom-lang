@@ -1,20 +1,20 @@
-// RFC 0003: `enum` indent-style sugar (desugars to sum type)
+// RFC 0003 + 0004: enum + ADT codegen (single-payload + no-payload variants)
 enum Shape:
     Circle(i64)
-    Rect(i64, i64)
+    Square(i64)
     Unit
 
 fn area(s: Shape) -> i64:
     match s:
         Circle(r):
-            return r * r * 3 as i64
-        Rect(w, h):
-            return w * h
+            return r * r
+        Square(w):
+            return w * w * 2 as i64
         Unit:
             return 1 as i64
 
 pub fn main() -> i32:
-    let a = area(Circle(3 as i64))      // 27
-    let b = area(Rect(4 as i64, 5 as i64))  // 20
-    let c = area(Unit)                  // 1
-    return (a + b + c) as i32           // 48
+    let a = area(Circle(3 as i64))   // 9
+    let b = area(Square(4 as i64))   // 32
+    let c = area(Unit)               // 1
+    return (a + b + c) as i32        // 42

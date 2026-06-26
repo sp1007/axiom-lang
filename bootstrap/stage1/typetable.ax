@@ -288,13 +288,17 @@ pub fn new_type_table() -> ptr[TypeTable]:
 pub fn register_sum_type(self: ptr[TypeTable], name_id: u32, variants: VariantInfoVec) -> u32:
     let s_idx = self.sumtypes.len as u32
     (&self.sumtypes).push(SumInfo(variants: variants))
+    // RFC 0004: a user sum value is an 8-byte by-address pointer to a heap box
+    // laid out as [tag: i64 @0][payload: 8B @8] = 16 bytes (kind 6 is aggregate,
+    // so the VALUE stays an 8-byte pointer; the 16 is the box allocation size).
+    // v1 supports a single <=8-byte payload slot; str/multi-field payloads TODO.
     return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_SUM,
         padding: 0 as u8,
         flags: 0 as u16,
         name_id: name_id,
-        size: 0 as u32,
-        align: 0 as u32,
+        size: 16 as u32,
+        align: 8 as u32,
         extra: s_idx,
     ))
 
