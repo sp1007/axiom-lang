@@ -1,0 +1,67 @@
+// Regression: 16/24-byte aggregate by-value ABI (RFC 0001) + str-field mix +
+// reference semantics. Each line prints tag=value.
+extern "C" fn putchar(c: i32) -> i32
+extern "C" fn fflush(s: ptr[void]) -> i32
+
+struct P:
+    a: i64
+    b: i64
+struct T:
+    a: i64
+    b: i64
+    c: i64
+struct Named:
+    name: str
+    n: i64
+struct Outer:
+    inner: P
+    z: i64
+
+fn pr(tag: i64, v: i64):
+    putchar(tag as i32)
+    putchar('=' as i32)
+    mut x := v
+    if x == 0 as i64:
+        putchar('0' as i32)
+    mut buf := @alloc(32) as ptr[u8]
+    mut k := 0 as i64
+    while x > 0 as i64:
+        buf[k] = ('0' as u8) + (x % 10 as i64) as u8
+        k = k + 1 as i64
+        x = x / 10 as i64
+    mut j := k - 1 as i64
+    while j >= 0 as i64:
+        putchar(buf[j] as i32)
+        j = j - 1 as i64
+    putchar(' ' as i32)
+    fflush(null as ptr[void])
+
+fn mkP(x: i64, y: i64) -> P:
+    return P(a: x, b: y)
+fn sumP(p: P) -> i64:
+    return p.a + p.b
+fn mkT(x: i64) -> T:
+    return T(a: x, b: x * 2 as i64, c: x * 3 as i64)
+fn sumT(t: T) -> i64:
+    return t.a + t.b + t.c
+fn mkN(s: str, k: i64) -> Named:
+    return Named(name: s, n: k)
+fn shout(x: Named) -> i64:
+    return x.n + x.name.len
+fn sumOuter(o: Outer) -> i64:
+    return o.inner.a + o.inner.b + o.z
+fn bump(mut p: P):
+    p.a = 99 as i64
+
+pub fn main() -> i32:
+    pr('A' as i64, sumP(mkP(3 as i64, 4 as i64)))          // 7   (16-byte by-value)
+    pr('B' as i64, sumT(mkT(2 as i64)))                     // 12  (24-byte by-value)
+    pr('C' as i64, shout(mkN("hello", 10 as i64)))          // 15  (str field by-value)
+    let o = Outer(inner: P(a: 1 as i64, b: 2 as i64), z: 3 as i64)
+    pr('D' as i64, sumOuter(o))                             // 6   (nested struct by-value)
+    let q = mkP(3 as i64, 4 as i64)
+    bump(q)                                                 // reference semantics
+    pr('E' as i64, q.a)                                     // 99  (mut param affects caller)
+    putchar(10 as i32)
+    fflush(null as ptr[void])
+    return 0

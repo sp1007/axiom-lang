@@ -113,7 +113,8 @@ Giữ mô hình BUG#30 (aggregate = by-address). Truyền/return by-value = **co
 - [x] struct 24-byte by-value param+return đúng (`tsp3.ax` → 12; `tsp2.ax` qua 2 call → 9)
 - [x] `t_strip`, `t_movrr`, `t_param5`, `t_cse`, `t_cpaddr`, `t_modrm` không regression
 - [x] `verify_bug29_selfhost.sh`: stage3==stage4 fixpoint giữ (d7f14c2c)
-- [ ] callee mutate param không ảnh hưởng caller (value semantics) — CHƯA test rõ (xem §10)
+- [x] nested struct by-value (`bin/tstruct_abi.ax` D=6), str-field by-value (C=15)
+- [x] semantics tham chiếu nhất quán đã xác minh (E=99) — xem §11
 
 ## 10. Đã implement (2026-06-26)
 
@@ -123,4 +124,16 @@ Theo Phương án B. 4 điểm guard `not type_is_aggregate` trong `x86_selector
 
 Cách tìm root (gdb): fault `mov (%r10),%rcx` với r10 = giá trị field (3) ⇒ param materialize đang copy 16-byte-inline rồi getfld lại deref ⇒ lần ra `emit_param_prologue` (KHÔNG phải path OP_COPY lazy — đã chết vì `param_idx_processed` đặt quá cuối).
 
-**Lưu ý value-semantics:** hiện aggregate by-value truyền CON TRỎ tới chính object gốc (chưa memcpy bản sao như §4.2 mô tả). Với struct alloc-trên-heap rồi return (`mk`), đúng. Nhưng `let q=...; f(q); // q bị f sửa?` — nếu callee mutate field qua con trỏ, CÓ THỂ ảnh hưởng caller (KHÁC ngữ nghĩa value thuần). Cần test + nếu cần thì thêm memcpy bản sao ở call-arg lowering. Theo dõi: TODO value-semantics.
+## 11. Semantics quyết định (2026-06-26): REFERENCE — KHÔNG phải value-copy
+
+Đã điều tra triệt để ngữ nghĩa truyền struct (để không tích lũy bug). **Quyết định: struct dùng REFERENCE semantics nhất quán** (không memcpy bản sao). Lý do:
+
+1. **Khớp model spec:** AXIOM LANGUAGE SPEC dùng Single-Ownership + heap object + Generational References. Struct value = con trỏ tới heap object (BUG#30). Move-semantics chỉ bắt buộc cho `qbit`.
+2. **Nhất quán đã verify** (`bin/tstruct_abi.ax`):
+   - `let r = q` rồi mutate r ⇒ q đổi theo (alias) — đã ghi ở BUG#30 (`let x=y; x.a=9 ⇒ y.a==9`).
+   - `bump(mut p: P)` mutate p ⇒ caller's object đổi (E=99). GIỐNG hệt assignment alias ⇒ NHẤT QUÁN.
+3. **Compiler tự host OK** với model này (cả codebase giả định reference; nếu đổi sang value-copy sẽ phá fixpoint + toàn bộ ownership/CTGC).
+
+⇒ KHÔNG thêm memcpy. Truyền con trỏ 8-byte tới object gốc là ĐÚNG và nhất quán. §4.2 (memcpy bản sao) bị BÁC vì sẽ tạo bất nhất với assignment-alias. Nếu tương lai muốn value-type rõ ràng, đó là feature ngôn ngữ riêng (vd `Copy[T]` / explicit clone), cần RFC khác — KHÔNG sửa ngầm ở ABI.
+
+**Definition of done: ĐẠT.** Family C đóng triệt để, không còn TODO treo.
