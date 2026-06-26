@@ -30,6 +30,8 @@ pub struct Parser:
     pool: ptr[InternPool]
     src: str
     diags_count: i64
+    current_struct: u32       // RFC 0002: intern id of struct being parsed (0 = none); for untyped `self`
+    current_struct_tok: u32   // RFC 0002: token idx of that struct's name (for synthesized self type node)
 
 pub fn new_parser(tokens: TokenVec, src: str, pool: ptr[InternPool]) -> ptr[Parser]:
     let parser = @alloc(512) as ptr[Parser]
@@ -40,6 +42,8 @@ pub fn new_parser(tokens: TokenVec, src: str, pool: ptr[InternPool]) -> ptr[Pars
         pool: pool,
         src: src,
         diags_count: 0,
+        current_struct: 0 as u32,
+        current_struct_tok: 0 as u32,
     )
     return parser
 
@@ -774,12 +778,23 @@ pub fn parse_func_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
             self.set_flags(param, FLAG_IS_MUT as u16)
         let param_name = self.expect(TK_IDENT)
         let param_text = self.token_text(param_name)
+        let is_self = (param_text == "self")
         self.set_payload(param, self.pool.intern(param_text))
         @free(param_text as ptr[u8])
-        self.expect(TK_COLON)
-        let t = self.parse_type_expr()
-        if t != 0 as u32:
-            self.append_child(param, t)
+        if is_self and not self.check(TK_COLON) and self.current_struct != 0 as u32:
+            // RFC 0002: untyped `self` -> synthesize the enclosing struct type, i.e. the
+            // exact node `self: Struct` produces (verified to run identically since struct
+            // values are by-address 8-byte pointers, BUG#30). The synthesized NODE_TYPE_EXPR
+            // points its token at the STRUCT NAME token so type resolution (node_text_in_tree,
+            // which reads token bytes — NOT payload) sees the struct name and resolves it.
+            let self_ty = self.tree.add_node(NODE_TYPE_EXPR, self.current_struct_tok)
+            self.set_payload(self_ty, self.current_struct)
+            self.append_child(param, self_ty)
+        else:
+            self.expect(TK_COLON)
+            let t = self.parse_type_expr()
+            if t != 0 as u32:
+                self.append_child(param, t)
         self.append_child(node, param)
 
         if not self.check(TK_R_PAREN):
@@ -895,7 +910,8 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
 
     let name_tok = self.expect(TK_IDENT)
     let name_text = self.token_text(name_tok)
-    self.set_payload(node, self.pool.intern(name_text))
+    let struct_name_id = self.pool.intern(name_text)
+    self.set_payload(node, struct_name_id)
     @free(name_text as ptr[u8])
 
     if self.check(TK_L_BRACKET):
@@ -911,6 +927,12 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
         self.errorf(p, "expected INDENT after struct declaration")
         return node
     self.consume() // consume INDENT
+
+    // RFC 0002: methods in this body may use untyped `self` -> the struct type.
+    let prev_struct = self.current_struct
+    let prev_struct_tok = self.current_struct_tok
+    self.current_struct = struct_name_id
+    self.current_struct_tok = self.token_idx(name_tok)
 
     while not self.check(TK_DEDENT) and not self.check(TK_EOF):
         let prev_pos = self.pos
@@ -939,6 +961,8 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
 
     if self.check(TK_DEDENT):
         self.consume()
+    self.current_struct = prev_struct           // RFC 0002: restore
+    self.current_struct_tok = prev_struct_tok
     return node
 
 pub fn parse_field_decl(mut self: ptr[Parser], is_pub: bool) -> u32:

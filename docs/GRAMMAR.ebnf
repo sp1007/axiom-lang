@@ -69,8 +69,13 @@ GenericParams = '[' , GenericParam , { ',' , GenericParam } , ']' ;
 GenericParam  = IDENT , [ ':' , TypeExpr ] ;
 
 ParamList = Param , { ',' , Param } ;
-Param = [ ParamModifier ] , IDENT , ':' , TypeExpr ;
+Param = SelfParam | ( [ ParamModifier ] , IDENT , ':' , TypeExpr ) ;
 ParamModifier = 'mut' | 'lent' | '!' ;
+
+(* SelfParam: untyped receiver sugar (RFC 0002). Valid only as a parameter of a
+   method declared inside a struct body; type inferred as ptr[EnclosingStruct].
+   `fn m(self)` desugars to `fn m(self: ptr[Struct])`; `mut self` adds mut. *)
+SelfParam = [ 'mut' ] , 'self' ;
 
 (* Effect annotations declare side effects: {.raises: [IOError, ParseError].} *)
 EffectAnnotation = '{' , '.' , IDENT , ':' , '[' , TypeList , ']' , '.' , '}' ;

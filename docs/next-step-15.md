@@ -40,7 +40,7 @@ untyped-self mỗi file) → 160-713 lỗi parse. Đây là **nợ dialect**, kh
 Vì grammar hiện tại đã chạy đủ, "mở rộng" = thêm feature MỚI vào grammar. CLAUDE.md:
 syntax change PHẢI có RFC + cập nhật `docs/GRAMMAR.ebnf` TRƯỚC khi implement.
 
-### T1 — RFC 0002: Untyped `self`/`mut self` sugar  [ƯU TIÊN 1: giá trị cao, rủi ro thấp]
+### T1 — RFC 0002: Untyped `self`/`mut self` sugar  ✅ DONE (fixpoint fc5e6f48 giữ)
 Hiện mọi method phải viết `mut self: ptr[Parser]` (boilerplate khắp compiler). Sugar:
 trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[StructCha]`.
 - [ ] RFC 0002 + sửa GRAMMAR.ebnf: `Param = [Mod] IDENT [':' TypeExpr]` (type optional khi IDENT=self trong method).
