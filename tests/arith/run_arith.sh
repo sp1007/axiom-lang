@@ -12,13 +12,14 @@ cd "$(dirname "$0")/../.."
 AXC="${AXC:-bin/axc_stage1.exe}"
 N="${N:-100000}"
 SEED="${SEED:-1}"
+MODE="${MODE:-int}"   # int | float | mixed
 TIMEOUT="${TIMEOUT:-1200}"
 PY=python; command -v python >/dev/null 2>&1 || PY=python3
 
 src="tests/arith/arith_test.ax"
 exe="/tmp/arith_test.exe"
-echo "[gen] N=$N seed=$SEED -> $src"
-"$PY" tests/arith/arith_gen.py "$N" "$SEED" > "$src" || { echo "GEN FAIL"; exit 2; }
+echo "[gen] N=$N seed=$SEED mode=$MODE -> $src"
+"$PY" tests/arith/arith_gen.py "$N" "$SEED" "$MODE" > "$src" || { echo "GEN FAIL"; exit 2; }
 echo "[gen] $(wc -l < "$src") lines"
 
 rm -f "$exe"

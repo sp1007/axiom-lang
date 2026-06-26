@@ -14,7 +14,7 @@
 #   - shifts: logical for unsigned, arithmetic for signed; amount in [0,W-1]
 #
 # Usage: python3 arith_gen.py <N> <seed> > arith_test.ax
-import sys, random
+import sys, random, struct
 
 # (name, width_bits, signed)
 ITYPES = [
@@ -64,6 +64,82 @@ def lit(val):
     return f"({val})" if val >= 0 else f"(0 - {abs(val)})"
 
 ARITH = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
+
+# ---- float oracle ----
+def f32_round(x):
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+def fbits(val, ty):
+    """IEEE bit pattern of `val` in float type `ty`, as a SIGNED int matching
+    AXIOM's `(&g as ptr[iN])[0]` reinterpret (i64 for f64, i32 for f32→i64)."""
+    if ty == "f64":
+        return struct.unpack('<q', struct.pack('<d', val))[0]
+    return struct.unpack('<i', struct.pack('<f', f32_round(val)))[0]  # sign-ext to i64 OK
+
+def frand(rng):
+    # exactly-representable f32/f64 values (int + {0,.25,.5,.75}); finite, no NaN/inf
+    base = rng.randint(-1000, 1000)
+    frac = rng.choice([0.0, 0.25, 0.5, 0.75, -0.25, -0.5])
+    edge = [0.0, 1.0, -1.0, 2.0, 0.5, -0.5, 1024.0, -1024.0]
+    return rng.choice(edge) if rng.random() < 0.25 else float(base) + frac
+
+def flit(v):
+    s = repr(v)
+    if "." not in s and "e" not in s and "E" not in s:
+        s += ".0"
+    return f"({s})" if v >= 0 else f"(0.0 - {repr(abs(v))})"
+
+FOPS = ["+", "-", "*", "/"]
+FTYPES = ["f32", "f64"]
+
+def gen_fexpr(rng):
+    """Return (axiom_src, expected_bits_i64, result_type) for a float expr."""
+    rty = rng.choice(FTYPES)
+    op = rng.choice(FOPS)
+    av = frand(rng); bv = frand(rng)
+    if op == "/":
+        while bv == 0.0:
+            bv = frand(rng)
+    # operands cast to result type
+    rnd = f32_round if rty == "f32" else (lambda z: z)
+    a = rnd(av); b = rnd(bv)
+    if op == "+": res = a + b
+    elif op == "-": res = a - b
+    elif op == "*": res = a * b
+    else: res = a / b
+    res = rnd(res)  # round result to f32 when applicable
+    a_src = f"({flit(av)} as {rty})"
+    b_src = f"({flit(bv)} as {rty})"
+    src = f"({a_src} {op} {b_src})"
+    return src, fbits(res, rty), rty
+
+def gen_mixed_expr(rng):
+    """Mixed int/float operands, each cast to a float result type. Tests int->float
+    conversion + float op. (Run AFTER float arithmetic is fixed — RFC 0006.)"""
+    rty = rng.choice(FTYPES)
+    op = rng.choice(FOPS)
+    rnd = f32_round if rty == "f32" else (lambda z: z)
+
+    def operand():
+        if rng.random() < 0.5:
+            ity = rng.choice([t[0] for t in ITYPES])
+            iv = rand_val(ity, rng)
+            src = f"(({lit(iv)} as {ity}) as {rty})"
+            return src, rnd(float(iv))
+        fv = frand(rng)
+        return f"({flit(fv)} as {rty})", rnd(fv)
+
+    a_src, a = operand()
+    b_src, b = operand()
+    if op == "/":
+        while b == 0.0:
+            b_src, b = operand()
+    if op == "+": res = a + b
+    elif op == "-": res = a - b
+    elif op == "*": res = a * b
+    else: res = a / b
+    res = rnd(res)
+    return f"({a_src} {op} {b_src})", fbits(res, rty), rty
 
 def gen_expr(rng):
     """Return (axiom_src, expected_i64, result_type)."""
@@ -127,6 +203,7 @@ CHUNK = 100  # expressions per function (keep functions small for regalloc)
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 12345
+    mode = sys.argv[3] if len(sys.argv) > 3 else "int"   # int | float
     rng = random.Random(seed)
 
     out = []
@@ -173,11 +250,20 @@ def main():
         for _ in range(CHUNK):
             if idx >= n:
                 break
-            src, exp, rty = gen_expr(rng)
-            out.append(f'    let g{idx}: {rty} = {src}')
-            out.append(f'    if (g{idx} as i64) != ({exp} as i64):')
-            out.append('        fails = fails + 1 as i64')
-            out.append(f'        report({idx} as i64, (g{idx} as i64), ({exp} as i64))')
+            if mode in ("float", "mixed"):
+                src, exp, rty = gen_fexpr(rng) if mode == "float" else gen_mixed_expr(rng)
+                bptr = "ptr[i64]" if rty == "f64" else "ptr[i32]"
+                out.append(f'    mut g{idx}: {rty} = {src}')
+                out.append(f'    let bits{idx}: i64 = ((&g{idx} as {bptr})[0]) as i64')
+                out.append(f'    if bits{idx} != ({exp} as i64):')
+                out.append('        fails = fails + 1 as i64')
+                out.append(f'        report({idx} as i64, bits{idx}, ({exp} as i64))')
+            else:
+                src, exp, rty = gen_expr(rng)
+                out.append(f'    let g{idx}: {rty} = {src}')
+                out.append(f'    if (g{idx} as i64) != ({exp} as i64):')
+                out.append('        fails = fails + 1 as i64')
+                out.append(f'        report({idx} as i64, (g{idx} as i64), ({exp} as i64))')
             idx += 1
         out.append('    return fails')
         out.append('')
