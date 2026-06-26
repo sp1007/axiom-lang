@@ -111,23 +111,11 @@ def cases():
         src = f"(({src_val(it, iv)} as {ft}) + {src_val(ft, fv)})"
         add(f"mix_{it}_{ft}_add", src, ft, fbits(rnd(a + b), ft))
 
-    # ---- 5. overflow / wrap (two's complement, well-defined per RFC 0006 §6) ----
-    def wrapcase(label, ty, a, op, b):
-        w, s = TINFO[ty]
-        A, B = src_val(ty, wrap(a, ty)), src_val(ty, wrap(b, ty))
-        if op == "+": r = a + b
-        elif op == "-": r = a - b
-        else: r = a * b
-        add(f"wrap_{label}", f"({A} {op} {B})", ty, to_i64(wrap(r, ty)))
-    wrapcase("u8_max_inc", "u8", 255, "+", 1)        # -> 0
-    wrapcase("u8_zero_dec", "u8", 0, "-", 1)         # -> 255
-    wrapcase("i8_max_inc", "i8", 127, "+", 1)        # -> -128
-    wrapcase("i8_min_dec", "i8", -128, "-", 1)       # -> 127
-    wrapcase("u16_max_inc", "u16", 65535, "+", 1)    # -> 0
-    wrapcase("u32_zero_dec", "u32", 0, "-", 1)       # -> 4294967295
-    wrapcase("i32_max_inc", "i32", (1 << 31) - 1, "+", 1)   # -> -2147483648
-    wrapcase("u8_mul", "u8", 200, "*", 2)            # -> 144
-    wrapcase("i16_mul_ovf", "i16", 1234, "*", 56)    # 69104 -> wraps i16
+    # NOTE (RFC 0006 §6, user-confirmed): runtime overflow WRAPS (fixed width), but
+    # overflow detectable at COMPILE TIME (all-constant operands) is a compile ERROR.
+    # So constant-operand overflow cases are NOT value tests here — they live in
+    # tests/arith/diag/ as EXPECT-ERROR. Runtime-wrap value tests need operands the
+    # compiler cannot const-fold (opaque source); TODO when harness gets that.
 
     return cs
 

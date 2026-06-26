@@ -62,10 +62,15 @@ VD chốt:
 - shift phải: signed `>>` = SAR (arithmetic), unsigned `>>` = SHR (logical).
 - compare unsigned dùng JB/JA…, signed dùng JL/JG…
 
-## 6. Overflow
+## 6. Overflow (user chốt 2026-06-26: wrap runtime + lỗi nếu tràn hằng)
 
-Integer overflow = **wrap** (two's complement, định nghĩa rõ; khớp oracle test). (Có thể
-thêm checked-mode sau, nhưng default wrap để xác định.)
+- **Runtime:** tràn = **wrap** fixed-width (two's complement). Phép toán GIỮ kiểu toán
+  hạng (i16+i16 → i16), backend phải **mask về bề rộng** sau mỗi op (hiện KHÔNG mask →
+  tính trong 64-bit, BUG#36). KHÔNG promotion kiểu C (i16+i16 vẫn i16, không lên i32).
+- **Compile-time:** nếu tràn THẤY ĐƯỢC lúc biên dịch (toán hạng toàn HẰNG) → **LỖI**
+  (constant-overflow checker). VD `let b: u8 = 255 + 1` → lỗi; `i16: 1234*56` → lỗi.
+- Hệ quả test: ca tràn-hằng = EXPECT-ERROR (tests/arith/diag/e08-e10), KHÔNG phải value
+  test. Runtime-wrap value test cần toán hạng non-const (opaque) — TODO harness.
 
 ## 7. Float codegen (BUG#33)
 
