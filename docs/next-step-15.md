@@ -52,8 +52,13 @@ trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[Str
 Chỉ làm khi có nhu cầu rõ; mỗi cái 1 RFC cập nhật grammar. `enum`/braces đi NGƯỢC
 triết lý indent-based — cân nhắc kỹ, có thể KHÔNG làm.
 
-### T3 — Triage nợ dialect (iter/json/log/net/fmt + suites)  [dọn nợ]
-- [ ] Policy: viết lại theo grammar AXIOM HOẶC quarantine. KHÔNG thêm braces/enum để "chiều" chúng.
+### T3 — Triage nợ dialect (iter/json/log/net/fmt + suites)  [dọn nợ] ✅ DONE (triage+document)
+- [x] Đo toàn bộ std/: build chỉ import std.string/io/collections (đều 0 lỗi). ~13 file
+      (net/iter/log/json/mem/math/fmt/gpu/compiler/ffi/crypto/cli/arch) là stub aspirational
+      dialect-ngoài-grammar (70-713 lỗi), KHÔNG import, KHÔNG compile được, KHÔNG block gì.
+- [x] Tạo `std/MODULE_STATUS.md`: phân loại working vs aspirational + policy kích hoạt
+      (rewrite-to-grammar HOẶC RFC mở rộng grammar; KHÔNG bịa braces/enum). → hết "masquerade".
+- [ ] (Backlog, không gấp) rewrite từng module aspirational sang grammar khi cần.
 
 ## Definition of done mỗi task
 - [ ] Probe syntax đúng → 0 lỗi parse/typecheck.
