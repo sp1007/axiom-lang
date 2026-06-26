@@ -66,6 +66,27 @@ trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[Str
       (rewrite-to-grammar HOẶC RFC mở rộng grammar; KHÔNG bịa braces/enum). → hết "masquerade".
 - [ ] (Backlog, không gấp) rewrite từng module aspirational sang grammar khi cần.
 
+## TASK QUEUE (thực hiện TUẦN TỰ — mỗi task: implement → regression → fixpoint → commit)
+
+1. **RFC 0005 — int literal type inference** ⏳ ĐANG VERIFY FIXPOINT.
+   `b + 1`, `x < 10` không cần `as`. Implement xong, regression 20/20, fixpoint đang chạy.
+2. **ADT v2 — multi-field variant** (`Rect(i64,i64)`): mỗi field ≤8B (scalar/ptr), box
+   size = 8 + max_fields*8, OP_SET_FIELD/GET_FIELD field idx 1..n. typecheck gán type cho
+   mọi binding sub-pattern. (đã thiết kế ở docs/next-step-15-sub-1.md; đã revert checkpoint).
+3. **ADT v2 — str / >8B payload**: cần máy 16-byte field (offset+size theo type thật).
+4. **RFC 0006 — numeric & arithmetic semantics (NGHIÊM TÚC, gộp BUG#33+#34)**: phép toán
+   là nền tảng → xử lý kỹ. Gồm: (a) **unsigned div/mod** dùng DIV thay vì IDIV signed cho
+   u32/u64 (BUG#34.1); (b) **float arithmetic** phát OP_FADD/FSUB/FMUL/FDIV theo f32/f64 +
+   cvt int→float (BUG#33); (c) **lan kiểu 2 chiều** từ kiểu khai báo xuống toán hạng
+   (BUG#34.3); (d) **chính sách narrowing/đổi dấu** khi gán khác kiểu — cast tường minh /
+   cảnh báo thay vì reinterpret thầm lặng (BUG#34.4); (e) shift/compare signed-aware;
+   overflow policy. Mỗi phần: test + giữ fixpoint. knowledge/bugs.md BUG#33+#34.
+   - **Test harness:** `tests/arith/` (gen + oracle Python) — `MODE=int|float|mixed N=100000`.
+     Chạy `int` NGAY sau fixpoint RFC0005 (kỳ vọng lộ BUG#34 unsigned div); `float`+`mixed`
+     chạy SAU khi fix float (BUG#33). So sánh bit-exact, oracle fixed-width chuẩn.
+5. **`Self` type** (RFC riêng): cho return type / interface (`fn clone(self) -> Self`).
+6. **Rewrite module aspirational** (iter/json/log/net/fmt…) sang grammar — cần enum/Self.
+
 ## Definition of done mỗi task
 - [ ] Probe syntax đúng → 0 lỗi parse/typecheck.
 - [ ] Compile + run test cho ra giá trị đúng (thêm vào `scripts/regression_repros.sh`).
