@@ -1006,7 +1006,9 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 - `a/3 + 20` → `3` int literal → **int division** 10/3=3, +20=23, cvt → **b=23.0**.
 - `a/3.0 + 20` → `3.0` float literal → **float division**, a ngầm→f64 → 10.0/3.0=3.333, +20.0 → **b=23.333…**.
 AIR hiện tại SAI cả hai phần float: `a/3.0` ra `idiv` trên i32+f64 (không cvt a, không FDIV), `20` ra `iconst` (BUG#33). RFC 0006 phải: typecheck mixed→float + đánh dấu toán hạng int cần cvt; codegen chèn cvtsi2sd + dùng OP_FADD/FDIV.
-**Harness:** mode `mixed` hiện dùng cast tường minh; cần thêm ca **promote ngầm** (int-var + float-literal không cast) để phủ đúng ngữ nghĩa này.
+**Harness:** mode `mixed` hiện dùng cast tường minh; mode `imix` phủ ca **promote ngầm** (int-var + float-literal không cast).
+
+**Ca `let a:f32 = 10/3; let b:i64 = a+10` (user 2026-06-26):** PHẢI lỗi tại `let b:i64 = a+10` (float→int ngầm). Nếu sửa `(a+10) as i64`: `10/3`=int div=3 → a=int→float→**3.0** → `a+10`=13.0 (10 promote) → `as i64`=**13**. AIR hiện tại SAI KÉP: (1) `let a:f32 = 3` ra `copy` t3→t9 (reinterpret bit, a=denormal rác) thay vì cvtsi2ss — **int→float assignment cũng phải chèn cvt, không phải copy**; (2) `let b:i64 = <f32>` ra `copy` không báo lỗi. → RFC 0006: int→float (cả assignment lẫn promote) PHẢI chèn cvt int→float thật (cvtsi2ss/sd); float→int ngầm PHẢI lỗi.
 
 **Liên quan:** phần (d)+(e) RFC 0006. int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định (widening OK / cảnh báo narrowing). float↔int: float→int LỖI, int→float NGẦM.
 
