@@ -86,6 +86,15 @@ trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[Str
      chạy SAU khi fix float (BUG#33). So sánh bit-exact, oracle fixed-width chuẩn.
 5. **`Self` type** (RFC riêng): cho return type / interface (`fn clone(self) -> Self`).
 6. **Rewrite module aspirational** (iter/json/log/net/fmt…) sang grammar — cần enum/Self.
+7. **(Tối ưu, RFC riêng — KHÔNG đổi ngữ nghĩa) Jump-table dispatch.** Câu hỏi user
+   2026-06-26: code self-host dùng rất nhiều `if/elif` so `op == OP_*`. Hiện trạng:
+   `match` CÓ (sum type) nhưng `lower_match` phát chuỗi `OP_EQ`+`OP_BRANCH` tuyến tính
+   O(n) — KHÔNG nhanh hơn if/elif; và không áp được cho `op == const u16` (opcode là
+   const rời rạc, không phải sum). KHÔNG có C-style `switch`/jump-table/computed-goto.
+   Lợi ích hiệu năng thực = thêm **jump-table lowering** khi nhiều nhánh so 1 biến với
+   hằng DÀY (đúng case selector/emitter — chạy cho mọi lệnh lúc compile) → O(1) thay vì
+   O(n) cmp; hằng thưa → binary-search dispatch. Là tối ưu backend thuần, hoãn tới sau
+   float/numeric (CLAUDE.md §10 không tối ưu sớm + §13 RFC-gate optimizer change).
 
 ## Definition of done mỗi task
 - [ ] Probe syntax đúng → 0 lỗi parse/typecheck.

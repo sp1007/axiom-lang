@@ -840,6 +840,16 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 elif is_16:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                elif is_float_vreg(fn_ptr, v):
+                    // RFC 0006: a spilled FLOAT operand must be reloaded into an
+                    // XMM scratch via movsd (MACH_LOAD with xmm dst). Reloading
+                    // into a GP scratch (R10) would leave the value in the wrong
+                    // register file — float encoders (addsd/cvttsd2si/…) encode
+                    // the operand as XMM, and R10's hw-index aliases XMM10, so the
+                    // CPU would read garbage. XMM0/XMM1 are scratch (not in the
+                    // allocatable XMM8-15 set).
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_XMM0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_XMM0, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
                 else:
                     result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
@@ -855,9 +865,14 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 let offset = -((frame.callee_saved_len + add_mult + alloc.spill_idx as i64) * 8)
                 if is_16_s2:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                elif is_float_vreg(fn_ptr, v):
+                    // RFC 0006: spilled FLOAT src2 → XMM1 scratch via movsd (see src1).
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                    inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
                 else:
                     result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
-                inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                    inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
 
         mut dst_spilled := false
         mut dst_alloc = RegAllocation(vreg: 0 as u32, phys: 0 as u8, spilled: false, spill_idx: 0 as i32)

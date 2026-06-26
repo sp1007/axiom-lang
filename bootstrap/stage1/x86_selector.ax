@@ -738,8 +738,16 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
 
     elif op == OP_FCONST:
-        let val = inst.src1 as i64
-        out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: val), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // RFC 0006: f64 constant. AIR carries the full IEEE-754 bit pattern
+        // split across src1(low32)/src2(high32). Materialize the 64-bit pattern
+        // in a GPR scratch (mov imm64) then move it into the XMM dest via movq
+        // (MACH_MOVDQ = movq xmm, r64). The scratch vreg is never an AIR dest so
+        // is_float_vreg() is false for it → allocated a GPR; inst.dest is f-typed
+        // → allocated an XMM.
+        let bits = ((inst.src1 as i64) & (0xFFFFFFFF as i64)) | ((inst.src2 as i64) << (32 as i64))
+        let gpr_tmp = inst.dest + 60000 as u32
+        out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: bits), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_MOVDQ, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_COPY or op == OP_MOVE:
         if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:

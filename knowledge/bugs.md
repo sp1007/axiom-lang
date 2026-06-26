@@ -973,6 +973,13 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 
 **Để fix (RFC float-arithmetic, follow-up):** (a) lower_binary_expr chọn OP_FADD/FSUB/FMUL/FDIV khi node_type là f32/f64 (thay vì luôn OP_IADD…); (b) chèn OP_CAST int→float (cvtsi2sd) khi một toán hạng là int-var còn vế kia float (hoặc YÊU CẦU `as f64` tường minh + chỉ chọn float-op); (c) literal float/int hỗn hợp đã do RFC 0005 + promotion lo phần kiểu. Cần test + giữ fixpoint (compiler không dùng float nên an toàn).
 
+**✅ FIXED cho f64 (2026-06-26, RFC 0006 phần 1; f32 deferred).** Matrix 216/232 PASS (16 fail còn lại = ĐÚNG f32, deferred). Hoá ra "float arith never emitted" chỉ là phần NỔI; đào sâu lộ 3 bug encoder/regalloc nghiêm trọng hơn (float backend CÓ sẵn nhưng CHƯA TỪNG chạy đúng):
+1. **lower_float_lit truncate float→int:** `src1: val as u32` → hằng số 3.5 lưu thành 3, mất bit pattern; OP_FCONST còn emit MACH_MOV_IMM vào vreg XMM (vô nghĩa). FIX: lower_float_lit lưu IEEE-754 bits (reinterpret `(&fv as ptr[u64])[0]`) tách low32→src1/high32→src2; OP_FCONST selector dựng lại bits trong GPR scratch (dest+60000) rồi MACH_MOVDQ (movq xmm,r64) vào XMM.
+2. **🔑 movq xmm↔gpr THIẾU prefix 0x66** (x86_encoding.ax movdq/movqd): `4d 0f 7e c3` decode = `movq r11,mm0` (MMX! mm0-7 alias x87 stack, KHÔNG phải xmm). Mọi round-trip gpr↔xmm đọc/ghi sai register file → int→float ra rác. FIX: thêm `push_byte 0x66` trước REX ở cả movdq (66 REX.W 0F 6E) và movqd (66 REX.W 0F 7E).
+3. **🔑 spill reload float dùng GP scratch:** insert_spill_code (x86_regalloc.ax) reload toán hạng spill vào REG_R10/R11 bằng MACH_LOAD nguyên. Với vreg float, lệnh float (cvttsd2si/addsd) encode operand là XMM; R10 (hw-idx 10) ALIAS XMM10 → CPU đọc xmm10 trong khi giá trị ở GP r10 → rác (FTOI ra 0/7). FIX: nếu `is_float_vreg(v)` → reload vào XMM scratch (src1→XMM0, src2→XMM1) bằng movsd. MACH_MOV đã reg-class-aware (movsd/movdq/movqd) nên FADD path cũ vẫn đúng.
+
+**Code path chạy đúng f64:** lower_binary_expr remap OP_F* khi result f32/f64 + chèn OP_ITOF promote toán hạng int; lower_cast_expr int→float=OP_ITOF, float→int=OP_FTOI (truncate). **Còn lại f32 (deferred):** cần họ encoder `ss` (addss/cvtsi2ss/cvttss2si/cvtss2sd/cvtsd2ss/movss) + width-tracking (4-byte) trên MachInst; hiện f32 dùng sd nên store 8-byte sai slot 4-byte. **Float dst-spill** (DST_UNUSED cho MACH_FADD/ITOF/MOVDQ trong get_dst_behavior) chưa xử lý — chưa lộ ở matrix; xử lý nếu fuzz/áp lực thanh ghi lộ. **Float compare** (OP_LT… trên f64) chưa làm (matrix chỉ so int).
+
 ---
 
 ## BUG#34 (GAP, phát hiện 2026-06-26) — Chia/mod unsigned dùng IDIV signed + narrowing thầm lặng

@@ -508,10 +508,15 @@ pub fn x86_encode_movsd(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, modrm)
 
 pub fn x86_encode_movdq(dst: u8, src: u8, buf: ptr[ByteVec]):
+    // movq xmm, r/m64 = 66 REX.W 0F 6E /r. The 0x66 operand-size prefix is
+    // MANDATORY — without it the opcode is the MMX `movq mm, r/m64` (mm0-7 alias
+    // the x87 stack, NOT the XMM regs), so the gpr→xmm move silently targets the
+    // wrong register file (BUG#33 sub-bug: int→float conversions read garbage).
     mut modrm := 0 as u8
     mut rex := 0 as u8
     mut need_rex := false
     x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0x66 as u8)
     if need_rex:
         rex = rex | REX_W
         push_byte(buf, rex)
@@ -522,10 +527,14 @@ pub fn x86_encode_movdq(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, modrm)
 
 pub fn x86_encode_movqd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    // movq r/m64, xmm = 66 REX.W 0F 7E /r. 0x66 mandatory (see movdq above) —
+    // without it this is the MMX `movq r/m64, mm` and extracts from the wrong
+    // register file (xmm→gpr round-trip returned garbage).
     mut modrm := 0 as u8
     mut rex := 0 as u8
     mut need_rex := false
     x86_encode_modrm_rr(src, dst, &modrm, &rex, &need_rex)
+    push_byte(buf, 0x66 as u8)
     if need_rex:
         rex = rex | REX_W
         push_byte(buf, rex)

@@ -488,19 +488,26 @@ pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u3
 pub fn lower_float_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
-    let val = atof(get_str_ptr(text))
+    mut fv := atof(get_str_ptr(text))
     @free(get_str_ptr(text))
 
     mut type_id := 10 as u32 // default f64
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
         type_id = self.mb.node_types[idx as i64] as u32
 
+    // RFC 0006: carry the IEEE-754 bit pattern of the constant (NOT the
+    // int-truncated value) split across src1(low32)/src2(high32). f64 only for
+    // now (f32 single-precision constants are a follow-up needing the ss
+    // encoder family); use a pure reinterpret-load so the compiler source does
+    // not itself depend on float arithmetic codegen (keeps self-host fixpoint
+    // safe). atof already returns f64 as the old code did.
+    let bits = (&fv as ptr[u64])[0]
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
         type_id: type_id,
         dest: reg,
-        src1: val as u32,
-        src2: 0 as u32,
+        src1: (bits & (0xFFFFFFFF as u64)) as u32,
+        src2: (bits >> (32 as u64)) as u32,
     ))
     return reg
 
@@ -656,20 +663,51 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
     let rhs_reg = self.lower_expr(rhs_idx)
 
     let op_token = self.mb.get_token_text(node.token_idx)
-    let opcode = map_binary_op(op_token)
+    mut opcode := map_binary_op(op_token)
     @free(get_str_ptr(op_token))
 
     mut type_id := 3 as u32 // default i32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
         type_id = self.mb.node_types[idx as i64] as u32
 
+    // RFC 0006 (BUG#33): float arithmetic. When the RESULT type is float, the
+    // operator selects the float opcode (OP_FADD/FSUB/FMUL/FDIV) instead of the
+    // integer one, and any integer operand is promoted to float with a real
+    // OP_ITOF (cvtsi2sd) — NOT a copy-reinterpret. f64 fully supported here;
+    // f32 reuses the sd path for now (precise single-precision is a follow-up
+    // needing the ss encoder family). Comparison ops keep result type bool, so
+    // they never enter this branch (float compare is a separate follow-up).
+    mut op_l := lhs_reg
+    mut op_r := rhs_reg
+    if type_id == 9 as u32 or type_id == 10 as u32:
+        if opcode == OP_IADD:
+            opcode = OP_FADD
+        elif opcode == OP_ISUB:
+            opcode = OP_FSUB
+        elif opcode == OP_IMUL:
+            opcode = OP_FMUL
+        elif opcode == OP_IDIV:
+            opcode = OP_FDIV
+        if opcode == OP_FADD or opcode == OP_FSUB or opcode == OP_FMUL or opcode == OP_FDIV:
+            if self.mb.node_types != null as ptr[u32]:
+                let lt = self.mb.node_types[child as i64]
+                let rt = self.mb.node_types[rhs_idx as i64]
+                if lt != 9 as u32 and lt != 10 as u32:
+                    let lconv = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_ITOF, type_id: type_id, dest: lconv, src1: lhs_reg, src2: 0 as u32))
+                    op_l = lconv
+                if rt != 9 as u32 and rt != 10 as u32:
+                    let rconv = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_ITOF, type_id: type_id, dest: rconv, src1: rhs_reg, src2: 0 as u32))
+                    op_r = rconv
+
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: opcode,
         type_id: type_id,
         dest: reg,
-        src1: lhs_reg,
-        src2: rhs_reg,
+        src1: op_l,
+        src2: op_r,
     ))
     return reg
 
@@ -1333,9 +1371,25 @@ pub fn lower_cast_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
 
+    // RFC 0006 (BUG#33/BUG#35): int↔float casts must be real convert
+    // instructions, not OP_CAST copy-reinterpret. int→float → OP_ITOF
+    // (cvtsi2sd); float→int → OP_FTOI (cvttsd2si, truncate toward zero).
+    // int↔int and f32↔f64 stay OP_CAST for now (f32↔f64 precise convert is a
+    // follow-up with the ss encoder family).
+    mut opcode := OP_CAST
+    if self.mb.node_types != null as ptr[u32] and type_id != 0 as u32:
+        let src_ty = self.mb.node_types[child as i64]
+        if src_ty != 0 as u32:
+            let dst_is_float = type_id == 9 as u32 or type_id == 10 as u32
+            let src_is_float = src_ty == 9 as u32 or src_ty == 10 as u32
+            if dst_is_float and not src_is_float:
+                opcode = OP_ITOF
+            elif src_is_float and not dst_is_float:
+                opcode = OP_FTOI
+
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
-        opcode: OP_CAST,
+        opcode: opcode,
         type_id: type_id,
         dest: reg,
         src1: src_reg,
