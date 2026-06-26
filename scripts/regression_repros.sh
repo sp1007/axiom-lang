@@ -33,6 +33,7 @@ rows=(
   "t_adt2|exit|104"
   "t_adt3|exit|19"
   "t_builtin_opt|exit|15"
+  "t_litinfer|exit|111"
 )
 
 for row in "${rows[@]}"; do

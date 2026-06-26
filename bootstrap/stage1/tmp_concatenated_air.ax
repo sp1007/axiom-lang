@@ -6220,6 +6220,11 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
             self.symtable.symbols.data[sym_idx].type_id = func_type_id
         self.set_node_type(node_idx, func_type_id)
 
+// RFC 0005: a concrete numeric scalar type (int family or float family). Used to
+// decide whether a bare integer literal operand may adopt the other operand's type.
+pub fn tc_is_numeric(t: u32) -> bool:
+    return t == TYPE_I8 or t == TYPE_I16 or t == TYPE_I32 or t == TYPE_I64 or t == TYPE_U8 or t == TYPE_U16 or t == TYPE_U32 or t == TYPE_U64 or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_ISIZE or t == TYPE_USIZE
+
 pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u32:
     if node_idx == 0 as u32:
         if self.tree.nodes.len == 0 as i64:
@@ -6466,17 +6471,34 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             
         if lhs != 0 as u32 and rhs != 0 as u32:
             let op = flags
-            if op == 1 as u16: // ==
-                self.infer_node(lhs, TYPE_UNKNOWN)
-                self.infer_node(rhs, TYPE_UNKNOWN)
+            if op == 1 as u16: // comparisons ==, !=, <, >, <=, >=
+                let t1 = self.infer_node(lhs, TYPE_UNKNOWN)
+                let t2 = self.infer_node(rhs, TYPE_UNKNOWN)
+                // RFC 0005: a bare int literal operand adopts the other operand's
+                // concrete numeric type so `x < 10` needs no `10 as u32`. Guard on
+                // t1 != t2 so already-matching / both-cast operands are untouched
+                // (keeps the self-host fixpoint: casted literals are CAST_EXPR nodes).
+                let lhs_lit = self.tree.nodes.data[lhs].kind == NODE_INT_LIT
+                let rhs_lit = self.tree.nodes.data[rhs].kind == NODE_INT_LIT
+                if rhs_lit and not lhs_lit and tc_is_numeric(t1) and t1 != t2:
+                    self.infer_node(rhs, t1)
+                elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
+                    self.infer_node(lhs, t2)
                 result_type = TYPE_BOOL
             elif op == 2 as u16: // and / or
                 self.infer_node(lhs, TYPE_BOOL)
                 self.infer_node(rhs, TYPE_BOOL)
                 result_type = TYPE_BOOL
             else:
-                let t1 = self.infer_node(lhs, TYPE_UNKNOWN)
-                let t2 = self.infer_node(rhs, TYPE_UNKNOWN)
+                mut t1 := self.infer_node(lhs, TYPE_UNKNOWN)
+                mut t2 := self.infer_node(rhs, TYPE_UNKNOWN)
+                // RFC 0005: bidirectional int-literal type inference (see above).
+                let lhs_lit = self.tree.nodes.data[lhs].kind == NODE_INT_LIT
+                let rhs_lit = self.tree.nodes.data[rhs].kind == NODE_INT_LIT
+                if rhs_lit and not lhs_lit and tc_is_numeric(t1) and t1 != t2:
+                    t2 = self.infer_node(rhs, t1)
+                elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
+                    t1 = self.infer_node(lhs, t2)
                 // numeric promotion simple
                 if t1 == TYPE_F64 or t2 == TYPE_F64:
                     result_type = TYPE_F64
