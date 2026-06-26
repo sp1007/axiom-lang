@@ -439,7 +439,9 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
         let type_id = fn_ptr.params.data[vreg as i64 - 1 as i64] as u32
         if type_id < table.entries.len as u32:
             let size = table.entries.data[type_id].size
-            if size == 16 as u32:
+            // RFC 0001 / Family C: only `str` (PRIMITIVE) is inline-16; a 16-byte
+            // by-address aggregate param is an 8-byte pointer.
+            if size == 16 as u32 and not type_is_aggregate(table, type_id):
                 return true
         return false
     mut i := 0 as i64
@@ -466,7 +468,8 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                                             return true
                                         if ret_type_id < table.entries.len as u32:
                                             let size = table.entries.data[ret_type_id].size
-                                            if size == 16 as u32:
+                                            // RFC 0001: 16-byte aggregate return = 8-byte pointer
+                                            if size == 16 as u32 and not type_is_aggregate(table, ret_type_id):
                                                 return true
                     else: // Dynamic function call
                         let type_id = inst.type_id as u32
@@ -474,7 +477,8 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                             return true
                         if type_id < table.entries.len as u32:
                             let size = table.entries.data[type_id].size
-                            if size == 16 as u32:
+                            // RFC 0001: 16-byte aggregate return = 8-byte pointer
+                            if size == 16 as u32 and not type_is_aggregate(table, type_id):
                                 return true
                     return false
                 elif op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL:
@@ -747,8 +751,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 mut dest_size := 8 as u32
                 if dest_type < sel.table.entries.len as u32:
                     dest_size = sel.table.entries.data[dest_type].size
-                
-                if dest_size == 16 as u32:
+
+                // RFC 0001: only `str` (PRIMITIVE) is passed by-pointer + copied
+                // 16-byte-inline into the callee's home. A by-address aggregate
+                // param IS already a pointer in the arg register; just store the
+                // 8-byte pointer (the else branch) — derefing it as str (load 16)
+                // made the home hold the DATA while getfld treated it as a pointer.
+                if dest_size == 16 as u32 and not type_is_aggregate(sel.table, dest_type):
                     let tmp_val1 = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_val1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     
@@ -1670,7 +1679,12 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
         let phys = abi_int_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = snaps[p]
-            if psize == 16 as u32:
+            // RFC 0001: `str` (16-byte PRIMITIVE) is passed as a pointer and copied
+            // 16-byte-inline into its param home. A by-address aggregate param is
+            // ITSELF an 8-byte pointer in the arg register — store it directly (the
+            // else branch); copying 16 bytes made the home hold the data while
+            // getfld then derefs it -> deref of the field value (segfault, tsp).
+            if psize == 16 as u32 and not type_is_aggregate(sel.table, pty):
                 // arg register held a pointer to the 16-byte value
                 let lo = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: lo, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: snap, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -1689,7 +1703,8 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
                 offset = 48 as i64 + (p - 4 as i64) * 8 as i64
             else:
                 offset = 16 as i64 + (p - 6 as i64) * 8 as i64
-            if psize == 16 as u32:
+            // RFC 0001: see register-passed case above — aggregate = 8-byte pointer.
+            if psize == 16 as u32 and not type_is_aggregate(sel.table, pty):
                 let saddr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
                 let lo = next_vreg(sel)

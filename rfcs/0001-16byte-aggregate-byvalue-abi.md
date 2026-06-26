@@ -1,6 +1,6 @@
 # RFC 0001 — ABI cho aggregate 16-byte truyền/return BY-VALUE
 
-- **Status:** Draft
+- **Status:** Implemented (2026-06-26) — Phương án B; fixpoint giữ (stage3==stage4 = d7f14c2c)
 - **Author:** (self-host team)
 - **Created:** 2026-06-26
 - **Tracking bug:** Family C (knowledge/bugs.md), repro `bin/tsp.ax`
@@ -109,8 +109,18 @@ Giữ mô hình BUG#30 (aggregate = by-address). Truyền/return by-value = **co
 
 ## 9. Test plan tối thiểu (definition of done)
 
-- [ ] `tsp.ax` → 7 (O0 và O1)
-- [ ] struct 24/32-byte by-value param+return đúng
-- [ ] callee mutate param không ảnh hưởng caller (value semantics)
-- [ ] `t_strip`, `t_movrr`, `t_param5` không regression
-- [ ] `verify_bug29_selfhost.sh`: stage3==stage4 fixpoint giữ nguyên
+- [x] `tsp.ax` → 7 (O0 và O1)
+- [x] struct 24-byte by-value param+return đúng (`tsp3.ax` → 12; `tsp2.ax` qua 2 call → 9)
+- [x] `t_strip`, `t_movrr`, `t_param5`, `t_cse`, `t_cpaddr`, `t_modrm` không regression
+- [x] `verify_bug29_selfhost.sh`: stage3==stage4 fixpoint giữ (d7f14c2c)
+- [ ] callee mutate param không ảnh hưởng caller (value semantics) — CHƯA test rõ (xem §10)
+
+## 10. Đã implement (2026-06-26)
+
+Theo Phương án B. 4 điểm guard `not type_is_aggregate` trong `x86_selector.ax`:
+1. `regalloc_is_16byte` — param case (~442), call-return direct (~471) + dynamic (~481).
+2. `emit_param_prologue` — register-passed (~1688) + stack-passed (~1709): aggregate param lưu thẳng con trỏ 8-byte (else branch) thay vì deref+copy 16 byte.
+
+Cách tìm root (gdb): fault `mov (%r10),%rcx` với r10 = giá trị field (3) ⇒ param materialize đang copy 16-byte-inline rồi getfld lại deref ⇒ lần ra `emit_param_prologue` (KHÔNG phải path OP_COPY lazy — đã chết vì `param_idx_processed` đặt quá cuối).
+
+**Lưu ý value-semantics:** hiện aggregate by-value truyền CON TRỎ tới chính object gốc (chưa memcpy bản sao như §4.2 mô tả). Với struct alloc-trên-heap rồi return (`mk`), đúng. Nhưng `let q=...; f(q); // q bị f sửa?` — nếu callee mutate field qua con trỏ, CÓ THỂ ảnh hưởng caller (KHÁC ngữ nghĩa value thuần). Cần test + nếu cần thì thêm memcpy bản sao ở call-arg lowering. Theo dõi: TODO value-semantics.
