@@ -1013,3 +1013,13 @@ AIR hiện tại SAI cả hai phần float: `a/3.0` ra `idiv` trên i32+f64 (kh�
 **Liên quan:** phần (d)+(e) RFC 0006. int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định (widening OK / cảnh báo narrowing). float↔int: float→int LỖI, int→float NGẦM.
 
 **An toàn self-host:** compiler tự host integer-only, không gán int↔float → thêm rule này KHÔNG sinh lỗi mới trong source compiler → fixpoint giữ. (Verify lại khi implement.)
+
+---
+
+## BUG#36 (GAP, phát hiện 2026-06-26 qua tests/arith matrix) — Phép toán int < 64-bit KHÔNG mask về bề rộng
+
+**Triệu chứng (matrix run):** `(255 as u8)+(1 as u8)` → got 256 (không wrap 0); `(200 as u8)*2` → 400 (không 144); `(1234 as i16)*(56 as i16)` → 69104 (không wrap 3568). Backend tính trong thanh ghi 64-bit, KHÔNG truncate/mask về bề rộng kiểu sau op.
+
+**Đúng (RFC 0006 §6):** phép toán giữ kiểu toán hạng; runtime tràn → wrap (mask về W bit, sign-interpret nếu signed). Cần chèn mask (and reg, (1<<W)-1) + sign-extend cho signed sau add/sub/mul/shl trên kiểu <64-bit. (Tràn toàn-hằng → lỗi compile, checker riêng.)
+
+**Lưu ý test:** matrix run 2026-06-26 = 184 PASS / 57 FAIL: nhóm FAIL = (1) MỌI float cast/op/mixed (BUG#33: int→float & float→int & f64→f32 dùng copy-reinterpret, float arith dùng iadd/idiv), (2) wrap-hằng (giờ là EXPECT-ERROR theo policy, đã dời sang diag). int in-range + int↔int cast PASS hết. Unsigned-div (BUG#34) CHƯA lộ ở matrix (operand nhỏ 7/3) — cần chạy fuzz `int` operand lớn.
