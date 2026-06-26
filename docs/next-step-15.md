@@ -14,45 +14,46 @@ duck-typing. KHÔNG thêm braces `{}` / `enum {}` / Go-style `fn (recv)` / assoc
 
 ## Gap matrix (đo bằng `dump-air` trên syntax ĐÚNG + file std thật, 2026-06-26)
 
-| Feature | Grammar | Status | Ghi chú |
-|---|---|---|---|
-| Sum type `type X=A\|B` | ✅ | ✅ works | result.ax/option payload OK |
-| `match` (block-form arms) | ✅ §207 | ✅ works | arm phải là Block hoặc bare-Expr+NEWLINE (KHÔNG `return` cùng dòng pattern) |
-| Generics `fn f[T]`, `T[U]` | ✅ | ✅ parse OK | |
-| Struct (fields) + by-value ABI | ✅ | ✅ works | Family C đã fix |
-| `.slice`, `.len`, `.ptr` trên str | ✅ | ✅ works | |
-| std files đúng syntax | — | ✅ 0 lỗi: collections.ax, result.ax, process.ax | |
-| **Inline struct method** `fn m(self)` | ✅ §83-85 | ❌ **GAP** | parse_struct_decl ĐÃ gọi parse_func_decl cho `fn` trong body (parser.ax:918), nhưng `parse_func_decl` đòi `name: type` → **param `self`/`mut self` (không type) gãy** ("expected type expression" tại `self`) |
-| **Interface** (colon-form) | ✅ §94 | ❌ **GAP (partial)** | `interface X:\n  fn m(self)->T` còn 2 lỗi — parse_interface_decl/parse_method_sig chưa nuốt `self` + method-sig |
-| `enum {}`, braces, `fn (recv)`, `type Item` | ❌ KHÔNG có trong grammar | n/a | iter.ax/json.ax/log.ax/net.ax + tests/*suite* viết SAI dialect → 247-713 lỗi |
+**KẾT LUẬN QUAN TRỌNG (sau khi probe lại bằng syntax grammar-conformant):** GRAMMAR
+ĐÃ ĐƯỢC IMPLEMENT ĐẦY ĐỦ. Mọi "gap" ban đầu là do tôi probe bằng syntax KHÔNG theo
+grammar (untyped `self`, `;`, braces `{}`, `enum`, Go-method `fn (recv)`).
 
-## Nhiệm vụ (ưu tiên)
+| Feature (grammar-conformant) | Status | Bằng chứng |
+|---|---|---|
+| Sum type `type X=A\|B` | ✅ works | probe 0 lỗi |
+| `match` (block-form arms) | ✅ works | arm = Block hoặc bare-Expr+NEWLINE |
+| Generics `fn f[T]`, `T[U]` | ✅ works | |
+| Struct + by-value ABI (Family C) | ✅ works | |
+| **Method = typed `self` + UFCS** `fn m(self: ptr[T])`, gọi `x.m()` | ✅ works | u1.exe/u2.exe → exit 7 |
+| **Inline method** (typed self trong struct body) | ✅ works | parser.ax:918 + exit 7 |
+| **Interface** (method-sig typed/no-param) | ✅ works | if1/if2 0 lỗi; std/io.ax 0 lỗi |
+| `.slice/.len/.ptr` str | ✅ works | |
+| File grammar-đúng | ✅ 0 lỗi: collections, result, process, io | |
 
-### T1 — Inline struct methods (`self` receiver)  [ƯU TIÊN 1, giá trị cao nhất]
-Root: `parse_func_decl` không nhận param `self`/`mut self` (implicit-typed = struct bao quanh).
-- [ ] Parser: `parse_func_decl` (hoặc parse_param) chấp nhận first-param `self` / `mut self`
-      không cần `: type`; gắn type = struct cha (khi gọi từ parse_struct_decl).
-- [ ] Resolver: bind `self` trong thân method về type struct cha; đăng ký method vào
-      namespace của struct (để `p.getx()` resolve được).
-- [ ] Typecheck: method call `recv.method(args)` → tìm method trong struct của recv,
-      truyền recv làm `self` (by-address pointer — khớp struct reference semantics).
-- [ ] AIR/codegen: lower `recv.method(args)` thành call(method, recv, args). Vì struct =
-      con trỏ 8-byte (BUG#30), self = con trỏ → khớp param ABI sẵn có. Khả năng KHÔNG cần
-      sửa codegen, chỉ frontend.
-- [ ] Test: `bin/t_method.ax` (`Pt{x}.getx()==7`, `mut self` mutate, method gọi method).
-- [ ] Regression gate + verify fixpoint stage3==stage4 KHÔNG vỡ.
+**KHÔNG có trong grammar (⇒ KHÔNG phải bug compiler):** untyped `self`, `Self` type,
+`enum {}`, braces block, Go-method `fn (recv)`, associated `type Item`. Các file
+iter/json/log/net/fmt + tests/*_suite* viết bằng dialect này (19-55 lần `{`/`enum`/
+untyped-self mỗi file) → 160-713 lỗi parse. Đây là **nợ dialect**, không phải thiếu feature.
 
-### T2 — Interface declarations (structural/duck typing)  [ƯU TIÊN 2]
-- [ ] Parser: sửa `parse_interface_decl`/`parse_method_sig` cho colon-form + `self` (2 lỗi còn lại).
-- [ ] Typecheck: structural check — struct nào có đủ method-sig thì thỏa interface (không cần `implements`).
-- [ ] (Tùy phạm vi) dynamic dispatch: defer nếu lớn; làm static/duck-typed trước.
-- [ ] Test + fixpoint.
+## Nghĩa lại của "mở rộng feature": THÊM grammar mới (RFC-gated)
 
-### T3 — Triage file dialect-sai  [ƯU TIÊN 3, dọn nợ]
-iter.ax, json.ax, log.ax, net.ax + tests/*_suite*.ax dùng braces/enum/Go-method/assoc-type.
-- [ ] Quyết định policy: (a) viết lại theo grammar AXIOM, hoặc (b) đánh dấu out-of-scope/quarantine.
-- [ ] KHÔNG thêm syntax braces/enum vào compiler (vi phạm spec). Nếu muốn `enum`/assoc-type
-      là feature thật → cần RFC riêng cập nhật GRAMMAR.ebnf trước.
+Vì grammar hiện tại đã chạy đủ, "mở rộng" = thêm feature MỚI vào grammar. CLAUDE.md:
+syntax change PHẢI có RFC + cập nhật `docs/GRAMMAR.ebnf` TRƯỚC khi implement.
+
+### T1 — RFC 0002: Untyped `self`/`mut self` sugar  [ƯU TIÊN 1: giá trị cao, rủi ro thấp]
+Hiện mọi method phải viết `mut self: ptr[Parser]` (boilerplate khắp compiler). Sugar:
+trong thân struct, `fn m(self)` / `fn m(mut self)` ⇒ tự suy type = `ptr[StructCha]`.
+- [ ] RFC 0002 + sửa GRAMMAR.ebnf: `Param = [Mod] IDENT [':' TypeExpr]` (type optional khi IDENT=self trong method).
+- [ ] Parser: `parse_func_decl` nhận first-param `self`/`mut self` không type khi gọi từ parse_struct_decl (truyền struct type).
+- [ ] Resolver/typecheck: gán self type = ptr[struct cha].
+- [ ] Test `bin/t_method.ax` + regression gate + fixpoint giữ.
+
+### T2 — (Cân nhắc) `Self` type / `enum` sugar / associated type  [cần RFC riêng]
+Chỉ làm khi có nhu cầu rõ; mỗi cái 1 RFC cập nhật grammar. `enum`/braces đi NGƯỢC
+triết lý indent-based — cân nhắc kỹ, có thể KHÔNG làm.
+
+### T3 — Triage nợ dialect (iter/json/log/net/fmt + suites)  [dọn nợ]
+- [ ] Policy: viết lại theo grammar AXIOM HOẶC quarantine. KHÔNG thêm braces/enum để "chiều" chúng.
 
 ## Definition of done mỗi task
 - [ ] Probe syntax đúng → 0 lỗi parse/typecheck.
