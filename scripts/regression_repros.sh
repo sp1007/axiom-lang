@@ -26,6 +26,7 @@ rows=(
   "t_param5|out|A38"
   "t_strip|out|a.b len exit print"
   "t_alias|out|A=1 B=0 "
+  "t_mutstr|exit|9"
 )
 
 for row in "${rows[@]}"; do

@@ -176,3 +176,24 @@ next-step-13 đã xác nhận:
 3. Bug mutable str .rdata là blocker duy nhất cho full self-hosting test
 
 next-step-14 giải quyết blocker này.
+
+---
+
+## KẾT QUẢ / ĐÁNH GIÁ (2026-06-26)
+
+**TRẠNG THÁI: ✅ MỤC TIÊU ĐẠT — self-host native deterministic fixpoint.**
+
+| Tiêu chí next-step-14 | Kết quả |
+|---|---|
+| Bug mutable str ghi-xuyên-.rdata (crash AV) | ✅ FIXED — `tests/codegen/test_mut_str.ax`: `mut s:="hi"; s="worldwide"` in "hi"/"worldwide", exit=9, KHÔNG crash |
+| Self-host SHA fixpoint | ✅ ĐẠT — converged fixpoint **stage3==stage4 = d7f14c2c** (`scripts/verify_bug29_selfhost.sh`) |
+| Zero-GCC | ⚠️ MỘT PHẦN — stage2→3→4 thuần native AXIOM; stage1 bootstrap vẫn C/gcc. Tiêu chí self-host (native tái tạo chính nó bit-for-bit) ĐÃ đạt |
+
+**Đánh giá độ chính xác của next-step-14:**
+- Ước lượng "độ phức tạp Thấp-Trung, sửa vài dòng" → **SAI**. Bug mutable-str chỉ là *triệu chứng bề mặt* của vấn đề biểu diễn `str` 16-byte. Fix triệt để cần cả một CHUỖI bug sâu hơn qua nhiều phiên: #24 cast-shift → #25 optimizer addr-taken REX-loss → #26 strip self-mangle → #27 byte-store REX-loss → #28 stack 1MB→16MB → #29 (str C-ABI sret) → #30 (struct by-address vs str inline-16) → #31 (copy_prop thiếu guard addr_taken) → Family C (struct by-value ABI). Chi tiết: `knowledge/bugs.md`.
+- Hướng root-cause của next-step-14 (str {ptr,len} handling) ĐÚNG hướng — nó chính là họ bug #29/#30 (str inline-16 vs aggregate by-address).
+- "Blocker duy nhất" → SAI; là blocker ĐẦU TIÊN nhìn thấy, không phải duy nhất.
+
+**Hạ tầng chống tái phát (đã thêm):** `scripts/regression_repros.sh` (13 repro gồm test_mut_str) — gate chạy sau mọi thay đổi backend. Baseline: all PASS. `scripts/verify_bug29_selfhost.sh` cho fixpoint.
+
+**Kết luận:** next-step-14 hoàn thành về mục tiêu (self-host fixpoint), nhưng phạm vi thực tế lớn hơn nhiều so với dự kiến. AXIOM nay tự host xác định + struct/str ABI nhất quán.
