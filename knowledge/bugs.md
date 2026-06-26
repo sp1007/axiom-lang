@@ -958,3 +958,45 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 **RFC 0003 (enum) trạng thái:** parser sugar ĐÚNG (enum desugar == sum type, exit byte-identical). Nhưng giá trị thực tế bị chặn bởi BUG#32. Enum chỉ usable sau khi có ADT codegen.
 
 **BUG#32 — ✅ FIXED v1 (2026-06-26, RFC 0004):** thêm ADT codegen native. Representation: sum value = con trỏ 8-byte tới heap box [tag i64 @0, payload 8B @8] (size 16, kind6 aggregate → value vẫn 8-byte by-address). Dùng thẳng sum type id cho OP_ALLOC/SET_FIELD/GET_FIELD: get_register_type trả sum id, field_offset(sum,idx) rơi fallback idx*8 → field0@0/field1@8 ĐÚNG, field_size(sum)=8; KHÔNG cần sửa selector. Lowering ở air_builder.ax: lower_variant_construct (no-payload qua lower_ident, payload qua lower_call_expr — đặt SAU path tên Ok/Err/Some/None + guard kind==SUM), lower_match (OP_GET_FIELD tag@0 + chuỗi OP_EQ/OP_BRANCH; bind payload field1; bare-ident-là-variant resolve theo tên; catch-all binding + wildcard). **Cạm bẫy:** Option/Result CŨNG là `type Option=Some(T)|None` (Some/Ok là SYM_VARIANT kind SUM) — phân biệt CHỈ bằng TÊN; path tên phải chạy TRƯỚC user-variant path, KHÔNG reorder (reorder làm is_some/unwrap đọc sai layout → bug). Test: t_enum_np=6, t_enum=42, t_adt2=104, t_adt3=19, t_builtin_opt=15; regression 19/19; **fixpoint stage3==stage4=692ba8e9 GIỮ** (compiler tự host không dùng match/user-sum). Hạn chế v1 (follow-up): multi-field variant, payload str/>8B, generic user sum + match trên Option/Result. Chi tiết: rfcs/0004-adt-codegen.md, docs/next-step-15-sub-1.md.
+
+---
+
+## BUG#33 (GAP, phát hiện 2026-06-26) — Float arithmetic KHÔNG được sinh trong native backend (compiler integer-only)
+
+**Triệu chứng:** `let c = (b + 1.0) / 2` (b: u32) → typecheck cho `c: f64` ĐÚNG (1.0 float→f64; promotion u32+f64→f64; rồi /2 với 2 int-literal adopt f64 theo RFC 0005 → f64). NHƯNG AIR: `iadd`/`idiv`/`iconst` (số nguyên) dù kiểu f64 → **mis-compute lúc chạy**.
+
+**Root cause (kép):**
+1. `map_binary_op` (air_builder.ax:171) trả OP_IADD/ISUB/IMUL/IDIV theo TOÁN TỬ, KHÔNG theo kiểu. OP_FADD/FSUB/FMUL/FDIV CÓ định nghĩa (air.ax) và x86 selector XỬ LÝ được (x86_selector.ax:899-911) nhưng **AIR builder KHÔNG BAO GIỜ phát chúng** (grep OP_FADD air_builder = rỗng). → kể cả `1.0 + 2.0` thuần float cũng ra iadd.
+2. Mix int-var + float (vd `b(u32) + 1.0`): KHÔNG chèn cvt int→float cho biến `b` (AXIOM cố ý không implicit int→float cho biến; RFC 0005 chỉ ép literal). typecheck promotion ra f64 nhưng codegen không convert.
+
+**Vì sao chưa lộ:** compiler tự host integer-only (không dùng float math) → fixpoint không ảnh hưởng. Đây là gap aspirational.
+
+**Để fix (RFC float-arithmetic, follow-up):** (a) lower_binary_expr chọn OP_FADD/FSUB/FMUL/FDIV khi node_type là f32/f64 (thay vì luôn OP_IADD…); (b) chèn OP_CAST int→float (cvtsi2sd) khi một toán hạng là int-var còn vế kia float (hoặc YÊU CẦU `as f64` tường minh + chỉ chọn float-op); (c) literal float/int hỗn hợp đã do RFC 0005 + promotion lo phần kiểu. Cần test + giữ fixpoint (compiler không dùng float nên an toàn).
+
+---
+
+## BUG#34 (GAP, phát hiện 2026-06-26) — Chia/mod unsigned dùng IDIV signed + narrowing thầm lặng
+
+**Phát hiện qua ví dụ `let a: i32 = -2; let b: u32 = (a-4)/2` → b = 4294967293 (2^32-3).** AIR: isub/idiv SIGNED trên i32 → -3, rồi `copy` i32→u32 reg (reinterpret thầm lặng, không cast/cảnh báo).
+
+**Các gap số học (gộp xử lý ở RFC 0006):**
+1. **Unsigned div/mod sai:** `map_binary_op("/")→OP_IDIV` luôn; x86_selector OP_IDIV/OP_IMOD chỉ `CQO+IDIV` (signed), KHÔNG có OP_UDIV/MACH_DIV. → `u32`/`u64` chia số lớn (>2^31/2^63) ra sai. Cần: chọn IDIV vs DIV theo signedness của kiểu toán hạng.
+2. **Float arithmetic không phát** (BUG#33): cần lower_binary chọn OP_FADD/FSUB/FMUL/FDIV theo f32/f64.
+3. **Không lan kiểu 2 chiều** từ kiểu khai báo (`b: u32 = ...`) vào toán hạng literal trong biểu thức số học (RFC 0005 chỉ lan giữa hai toán hạng cùng biểu thức nhị phân, chưa lan từ expected của let-binding xuống sâu).
+4. **Narrowing/đổi dấu thầm lặng** khi gán khác kiểu (i32↔u32, i64→i32): hiện OP_COPY reinterpret, không cast tường minh, không cảnh báo → dễ giấu bug sign/width.
+
+**RFC 0006 (numeric & arithmetic semantics) cần định nghĩa:** signed vs unsigned cho mọi op (div/mod/shift/compare), quy tắc int↔float (chèn cvt hay yêu cầu `as`), chính sách narrowing (cho phép thầm lặng / cảnh báo / cấm), overflow/wrap. Giữ fixpoint: compiler tự host hiện chỉ dùng i32/i64/u32/u64 với div nhỏ → phải kiểm tra kỹ thay đổi div signedness KHÔNG đổi codegen các div hiện có (hoặc đổi nhưng vẫn đúng).
+
+---
+
+## BUG#35 (GAP, phát hiện 2026-06-26) — Gán int↔float ngầm KHÔNG báo lỗi (phải cấm)
+
+**Kiểm chứng (dump-air):**
+- `let a: u64 = (b + 2.0) * 3` (b: f64) → KHÔNG lỗi; AIR: `imul` ra t10(f64) rồi `copy` t10→t8(u64) — gán f64 vào u64 thầm lặng (reinterpret bit, không convert). **PHẢI báo lỗi.**
+- `let a: u64 = ((b + 2.0) as u32) * 3` → đúng: `cast` f64→u32, `imul` u32, `copy` u32→u64 (widening). KHÔNG lỗi. ✓
+
+**Quy tắc RFC 0006 (conversion policy):** CẤM chuyển ngầm giữa int-family và float-family ở mọi điểm gán: let-binding có annotation, assignment, arg truyền hàm, return. Rule: `is_float(target) != is_float(expr_type)` → **lỗi typecheck** `E####: không thể chuyển ngầm giữa int và float — dùng 'as'`. Explicit `as` đổi category nên hợp lệ (case 2). Float literal luôn f64 (NODE_FLOAT_LIT) nên `let x: i32 = 3.0` → lỗi (đúng); `let x: f64 = 3` → 3 adopt f64 (RFC 0005) → OK.
+
+**Liên quan:** đây là phần (d) của RFC 0006 (narrowing/conversion policy). Cần thêm: int→int khác kiểu (i32→u32, i64→u32) hiện COPY reinterpret thầm lặng — RFC 0006 quyết định cho phép widening / cảnh báo hoặc cấm narrowing. Float↔int thì DỨT KHOÁT lỗi (yêu cầu user).
+
+**An toàn self-host:** compiler tự host integer-only, không gán int↔float → thêm rule này KHÔNG sinh lỗi mới trong source compiler → fixpoint giữ. (Verify lại khi implement.)
