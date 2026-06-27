@@ -15851,14 +15851,23 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
     return false
 
 
-pub fn select_comparison(sel: ptr[InstructionSelector], inst: ptr[AirInst], int_cc: u8, float_cc: u8, out_insts: ptr[MachInstVec]):
+// unsf_cc = the condition code for SSE float comparisons (comisd sets CF/ZF) AND,
+// conveniently, for UNSIGNED integer comparisons â€” x86 shares the below/above
+// codes (B/BE/A/AE) for both. int_cc = the signed-integer code (L/LE/G/GE).
+pub fn select_comparison(sel: ptr[InstructionSelector], inst: ptr[AirInst], int_cc: u8, unsf_cc: u8, out_insts: ptr[MachInstVec]):
     let src_type = get_register_type(sel, inst.src1)
     if src_type == 9 as u32 or src_type == 10 as u32:
         out_insts.push(MachInst(op: MACH_FCMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SETCC, cc: float_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SETCC, cc: unsf_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
     else:
+        // RFC 0006 (BUG#34.3): unsigned integer types compare with the below/above
+        // codes; only signed types use L/LE/G/GE. Was always int_cc (signed) â†’
+        // wrong for u32/u64 operands with the high bit set.
+        mut icc := int_cc
+        if sel_type_is_unsigned(src_type):
+            icc = unsf_cc
         out_insts.push(MachInst(op: MACH_CMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SETCC, cc: int_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_SETCC, cc: icc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
     out_insts.push(MachInst(op: MACH_MOVZX_B, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
 pub fn emit_block_copy_ext(sel: ptr[InstructionSelector], dst_reg: u32, dst_disp: u32, src_reg: u32, src_disp: u32, size: u32, out_insts: ptr[MachInstVec]):

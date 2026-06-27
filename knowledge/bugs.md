@@ -989,7 +989,8 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 - **OP_SHR** chọn MACH_SAR (arithmetic, signed) vs MACH_SHR (logical, unsigned). Trước luôn SHR → i32 `-16>>2` ra số dương khổng lồ thay vì -4.
 - **🔑 BẪY: divisor của DIV phải FORBID rax/rdx** (x86_regalloc.ax:344). MACH_IDIV đã được đăng ký `forbid_rax_rdx[divisor]` (vì thế signed chạy); MACH_DIV mới QUÊN → divisor rơi vào rdx → `mov rdx,0` đè divisor → **div by 0 → crash (exit 127)**. FIX: thêm MACH_DIV vào điều kiện forbid_rax_rdx. Bài học: mọi lệnh div implicit-operand cần ràng buộc regalloc.
 - Test: tests/arith/_t2 (6 ca: u32/u64 udiv, umod, SAR, SHR, signed div) PASS; matrix 216/232 (16 f32 deferred, không đổi); regression giữ.
-- **CÒN LẠI BUG#34:** (#34.3) lan kiểu 2 chiều, (#34.4) narrowing/đổi-dấu thầm lặng (copy reinterpret i32↔u32) + diagnostics conversion, **unsigned COMPARE** (JB/JA thay JL/JG — chưa làm, matrix dùng operand nhỏ nên chưa lộ), và BUG#36 mask-về-width. Phần sau RFC 0006.
+- **✅ FIXED part 3 (2026-06-27): unsigned COMPARE.** `select_comparison` (x86_selector.ax) trước LUÔN dùng signed CC (CC_L/G/LE/GE) cho mọi integer compare → sai cho u32/u64 high-bit (vd `0x80000000 < 1` ra true vì so signed). FIX: nhánh integer chọn `icc = unsf_cc` nếu `sel_type_is_unsigned(src_type)`. May mắn: CC unsigned (B/BE/A/AE) TRÙNG CC float (comisd set CF/ZF) → tham số thứ 2 (đổi tên float_cc→unsf_cc) phục vụ cả hai. Branch (`if`/`while`) test bool từ setcc nên KHÔNG có fused signed-cmp-branch → fix ở select_comparison là đủ. Repro bin/t_ucmp.ax (exit 6). Fixpoint commit sau.
+- **CÒN LẠI BUG#34:** (#34.4) lan kiểu 2 chiều, narrowing/đổi-dấu thầm lặng (copy reinterpret i32↔u32) + diagnostics conversion (BUG#35), và BUG#36 mask-về-width. Phần sau RFC 0006.
 
 **Phát hiện qua ví dụ `let a: i32 = -2; let b: u32 = (a-4)/2` → b = 4294967293 (2^32-3).** AIR: isub/idiv SIGNED trên i32 → -3, rồi `copy` i32→u32 reg (reinterpret thầm lặng, không cast/cảnh báo).
 

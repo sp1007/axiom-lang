@@ -1,0 +1,30 @@
+// RFC 0006 part 3 regression: unsigned vs signed integer comparison.
+// Each unsigned check fails under the old always-signed-CC codegen. Exit = count
+// of passing checks; expected 6.
+pub fn main() -> i32:
+    mut ok := 0 as i32
+    // u32 0x80000000 < 1 : unsigned false (signed would be true)
+    let a: u32 = 2147483648 as u32
+    if (a < (1 as u32)) == false:
+        ok = ok + 1 as i32
+    // u32 0xFFFFFFFF > 1 : unsigned true (signed -1>1 false)
+    let b: u32 = 4294967295 as u32
+    if (b > (1 as u32)) == true:
+        ok = ok + 1 as i32
+    // u64 max > 1 : unsigned true
+    let c: u64 = 18446744073709551615 as u64
+    if (c > (1 as u64)) == true:
+        ok = ok + 1 as i32
+    // u32 0x80000000 >= 0x80000001 : unsigned false
+    let d: u32 = 2147483648 as u32
+    let e: u32 = 2147483649 as u32
+    if (d >= e) == false:
+        ok = ok + 1 as i32
+    // signed still correct: -5 < 3 true
+    let s: i32 = 0 as i32 - 5 as i32
+    if (s < (3 as i32)) == true:
+        ok = ok + 1 as i32
+    // signed -5 > 3 false
+    if (s > (3 as i32)) == false:
+        ok = ok + 1 as i32
+    return ok

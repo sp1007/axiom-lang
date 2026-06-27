@@ -35,6 +35,7 @@ rows=(
   "t_builtin_opt|exit|15"
   "t_litinfer|exit|111"
   "t_udiv|exit|5"
+  "t_ucmp|exit|6"
 )
 
 for row in "${rows[@]}"; do
