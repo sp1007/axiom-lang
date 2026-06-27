@@ -341,7 +341,10 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     mut scan_idx := 0 as i64
     while scan_idx < insts_len:
         let inst = &insts[scan_idx]
-        if inst.op == MACH_IDIV and inst.src1.kind == OPND_VREG:
+        if (inst.op == MACH_IDIV or inst.op == MACH_DIV) and inst.src1.kind == OPND_VREG:
+            // RFC 0006: the (unsigned) DIV divisor, like IDIV's, must avoid
+            // rax/rdx — those are the implicit dividend/remainder and the
+            // sequence zeroes rdx, which would clobber a divisor placed there.
             let v = inst.src1.vreg
             if v < graph_size as u32:
                 forbid_rax_rdx[v] = true

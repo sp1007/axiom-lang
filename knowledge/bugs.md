@@ -984,6 +984,13 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 
 ## BUG#34 (GAP, phát hiện 2026-06-26) — Chia/mod unsigned dùng IDIV signed + narrowing thầm lặng
 
+**✅ FIXED part 2 (2026-06-27, RFC 0006 phần 2): unsigned div/mod (#34.1) + signed-aware shift (#34.2).** Commit sau.
+- **OP_IDIV/OP_IMOD** giờ chọn theo `sel_type_is_unsigned(get_register_type src1)`: unsigned → zero rdx (`mov rdx,0`) + **MACH_DIV** (F7 /6, encoder mới x86_encode_div_r); signed → cqo + MACH_IDIV (cũ). Trước: LUÔN cqo+IDIV → u32/u64 high-bit sai (vd 0x80000000/2 ra 3221225472 thay vì 1073741824; u64 max/2 ra 0).
+- **OP_SHR** chọn MACH_SAR (arithmetic, signed) vs MACH_SHR (logical, unsigned). Trước luôn SHR → i32 `-16>>2` ra số dương khổng lồ thay vì -4.
+- **🔑 BẪY: divisor của DIV phải FORBID rax/rdx** (x86_regalloc.ax:344). MACH_IDIV đã được đăng ký `forbid_rax_rdx[divisor]` (vì thế signed chạy); MACH_DIV mới QUÊN → divisor rơi vào rdx → `mov rdx,0` đè divisor → **div by 0 → crash (exit 127)**. FIX: thêm MACH_DIV vào điều kiện forbid_rax_rdx. Bài học: mọi lệnh div implicit-operand cần ràng buộc regalloc.
+- Test: tests/arith/_t2 (6 ca: u32/u64 udiv, umod, SAR, SHR, signed div) PASS; matrix 216/232 (16 f32 deferred, không đổi); regression giữ.
+- **CÒN LẠI BUG#34:** (#34.3) lan kiểu 2 chiều, (#34.4) narrowing/đổi-dấu thầm lặng (copy reinterpret i32↔u32) + diagnostics conversion, **unsigned COMPARE** (JB/JA thay JL/JG — chưa làm, matrix dùng operand nhỏ nên chưa lộ), và BUG#36 mask-về-width. Phần sau RFC 0006.
+
 **Phát hiện qua ví dụ `let a: i32 = -2; let b: u32 = (a-4)/2` → b = 4294967293 (2^32-3).** AIR: isub/idiv SIGNED trên i32 → -3, rồi `copy` i32→u32 reg (reinterpret thầm lặng, không cast/cảnh báo).
 
 **Các gap số học (gộp xử lý ở RFC 0006):**

@@ -114,6 +114,15 @@ pub fn x86_encode_idiv_r(divisor: u8, buf: ptr[ByteVec]):
     push_byte(buf, 0xF7 as u8)
     push_byte(buf, modrm)
 
+pub fn x86_encode_div_r(divisor: u8, buf: ptr[ByteVec]):
+    // unsigned divide: REX.W F7 /6 — rdx:rax / divisor (rdx MUST be zeroed by
+    // the caller, unlike signed idiv which sign-extends via cqo). reg field = 6.
+    let rex = encode_rex(true, false, false, reg_needs_rex(divisor))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (6 as u8 << 3 as u8) | (reg_hw_reg(divisor) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0xF7 as u8)
+    push_byte(buf, modrm)
+
 pub fn x86_encode_neg_r(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
     let modrm = (MOD_REG_DIRECT << 6 as u8) | (3 as u8 << 3 as u8) | (reg_hw_reg(reg) & 7 as u8)

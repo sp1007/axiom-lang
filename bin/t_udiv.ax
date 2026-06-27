@@ -1,0 +1,26 @@
+// RFC 0006 part 2 regression: unsigned div/mod (DIV) + signed-aware shift (SAR/SHR).
+// Each check fails under the old always-IDIV / always-SHR codegen. Exit = count of
+// passing checks; expected 5.
+pub fn main() -> i32:
+    mut ok := 0 as i32
+    // unsigned div: 0x80000000 / 2 = 1073741824 (signed IDIV would give 3221225472)
+    let a: u32 = 2147483648 as u32
+    if a / (2 as u32) == 1073741824 as u32:
+        ok = ok + 1 as i32
+    // unsigned mod: 0x80000007 % 10 = 5 (works only with DIV path zeroing rdx)
+    let c: u32 = 2147483655 as u32
+    if c % (10 as u32) == 5 as u32:
+        ok = ok + 1 as i32
+    // signed shift right is arithmetic: -16 >> 2 = -4 (SAR, not SHR)
+    let s: i32 = 0 as i32 - 16 as i32
+    if (s >> (2 as i32)) == (0 as i32 - 4 as i32):
+        ok = ok + 1 as i32
+    // unsigned shift right is logical: 0x80000000 >> 1 = 1073741824 (SHR)
+    let u: u32 = 2147483648 as u32
+    if (u >> (1 as u32)) == 1073741824 as u32:
+        ok = ok + 1 as i32
+    // signed div still correct: -7 / 2 = -3
+    let d: i32 = 0 as i32 - 7 as i32
+    if (d / (2 as i32)) == (0 as i32 - 3 as i32):
+        ok = ok + 1 as i32
+    return ok
