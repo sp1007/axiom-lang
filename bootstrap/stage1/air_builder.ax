@@ -496,12 +496,15 @@ pub fn lower_float_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         type_id = self.mb.node_types[idx as i64] as u32
 
     // RFC 0006: carry the IEEE-754 bit pattern of the constant (NOT the
-    // int-truncated value) split across src1(low32)/src2(high32). f64 only for
-    // now (f32 single-precision constants are a follow-up needing the ss
-    // encoder family); use a pure reinterpret-load so the compiler source does
-    // not itself depend on float arithmetic codegen (keeps self-host fixpoint
-    // safe). atof already returns f64 as the old code did.
-    let bits = (&fv as ptr[u64])[0]
+    // int-truncated value) split across src1(low32)/src2(high32). For f32 narrow
+    // to single precision first so the 32-bit pattern lands in src1 (src2=0).
+    // (`fv as f32` here is a dead path during self-host — the compiler source has
+    // no f32 literals — so it cannot affect the fixpoint; it only runs when
+    // compiling user code with f32 literals.)
+    mut bits := (&fv as ptr[u64])[0]
+    if type_id == 9 as u32:
+        mut f32v := fv as f32
+        bits = ((&f32v as ptr[u32])[0]) as u64
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
         type_id: type_id,

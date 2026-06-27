@@ -978,7 +978,9 @@ Nếu hàm chạy đúng dưới C backend (stage1 build OK / `emit-c`) nhưng s
 2. **🔑 movq xmm↔gpr THIẾU prefix 0x66** (x86_encoding.ax movdq/movqd): `4d 0f 7e c3` decode = `movq r11,mm0` (MMX! mm0-7 alias x87 stack, KHÔNG phải xmm). Mọi round-trip gpr↔xmm đọc/ghi sai register file → int→float ra rác. FIX: thêm `push_byte 0x66` trước REX ở cả movdq (66 REX.W 0F 6E) và movqd (66 REX.W 0F 7E).
 3. **🔑 spill reload float dùng GP scratch:** insert_spill_code (x86_regalloc.ax) reload toán hạng spill vào REG_R10/R11 bằng MACH_LOAD nguyên. Với vreg float, lệnh float (cvttsd2si/addsd) encode operand là XMM; R10 (hw-idx 10) ALIAS XMM10 → CPU đọc xmm10 trong khi giá trị ở GP r10 → rác (FTOI ra 0/7). FIX: nếu `is_float_vreg(v)` → reload vào XMM scratch (src1→XMM0, src2→XMM1) bằng movsd. MACH_MOV đã reg-class-aware (movsd/movdq/movqd) nên FADD path cũ vẫn đúng.
 
-**Code path chạy đúng f64:** lower_binary_expr remap OP_F* khi result f32/f64 + chèn OP_ITOF promote toán hạng int; lower_cast_expr int→float=OP_ITOF, float→int=OP_FTOI (truncate). **Còn lại f32 (deferred):** cần họ encoder `ss` (addss/cvtsi2ss/cvttss2si/cvtss2sd/cvtsd2ss/movss) + width-tracking (4-byte) trên MachInst; hiện f32 dùng sd nên store 8-byte sai slot 4-byte. **Float dst-spill** (DST_UNUSED cho MACH_FADD/ITOF/MOVDQ trong get_dst_behavior) chưa xử lý — chưa lộ ở matrix; xử lý nếu fuzz/áp lực thanh ghi lộ. **Float compare** (OP_LT… trên f64) chưa làm (matrix chỉ so int).
+**Code path chạy đúng f64:** lower_binary_expr remap OP_F* khi result f32/f64 + chèn OP_ITOF promote toán hạng int; lower_cast_expr int→float=OP_ITOF, float→int=OP_FTOI (truncate).
+
+**✅ FIXED f32 (2026-06-27, RFC 0006 part 4) — MATRIX 232/232 (F=0!).** Thêm họ encoder `ss` (x86_encoding.ax: addss/subss/mulss/divss F3; comiss 0F2F không 66; cvtsi2ss/cvttss2si F3+REX.W; cvtss2sd F3 0F5A; cvtsd2ss F2 0F5A; movss F3 0F10/11; movd 66 0F6E KHÔNG REX.W). Width 4-byte threaded qua field `padding` của MachInst: emitter chọn ss khi padding==4, sd khi khác; movss vs movsd cho xmm load/store; movd vs movq cho MACH_MOVDQ (FCONST). Selector set padding theo type_id (9→4): FADD/FSUB/FMUL/FDIV/ITOF (theo dest), FTOI/FCMP (theo SOURCE float). f32↔f64 cast: OP_CAST selector phát MACH_CVTSS2SD (f32→f64)/MACH_CVTSD2SS (f64→f32) mới. lower_float_lit: f32 lưu 32-bit pattern (`fv as f32` — dead path self-host, an toàn fixpoint). **Lưu ý:** ss ops để f32 ở low-32 của xmm; spill/store dùng movsd 8-byte vẫn OK vì slot 8-byte & đọc offset 0 lấy đúng low-32. Repro bin/t_f32.ax (exit 5). **Float dst-spill** (DST_UNUSED cho MACH_FADD/ITOF/MOVDQ) vẫn chưa xử lý — chưa lộ. **Float compare** (OP_LT… trên f32/f64) đã có sẵn qua select_comparison (FCMP + unsf_cc), matrix chưa test float-compare value nhưng path có.
 
 ---
 
@@ -1038,3 +1040,48 @@ AIR hiện tại SAI cả hai phần float: `a/3.0` ra `idiv` trên i32+f64 (kh�
 **Đúng (RFC 0006 §6):** phép toán giữ kiểu toán hạng; runtime tràn → wrap (mask về W bit, sign-interpret nếu signed). Cần chèn mask (and reg, (1<<W)-1) + sign-extend cho signed sau add/sub/mul/shl trên kiểu <64-bit. (Tràn toàn-hằng → lỗi compile, checker riêng.)
 
 **Lưu ý test:** matrix run 2026-06-26 = 184 PASS / 57 FAIL: nhóm FAIL = (1) MỌI float cast/op/mixed (BUG#33: int→float & float→int & f64→f32 dùng copy-reinterpret, float arith dùng iadd/idiv), (2) wrap-hằng (giờ là EXPECT-ERROR theo policy, đã dời sang diag). int in-range + int↔int cast PASS hết. Unsigned-div (BUG#34) CHƯA lộ ở matrix (operand nhỏ 7/3) — cần chạy fuzz `int` operand lớn.
+
+---
+
+## BUG#37 (GAP, phát hiện 2026-06-27) — `match` trên số nguyên / LiteralPat KHÔNG được codegen (không có "C switch")
+
+**Triệu chứng:** Grammar ([GRAMMAR.ebnf:236](docs/GRAMMAR.ebnf)) định nghĩa `LiteralPat = INT_LIT | FLOAT_LIT | STRING_LIT | 'true' | 'false' | 'nil'`, nên cú pháp cho phép `match x:\n  1: ...\n  2: ...\n  _: ...` (giống `switch` C). NHƯNG codegen KHÔNG implement:
+- `lower_match` (air_builder.ax:1855) có guard `if not is_sum: return` → scrutinee KHÔNG phải sum type ⇒ **không sinh code nào** (im lặng no-op, sai).
+- Vòng lặp arm chỉ phân loại WildcardPat/VariantPat/BindingPat — **không có nhánh NODE_LITERAL_PAT**, kể cả trong match sum-type.
+
+**Hệ quả:** KHÔNG có lệnh tương đương `switch` C cho số nguyên. Rẽ nhánh theo giá trị int hiện phải dùng `if/elif/else`. `match` chỉ chạy cho sum type / enum / Option / Result (tag dispatch). Đây là lỗi grammar-vs-implementation (CLAUDE.md: grammar là authoritative).
+
+**Để fix (moderate):** mở rộng lower_match: (a) bỏ guard cho scrutinee số nguyên (dùng thẳng scrut_reg thay vì tag), (b) thêm nhánh NODE_LITERAL_PAT → `OP_EQ`(scrut, literal) + `OP_BRANCH`, `_` làm default. Cộng typecheck cho literal pattern. (Tối ưu jump-table = task #7 next-step-15, RFC riêng.) Liên quan [[next-step-15]] task #7.
+
+---
+
+## BUG#38 (AUDIT 2026-06-27) — Nhiều cấu trúc grammar parse/định nghĩa node nhưng codegen SAI/THIẾU (latent vì compiler không tự dùng)
+
+Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất cả LATENT (compiler bootstrap không dùng → self-host xanh; sẽ cắn code người dùng). Mức ưu tiên + cách fix:
+
+- **#38.1 Compound assign `+= -= *= /= %=` (CAO, sai âm thầm):** parser (parser.ax:619) giữ NODE_ASSIGN_STMT với token op nhưng `lower_assign` (air_builder.ax:2077) KHÔNG đọc op → `a += b` chạy thành `a = b` (mất phép). FIX: desugar ở parser `a op= b` → `a = a op b` (build binary node), hoặc lower_assign đọc token → emit binary trước store.
+- **#38.2 `match` int/literal = BUG#37 (CAO):** không "C switch". lower_match guard `not is_sum: return` + thiếu NODE_LITERAL_PAT.
+- **#38.3 Lũy thừa `**` (TB, sai):** TK_STAR_STAR lex+parse OK nhưng map_binary_op (air_builder.ax:171) KHÔNG map → OP_NOP. FIX: lower thành loop (int) / call runtime pow (float). Cần OP mới hoặc desugar.
+- **#38.4 `defer` (TB):** TK_DEFER + lower_stmt NODE_DEFER_STMT CÓ, nhưng parse_stmt KHÔNG có nhánh TK_DEFER → không parse được (unreachable). FIX: thêm nhánh parse_stmt.
+- **#38.5 `unsafe:` block (TB):** TK_UNSAFE lex OK, parse_stmt không dispatch → lỗi parse. FIX: parse → lower block con (unsafe = no-op ngữ nghĩa codegen).
+- **#38.6 `in [arena]:` block (Thấp):** NODE_ARENA_BLOCK có, không parse_stmt + lower_stmt else→lower_expr (drop body). FIX sau (arena cấp phát).
+- **#38.7 Closures `|x|` (TB):** resolver biết NODE_CLOSURE_EXPR, không typecheck/codegen. Feature lớn → RFC riêng.
+- **#38.8 Tuple patterns (Thấp):** NODE_TUPLE_PAT không codegen trong lower_match.
+- **#38.9 spawn/await/async, Isolated/Future (Thấp, phase 9):** dispatch/node có nhưng runtime stub.
+
+**Kế hoạch:** nhóm rẻ+an-toàn-fixpoint (#38.1 compound, #38.2 match-int, #38.4 defer, #38.5 unsafe) gộp 1 verify (AST compiler không đổi → fixpoint giữ). #38.3 power + #38.7 closures = lớn hơn, sau. Làm sau khi RFC 0006 part 4 (f32) commit.
+
+**LƯU Ý audit này KHÔNG vét cạn** (pass tĩnh, tầng cú pháp). Chưa audit: type-expr codegen (slice [T], array [T;N], func-type value, Isolated/Future), effect annotation {.raises.}, comptime, monomorphization generic ca khó, runtime/allocator/stdlib, float-compare value-correctness. Audit chuẩn cần test-driven (compile+run từng feature) — cần build. TODO sau.
+
+---
+
+## BUG#39 (AUDIT 2026-06-27) — KHÔNG có operator overloading → bignum/scientific số tùy-biến KHÔNG khả thi với cú pháp `a + b`
+
+**Bối cảnh:** AXIOM định hướng hỗ trợ số siêu lớn / siêu chính xác (scientific). User yêu cầu dùng GIỐNG phép toán số hiện tại (`a + b`, `a * b`). Hiện KHÔNG được vì thiếu 2 trụ cột:
+
+1. **Operator overloading KHÔNG tồn tại.** Có method/function overloading (resolve_method_overload typecheck.ax:373, theo chữ ký) nhưng binary op hardcode qua map_binary_op → OP_IADD/etc (lệnh máy). Toán hạng struct → `a+b` emit OP_IADD trên con trỏ → rác. Không có dispatch `+`→method.
+2. **Không có kiểu arbitrary-precision** (chỉ fixed-width i8..i64/u8..u64/f32/f64; KHÔNG cả i128/u128). Không có thư viện BigInt/BigDecimal. Không có add-with-carry/u128 cho limb-arithmetic.
+
+**Để hỗ trợ (RFC + nhiều phase):** (a) operator overloading: typecheck phát hiện toán hạng non-primitive → resolve operator-method (interface Add/Mul hoặc method add/mul), air_builder emit OP_CALL thay OP_IADD; (b) primitive carry (add-with-carry intrinsic hoặc u128); (c) stdlib BigInt/BigDecimal (limb u64 trên heap); (d) arbitrary-precision float (MPFR-style) riêng. Khối xây sẵn CÓ: heap @alloc, u64 arith đúng (sau BUG#34 fix), struct/generics/method. Phase 9+ / aspirational. Operator overloading là bước MỞ KHÓA, làm trước.
+
+**Tham-số-hóa kích thước (`bignum[256]`) cần CONST GENERICS — hiện KHÔNG có.** parse_generic_param (parser.ax:734) chỉ nhận `IDENT [: TypeExpr]` = tham số KIỂU, không có value/const generic; generic arg parse bằng parse_type_expr (chỉ kiểu) → int-literal `256` không hợp lệ; array `[T;N]` N bắt buộc INT_LIT (không generic-hóa). (Phụ: AXIOM dùng `[]` không `<>`.) → Hai hướng: (A) **BigInt động runtime-sized** (arbitrary precision, chỉ cần operator overloading + lib — KHUYẾN NGHỊ trước); (B) fixed-width `bignum[N]` cần const generics (RFC type-system nặng kiểu Rust/Zig, phase rất sau). Const generics cũng mở khóa array-size generic.

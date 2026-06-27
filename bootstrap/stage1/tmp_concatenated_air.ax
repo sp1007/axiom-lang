@@ -9206,12 +9206,15 @@ pub fn lower_float_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         type_id = self.mb.node_types[idx as i64] as u32
 
     // RFC 0006: carry the IEEE-754 bit pattern of the constant (NOT the
-    // int-truncated value) split across src1(low32)/src2(high32). f64 only for
-    // now (f32 single-precision constants are a follow-up needing the ss
-    // encoder family); use a pure reinterpret-load so the compiler source does
-    // not itself depend on float arithmetic codegen (keeps self-host fixpoint
-    // safe). atof already returns f64 as the old code did.
-    let bits = (&fv as ptr[u64])[0]
+    // int-truncated value) split across src1(low32)/src2(high32). For f32 narrow
+    // to single precision first so the 32-bit pattern lands in src1 (src2=0).
+    // (`fv as f32` here is a dead path during self-host â€” the compiler source has
+    // no f32 literals â€” so it cannot affect the fixpoint; it only runs when
+    // compiling user code with f32 literals.)
+    mut bits := (&fv as ptr[u64])[0]
+    if type_id == 9 as u32:
+        mut f32v := fv as f32
+        bits = ((&f32v as ptr[u32])[0]) as u64
     self.fb.emit(AirInst(
         opcode: OP_FCONST,
         type_id: type_id,
@@ -15336,6 +15339,10 @@ pub const MACH_FTOI: u16 = 39
 pub const MACH_MOVDQ: u16 = 40
 pub const MACH_MOVQD: u16 = 41
 pub const MACH_DIV: u16 = 42   // unsigned divide (F7 /6); MACH_IDIV is signed (/7)
+pub const MACH_CVTSS2SD: u16 = 43  // f32 -> f64 widen
+pub const MACH_CVTSD2SS: u16 = 44  // f64 -> f32 narrow
+// RFC 0006 f32: float MachInsts (FADD/FSUB/FMUL/FDIV/FCMP/ITOF/FTOI/MOVDQ) carry
+// the operand width in `padding`: 4 = single (ss/movd), else double (sd/movq).
 
 pub const OPND_NONE: u8 = 0
 pub const OPND_VREG: u8 = 1
@@ -15857,7 +15864,10 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
 pub fn select_comparison(sel: ptr[InstructionSelector], inst: ptr[AirInst], int_cc: u8, unsf_cc: u8, out_insts: ptr[MachInstVec]):
     let src_type = get_register_type(sel, inst.src1)
     if src_type == 9 as u32 or src_type == 10 as u32:
-        out_insts.push(MachInst(op: MACH_FCMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        mut cmpw := 8 as u8
+        if src_type == 9 as u32:
+            cmpw = 4 as u8
+        out_insts.push(MachInst(op: MACH_FCMP, cc: 0 as u8, padding: cmpw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_SETCC, cc: unsf_cc, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
     else:
         // RFC 0006 (BUG#34.3): unsigned integer types compare with the below/above
@@ -16049,10 +16059,15 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         // (MACH_MOVDQ = movq xmm, r64). The scratch vreg is never an AIR dest so
         // is_float_vreg() is false for it â†’ allocated a GPR; inst.dest is f-typed
         // â†’ allocated an XMM.
+        // f32 (type 9): the 32-bit pattern is in src1; move via movd (padding 4).
+        // f64: full 64-bit pattern across src1/src2, via movq (padding 8).
+        mut cw := 8 as u8
+        if inst.type_id == 9 as u32:
+            cw = 4 as u8
         let bits = ((inst.src1 as i64) & (0xFFFFFFFF as i64)) | ((inst.src2 as i64) << (32 as i64))
         let gpr_tmp = inst.dest + 60000 as u32
         out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: bits), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_MOVDQ, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_MOVDQ, cc: 0 as u8, padding: cw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_COPY or op == OP_MOVE:
         if sel.param_idx_processed < sel.fn_ptr.params.len as i32 and inst.src1 == (sel.param_idx_processed + 1) as u32:
@@ -16105,6 +16120,18 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
     elif op == OP_CAST:
         let t_id = inst.type_id as u32
+        // RFC 0006 f32: float<->float width conversions are real cvt instructions.
+        // (int<->float already lowered to OP_ITOF/OP_FTOI in air_builder; only
+        // f32<->f64 reaches OP_CAST as a float pair.)
+        let cast_src_ty = get_register_type(sel, inst.src1)
+        let dst_is_f = t_id == 9 as u32 or t_id == 10 as u32
+        let src_is_f = cast_src_ty == 9 as u32 or cast_src_ty == 10 as u32
+        if dst_is_f and src_is_f and t_id != cast_src_ty:
+            mut cvop := MACH_CVTSS2SD
+            if t_id == 9 as u32:
+                cvop = MACH_CVTSD2SS
+            out_insts.push(MachInst(op: cvop, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            return
         mut is_str := (t_id == 12 as u32)
         if t_id < sel.table.entries.len as u32:
             if sel.table.entries.data[t_id].size == 16 as u32:
@@ -16210,26 +16237,46 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
 
     elif op == OP_FADD:
+        mut fw := 8 as u8
+        if inst.type_id == 9 as u32:
+            fw = 4 as u8
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_FADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FADD, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_FSUB:
+        mut fw := 8 as u8
+        if inst.type_id == 9 as u32:
+            fw = 4 as u8
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_FSUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FSUB, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_FMUL:
+        mut fw := 8 as u8
+        if inst.type_id == 9 as u32:
+            fw = 4 as u8
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_FMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FMUL, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_FDIV:
+        mut fw := 8 as u8
+        if inst.type_id == 9 as u32:
+            fw = 4 as u8
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_FDIV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_FDIV, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_ITOF:
-        out_insts.push(MachInst(op: MACH_ITOF, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // f32 dest -> cvtsi2ss (padding 4); f64 dest -> cvtsi2sd.
+        mut fw := 8 as u8
+        if inst.type_id == 9 as u32:
+            fw = 4 as u8
+        out_insts.push(MachInst(op: MACH_ITOF, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_FTOI:
-        out_insts.push(MachInst(op: MACH_FTOI, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // SOURCE float width selects cvttss2si (f32) vs cvttsd2si (f64).
+        mut fw := 8 as u8
+        if get_register_type(sel, inst.src1) == 9 as u32:
+            fw = 4 as u8
+        out_insts.push(MachInst(op: MACH_FTOI, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_IADD:
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -19824,6 +19871,198 @@ pub fn x86_encode_cvttsd2si(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, 0x2C as u8)
     push_byte(buf, modrm)
 
+// ---- RFC 0006: single-precision (f32) SSE family. Mirrors the sd encoders but
+// scalar-single uses the F3 prefix (vs F2 for scalar-double); comiss/movd drop
+// the F2/F3 and use 66 (or none for comiss). These feed f32 codegen. ----
+
+pub fn x86_encode_movss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x10 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_movss_load(dst: u8, base: u8, disp: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(false, reg_needs_rex(dst), false, reg_needs_rex(base))
+    mut temp_buf := new_byte_vec()
+    x86_encode_modrm_rm(dst, base, disp, &temp_buf)
+    mut final_rex := rex
+    mut start_idx := 0 as i64
+    let has_rex := reg_needs_rex(dst) or reg_needs_rex(base)
+    if has_rex and temp_buf.len > 0 as i64:
+        let first_byte = temp_buf.data[0]
+        if (first_byte & 0xF0 as u8) == 0x40 as u8:
+            final_rex = final_rex | (first_byte & 0x0F as u8)
+            start_idx = 1
+    push_byte(buf, 0xF3 as u8)
+    if final_rex != 0 as u8:
+        push_byte(buf, final_rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x10 as u8)
+    mut i := start_idx
+    while i < temp_buf.len:
+        push_byte(buf, temp_buf.data[i])
+        i = i + 1
+    if temp_buf.data != null as ptr[u8]:
+        @free(temp_buf.data)
+
+pub fn x86_encode_movss_store(base: u8, disp: i32, src: u8, buf: ptr[ByteVec]):
+    let rex = encode_rex(false, reg_needs_rex(src), false, reg_needs_rex(base))
+    mut temp_buf := new_byte_vec()
+    x86_encode_modrm_rm(src, base, disp, &temp_buf)
+    mut final_rex := rex
+    mut start_idx := 0 as i64
+    let has_rex := reg_needs_rex(src) or reg_needs_rex(base)
+    if has_rex and temp_buf.len > 0 as i64:
+        let first_byte = temp_buf.data[0]
+        if (first_byte & 0xF0 as u8) == 0x40 as u8:
+            final_rex = final_rex | (first_byte & 0x0F as u8)
+            start_idx = 1
+    push_byte(buf, 0xF3 as u8)
+    if final_rex != 0 as u8:
+        push_byte(buf, final_rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x11 as u8)
+    mut i := start_idx
+    while i < temp_buf.len:
+        push_byte(buf, temp_buf.data[i])
+        i = i + 1
+    if temp_buf.data != null as ptr[u8]:
+        @free(temp_buf.data)
+
+pub fn x86_encode_addss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x58 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_subss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5C as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_mulss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x59 as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_divss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5E as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_comiss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2F as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvtsi2ss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2A as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvttss2si(dst: u8, src: u8, buf: ptr[ByteVec]):
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        rex = rex | REX_W
+        push_byte(buf, rex)
+    else:
+        push_byte(buf, encode_rex(true, false, false, false))
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x2C as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvtss2sd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    // f32 -> f64 widen: F3 0F 5A
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF3 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5A as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_cvtsd2ss(dst: u8, src: u8, buf: ptr[ByteVec]):
+    // f64 -> f32 narrow: F2 0F 5A
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0xF2 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x5A as u8)
+    push_byte(buf, modrm)
+
+pub fn x86_encode_movd(dst: u8, src: u8, buf: ptr[ByteVec]):
+    // movd xmm, r/m32 = 66 0F 6E /r (32-bit, NO REX.W) â€” gpr32 -> xmm low dword.
+    mut modrm := 0 as u8
+    mut rex := 0 as u8
+    mut need_rex := false
+    x86_encode_modrm_rr(dst, src, &modrm, &rex, &need_rex)
+    push_byte(buf, 0x66 as u8)
+    if need_rex:
+        push_byte(buf, rex)
+    push_byte(buf, 0x0F as u8)
+    push_byte(buf, 0x6E as u8)
+    push_byte(buf, modrm)
+
 
 // bootstrap/stage1/x86_emitter.ax
 // Binary machine code emitter for x86-64 in self-hosted AXIOM.
@@ -20182,7 +20421,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
         if reg_is_xmm(dst):
-            x86_encode_movsd_load(dst, base, disp, buf)
+            // RFC 0006 f32: a 4-byte float slot uses movss; 8-byte uses movsd.
+            if inst.padding == 4 as u8:
+                x86_encode_movss_load(dst, base, disp, buf)
+            else:
+                x86_encode_movsd_load(dst, base, disp, buf)
         else:
             mut size := inst.padding
             if size == 0 as u8:
@@ -20195,7 +20438,10 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
         if reg_is_xmm(src):
-            x86_encode_movsd_store(base, disp, src, buf)
+            if inst.padding == 4 as u8:
+                x86_encode_movss_store(base, disp, src, buf)
+            else:
+                x86_encode_movsd_store(base, disp, src, buf)
         else:
             mut size := inst.padding
             if size == 0 as u8:
@@ -20204,35 +20450,67 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     elif op == MACH_FADD:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_addsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_addss(dst, src, buf)
+        else:
+            x86_encode_addsd(dst, src, buf)
     elif op == MACH_FSUB:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_subsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_subss(dst, src, buf)
+        else:
+            x86_encode_subsd(dst, src, buf)
     elif op == MACH_FMUL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_mulsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_mulss(dst, src, buf)
+        else:
+            x86_encode_mulsd(dst, src, buf)
     elif op == MACH_FDIV:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_divsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_divss(dst, src, buf)
+        else:
+            x86_encode_divsd(dst, src, buf)
     elif op == MACH_FCMP:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_comisd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_comiss(dst, src, buf)
+        else:
+            x86_encode_comisd(dst, src, buf)
     elif op == MACH_ITOF:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_cvtsi2sd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_cvtsi2ss(dst, src, buf)
+        else:
+            x86_encode_cvtsi2sd(dst, src, buf)
     elif op == MACH_FTOI:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_cvttsd2si(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_cvttss2si(dst, src, buf)
+        else:
+            x86_encode_cvttsd2si(dst, src, buf)
+    elif op == MACH_CVTSS2SD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvtss2sd(dst, src, buf)
+    elif op == MACH_CVTSD2SS:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvtsd2ss(dst, src, buf)
     elif op == MACH_MOVDQ:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_movdq(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_movd(dst, src, buf)
+        else:
+            x86_encode_movdq(dst, src, buf)
     elif op == MACH_MOVQD:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)

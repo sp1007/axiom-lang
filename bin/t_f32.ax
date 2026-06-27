@@ -1,0 +1,25 @@
+// RFC 0006 part 4 regression: f32 single-precision codegen (ss family, movd const,
+// cvtsi2ss/cvttss2si, cvtss2sd/cvtsd2ss). Exit = count of passing checks; expected 5.
+pub fn main() -> i32:
+    mut ok := 0 as i32
+    // f32 add: 5.5 + 2.0 = 7.5 -> trunc 7
+    let a: f32 = (5.5 as f32) + (2.0 as f32)
+    if (a as i32) == 7 as i32:
+        ok = ok + 1 as i32
+    // int -> f32 (cvtsi2ss): 7 -> 7.0 -> 7
+    let b: f32 = (7 as i32) as f32
+    if (b as i32) == 7 as i32:
+        ok = ok + 1 as i32
+    // f32 div: 15.0 / 4.0 = 3.75 -> trunc 3
+    let c: f32 = (15.0 as f32) / (4.0 as f32)
+    if (c as i32) == 3 as i32:
+        ok = ok + 1 as i32
+    // f32 -> f64 widen (cvtss2sd): 2.5 -> 2
+    let d: f64 = (2.5 as f32) as f64
+    if (d as i32) == 2 as i32:
+        ok = ok + 1 as i32
+    // f64 -> f32 narrow (cvtsd2ss): 9.0 -> 9
+    let e: f32 = (9.0 as f64) as f32
+    if (e as i32) == 9 as i32:
+        ok = ok + 1 as i32
+    return ok

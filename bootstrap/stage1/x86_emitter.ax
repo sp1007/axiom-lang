@@ -355,7 +355,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
         if reg_is_xmm(dst):
-            x86_encode_movsd_load(dst, base, disp, buf)
+            // RFC 0006 f32: a 4-byte float slot uses movss; 8-byte uses movsd.
+            if inst.padding == 4 as u8:
+                x86_encode_movss_load(dst, base, disp, buf)
+            else:
+                x86_encode_movsd_load(dst, base, disp, buf)
         else:
             mut size := inst.padding
             if size == 0 as u8:
@@ -368,7 +372,10 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         if inst.src2.kind == OPND_IMM:
             disp = inst.src2.imm as i32
         if reg_is_xmm(src):
-            x86_encode_movsd_store(base, disp, src, buf)
+            if inst.padding == 4 as u8:
+                x86_encode_movss_store(base, disp, src, buf)
+            else:
+                x86_encode_movsd_store(base, disp, src, buf)
         else:
             mut size := inst.padding
             if size == 0 as u8:
@@ -377,35 +384,67 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     elif op == MACH_FADD:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_addsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_addss(dst, src, buf)
+        else:
+            x86_encode_addsd(dst, src, buf)
     elif op == MACH_FSUB:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_subsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_subss(dst, src, buf)
+        else:
+            x86_encode_subsd(dst, src, buf)
     elif op == MACH_FMUL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_mulsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_mulss(dst, src, buf)
+        else:
+            x86_encode_mulsd(dst, src, buf)
     elif op == MACH_FDIV:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_divsd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_divss(dst, src, buf)
+        else:
+            x86_encode_divsd(dst, src, buf)
     elif op == MACH_FCMP:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_comisd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_comiss(dst, src, buf)
+        else:
+            x86_encode_comisd(dst, src, buf)
     elif op == MACH_ITOF:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_cvtsi2sd(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_cvtsi2ss(dst, src, buf)
+        else:
+            x86_encode_cvtsi2sd(dst, src, buf)
     elif op == MACH_FTOI:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_cvttsd2si(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_cvttss2si(dst, src, buf)
+        else:
+            x86_encode_cvttsd2si(dst, src, buf)
+    elif op == MACH_CVTSS2SD:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvtss2sd(dst, src, buf)
+    elif op == MACH_CVTSD2SS:
+        let dst = emitter_resolve_reg(inst.dst, allocs)
+        let src = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_cvtsd2ss(dst, src, buf)
     elif op == MACH_MOVDQ:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_movdq(dst, src, buf)
+        if inst.padding == 4 as u8:
+            x86_encode_movd(dst, src, buf)
+        else:
+            x86_encode_movdq(dst, src, buf)
     elif op == MACH_MOVQD:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let src = emitter_resolve_reg(inst.src1, allocs)
