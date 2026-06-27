@@ -1,0 +1,23 @@
+// BUG#37/#38.2 regression: `match` on an integer scrutinee = C-switch.
+// Returns 4 if all cases (incl. default) dispatch correctly.
+fn classify(x: i32) -> i32:
+    match x:
+        1:
+            return 10 as i32
+        2:
+            return 20 as i32
+        7:
+            return 70 as i32
+        _:
+            return 99 as i32
+pub fn main() -> i32:
+    mut ok := 0 as i32
+    if classify(1 as i32) == 10 as i32:
+        ok = ok + 1 as i32
+    if classify(2 as i32) == 20 as i32:
+        ok = ok + 1 as i32
+    if classify(7 as i32) == 70 as i32:
+        ok = ok + 1 as i32
+    if classify(5 as i32) == 99 as i32:
+        ok = ok + 1 as i32
+    return ok

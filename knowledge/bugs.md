@@ -1061,8 +1061,10 @@ Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất c�
 
 - **#38.1 Compound assign `+= -= *= /= %=` (CAO, sai âm thầm):** parser (parser.ax:619) giữ NODE_ASSIGN_STMT với token op nhưng `lower_assign` (air_builder.ax:2077) KHÔNG đọc op → `a += b` chạy thành `a = b` (mất phép). FIX: desugar ở parser `a op= b` → `a = a op b` (build binary node), hoặc lower_assign đọc token → emit binary trước store.
 - **#38.2 `match` int/literal = BUG#37 (CAO):** không "C switch". lower_match guard `not is_sum: return` + thiếu NODE_LITERAL_PAT.
+
+**✅ #38.1 + #38.2 FIXED (2026-06-27, commit sau).** #38.1: helper assign_value (air_builder.ax) — lower rhs + nếu token `op=` thì lower_expr(lhs hiện tại) + emit binary (float→OP_F*, unsigned div theo selector); 4 nhánh lower_assign route qua. Hạn chế: lhs side-effecting eval 2 lần (v1). Repro bin/t_cassign.ax exit12. #38.2 "C SWITCH": lower_match thêm is_int (scrut 1-8/11/13/15/16)→match_reg=scrut_reg (không tag); NODE_LITERAL_PAT→parse_int_from_str+ICONST(typed scrut_type,split64)+OP_EQ(match_reg)+branch; typecheck NODE_MATCH_ARM thêm else cho binding non-sum. Repro bin/t_switch.ax exit4.
 - **#38.3 Lũy thừa `**` (TB, sai):** TK_STAR_STAR lex+parse OK nhưng map_binary_op (air_builder.ax:171) KHÔNG map → OP_NOP. FIX: lower thành loop (int) / call runtime pow (float). Cần OP mới hoặc desugar.
-- **#38.4 `defer` (TB):** TK_DEFER + lower_stmt NODE_DEFER_STMT CÓ, nhưng parse_stmt KHÔNG có nhánh TK_DEFER → không parse được (unreachable). FIX: thêm nhánh parse_stmt.
+- **#38.4 `defer` (TB, codegen SAI + không parse):** parse_stmt KHÔNG có nhánh TK_DEFER → không parse được. VÀ lower_defer (air_builder.ax:2557) là STUB SAI — chỉ `lower_expr` ngay tại chỗ (chạy NGAY) thay vì hoãn tới scope/function exit (reverse order). FIX: parse branch + track danh sách deferred expr theo scope, emit khi thoát (ở return + cuối block). KHÔNG cheap.
 - **#38.5 `unsafe:` block (TB):** TK_UNSAFE lex OK, parse_stmt không dispatch → lỗi parse. FIX: parse → lower block con (unsafe = no-op ngữ nghĩa codegen).
 - **#38.6 `in [arena]:` block (Thấp):** NODE_ARENA_BLOCK có, không parse_stmt + lower_stmt else→lower_expr (drop body). FIX sau (arena cấp phát).
 - **#38.7 Closures `|x|` (TB):** resolver biết NODE_CLOSURE_EXPR, không typecheck/codegen. Feature lớn → RFC riêng.

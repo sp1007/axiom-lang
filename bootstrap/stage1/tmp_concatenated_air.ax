@@ -6415,7 +6415,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if b_sym_idx != 0 as u32:
                             self.symtable.symbols.data[b_sym_idx].type_id = scrutinee_type
                             self.set_node_type(pattern, scrutinee_type)
-        
+            else:
+                // RFC 0006 (#38.2): C-switch (int/bool/char scrutinee). A bare
+                // binding pattern binds the whole value; literal patterns need
+                // no typing (they are constants compared against the scrutinee).
+                if pattern != 0 as u32:
+                    let pat_node_i = self.tree.nodes.data[pattern]
+                    if pat_node_i.kind == NODE_BINDING_PAT:
+                        let bsi2 = pat_node_i.payload
+                        if bsi2 != 0 as u32:
+                            self.symtable.symbols.data[bsi2].type_id = scrutinee_type
+                            self.set_node_type(pattern, scrutinee_type)
+
         if body != 0 as u32:
             result_type = self.infer_node(body, expected)
         
@@ -10562,18 +10573,28 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if scrut_type != 0 as u32 and (scrut_type as i64) < self.mb.typetable.entries.len:
         if self.mb.typetable.entries.data[scrut_type as i64].kind == TYPE_KIND_SUM:
             is_sum = true
+    // RFC 0006 (BUG#37/#38.2): `match` on a plain integer/bool/char scrutinee is
+    // the C-`switch` equivalent â€” compare the value itself against literal-pattern
+    // values. (1-8 = int widths, 11 = bool, 13 = char8, 15/16 = isize/usize.)
+    mut is_int := false
     if not is_sum:
+        if (scrut_type >= 1 as u32 and scrut_type <= 8 as u32) or scrut_type == 11 as u32 or scrut_type == 13 as u32 or scrut_type == 15 as u32 or scrut_type == 16 as u32:
+            is_int = true
+    if not is_sum and not is_int:
         return
 
-    // Load the tag once.
-    let tag_reg = self.fb.fresh_reg()
-    self.fb.emit(AirInst(
-        opcode: OP_GET_FIELD,
-        type_id: 4 as u32,
-        dest: tag_reg,
-        src1: scrut_reg,
-        src2: 0 as u32,
-    ))
+    // The register compared against each arm: the tag (sum) or the value (int).
+    mut match_reg := scrut_reg
+    if is_sum:
+        let tag_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_GET_FIELD,
+            type_id: 4 as u32,
+            dest: tag_reg,
+            src1: scrut_reg,
+            src2: 0 as u32,
+        ))
+        match_reg = tag_reg
 
     let merge_block = self.fb.new_block()
 
@@ -10601,6 +10622,11 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
         if pat_node.kind == NODE_WILDCARD_PAT:
             is_default = true
+        elif pat_node.kind == NODE_LITERAL_PAT:
+            // C-switch case: compare the scrutinee value against this literal.
+            let ltext = self.mb.get_token_text(pat_node.token_idx)
+            variant_tag = parse_int_from_str(ltext)
+            @free(get_str_ptr(ltext))
         elif pat_node.kind == NODE_VARIANT_PAT:
             let vsi = pat_node.payload
             if vsi != 0 as u32:
@@ -10642,10 +10668,13 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         else:
             if variant_tag < 0 as i64:
                 variant_tag = 0 as i64
+            mut const_type := 4 as u32   // i64 tag (sum)
+            if is_int:
+                const_type = scrut_type  // compare in the scrutinee's own width/signedness
             let const_reg = self.fb.fresh_reg()
-            self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: const_reg, src1: variant_tag as u32, src2: 0 as u32))
+            self.fb.emit(AirInst(opcode: OP_ICONST, type_id: const_type, dest: const_reg, src1: (variant_tag & (0xFFFFFFFF as i64)) as u32, src2: ((variant_tag >> (32 as i64)) & (0xFFFFFFFF as i64)) as u32))
             let cmp_reg = self.fb.fresh_reg()
-            self.fb.emit(AirInst(opcode: OP_EQ, type_id: 11 as u32, dest: cmp_reg, src1: tag_reg, src2: const_reg))
+            self.fb.emit(AirInst(opcode: OP_EQ, type_id: 11 as u32, dest: cmp_reg, src1: match_reg, src2: const_reg))
 
             let then_block = self.fb.new_block()
             let else_block = self.fb.new_block()
@@ -10784,6 +10813,46 @@ pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         ))
         self.locals.local_map_put(name_id, reg)
 
+// RFC 0006 (#38.1): lower the RHS value of an assignment, applying compound
+// `op=` semantics. `a op= b` desugars to `a = a op b` â€” the lhs is re-read as an
+// expression for its current value (simple lvalues; side-effecting bases are
+// evaluated twice, acceptable for now). The op follows the lhs type: float ->
+// OP_F*, unsigned div handled downstream by the selector. Plain `=` returns the
+// rhs unchanged. (Was silently dropping the op so `a += b` ran as `a = b`.)
+pub fn assign_value(mut self: ptr[FuncLowering], node: AstNode, lhs_idx: u32, rhs_idx: u32) -> u32:
+    let rhs_reg = self.lower_expr(rhs_idx)
+    let op_text = self.mb.get_token_text(node.token_idx)
+    mut bop := OP_NOP
+    if op_text == "+=":
+        bop = OP_IADD
+    elif op_text == "-=":
+        bop = OP_ISUB
+    elif op_text == "*=":
+        bop = OP_IMUL
+    elif op_text == "/=":
+        bop = OP_IDIV
+    elif op_text == "%=":
+        bop = OP_IMOD
+    @free(get_str_ptr(op_text))
+    if bop == OP_NOP:
+        return rhs_reg
+    mut rty := 3 as u32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[lhs_idx as i64] != 0 as u32:
+        rty = self.mb.node_types[lhs_idx as i64] as u32
+    if rty == 9 as u32 or rty == 10 as u32:
+        if bop == OP_IADD:
+            bop = OP_FADD
+        elif bop == OP_ISUB:
+            bop = OP_FSUB
+        elif bop == OP_IMUL:
+            bop = OP_FMUL
+        elif bop == OP_IDIV:
+            bop = OP_FDIV
+    let cur_reg = self.lower_expr(lhs_idx)
+    let comb = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: bop, type_id: rty, dest: comb, src1: cur_reg, src2: rhs_reg))
+    return comb
+
 pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let lhs_idx = node.first_child
     if lhs_idx == 0 as u32:
@@ -10798,7 +10867,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let rhs_idx = lhs_node.next_sibling
         if rhs_idx == 0 as u32:
             return
-        let val_reg = self.lower_expr(rhs_idx)
+        let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
         mut type_id := 0 as u32
         let obj_type = self.mb.node_types[obj_idx as i64]
@@ -10829,7 +10898,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let rhs_idx = lhs_node.next_sibling
         if rhs_idx == 0 as u32:
             return
-        let val_reg = self.lower_expr(rhs_idx)
+        let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
         mut type_id := 0 as u32
         let arr_type = self.mb.node_types[arr_idx as i64]
@@ -10854,7 +10923,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let rhs_idx = lhs_node.next_sibling
         if rhs_idx == 0 as u32:
             return
-        let val_reg = self.lower_expr(rhs_idx)
+        let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
         mut type_id := 0 as u32
         let ptr_type = self.mb.node_types[ptr_idx as i64]
@@ -10882,7 +10951,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if rhs_idx == 0 as u32:
         return
     let rhs_node = self.mb.tree.nodes.data[rhs_idx as i64]
-    let val_reg = self.lower_expr(rhs_idx)
+    let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
     mut type_id := 3 as u32 // default i32
     if lhs_node.payload != 0 as u32 and (lhs_node.payload as i64) < self.mb.symbols.symbols.len:

@@ -1284,7 +1284,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if b_sym_idx != 0 as u32:
                             self.symtable.symbols.data[b_sym_idx].type_id = scrutinee_type
                             self.set_node_type(pattern, scrutinee_type)
-        
+            else:
+                // RFC 0006 (#38.2): C-switch (int/bool/char scrutinee). A bare
+                // binding pattern binds the whole value; literal patterns need
+                // no typing (they are constants compared against the scrutinee).
+                if pattern != 0 as u32:
+                    let pat_node_i = self.tree.nodes.data[pattern]
+                    if pat_node_i.kind == NODE_BINDING_PAT:
+                        let bsi2 = pat_node_i.payload
+                        if bsi2 != 0 as u32:
+                            self.symtable.symbols.data[bsi2].type_id = scrutinee_type
+                            self.set_node_type(pattern, scrutinee_type)
+
         if body != 0 as u32:
             result_type = self.infer_node(body, expected)
         

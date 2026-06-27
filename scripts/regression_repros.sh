@@ -37,6 +37,8 @@ rows=(
   "t_udiv|exit|5"
   "t_ucmp|exit|6"
   "t_f32|exit|5"
+  "t_switch|exit|4"
+  "t_cassign|exit|12"
 )
 
 for row in "${rows[@]}"; do
