@@ -9412,6 +9412,17 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
+
+    // RFC 0006 (#38.3): `**` exponentiation. Handled before the generic binary
+    // path because the exponent controls evaluation: a constant non-negative
+    // exponent is unrolled to a chain of multiplies, otherwise a runtime loop is
+    // synthesized. (Previously `**` mapped to OP_NOP -> garbage result.)
+    let op_peek = self.mb.get_token_text(node.token_idx)
+    let is_pow = op_peek == "**"
+    @free(get_str_ptr(op_peek))
+    if is_pow:
+        return self.lower_power(idx, node, child)
+
     let lhs_reg = self.lower_expr(child)
 
     let rhs_idx = self.mb.tree.nodes.data[child as i64].next_sibling
@@ -9468,6 +9479,115 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
         src2: op_r,
     ))
     return reg
+
+// RFC 0006 (#38.3): emit the multiplicative identity (1) for the power base type.
+// Integer -> OP_ICONST 1; float -> OP_FCONST with the IEEE bit pattern of 1.0
+// (single- or double-precision per type_id), mirroring lower_float_lit.
+fn emit_one(mut self: ptr[FuncLowering], type_id: u32, is_float: bool) -> u32:
+    let reg = self.fb.fresh_reg()
+    if is_float:
+        mut fone := 1.0 as f64
+        mut bits := (&fone as ptr[u64])[0]
+        if type_id == 9 as u32:
+            mut f1 := fone as f32
+            bits = ((&f1 as ptr[u32])[0]) as u64
+        self.fb.emit(AirInst(opcode: OP_FCONST, type_id: type_id, dest: reg, src1: (bits & (0xFFFFFFFF as u64)) as u32, src2: (bits >> (32 as u64)) as u32))
+    else:
+        self.fb.emit(AirInst(opcode: OP_ICONST, type_id: type_id, dest: reg, src1: 1 as u32, src2: 0 as u32))
+    return reg
+
+// RFC 0006 (#38.3): lower `base ** exp`. Result type drives int (OP_IMUL) vs
+// float (OP_FMUL); an integer base is promoted with a real OP_ITOF when the
+// result is float. A constant non-negative exponent <= 64 is unrolled into a
+// chain of multiplies; any other exponent (variable, or out of the unroll
+// bound) emits a count-down runtime loop. Negative/fractional exponents are not
+// supported (integer -> 0 path, float fractional unsupported) â€” rare and
+// flagged as a known limitation, not silently miscompiled into garbage.
+pub fn lower_power(mut self: ptr[FuncLowering], idx: u32, node: AstNode, base_idx: u32) -> u32:
+    let exp_idx = self.mb.tree.nodes.data[base_idx as i64].next_sibling
+    if exp_idx == 0 as u32:
+        return self.lower_expr(base_idx)
+
+    mut type_id := 3 as u32 // default i32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
+    let is_float = type_id == 9 as u32 or type_id == 10 as u32
+
+    // Base evaluated exactly once (no double side effects).
+    mut base_reg := self.lower_expr(base_idx)
+    if is_float and self.mb.node_types != null as ptr[u32]:
+        let bt = self.mb.node_types[base_idx as i64]
+        if bt != 9 as u32 and bt != 10 as u32:
+            let bc = self.fb.fresh_reg()
+            self.fb.emit(AirInst(opcode: OP_ITOF, type_id: type_id, dest: bc, src1: base_reg, src2: 0 as u32))
+            base_reg = bc
+
+    mut mul_op := OP_IMUL
+    if is_float:
+        mul_op = OP_FMUL
+
+    // Constant exponent -> unroll.
+    let exp_node = self.mb.tree.nodes.data[exp_idx as i64]
+    if exp_node.kind == NODE_INT_LIT:
+        let etext = self.mb.get_token_text(exp_node.token_idx)
+        let n = parse_int_from_str(etext)
+        @free(get_str_ptr(etext))
+        if n >= 0 as i64 and n <= 64 as i64:
+            if n == 0 as i64:
+                return self.emit_one(type_id, is_float)
+            if n == 1 as i64:
+                let cp = self.fb.fresh_reg()
+                self.fb.emit(AirInst(opcode: OP_COPY, type_id: type_id, dest: cp, src1: base_reg, src2: 0 as u32))
+                return cp
+            mut acc := self.fb.fresh_reg()
+            self.fb.emit(AirInst(opcode: mul_op, type_id: type_id, dest: acc, src1: base_reg, src2: base_reg))
+            mut k := 2 as i64
+            while k < n:
+                let nx = self.fb.fresh_reg()
+                self.fb.emit(AirInst(opcode: mul_op, type_id: type_id, dest: nx, src1: acc, src2: base_reg))
+                acc = nx
+                k = k + 1 as i64
+            return acc
+
+    // Variable exponent -> count-down loop. acc and cnt are loop-carried via
+    // OP_COPY into fixed vregs, exactly how the front-end lowers user `mut`
+    // locals across blocks (register-machine IR, no phi).
+    let exp_reg = self.lower_expr(exp_idx)
+    let acc = self.emit_one(type_id, is_float)
+    let cnt = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_COPY, type_id: 3 as u32, dest: cnt, src1: exp_reg, src2: 0 as u32))
+
+    let cond_block = self.fb.new_block()
+    let body_block = self.fb.new_block()
+    let exit_block = self.fb.new_block()
+    let entry_block = self.fb.current_block()
+    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+    self.fb.add_edge(entry_block, cond_block)
+
+    self.fb.switch_to(cond_block)
+    let zero = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 3 as u32, dest: zero, src1: 0 as u32, src2: 0 as u32))
+    let test = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_GT, type_id: 11 as u32, dest: test, src1: cnt, src2: zero))
+    self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: exit_block, src1: test, src2: body_block))
+    self.fb.add_edge(cond_block, body_block)
+    self.fb.add_edge(cond_block, exit_block)
+
+    self.fb.switch_to(body_block)
+    let nacc = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: mul_op, type_id: type_id, dest: nacc, src1: acc, src2: base_reg))
+    self.fb.emit(AirInst(opcode: OP_COPY, type_id: type_id, dest: acc, src1: nacc, src2: 0 as u32))
+    let one_c = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 3 as u32, dest: one_c, src1: 1 as u32, src2: 0 as u32))
+    let ncnt = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ISUB, type_id: 3 as u32, dest: ncnt, src1: cnt, src2: one_c))
+    self.fb.emit(AirInst(opcode: OP_COPY, type_id: 3 as u32, dest: cnt, src1: ncnt, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
+    self.fb.add_edge(body_block, cond_block)
+
+    self.fb.switch_to(exit_block)
+    self.terminated = false
+    return acc
 
 pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
