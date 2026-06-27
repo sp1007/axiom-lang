@@ -1,0 +1,27 @@
+// RFC 0006 #36 — narrow-integer wrap-to-width repro.
+// x86-64 arithmetic runs in 64-bit registers; a narrow result must be
+// truncated/sign-extended to its declared width. Each correct wrap scores a
+// bit. Expected exit code: 15.
+fn main() -> i32:
+    mut score := 0 as i32
+    let x = 200 as u8
+    let y = 100 as u8
+    let z = x + y              // 300 -> 44 (u8)
+    if z == 44 as u8:
+        score = score + 1
+    let a = 60000 as u16
+    let b = 10000 as u16
+    let c = a + b              // 70000 -> 4464 (u16)
+    if c == 4464 as u16:
+        score = score + 2
+    let p = 4000000000 as u32
+    let q = 1000000000 as u32
+    let r = p + q             // 5e9 -> 705032704 (u32)
+    if r == 705032704 as u32:
+        score = score + 4
+    let m = 2000000000 as i32
+    let n = 2000000000 as i32
+    let s = m + n             // 4e9 -> -294967296 (i32 overflow wraps)
+    if s == (-294967296) as i32:
+        score = score + 8
+    return score

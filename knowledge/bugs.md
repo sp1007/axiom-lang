@@ -1039,6 +1039,8 @@ AIR hiện tại SAI cả hai phần float: `a/3.0` ra `idiv` trên i32+f64 (kh�
 
 **Đúng (RFC 0006 §6):** phép toán giữ kiểu toán hạng; runtime tràn → wrap (mask về W bit, sign-interpret nếu signed). Cần chèn mask (and reg, (1<<W)-1) + sign-extend cho signed sau add/sub/mul/shl trên kiểu <64-bit. (Tràn toàn-hằng → lỗi compile, checker riêng.)
 
+**✅ FIXED (2026-06-28).** x86_selector.ax: helper `emit_wrap_to_width(sel, dest, type_id, out_insts)` — nếu type_id là narrow int (i8/u8 size1, i16/u16 size2, i32/u32 size4) gọi lại `emit_load_extend` (đã có sẵn, dùng cho load/cast): signed→SHL/SAR (sign-extend), unsigned→MOV_IMM mask + AND. Gọi cuối các nhánh **OP_IADD/ISUB/IMUL/SHL + OP_NEG(int)** (các op tạo tràn). KHÔNG mask AND/OR/XOR/SHR/DIV/MOD (range-preserving) — **bất biến: mọi producer giá trị narrow (load/cast/arith) đều normalize → toán hạng luôn trong range**. i64/u64/usize/isize (size8) không mask. Probe trước fix: u8/u16/u32/i32 đều KHÔNG wrap (backend dùng 64-bit cho mọi phép). Sau fix: t_mask.ax exit 15 (4 check: 200u8+100u8==44, 60000u16+10000u16==4464, 4e9u32+1e9==705032704, 2e9i32+2e9==-294967296); baseline không-tràn vẫn đúng; regression 29. **RỦI RO fixpoint:** compiler dùng i32/u32 nhiều → mask thêm SHL/SAR/AND sau mỗi narrow arith (bloat); nhưng giá trị compiler luôn trong range nên kết quả KHÔNG đổi → fixpoint phải hội tụ lại SHA mới. [verify đang chạy — nếu vỡ thì revert].
+
 **Lưu ý test:** matrix run 2026-06-26 = 184 PASS / 57 FAIL: nhóm FAIL = (1) MỌI float cast/op/mixed (BUG#33: int→float & float→int & f64→f32 dùng copy-reinterpret, float arith dùng iadd/idiv), (2) wrap-hằng (giờ là EXPECT-ERROR theo policy, đã dời sang diag). int in-range + int↔int cast PASS hết. Unsigned-div (BUG#34) CHƯA lộ ở matrix (operand nhỏ 7/3) — cần chạy fuzz `int` operand lớn.
 
 ---
@@ -1068,7 +1070,7 @@ Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất c�
 - **#38.5 `unsafe:` block — ✅ FIXED (2026-06-27).** parse_stmt nhánh TK_UNSAFE → parse_unsafe_block (NODE_UNSAFE_BLOCK ôm block); lower_stmt lower block con trong suốt; typecheck recurse vào body; resolver đã có sẵn (resolver.ax:926). unsafe = no-op ngữ nghĩa codegen (gen-check chưa enforce).
 - **#38.6 `in [arena]:` block — ✅ FIXED parse+exec (2026-06-27).** parse_stmt nhánh TK_IN → parse_arena_block (NODE_ARENA_BLOCK, lưu tên arena vào payload); lower block con trong suốt. **Routing cấp phát theo arena vẫn DEFERRED** (chỉ chạy block như thường). Repro chung bin/t_unsafe.ax (exit 20: unsafe+arena+compound).
 - **#38.7 Closures `|x|` (TB):** resolver biết NODE_CLOSURE_EXPR, không typecheck/codegen. Feature lớn → RFC riêng.
-- **#38.8 Tuple patterns (Thấp):** NODE_TUPLE_PAT không codegen trong lower_match.
+- **#38.8 Tuple patterns — KHÔNG phải fix rẻ, là FEATURE LỚN (RFC).** Audit lại 2026-06-28: tuple KHÔNG phải feature thật. Chỉ có NODE_TUPLE_PAT (parse pattern) + enum TYPE_KIND_TUPLE. KHÔNG có: tuple type parsing (`(i32,i32)`), tuple literal/construction (`(1,2)` — không có NODE_TUPLE_EXPR), field access `.0/.1`, ABI layout. → codegen tuple-pattern một mình là VÔ NGHĨA (không tạo được tuple để match). Cần implement tuple như 1 aggregate type hoàn chỉnh (RFC) trước. Hoãn.
 - **#38.9 spawn/await/async, Isolated/Future (Thấp, phase 9):** dispatch/node có nhưng runtime stub.
 
 **Kế hoạch:** nhóm rẻ+an-toàn-fixpoint (#38.1 compound, #38.2 match-int, #38.4 defer, #38.5 unsafe) gộp 1 verify (AST compiler không đổi → fixpoint giữ). #38.3 power + #38.7 closures = lớn hơn, sau. Làm sau khi RFC 0006 part 4 (f32) commit.
