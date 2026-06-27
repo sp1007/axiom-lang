@@ -1,0 +1,8 @@
+fn setv(p: ptr[i64], v: i64):
+    p[0] = v
+pub fn main() -> i32:
+    mut a := 2 as i64
+    let x = a + 10 as i64   // 12
+    setv(&a, 100 as i64)    // a := 100
+    let y = a + 10 as i64   // 110 (must NOT be CSE'd to x)
+    return (y - x) as i32   // want 98; if cse y=x -> 0

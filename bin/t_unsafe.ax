@@ -1,0 +1,10 @@
+// BUG#38.5/#38.6 regression: `unsafe:` and `in [arena]:` blocks execute their
+// body (parsed + lowered transparently). Also exercises compound assign inside.
+pub fn main() -> i32:
+    mut x := 0 as i32
+    unsafe:
+        x = 7 as i32
+        x += 3 as i32
+    in [scratch]:
+        x *= 2 as i32
+    return x        // (7+3)*2 = 20

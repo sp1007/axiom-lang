@@ -1,0 +1,8 @@
+extern "C" fn putchar(c: i32) -> i32
+fn setone(p: ptr[i64]):
+    p[0] = 7 as i64
+pub fn main() -> i32:
+    let src = 3 as i64
+    mut d := src        // d = copy src  (copy_prop candidate: d -> src)
+    setone(&d)          // mutate d via pointer -> d should become 7
+    return d as i32     // want 7; if copy-propagated to src -> 3 (BUG)

@@ -39,6 +39,7 @@ rows=(
   "t_f32|exit|5"
   "t_switch|exit|4"
   "t_cassign|exit|12"
+  "t_unsafe|exit|20"
 )
 
 for row in "${rows[@]}"; do

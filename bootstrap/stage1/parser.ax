@@ -407,8 +407,40 @@ pub fn parse_stmt(mut self: ptr[Parser]) -> u32:
         return self.parse_break_stmt()
     if tok.kind == TK_CONTINUE:
         return self.parse_continue_stmt()
+    if tok.kind == TK_UNSAFE:
+        return self.parse_unsafe_block()
+    if tok.kind == TK_IN:
+        return self.parse_arena_block()
 
     return self.parse_expr_stmt()
+
+// RFC 0006 (#38.5/#38.6): `unsafe:` and `in [arena]:` blocks. Both are parsed
+// and their body lowered transparently (codegen no-op wrapper) — unsafe disables
+// generational checks (not yet enforced) and arena routes allocations (routing
+// deferred); for now both just execute their inner block.
+pub fn parse_unsafe_block(mut self: ptr[Parser]) -> u32:
+    let tok = self.expect(TK_UNSAFE)
+    let node = self.tree.add_node(NODE_UNSAFE_BLOCK, self.token_idx(tok))
+    self.expect(TK_COLON)
+    let block = self.parse_block()
+    if block != 0 as u32:
+        self.append_child(node, block)
+    return node
+
+pub fn parse_arena_block(mut self: ptr[Parser]) -> u32:
+    let tok = self.expect(TK_IN)
+    let node = self.tree.add_node(NODE_ARENA_BLOCK, self.token_idx(tok))
+    self.expect(TK_L_BRACKET)
+    let name = self.expect(TK_IDENT)
+    let text = self.token_text(name)
+    self.set_payload(node, self.pool.intern(text))
+    @free(text as ptr[u8])
+    self.expect(TK_R_BRACKET)
+    self.expect(TK_COLON)
+    let block = self.parse_block()
+    if block != 0 as u32:
+        self.append_child(node, block)
+    return node
 
 pub fn parse_break_stmt(mut self: ptr[Parser]) -> u32:
     let tok = self.expect(TK_BREAK)

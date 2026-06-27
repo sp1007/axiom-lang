@@ -1105,7 +1105,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     let flags = self.tree.nodes.data[node_idx].flags
     mut result_type := TYPE_UNKNOWN
     
-    if kind == NODE_PROGRAM or kind == NODE_BLOCK:
+    if kind == NODE_PROGRAM or kind == NODE_BLOCK or kind == NODE_UNSAFE_BLOCK or kind == NODE_ARENA_BLOCK:
+        // unsafe/arena: recurse into the inner block (their only child) so the
+        // body is typechecked (#38.5/#38.6).
         mut child := self.tree.nodes.data[node_idx].first_child
         while child != 0 as u32:
             self.infer_node(child, TYPE_UNKNOWN)

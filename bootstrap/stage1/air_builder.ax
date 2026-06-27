@@ -2018,6 +2018,11 @@ pub fn lower_stmt(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         self.lower_break(idx, node)
     elif node.kind == NODE_CONTINUE_STMT:
         self.lower_continue(idx, node)
+    elif node.kind == NODE_UNSAFE_BLOCK or node.kind == NODE_ARENA_BLOCK:
+        // RFC 0006 (#38.5/#38.6): execute the inner block transparently. unsafe
+        // (gen-check disable) and arena (alloc routing) semantics are deferred.
+        if node.first_child != 0 as u32:
+            self.lower_block(node.first_child)
     else:
         self.lower_expr(idx)
 
