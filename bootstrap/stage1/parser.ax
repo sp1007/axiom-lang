@@ -411,8 +411,21 @@ pub fn parse_stmt(mut self: ptr[Parser]) -> u32:
         return self.parse_unsafe_block()
     if tok.kind == TK_IN:
         return self.parse_arena_block()
+    if tok.kind == TK_DEFER:
+        return self.parse_defer_stmt()
 
     return self.parse_expr_stmt()
+
+// RFC 0006 (#38.4): `defer Expr NEWLINE`. The expression is recorded (not run)
+// and executed at scope exit, LIFO. See air_builder.lower_defer / flush_defers.
+pub fn parse_defer_stmt(mut self: ptr[Parser]) -> u32:
+    let tok = self.expect(TK_DEFER)
+    let node = self.tree.add_node(NODE_DEFER_STMT, self.token_idx(tok))
+    let expr = self.parse_expr_with_prec(BP_NONE)
+    if expr != 0 as u32:
+        self.append_child(node, expr)
+    self.expect_newline()
+    return node
 
 // RFC 0006 (#38.5/#38.6): `unsafe:` and `in [arena]:` blocks. Both are parsed
 // and their body lowered transparently (codegen no-op wrapper) — unsafe disables

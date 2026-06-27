@@ -41,6 +41,7 @@ rows=(
   "t_cassign|exit|12"
   "t_unsafe|exit|20"
   "t_pow|exit|59"
+  "t_defer|exit|7"
 )
 
 for row in "${rows[@]}"; do

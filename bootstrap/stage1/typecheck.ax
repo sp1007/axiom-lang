@@ -1212,6 +1212,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         if expr != 0 as u32:
             self.infer_node(expr, self.current_return)
 
+    elif kind == NODE_DEFER_STMT:
+        // #38.4: typecheck the deferred expression so its node_types are
+        // populated for codegen (it runs at scope exit, not here).
+        let expr = self.tree.nodes.data[node_idx].first_child
+        if expr != 0 as u32:
+            self.infer_node(expr, TYPE_UNKNOWN)
+
     elif kind == NODE_MATCH_STMT:
         let scrutinee = self.tree.nodes.data[node_idx].first_child
         if scrutinee != 0 as u32:

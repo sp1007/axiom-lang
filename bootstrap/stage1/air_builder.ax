@@ -211,6 +211,10 @@ pub struct FuncLowering:
     pub terminated: bool
     pub loop_conds: U32Vec
     pub loop_exits: U32Vec
+    // RFC 0006 (#38.4): deferred expression node indices, in textual order.
+    // Flushed LIFO at every return and at function exit (Go-style function-level
+    // defer). See lower_defer / flush_defers.
+    pub defers: U32Vec
 
 pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: ptr[AirFuncBuilder], params: U32Vec) -> ptr[FuncLowering]:
     let fl = @alloc(@compiler_intrinsic("size_of")[FuncLowering]()) as ptr[FuncLowering]
@@ -221,6 +225,7 @@ pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: ptr[AirFuncBuilder], par
     fl.terminated = false
     fl.loop_conds = new_u32_vec()
     fl.loop_exits = new_u32_vec()
+    fl.defers = new_u32_vec()
     return fl
 
 pub fn free_func_lowering(mut self: ptr[FuncLowering]):
@@ -231,6 +236,8 @@ pub fn free_func_lowering(mut self: ptr[FuncLowering]):
         @free(self.loop_conds.data as ptr[u8])
     if self.loop_exits.data != null as ptr[u32]:
         @free(self.loop_exits.data as ptr[u8])
+    if self.defers.data != null as ptr[u32]:
+        @free(self.defers.data as ptr[u8])
 
 pub fn register_params(mut self: ptr[FuncLowering], func_idx: u32, func_node: AstNode):
     mut child := func_node.first_child
@@ -2380,6 +2387,10 @@ pub fn lower_return(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:
         ret_val = self.lower_expr(node.first_child)
 
+    // RFC 0006 (#38.4): run deferred expressions (LIFO) after the return value
+    // is computed but before transferring control, on every return path.
+    self.flush_defers()
+
     self.fb.emit(AirInst(
         opcode: OP_RETURN,
         type_id: 0 as u32,
@@ -2679,12 +2690,31 @@ pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     src2: 0 as u32,
                 ))
 
+// RFC 0006 (#38.4): a `defer expr` registers the expression to run at scope
+// exit instead of executing it now (the old stub ran it immediately, which was
+// wrong). We record the expr node index in textual order; flush_defers emits
+// them LIFO at each return and at function exit. Function-level (Go) semantics:
+// an unconditional `defer` at the top of a function runs on every return path.
+// LIMITATION: a defer inside a not-taken conditional branch is still emitted at
+// later exits (no runtime registration) — documented in knowledge/bugs.md.
 pub fn lower_defer(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:
-        self.lower_expr(node.first_child)
+        self.defers.push(node.first_child)
+
+// Emit all registered deferred expressions into the current block, last-in
+// first-out. Does NOT clear the list: each control-flow exit path (return /
+// fall-through) is a distinct basic block and must run the defers once.
+pub fn flush_defers(mut self: ptr[FuncLowering]):
+    if self.defers.len == 0 as i64:
+        return
+    mut i := self.defers.len - 1 as i64
+    while i >= 0 as i64:
+        self.lower_expr(self.defers.data[i])
+        i = i - 1 as i64
 
 pub fn ensure_return(mut self: ptr[FuncLowering]):
     if not self.terminated:
+        self.flush_defers()
         self.fb.emit(AirInst(
             opcode: OP_RETURN,
             type_id: 0 as u32,

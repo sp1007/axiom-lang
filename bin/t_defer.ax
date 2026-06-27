@@ -1,0 +1,26 @@
+// RFC 0006 #38.4 — `defer` repro.
+// Verifies: defer does NOT run immediately; LIFO order; early return triggers
+// pending defers; return value is preserved across defer execution.
+// Expected stdout:
+//   start
+//   early
+//   B
+//   A
+//   end
+// Expected exit code: 7.
+import std.io
+
+fn f(x: i32) -> i32:
+    defer std.io.println("A")   // registered first -> runs last
+    defer std.io.println("B")   // registered second -> runs first
+    if x > 0:
+        std.io.println("early")
+        return x
+    std.io.println("late")
+    return 0
+
+fn main() -> i32:
+    std.io.println("start")
+    let r = f(7)
+    std.io.println("end")
+    return r
