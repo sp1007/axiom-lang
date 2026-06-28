@@ -1,0 +1,50 @@
+// examples/mul128.ax — 64x64 -> 128-bit widening multiply in PURE AXIOM.
+//
+// AXIOM has no 128-bit integer and no widening-multiply intrinsic, yet bignum
+// multiplication is still expressible: split each u64 operand into two u32
+// halves, form the four u32*u32 partial products (each fits in a u64), then
+// recombine with carry propagation. This is the multiply building block that,
+// together with the limb+carry add in bigint128.ax, lets a full N-limb BigInt
+// be written entirely as a library — no compiler change required.
+//
+// Run:  axc build examples/mul128.ax -o mul128 && ./mul128 ; echo $?
+// Expected exit code: 7.
+
+struct U128:
+    lo: u64
+    hi: u64
+
+fn mul64(a: u64, b: u64) -> U128:
+    let mask = 4294967295 as u64          // 0xFFFFFFFF
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let ll = aL * bL                      // (2^32-1)^2 still fits in u64
+    let lh = aL * bH
+    let hl = aH * bL
+    let hh = aH * bH
+    let cross = lh + hl                   // may carry out of u64
+    mut carry := 0 as u64
+    if cross < lh:
+        carry = 1 as u64
+    let lo = ll + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < ll:
+        c2 = 1 as u64
+    let hi = hh + (cross >> 32) + (carry << 32) + c2
+    return U128(lo: lo, hi: hi)
+
+pub fn main() -> i32:
+    mut score := 0 as i32
+    // 0xFFFFFFFFFFFFFFFF^2 = 0xFFFFFFFFFFFFFFFE_0000000000000001
+    let p = mul64(18446744073709551615 as u64, 18446744073709551615 as u64)
+    if p.lo == 1 as u64:
+        score = score + 1
+    if p.hi == 18446744073709551614 as u64:
+        score = score + 2
+    // 1_000_000 * 1_000_000 = 1_000_000_000_000 (no high word)
+    let q = mul64(1000000 as u64, 1000000 as u64)
+    if q.hi == 0 as u64 and q.lo == 1000000000000 as u64:
+        score = score + 4
+    return score    // 7

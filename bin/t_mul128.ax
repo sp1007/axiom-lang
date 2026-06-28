@@ -1,0 +1,39 @@
+// Regression: 64x64 -> 128-bit widening multiply in pure AXIOM (u32 half-limb
+// split). Bignum multiply building block; no compiler primitive needed.
+// Expected exit code: 7.
+struct U128:
+    lo: u64
+    hi: u64
+
+fn mul64(a: u64, b: u64) -> U128:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let ll = aL * bL
+    let lh = aL * bH
+    let hl = aH * bL
+    let hh = aH * bH
+    let cross = lh + hl
+    mut carry := 0 as u64
+    if cross < lh:
+        carry = 1 as u64
+    let lo = ll + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < ll:
+        c2 = 1 as u64
+    let hi = hh + (cross >> 32) + (carry << 32) + c2
+    return U128(lo: lo, hi: hi)
+
+pub fn main() -> i32:
+    mut score := 0 as i32
+    let p = mul64(18446744073709551615 as u64, 18446744073709551615 as u64)
+    if p.lo == 1 as u64:
+        score = score + 1
+    if p.hi == 18446744073709551614 as u64:
+        score = score + 2
+    let q = mul64(1000000 as u64, 1000000 as u64)
+    if q.hi == 0 as u64 and q.lo == 1000000000000 as u64:
+        score = score + 4
+    return score
