@@ -1132,3 +1132,24 @@ Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất c�
 - → u512/u1024 = thêm limb; **f128/f256 bigfloat = bignum mantissa + exponent** (hoặc fixed-point Q.n) — cùng pattern, là module lib lớn hơn (std.bignum/std.bigfloat), pure-library; bundling cần giải keystone stage0.
 
 **Bug số nguyên TANGENTIAL phát hiện (pre-existing, KHÔNG từ float work):** (1) **u64 `%`/`/` SAI trong vài ngữ cảnh:** `48%36` đúng ở -O1 khi inline trong main NHƯNG = 0/1 sai ở -O0, và SAI trong vòng lặp gcd ở cả -O0/-O1 (gcd_u64 trả 0). i64 gcd thì đúng. → unsigned div/mod (BUG#34) còn lỗi residual ở -O0 + trong loop. (2) **so sánh u64 literal lớn lệch:** computed fib.lo (đúng, %1000==371) != literal `3737010778780434371 as u64` dù `2432902008176640000` so đúng — parse/compare literal u64 ~19 chữ số có quirk. Cả 2 latent (compiler không dùng), chưa fix; né bằng i64 / modulo-check trong demo.
+
+---
+
+## Mở rộng std.math + dynamic-bignum + codegen footguns (2026-06-28, phiên 2)
+
+**⚠️ COMPILER THỰC HÀNH = bin/axc_stage1.exe, KHÔNG phải bin/axc.exe.** bin/axc.exe (stage0, Go/C-backend) là bản CŨ (Jun 22) VÀ — đã xác nhận bằng `go build` mới tinh — Go stage0 THỰC SỰ thiếu method (`fn m(self, o)`), operator-overload, và có bug type literal u64 (`let mask = 4294967295 as u64` → "found 8 and 3"). Các tính năng đó CHỈ có ở stage1 (compiler AXIOM tự-host). ⇒ build mọi test/example bằng **bin/axc_stage1.exe**. (Đây là "trần stage0" nhìn từ phía tính năng: source stage1 phải nằm trong subset stage0 build được; nhưng compiler để DÙNG là stage1.)
+
+**🟢 dynamic-width bignum (std/bignum.ax + std/xmath.ax, COMMIT 99cd609):** thay vì struct field cố định (U128/U256), số = heap limb array `ptr[u64]` + limb count `n` (width = n*64, chọn lúc RUNTIME). Default 128 (n=2) → u4096 (n=64) → tùy ý. Unsigned + signed (two's complement, bi_*) + fixed-point (bf_*). **Fixed array `[u64; N]` KHÔNG dùng được** — stage0/stage1 codegen sinh `ax_slice_void` undeclared cho array-literal field → phải heap ptr. examples/bignum_dynamic.ax + bin/t_bndyn.ax = 10 check (width động, 2^100@4096-bit, 50!, borrow-sub, shift, binary-gcd, isqrt, fib, signed neg/mul, fixed-mul) → exit 99 @ -O0/-O1, trong regression.
+
+**🟢 std.math +41 hàm (COMMIT a56cc42):** sign/clamp/recip/trunc/fract/square/cube/cbrt/hypot/exp2/exp10/log1p/atan/asin/acos/atan2/sinh/cosh/tanh/asinh/acosh/atanh/deg_to_rad/rad_to_deg/lerp/inverse_lerp/smoothstep/saturate/approx_equal/sigmoid/relu/leaky_relu/softplus/swish/popcount/clz/ctz/bit_width/rotate_left/has_single_bit/mul_hi + const LOG2E/LOG10E/SQRT1_2/EPSILON. bin/t_mathx.ax exit 28 @ -O0/-O1, trong regression.
+
+**🔴 BUG#44 — PATTERN CHÍNH XÁC (mới làm rõ):** float giữ trong thanh ghi QUA một call bị hỏng. Cụ thể:
+- `CONST <op> f(call)` → HỎNG (const/biến nạp vào XMM TRƯỚC call → clobber). VD `acos = HALF_PI - asin(x)` trả 0; `atanh = 0.5 * ln(...)` sai.
+- `f(call) <op> CONST` / `let r = f(call); ... r` → AN TOÀN (const materialize SAU call). VD `sinh: let e=exp(x); (e-1.0/e)*0.5` đúng; `atan2: return atan(y/x)+PI` đúng.
+- ⇒ QUY TẮC LIB: không bao giờ viết `CONST op f(call)`; luôn `let r=f(call); return CONST op r`. acos viết lại theo thứ tự đó; atanh dùng Taylor series thuần (hàm-lá, 0 call). Header std/math.ax ghi rõ quy tắc. Mong manh theo reg-alloc (đổi thứ tự làm flip pass/fail) → lý do PHẢI fix BUG#44 mới mở rộng float-compose diện rộng an toàn.
+
+**🔴 CODEGEN BUG MỚI — struct value trong loop (chặn lớp number-theory bignum):**
+1. **In-place accumulate field qua loop KHÔNG persist:** `let q = bu_alloc(n); ...loop... q.limbs[idx] = q.limbs[idx] + X` → chỉ lần ghi CUỐI còn (các vòng trước mất). divmod ban đầu cho quotient sai (q=1 thay 3 cho 10/3). WORKAROUND: build kết quả bằng REASSIGN struct mỗi vòng (`q = bu_shl1(q)` rồi `q.limbs[0]=q.limbs[0]+1`) — chỉ chạm limbs[0], giống pattern bu_from_u64/r đang chạy đúng. divmod sau fix ĐÚNG standalone (1000000/7=142857 r1).
+2. **Struct-return field-bind rồi mutate / struct aliasing trong loop → SEGFAULT hoặc kết quả 0:** `mut x := bu_divmod(a,m).r` trong HÀM (không phải main) rồi mutate x trong loop → segfault; Euclid `let t=y; let d=bu_divmod(x,y); y=d.r; x=t` → trả 0 (aliasing vreg OP_COPY). divmod gọi 1 lần trong hàm rồi return field thì OK (e.ax). ⇒ modpow/lcm-Euclid/binomial (divmod-in-loop) CHƯA ship được — pending fix codegen struct-copy/aliasing. Binary-gcd (shift, không divmod) thì OK → đã ship trong xmath. divmod prototype giữ ở scratch.
+
+**Footgun tên hàm:** đặt hàm tên `close` (hoặc tên trùng libc) → LINK ngầm vào libc `close(int fd)`, không phải hàm user → truyền bit f64 làm fd → SEGFAULT. Không phải bug AXIOM nhưng compiler nên cảnh báo shadow extern. Tránh: đừng đặt tên trùng symbol C (close/open/read/write/...).
