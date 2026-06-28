@@ -675,6 +675,25 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
     if is_pow:
         return self.lower_power(idx, node, child)
 
+    // RFC 0007: operator overloading. When the lhs operand is a user type
+    // (struct/sum/generic-inst), `a <op> b` lowers to the conventional method
+    // call `a.<name>(b)` (+ -> add, == -> eq, < -> lt, ...). Builtin numeric
+    // operands skip this entirely and keep their native codegen (fixpoint-safe,
+    // since the compiler never applies operators to user types).
+    if self.mb.node_types != null as ptr[u32]:
+        let lhs_t = self.mb.node_types[child as i64]
+        if lhs_t != 0 as u32 and (lhs_t as i64) < self.mb.typetable.entries.len:
+            let le = self.mb.typetable.entries.data[lhs_t as i64]
+            if le.kind == TYPE_KIND_STRUCT or le.kind == TYPE_KIND_SUM or le.kind == TYPE_KIND_GENERIC_INST:
+                let op_tok = self.mb.get_token_text(node.token_idx)
+                let mname = op_to_method_name(op_tok)
+                let is_ne = op_tok == "!="
+                @free(get_str_ptr(op_tok))
+                if not (mname == ""):
+                    let msym = self.resolve_op_method(mname, lhs_t)
+                    if msym != 0 as u32:
+                        return self.lower_op_overload(idx, node, child, msym, is_ne)
+
     let lhs_reg = self.lower_expr(child)
 
     let rhs_idx = self.mb.tree.nodes.data[child as i64].next_sibling
@@ -730,6 +749,93 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
         src1: op_l,
         src2: op_r,
     ))
+    return reg
+
+// RFC 0007: map a binary operator's token text to its conventional method name
+// (Rust core::ops style). Returns "" for operators that are not overloadable.
+// `!=` maps to `eq` (the caller negates the bool result).
+fn op_to_method_name(op: str) -> str:
+    if op == "+":
+        return "add"
+    if op == "-":
+        return "sub"
+    if op == "*":
+        return "mul"
+    if op == "/":
+        return "div"
+    if op == "%":
+        return "rem"
+    if op == "==" or op == "!=":
+        return "eq"
+    if op == "<":
+        return "lt"
+    if op == "<=":
+        return "le"
+    if op == ">":
+        return "gt"
+    if op == ">=":
+        return "ge"
+    return ""
+
+// RFC 0007: resolve a struct/sum method by conventional name on a receiver type.
+// Mirrors the non-generic method resolution in lower_call_expr: scan SYM_FUNC
+// symbols whose (mangled) name matches `method_name` and whose first parameter,
+// after unwrapping ptr/ref, equals the (unwrapped) receiver type. Returns 0 if
+// no matching method exists.
+pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u32) -> u32:
+    let method_id = self.mb.pool.intern(method_name)
+    mut unwrapped := rec_type
+    mut e := self.mb.typetable.entries.data[unwrapped as i64]
+    while e.kind == TYPE_KIND_POINTER or e.kind == TYPE_KIND_REF:
+        unwrapped = e.extra as u32
+        e = self.mb.typetable.entries.data[unwrapped as i64]
+    mut i := 0 as i64
+    while i < self.mb.symbols.symbols.len:
+        let sym = self.mb.symbols.symbols.data[i]
+        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+            let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+            if t_entry.kind == TYPE_KIND_FUNC:
+                let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                if fi.params.len > 0 as i64:
+                    mut fp := fi.params.data[0]
+                    mut pe := self.mb.typetable.entries.data[fp as i64]
+                    while pe.kind == TYPE_KIND_POINTER or pe.kind == TYPE_KIND_REF:
+                        fp = pe.extra as u32
+                        pe = self.mb.typetable.entries.data[fp as i64]
+                    if fp == unwrapped:
+                        return i as u32
+        i = i + 1 as i64
+    return 0 as u32
+
+// RFC 0007: lower an overloaded operator `a <op> b` to the method call
+// `a.<method>(b)` (method symbol `msym` already resolved). Mirrors the
+// method-call emission in lower_call_expr: a 2-element arg block [self, rhs] and
+// an OP_CALL whose type_id carries the method symbol (src1=0). `!=` reuses the
+// `eq` method and negates the bool result with OP_NOT.
+pub fn lower_op_overload(mut self: ptr[FuncLowering], idx: u32, node: AstNode, base_idx: u32, msym: u32, is_ne: bool) -> u32:
+    let rhs_idx = self.mb.tree.nodes.data[base_idx as i64].next_sibling
+    let lhs_reg = self.lower_expr(base_idx)
+    mut rhs_reg := 0 as u32
+    if rhs_idx != 0 as u32:
+        rhs_reg = self.lower_expr(rhs_idx)
+
+    let arg_start = self.fb.emit_extra(2 as u32)
+    self.fb.emit_extra(lhs_reg)
+    self.fb.emit_extra(rhs_reg)
+
+    let reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(
+        opcode: OP_CALL,
+        type_id: msym,
+        dest: reg,
+        src1: 0 as u32,
+        src2: arg_start,
+    ))
+
+    if is_ne:
+        let neg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_NOT, type_id: 11 as u32, dest: neg, src1: reg, src2: 0 as u32))
+        return neg
     return reg
 
 // RFC 0006 (#38.3): emit the multiplicative identity (1) for the power base type.

@@ -1,9 +1,21 @@
 # RFC 0007 — Operator overloading (convention-based)
 
-- **Status:** Proposed (2026-06-28)
+- **Status:** Implemented v1 (2026-06-28)
 - **Author:** self-host team
 - **Tracking:** next-step-15 (ergonomics) / BUG#39
-- **Liên quan:** typecheck.ax NODE_BINARY_EXPR, air_builder.ax lower_binary_expr / lower_call_expr
+- **Liên quan:** air_builder.ax lower_binary_expr / lower_op_overload / resolve_op_method
+
+## 0. Ghi chú implement (khác đề xuất §3)
+
+Resolution + dispatch làm **HOÀN TOÀN trong air_builder.lower_binary_expr** (KHÔNG đụng
+typecheck/parser/grammar như §3 dự kiến). Lý do: `resolve_method_sym` của typecheck chỉ
+tìm được generic method ở fallback (guard `SYM_FLAG_GENERIC`), KHÔNG resolve được struct
+method non-generic. air_builder đã có cơ chế đúng (`match_mangled_method_raw_bytes` + so
+first-param-type) dùng cho `obj.method()`. Nên: air_builder kiểm tra `node_types[lhs]` là
+user type → `op_to_method_name` → `resolve_op_method` (reuse match loop) → `lower_op_overload`
+emit OP_CALL `[self, rhs]`. Result type KHÔNG cần typecheck đổi: arithmetic = lhs type
+(numeric-promotion fallback đã trả `t1`), comparison = bool. `!=` = `eq` + OP_NOT.
+Verified: bin/t_opover.ax exit 44.
 - **Mở khóa:** BigInt/BigNum (số lớn cho tính toán khoa học) — `a + b` trên kiểu người dùng
 
 ## 1. Motivation
@@ -67,6 +79,26 @@ tạm thời: bỏ qua/giữ hành vi cũ cho tới khi có error infra).
 - Chỉ kích hoạt khi lhs là **kiểu người dùng**. Compiler self-host KHÔNG dùng
   `struct <op> struct` ở đâu → toàn bộ thay đổi LATENT → stage* byte-identical → fixpoint
   giữ. Verify đầy đủ + repro runtime (BigInt mini) để chứng minh chạy.
+
+## 4b. Giới hạn MVP v1 (QUAN TRỌNG cho biểu thức trộn kiểu)
+
+Khi bignum/user-type trộn với primitive trong cùng biểu thức, v1 có 3 giới hạn:
+
+1. **Dispatch CHỈ theo toán hạng TRÁI.** `big + 5` → `big.add(...)` (OK), nhưng
+   `5 + big` → lhs là primitive → đi đường numeric → `OP_IADD(int, ptr-bignum)` = RÁC.
+   → Hiện phải đặt user-type bên TRÁI. (Follow-up: dispatch đối xứng — nếu lhs
+   primitive mà rhs là user-type, thử `rhs.<op>` hoặc reflected method.)
+2. **KHÔNG kiểm tra kiểu toán hạng PHẢI.** `resolve_op_method` chỉ khớp param đầu
+   (self) == kiểu lhs; KHÔNG kiểm rhs. `big + 5` resolve trúng `add(self,o:BigInt)`
+   rồi truyền `5` (int) vào chỗ cần BigInt → mismatch ABI/miscompile. Phải tự
+   convert `big + BigInt.from(5)`. (Follow-up: so kiểu rhs với param thứ 2; nếu
+   lệch → lỗi typecheck khi có error-infra BUG#35.)
+3. **KHÔNG ép kiểu ngầm primitive → user-type.** Mọi primitive phải convert tường
+   minh sang bignum trước khi vào biểu thức. (Đồng nhất với chính sách RFC 0006:
+   không lan kiểu thầm lặng.)
+
+Primitive trộn primitive (vd `(a >> 8) as u8`) KHÔNG bị các giới hạn này — chỉ cần
+`as` tường minh khi thu hẹp/đổi dấu (RFC 0006).
 
 ## 5. Out of scope (follow-up)
 

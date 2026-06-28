@@ -1,0 +1,25 @@
+// RFC 0007 — operator overloading on a user type.
+// `+` -> add, `<` -> lt, `==` -> eq, `!=` -> eq+negate.
+// Expected exit code: 44.
+struct Num:
+    v: i64
+    fn add(self, o: Num) -> Num:
+        return Num(v: self.v + o.v)
+    fn lt(self, o: Num) -> bool:
+        return self.v < o.v
+    fn eq(self, o: Num) -> bool:
+        return self.v == o.v
+
+pub fn main() -> i32:
+    let a = Num(v: 10 as i64)
+    let b = Num(v: 32 as i64)
+    let c = a + b                      // a.add(b) -> 42
+    mut score := 0 as i32
+    if a < b:                          // a.lt(b) -> true
+        score = score + (c.v as i32)   // +42
+    let d = Num(v: 42 as i64)
+    if c == d:                         // c.eq(d) -> true
+        score = score + 1              // +1
+    if a != b:                         // !a.eq(b) -> true
+        score = score + 1              // +1
+    return score                       // 44

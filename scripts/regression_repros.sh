@@ -43,6 +43,7 @@ rows=(
   "t_pow|exit|59"
   "t_defer|exit|7"
   "t_mask|exit|15"
+  "t_opover|exit|44"
 )
 
 for row in "${rows[@]}"; do
