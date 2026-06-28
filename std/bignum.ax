@@ -1,0 +1,268 @@
+// AXIOM Standard Library — std.bignum
+//
+// Dynamic-width arbitrary-precision integers, pure AXIOM (no extern, no hardware
+// 128+/float). A number is a heap array of 64-bit limbs (little-endian: limbs[0]
+// is least significant) plus a limb count `n`; the bit-width is n*64. The width
+// is chosen AT RUNTIME by the caller, so the same code serves u128 (the default,
+// n=2), u256, u512, ... u4096 (n=64) and beyond — just pass a larger `n`.
+//
+//   default 128-bit : bu_from_u64(v, 2)
+//   u4096           : bu_from_u64(v, 64)
+//
+// Signed values (i128 ... i4096) use two's-complement over the same fixed n
+// limbs (see bi_*). Fixed-point reals (the f128 ... f4096 family) store
+// value * 2^(64*scale) in a BigUint (see bf_*); higher precision is just a
+// larger n / scale. Math functions over these types live in std.xmath.
+//
+// All arithmetic is GPR/struct based, so BUG#44 (float-across-call) does not
+// apply: these compose freely through ordinary calls.
+
+// Default width, in limbs, when a caller does not specify one (128-bit).
+pub const BIGNUM_DEFAULT_LIMBS: i64 = 2
+
+pub struct BigUint:
+    limbs: ptr[u64]
+    n: i64
+
+// A 64x64 -> 128 widening product, returned as (lo, hi).
+pub struct BigPair:
+    lo: u64
+    hi: u64
+
+pub fn bu_wmul(a: u64, b: u64) -> BigPair:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let ll = aL * bL
+    let lh = aL * bH
+    let hl = aH * bL
+    let hh = aH * bH
+    let cross = lh + hl
+    mut carry := 0 as u64
+    if cross < lh:
+        carry = 1 as u64
+    let lo = ll + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < ll:
+        c2 = 1 as u64
+    let hi = hh + (cross >> 32) + (carry << 32) + c2
+    return BigPair(lo: lo, hi: hi)
+
+// Allocate an n-limb zero value.
+pub fn bu_alloc(n: i64) -> BigUint:
+    let p = @alloc(n * 8 as i64) as ptr[u64]
+    mut i := 0 as i64
+    while i < n:
+        p[i] = 0 as u64
+        i = i + 1
+    return BigUint(limbs: p, n: n)
+
+pub fn bu_from_u64(v: u64, n: i64) -> BigUint:
+    let r = bu_alloc(n)
+    r.limbs[0] = v
+    return r
+
+pub fn bu_is_zero(a: BigUint) -> bool:
+    mut i := 0 as i64
+    while i < a.n:
+        if a.limbs[i] != 0 as u64:
+            return false
+        i = i + 1
+    return true
+
+pub fn bu_is_even(a: BigUint) -> bool:
+    return (a.limbs[0] & 1 as u64) == 0 as u64
+
+// -1 if a<b, 0 if a==b, 1 if a>b (unsigned, same width).
+pub fn bu_cmp(a: BigUint, b: BigUint) -> i32:
+    mut i := a.n - 1 as i64
+    while i >= 0 as i64:
+        if a.limbs[i] > b.limbs[i]:
+            return 1 as i32
+        if a.limbs[i] < b.limbs[i]:
+            return 0 as i32 - 1 as i32
+        i = i - 1 as i64
+    return 0 as i32
+
+// Highest set bit position + 1 (0 for zero).
+pub fn bu_bitlen(a: BigUint) -> i64:
+    mut i := a.n - 1 as i64
+    while i >= 0 as i64:
+        if a.limbs[i] != 0 as u64:
+            mut v := a.limbs[i]
+            mut b := 0 as i64
+            while v != 0 as u64:
+                v = v >> 1
+                b = b + 1
+            return i * 64 as i64 + b
+        i = i - 1 as i64
+    return 0 as i64
+
+// Ripple-carry add (wraps mod 2^(64n)).
+pub fn bu_add(a: BigUint, b: BigUint) -> BigUint:
+    let r = bu_alloc(a.n)
+    mut c := 0 as u64
+    mut i := 0 as i64
+    while i < a.n:
+        let ai = a.limbs[i]
+        let s = ai + b.limbs[i]
+        mut c1 := 0 as u64
+        if s < ai:
+            c1 = 1 as u64
+        let t = s + c
+        mut c2 := 0 as u64
+        if t < s:
+            c2 = 1 as u64
+        r.limbs[i] = t
+        c = c1 + c2
+        i = i + 1
+    return r
+
+// Borrow subtract (wraps mod 2^(64n); also valid for two's-complement signed).
+pub fn bu_sub(a: BigUint, b: BigUint) -> BigUint:
+    let r = bu_alloc(a.n)
+    mut borrow := 0 as u64
+    mut i := 0 as i64
+    while i < a.n:
+        let ai = a.limbs[i]
+        let bi = b.limbs[i]
+        let d1 = ai - bi
+        mut bw1 := 0 as u64
+        if ai < bi:
+            bw1 = 1 as u64
+        let d2 = d1 - borrow
+        mut bw2 := 0 as u64
+        if d1 < borrow:
+            bw2 = 1 as u64
+        r.limbs[i] = d2
+        borrow = bw1 + bw2
+        i = i + 1
+    return r
+
+pub fn bu_shl1(a: BigUint) -> BigUint:
+    let r = bu_alloc(a.n)
+    mut carry := 0 as u64
+    mut i := 0 as i64
+    while i < a.n:
+        let v = a.limbs[i]
+        r.limbs[i] = (v << 1) + carry
+        carry = v >> 63
+        i = i + 1
+    return r
+
+pub fn bu_shr1(a: BigUint) -> BigUint:
+    let r = bu_alloc(a.n)
+    mut carry := 0 as u64
+    mut i := a.n - 1 as i64
+    while i >= 0 as i64:
+        let v = a.limbs[i]
+        r.limbs[i] = (v >> 1) + (carry << 63)
+        carry = v & 1 as u64
+        i = i - 1 as i64
+    return r
+
+// Shift left by k bits (k >= 0).
+pub fn bu_shl(a: BigUint, k: i64) -> BigUint:
+    mut r := a
+    mut i := 0 as i64
+    while i < k:
+        r = bu_shl1(r)
+        i = i + 1
+    return r
+
+// Schoolbook multiply, truncated to n limbs (wraps mod 2^(64n)).
+pub fn bu_mul(a: BigUint, b: BigUint) -> BigUint:
+    let r = bu_alloc(a.n)
+    mut i := 0 as i64
+    while i < a.n:
+        mut carry := 0 as u64
+        mut j := 0 as i64
+        while i + j < a.n:
+            let idx = i + j
+            let p = bu_wmul(a.limbs[i], b.limbs[j])
+            let cur = r.limbs[idx]
+            let s1 = cur + p.lo
+            mut k1 := 0 as u64
+            if s1 < cur:
+                k1 = 1 as u64
+            let s2 = s1 + carry
+            mut k2 := 0 as u64
+            if s2 < s1:
+                k2 = 1 as u64
+            r.limbs[idx] = s2
+            carry = p.hi + k1 + k2
+            j = j + 1
+        i = i + 1
+    return r
+
+// Full 2n-limb product (no truncation).
+pub fn bu_mul_full(a: BigUint, b: BigUint) -> BigUint:
+    let r = bu_alloc(a.n * 2 as i64)
+    mut i := 0 as i64
+    while i < a.n:
+        mut carry := 0 as u64
+        mut j := 0 as i64
+        while j < a.n:
+            let idx = i + j
+            let p = bu_wmul(a.limbs[i], b.limbs[j])
+            let cur = r.limbs[idx]
+            let s1 = cur + p.lo
+            mut k1 := 0 as u64
+            if s1 < cur:
+                k1 = 1 as u64
+            let s2 = s1 + carry
+            mut k2 := 0 as u64
+            if s2 < s1:
+                k2 = 1 as u64
+            r.limbs[idx] = s2
+            carry = p.hi + k1 + k2
+            j = j + 1
+        r.limbs[i + a.n] = carry
+        i = i + 1
+    return r
+
+// --- Signed integers (two's complement over the same n limbs): i128 ... i4096 ---
+
+pub fn bi_from_i64(v: i64, n: i64) -> BigUint:
+    let r = bu_alloc(n)
+    r.limbs[0] = v as u64
+    if v < 0 as i64:
+        mut i := 1 as i64
+        while i < n:
+            r.limbs[i] = 18446744073709551615 as u64
+            i = i + 1
+    return r
+
+pub fn bi_neg(a: BigUint) -> BigUint:
+    let inv = bu_alloc(a.n)
+    mut i := 0 as i64
+    while i < a.n:
+        inv.limbs[i] = (18446744073709551615 as u64) - a.limbs[i]
+        i = i + 1
+    return bu_add(inv, bu_from_u64(1 as u64, a.n))
+
+pub fn bi_is_neg(a: BigUint) -> bool:
+    return (a.limbs[a.n - 1 as i64] >> 63) == 1 as u64
+
+// --- Fixed-point reals: raw = value * 2^(64*scale). f128 ... f4096 ---
+
+pub fn bf_from_int(v: u64, n: i64, scale: i64) -> BigUint:
+    let r = bu_alloc(n)
+    r.limbs[scale] = v
+    return r
+
+// Fixed-point multiply: (a*b) >> (64*scale), taking the n-limb window.
+pub fn bf_mul(a: BigUint, b: BigUint, scale: i64) -> BigUint:
+    let full = bu_mul_full(a, b)
+    let r = bu_alloc(a.n)
+    mut i := 0 as i64
+    while i < a.n:
+        r.limbs[i] = full.limbs[i + scale]
+        i = i + 1
+    return r
+
+// Fixed-point add is just integer add.
+pub fn bf_add(a: BigUint, b: BigUint) -> BigUint:
+    return bu_add(a, b)

@@ -1,0 +1,103 @@
+// AXIOM Standard Library — std.xmath
+//
+// Extended ("big") math: common mathematical functions that operate on the
+// arbitrary-precision number types of std.bignum (BigUint and the signed /
+// fixed-point views built on it). Where std.math provides f64 transcendentals,
+// std.xmath provides exact integer math at any width (u128 ... u4096 and up).
+//
+// Requires std.bignum to be in scope (the BigUint type and bu_* primitives).
+// All functions take an explicit limb count `n` (width = n*64) or inherit it
+// from their BigUint arguments, so the same code works at 128-bit or 4096-bit.
+
+// base^e (exponent fits in u64), truncated to n limbs. Exponentiation by squaring.
+pub fn xm_pow_u64(base: BigUint, e: u64, n: i64) -> BigUint:
+    mut result := bu_from_u64(1 as u64, n)
+    mut b := base
+    mut ee := e
+    while ee > 0 as u64:
+        if (ee & 1 as u64) == 1 as u64:
+            result = bu_mul(result, b)
+        b = bu_mul(b, b)
+        ee = ee >> 1
+    return result
+
+// 2^k as an n-limb bignum.
+pub fn xm_pow2(k: i64, n: i64) -> BigUint:
+    return bu_shl(bu_from_u64(1 as u64, n), k)
+
+// k! as an n-limb bignum (truncates if it exceeds the width).
+pub fn xm_factorial(k: i64, n: i64) -> BigUint:
+    mut acc := bu_from_u64(1 as u64, n)
+    mut m := 1 as u64
+    mut i := 1 as i64
+    while i <= k:
+        acc = bu_mul(acc, bu_from_u64(m, n))
+        m = m + 1 as u64
+        i = i + 1
+    return acc
+
+// Fibonacci F(k) as an n-limb bignum.
+pub fn xm_fib(k: i64, n: i64) -> BigUint:
+    mut a := bu_from_u64(0 as u64, n)
+    mut b := bu_from_u64(1 as u64, n)
+    mut i := 0 as i64
+    while i < k:
+        let c = bu_add(a, b)
+        a = b
+        b = c
+        i = i + 1
+    return a
+
+// Greatest common divisor via the binary (Stein) algorithm — no division.
+pub fn xm_gcd(ina: BigUint, inb: BigUint) -> BigUint:
+    mut x := ina
+    mut y := inb
+    if bu_is_zero(x):
+        return y
+    if bu_is_zero(y):
+        return x
+    mut shift := 0 as i64
+    while bu_is_even(x) and bu_is_even(y):
+        x = bu_shr1(x)
+        y = bu_shr1(y)
+        shift = shift + 1
+    while bu_is_even(x):
+        x = bu_shr1(x)
+    while not bu_is_zero(y):
+        while bu_is_even(y):
+            y = bu_shr1(y)
+        if bu_cmp(x, y) == 1 as i32:
+            let t = x
+            x = y
+            y = t
+        y = bu_sub(y, x)
+    return bu_shl(x, shift)
+
+// Integer square root (floor) via digit-by-digit extraction — no division.
+pub fn xm_isqrt(x: BigUint) -> BigUint:
+    let bl = bu_bitlen(x)
+    if bl == 0 as i64:
+        return bu_from_u64(0 as u64, x.n)
+    let sh = (bl - 1 as i64) / 2 as i64 * 2 as i64
+    mut one := bu_shl(bu_from_u64(1 as u64, x.n), sh)
+    mut res := bu_from_u64(0 as u64, x.n)
+    mut rem := x
+    while not bu_is_zero(one):
+        let rpo = bu_add(res, one)
+        if bu_cmp(rem, rpo) >= 0 as i32:
+            rem = bu_sub(rem, rpo)
+            res = bu_add(bu_shr1(res), one)
+        else:
+            res = bu_shr1(res)
+        one = bu_shr1(bu_shr1(one))
+    return res
+
+// floor(log2(x)) = bitlen - 1 (returns -1 for zero).
+pub fn xm_log2_floor(x: BigUint) -> i64:
+    return bu_bitlen(x) - 1 as i64
+
+// True iff x is a perfect square.
+pub fn xm_is_perfect_square(x: BigUint) -> bool:
+    let r = xm_isqrt(x)
+    let sq = bu_mul(r, r)
+    return bu_cmp(sq, x) == 0 as i32

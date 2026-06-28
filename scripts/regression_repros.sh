@@ -55,6 +55,7 @@ rows=(
   "t_bignum|exit|63"
   "t_bn256|exit|31"
   "t_bf128|exit|15"
+  "t_bndyn|exit|99"
 )
 
 for row in "${rows[@]}"; do
