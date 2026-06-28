@@ -310,3 +310,349 @@ pub fn lcm(a: i64, b: i64) -> i64:
     if bx < 0 as i64:
         bx = 0 as i64 - bx
     return ax / g * bx
+
+// ============================================================================
+// Extended scalar functions (RFC-free library growth; all leaf or tail-safe to
+// avoid BUG#44 — a float value must never be held across a call, so use the
+// `let r = f(...); return CONST op r` order, never `CONST op f(...)`).
+// ============================================================================
+
+// --- Additional constants ---
+pub const LOG2E:   f64 = 1.44269504088896340736
+pub const LOG10E:  f64 = 0.43429448190325182765
+pub const SQRT1_2: f64 = 0.70710678118654752440
+pub const EPSILON: f64 = 0.00000000000000022204460492503131
+
+pub fn sign(x: f64) -> f64:
+    if x > 0.0:
+        return 1.0
+    if x < 0.0:
+        return 0.0 - 1.0
+    return 0.0
+
+pub fn clamp(x: f64, lo: f64, hi: f64) -> f64:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+pub fn trunc(x: f64) -> f64:
+    return (x as i64) as f64
+
+pub fn fract(x: f64) -> f64:
+    return x - (x as i64) as f64
+
+pub fn square(x: f64) -> f64:
+    return x * x
+
+pub fn cube(x: f64) -> f64:
+    return x * x * x
+
+pub fn recip(x: f64) -> f64:
+    return 1.0 / x
+
+// cbrt via Newton (leaf): converge y^3 = x
+pub fn cbrt(x: f64) -> f64:
+    if x == 0.0:
+        return 0.0
+    mut neg := false
+    mut a := x
+    if a < 0.0:
+        neg = true
+        a = 0.0 - a
+    mut y := a
+    mut i := 0 as i32
+    while i < 100:
+        let y3 = y * y * y
+        let ny = y - (y3 - a) / (3.0 * y * y)
+        mut d := ny - y
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            y = ny
+            i = 100
+        else:
+            y = ny
+            i = i + 1
+    if neg:
+        return 0.0 - y
+    return y
+
+pub fn hypot(x: f64, y: f64) -> f64:
+    return sqrt(x * x + y * y)
+
+// exp2 = exp(x*ln2): x consumed before call -> tail-safe
+pub fn exp2(x: f64) -> f64:
+    return exp(x * LN2)
+
+pub fn exp10(x: f64) -> f64:
+    return exp(x * LN10)
+
+pub fn log1p(x: f64) -> f64:
+    return ln(1.0 + x)
+
+// atan via half-angle reduction (inlined sqrt) + Taylor: leaf, ~8 digits
+pub fn atan(x: f64) -> f64:
+    mut sgn := 1.0
+    mut a := x
+    if a < 0.0:
+        sgn = 0.0 - 1.0
+        a = 0.0 - a
+    mut addpi := 0.0
+    if a > 1.0:
+        // atan(a) = pi/2 - atan(1/a)
+        addpi = HALF_PI
+        a = 1.0 / a
+    // one half-angle: z = a/(1+sqrt(1+a^2))  -> atan(a)=2*atan(z)
+    let s = a * a
+    mut g := 1.0 + s
+    mut gi := 0 as i32
+    while gi < 60:
+        g = (g + (1.0 + s) / g) * 0.5
+        gi = gi + 1
+    let z = a / (1.0 + g)
+    let z2 = z * z
+    mut term := z
+    mut sum := z
+    mut n := 1 as i32
+    while n < 30:
+        term = (0.0 - term) * z2
+        sum = sum + term / ((2 * n + 1) as f64)
+        n = n + 1
+    mut res := 2.0 * sum
+    if addpi > 0.0:
+        res = addpi - res
+    return sgn * res
+
+pub fn asin(x: f64) -> f64:
+    if x >= 1.0:
+        return HALF_PI
+    if x <= (0.0 - 1.0):
+        return 0.0 - HALF_PI
+    // asin(x) = atan(x/sqrt(1-x^2)); inline sqrt of (1-x^2)
+    let s = 1.0 - x * x
+    mut g := s
+    if g < 0.0:
+        g = 0.0
+    mut gg := 1.0
+    if s > 0.0:
+        gg = s
+        mut gi := 0 as i32
+        while gi < 60:
+            gg = (gg + s / gg) * 0.5
+            gi = gi + 1
+    return atan(x / gg)
+
+pub fn acos(x: f64) -> f64:
+    if x >= 1.0:
+        return 0.0
+    if x <= (0.0 - 1.0):
+        return PI
+    let s = 1.0 - x * x
+    mut gg := 1.0
+    if s > 0.0:
+        gg = s
+        mut gi := 0 as i32
+        while gi < 60:
+            gg = (gg + s / gg) * 0.5
+            gi = gi + 1
+    let r = atan(x / gg)
+    return HALF_PI - r
+
+pub fn atan2(y: f64, x: f64) -> f64:
+    if x > 0.0:
+        return atan(y / x)
+    if x < 0.0:
+        if y >= 0.0:
+            return atan(y / x) + PI
+        return atan(y / x) - PI
+    if y > 0.0:
+        return HALF_PI
+    if y < 0.0:
+        return 0.0 - HALF_PI
+    return 0.0
+
+// sinh/cosh/tanh via exp (x consumed before call -> tail-safe)
+pub fn sinh(x: f64) -> f64:
+    let e = exp(x)
+    return (e - 1.0 / e) * 0.5
+
+pub fn cosh(x: f64) -> f64:
+    let e = exp(x)
+    return (e + 1.0 / e) * 0.5
+
+pub fn tanh(x: f64) -> f64:
+    let e = exp(x + x)
+    return (e - 1.0) / (e + 1.0)
+
+pub fn asinh(x: f64) -> f64:
+    // ln(x + sqrt(x^2+1)); inline sqrt
+    let s = x * x + 1.0
+    mut g := s
+    mut gi := 0 as i32
+    while gi < 60:
+        g = (g + s / g) * 0.5
+        gi = gi + 1
+    return ln(x + g)
+
+pub fn acosh(x: f64) -> f64:
+    if x < 1.0:
+        return 0.0
+    let s = x * x - 1.0
+    mut g := s
+    if s > 0.0:
+        mut gi := 0 as i32
+        while gi < 60:
+            g = (g + s / g) * 0.5
+            gi = gi + 1
+    else:
+        g = 0.0
+    return ln(x + g)
+
+pub fn atanh(x: f64) -> f64:
+    let x2 = x * x
+    mut term := x
+    mut sum := x
+    mut n := 1 as i32
+    while n < 60:
+        term = term * x2
+        sum = sum + term / ((2 * n + 1) as f64)
+        n = n + 1
+    return sum
+
+pub fn deg_to_rad(d: f64) -> f64:
+    return d * (PI / 180.0)
+
+pub fn rad_to_deg(r: f64) -> f64:
+    return r * (180.0 / PI)
+
+pub fn lerp(a: f64, b: f64, t: f64) -> f64:
+    return a + (b - a) * t
+
+pub fn inverse_lerp(a: f64, b: f64, v: f64) -> f64:
+    if b == a:
+        return 0.0
+    return (v - a) / (b - a)
+
+pub fn smoothstep(e0: f64, e1: f64, x: f64) -> f64:
+    mut t := (x - e0) / (e1 - e0)
+    if t < 0.0:
+        t = 0.0
+    if t > 1.0:
+        t = 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+pub fn saturate(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+pub fn approx_equal(a: f64, b: f64, eps: f64) -> bool:
+    mut d := a - b
+    if d < 0.0:
+        d = 0.0 - d
+    return d <= eps
+
+// sigmoid(x) = 1/(1+exp(-x)) : tail-safe
+pub fn sigmoid(x: f64) -> f64:
+    let e = exp(0.0 - x)
+    return 1.0 / (1.0 + e)
+
+pub fn relu(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    return x
+
+pub fn leaky_relu(x: f64, a: f64) -> f64:
+    if x < 0.0:
+        return a * x
+    return x
+
+pub fn softplus(x: f64) -> f64:
+    let e = exp(x)
+    return ln(1.0 + e)
+
+// swish(x) = x*sigmoid(x): x reused after transcendental -> inline exp (leaf)
+pub fn swish(x: f64) -> f64:
+    let nx = 0.0 - x
+    mut k := (nx / LN2 + 0.5) as i64
+    if nx < 0.0:
+        k = (nx / LN2 - 0.5) as i64
+    let r = nx - (k as f64) * LN2
+    mut term := 1.0
+    mut e := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        e = e + term
+        n = n + 1
+    mut kk := k
+    while kk > 0 as i64:
+        e = e * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        e = e * 0.5
+        kk = kk + 1 as i64
+    return x / (1.0 + e)
+
+// ---- integer bit math ----
+
+pub fn popcount(x: u64) -> i64:
+    mut v := x
+    mut c := 0 as i64
+    while v != 0 as u64:
+        c = c + (v & 1 as u64) as i64
+        v = v >> 1
+    return c
+
+pub fn clz(x: u64) -> i64:
+    if x == 0 as u64:
+        return 64 as i64
+    mut v := x
+    mut n := 0 as i64
+    while (v & (1 as u64 << 63)) == 0 as u64:
+        v = v << 1
+        n = n + 1
+    return n
+
+pub fn ctz(x: u64) -> i64:
+    if x == 0 as u64:
+        return 64 as i64
+    mut v := x
+    mut n := 0 as i64
+    while (v & 1 as u64) == 0 as u64:
+        v = v >> 1
+        n = n + 1
+    return n
+
+pub fn bit_width(x: u64) -> i64:
+    return 64 as i64 - clz(x)
+
+pub fn rotate_left(x: u64, k: i64) -> u64:
+    let r = k & 63 as i64
+    if r == 0 as i64:
+        return x
+    return (x << r) | (x >> (64 as i64 - r))
+
+pub fn has_single_bit(x: u64) -> bool:
+    return x != 0 as u64 and (x & (x - 1 as u64)) == 0 as u64
+
+pub fn mul_hi(a: u64, b: u64) -> u64:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let cross = aL * bH + aH * bL
+    mut carry := 0 as u64
+    if cross < aL * bH:
+        carry = 1 as u64
+    let lo = aL * bL + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < aL * bL:
+        c2 = 1 as u64
+    return aH * bH + (cross >> 32) + (carry << 32) + c2
+

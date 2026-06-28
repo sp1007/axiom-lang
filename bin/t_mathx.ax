@@ -1,0 +1,482 @@
+// bin/t_mathx.ax — regression for extended std.math scalar functions.
+// Self-contained (import bundler does not compose std.math yet). Exit 28 = all
+// 28 checks pass: rounding, powers, trig-inverse, hyperbolic, interpolation,
+// ML activations, bit math. Locks in the BUG#44-safe composition patterns.
+//
+// Build: axc_stage1 build bin/t_mathx.ax -o t_mathx && ./t_mathx ; echo $?  (=>28)
+
+
+const PI:      f64 = 3.14159265358979323846
+const TAU:     f64 = 6.28318530717958647692
+const HALF_PI: f64 = 1.57079632679489661923
+const LN2:     f64 = 0.69314718055994530942
+const LN10:    f64 = 2.30258509299404568402
+
+fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+fn sqrt(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn exp(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+fn ln(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut m := x
+    mut e := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        e = e + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        e = e - 1 as i64
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    mut term := t
+    mut sum := 0.0
+    mut n := 0 as i32
+    while n < 24:
+        sum = sum + term / ((2 * n + 1) as f64)
+        term = term * t2
+        n = n + 1
+    return (e as f64) * LN2 + 2.0 * sum
+
+// ---- new functions under test ----
+
+fn sign(x: f64) -> f64:
+    if x > 0.0:
+        return 1.0
+    if x < 0.0:
+        return 0.0 - 1.0
+    return 0.0
+
+fn clamp(x: f64, lo: f64, hi: f64) -> f64:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+fn trunc(x: f64) -> f64:
+    return (x as i64) as f64
+
+fn fract(x: f64) -> f64:
+    return x - (x as i64) as f64
+
+fn square(x: f64) -> f64:
+    return x * x
+
+fn cube(x: f64) -> f64:
+    return x * x * x
+
+fn recip(x: f64) -> f64:
+    return 1.0 / x
+
+// cbrt via Newton (leaf): converge y^3 = x
+fn cbrt(x: f64) -> f64:
+    if x == 0.0:
+        return 0.0
+    mut neg := false
+    mut a := x
+    if a < 0.0:
+        neg = true
+        a = 0.0 - a
+    mut y := a
+    mut i := 0 as i32
+    while i < 100:
+        let y3 = y * y * y
+        let ny = y - (y3 - a) / (3.0 * y * y)
+        mut d := ny - y
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            y = ny
+            i = 100
+        else:
+            y = ny
+            i = i + 1
+    if neg:
+        return 0.0 - y
+    return y
+
+fn hypot(x: f64, y: f64) -> f64:
+    return sqrt(x * x + y * y)
+
+// exp2 = exp(x*ln2): x consumed before call -> tail-safe
+fn exp2(x: f64) -> f64:
+    return exp(x * LN2)
+
+fn exp10(x: f64) -> f64:
+    return exp(x * LN10)
+
+fn log1p(x: f64) -> f64:
+    return ln(1.0 + x)
+
+// atan via half-angle reduction (inlined sqrt) + Taylor: leaf, ~8 digits
+fn atan(x: f64) -> f64:
+    mut sgn := 1.0
+    mut a := x
+    if a < 0.0:
+        sgn = 0.0 - 1.0
+        a = 0.0 - a
+    mut addpi := 0.0
+    if a > 1.0:
+        // atan(a) = pi/2 - atan(1/a)
+        addpi = HALF_PI
+        a = 1.0 / a
+    // one half-angle: z = a/(1+sqrt(1+a^2))  -> atan(a)=2*atan(z)
+    let s = a * a
+    mut g := 1.0 + s
+    mut gi := 0 as i32
+    while gi < 60:
+        g = (g + (1.0 + s) / g) * 0.5
+        gi = gi + 1
+    let z = a / (1.0 + g)
+    let z2 = z * z
+    mut term := z
+    mut sum := z
+    mut n := 1 as i32
+    while n < 30:
+        term = (0.0 - term) * z2
+        sum = sum + term / ((2 * n + 1) as f64)
+        n = n + 1
+    mut res := 2.0 * sum
+    if addpi > 0.0:
+        res = addpi - res
+    return sgn * res
+
+fn asin(x: f64) -> f64:
+    if x >= 1.0:
+        return HALF_PI
+    if x <= (0.0 - 1.0):
+        return 0.0 - HALF_PI
+    // asin(x) = atan(x/sqrt(1-x^2)); inline sqrt of (1-x^2)
+    let s = 1.0 - x * x
+    mut g := s
+    if g < 0.0:
+        g = 0.0
+    mut gg := 1.0
+    if s > 0.0:
+        gg = s
+        mut gi := 0 as i32
+        while gi < 60:
+            gg = (gg + s / gg) * 0.5
+            gi = gi + 1
+    return atan(x / gg)
+
+fn acos(x: f64) -> f64:
+    if x >= 1.0:
+        return 0.0
+    if x <= (0.0 - 1.0):
+        return PI
+    let s = 1.0 - x * x
+    mut gg := 1.0
+    if s > 0.0:
+        gg = s
+        mut gi := 0 as i32
+        while gi < 60:
+            gg = (gg + s / gg) * 0.5
+            gi = gi + 1
+    let r = atan(x / gg)
+    return HALF_PI - r
+
+fn atan2(y: f64, x: f64) -> f64:
+    if x > 0.0:
+        return atan(y / x)
+    if x < 0.0:
+        if y >= 0.0:
+            return atan(y / x) + PI
+        return atan(y / x) - PI
+    if y > 0.0:
+        return HALF_PI
+    if y < 0.0:
+        return 0.0 - HALF_PI
+    return 0.0
+
+// sinh/cosh/tanh via exp (x consumed before call -> tail-safe)
+fn sinh(x: f64) -> f64:
+    let e = exp(x)
+    return (e - 1.0 / e) * 0.5
+
+fn cosh(x: f64) -> f64:
+    let e = exp(x)
+    return (e + 1.0 / e) * 0.5
+
+fn tanh(x: f64) -> f64:
+    let e = exp(x + x)
+    return (e - 1.0) / (e + 1.0)
+
+fn asinh(x: f64) -> f64:
+    // ln(x + sqrt(x^2+1)); inline sqrt
+    let s = x * x + 1.0
+    mut g := s
+    mut gi := 0 as i32
+    while gi < 60:
+        g = (g + s / g) * 0.5
+        gi = gi + 1
+    return ln(x + g)
+
+fn acosh(x: f64) -> f64:
+    if x < 1.0:
+        return 0.0
+    let s = x * x - 1.0
+    mut g := s
+    if s > 0.0:
+        mut gi := 0 as i32
+        while gi < 60:
+            g = (g + s / g) * 0.5
+            gi = gi + 1
+    else:
+        g = 0.0
+    return ln(x + g)
+
+fn atanh(x: f64) -> f64:
+    let x2 = x * x
+    mut term := x
+    mut sum := x
+    mut n := 1 as i32
+    while n < 60:
+        term = term * x2
+        sum = sum + term / ((2 * n + 1) as f64)
+        n = n + 1
+    return sum
+
+fn deg_to_rad(d: f64) -> f64:
+    return d * (PI / 180.0)
+
+fn rad_to_deg(r: f64) -> f64:
+    return r * (180.0 / PI)
+
+fn lerp(a: f64, b: f64, t: f64) -> f64:
+    return a + (b - a) * t
+
+fn inverse_lerp(a: f64, b: f64, v: f64) -> f64:
+    if b == a:
+        return 0.0
+    return (v - a) / (b - a)
+
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64:
+    mut t := (x - e0) / (e1 - e0)
+    if t < 0.0:
+        t = 0.0
+    if t > 1.0:
+        t = 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+fn saturate(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+fn approx_equal(a: f64, b: f64, eps: f64) -> bool:
+    mut d := a - b
+    if d < 0.0:
+        d = 0.0 - d
+    return d <= eps
+
+// sigmoid(x) = 1/(1+exp(-x)) : tail-safe
+fn sigmoid(x: f64) -> f64:
+    let e = exp(0.0 - x)
+    return 1.0 / (1.0 + e)
+
+fn relu(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    return x
+
+fn leaky_relu(x: f64, a: f64) -> f64:
+    if x < 0.0:
+        return a * x
+    return x
+
+fn softplus(x: f64) -> f64:
+    let e = exp(x)
+    return ln(1.0 + e)
+
+// swish(x) = x*sigmoid(x): x reused after transcendental -> inline exp (leaf)
+fn swish(x: f64) -> f64:
+    let nx = 0.0 - x
+    mut k := (nx / LN2 + 0.5) as i64
+    if nx < 0.0:
+        k = (nx / LN2 - 0.5) as i64
+    let r = nx - (k as f64) * LN2
+    mut term := 1.0
+    mut e := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        e = e + term
+        n = n + 1
+    mut kk := k
+    while kk > 0 as i64:
+        e = e * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        e = e * 0.5
+        kk = kk + 1 as i64
+    return x / (1.0 + e)
+
+// ---- integer bit math ----
+
+fn popcount(x: u64) -> i64:
+    mut v := x
+    mut c := 0 as i64
+    while v != 0 as u64:
+        c = c + (v & 1 as u64) as i64
+        v = v >> 1
+    return c
+
+fn clz(x: u64) -> i64:
+    if x == 0 as u64:
+        return 64 as i64
+    mut v := x
+    mut n := 0 as i64
+    while (v & (1 as u64 << 63)) == 0 as u64:
+        v = v << 1
+        n = n + 1
+    return n
+
+fn ctz(x: u64) -> i64:
+    if x == 0 as u64:
+        return 64 as i64
+    mut v := x
+    mut n := 0 as i64
+    while (v & 1 as u64) == 0 as u64:
+        v = v >> 1
+        n = n + 1
+    return n
+
+fn bit_width(x: u64) -> i64:
+    return 64 as i64 - clz(x)
+
+fn rotate_left(x: u64, k: i64) -> u64:
+    let r = k & 63 as i64
+    if r == 0 as i64:
+        return x
+    return (x << r) | (x >> (64 as i64 - r))
+
+fn has_single_bit(x: u64) -> bool:
+    return x != 0 as u64 and (x & (x - 1 as u64)) == 0 as u64
+
+fn mul_hi(a: u64, b: u64) -> u64:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let cross = aL * bH + aH * bL
+    mut carry := 0 as u64
+    if cross < aL * bH:
+        carry = 1 as u64
+    let lo = aL * bL + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < aL * bL:
+        c2 = 1 as u64
+    return aH * bH + (cross >> 32) + (carry << 32) + c2
+
+fn near(a: f64, b: f64) -> bool:
+    mut d := a - b
+    if d < 0.0:
+        d = 0.0 - d
+    mut ab := b
+    if ab < 0.0:
+        ab = 0.0 - ab
+    return d <= 0.000001 * (1.0 + ab)
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if near(sign(0.0 - 3.0), 0.0 - 1.0):
+        s = s + 1
+    if near(clamp(5.0, 0.0, 1.0), 1.0):
+        s = s + 1
+    if near(trunc(0.0 - 2.7), 0.0 - 2.0) and near(fract(2.75), 0.75):
+        s = s + 1
+    if near(cube(3.0), 27.0) and near(square(4.0), 16.0):
+        s = s + 1
+    if near(cbrt(27.0), 3.0) and near(cbrt(0.0 - 8.0), 0.0 - 2.0):
+        s = s + 1
+    if near(hypot(3.0, 4.0), 5.0):
+        s = s + 1
+    if near(exp2(10.0), 1024.0) and near(exp10(3.0), 1000.0):
+        s = s + 1
+    if near(log1p(0.0), 0.0):
+        s = s + 1
+    if near(atan(1.0), PI / 4.0):
+        s = s + 1
+    if near(asin(0.5), PI / 6.0):
+        s = s + 1
+    if near(acos(0.5), PI / 3.0):
+        s = s + 1
+    if near(atan2(1.0, 1.0), PI / 4.0) and near(atan2(1.0, 0.0 - 1.0), 3.0 * PI / 4.0):
+        s = s + 1
+    if near(sinh(0.0), 0.0) and near(cosh(0.0), 1.0):
+        s = s + 1
+    if near(tanh(0.0), 0.0):
+        s = s + 1
+    if near(asinh(0.0), 0.0) and near(acosh(1.0), 0.0):
+        s = s + 1
+    if near(atanh(0.5), 0.5493061443):
+        s = s + 1
+    if near(deg_to_rad(180.0), PI) and near(rad_to_deg(PI), 180.0):
+        s = s + 1
+    if near(lerp(0.0, 10.0, 0.3), 3.0) and near(inverse_lerp(0.0, 10.0, 3.0), 0.3):
+        s = s + 1
+    if near(smoothstep(0.0, 1.0, 0.5), 0.5) and near(saturate(2.0), 1.0):
+        s = s + 1
+    if approx_equal(1.0, 1.0000001, 0.001):
+        s = s + 1
+    if near(sigmoid(0.0), 0.5) and near(relu(0.0 - 2.0), 0.0):
+        s = s + 1
+    if near(leaky_relu(0.0 - 2.0, 0.1), 0.0 - 0.2):
+        s = s + 1
+    if near(softplus(0.0), LN2):
+        s = s + 1
+    if near(swish(0.0), 0.0):
+        s = s + 1
+    if popcount(255 as u64) == 8 as i64 and clz(1 as u64) == 63 as i64:
+        s = s + 1
+    if ctz(8 as u64) == 3 as i64 and bit_width(255 as u64) == 8 as i64:
+        s = s + 1
+    if rotate_left(1 as u64, 4 as i64) == 16 as u64 and has_single_bit(64 as u64):
+        s = s + 1
+    if mul_hi(18446744073709551615 as u64, 2 as u64) == 1 as u64:
+        s = s + 1
+    return s   // expect 28
