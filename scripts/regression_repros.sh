@@ -51,6 +51,7 @@ rows=(
   "t_fcmp|exit|15"
   "t_farg|exit|44"
   "t_fret|exit|75"
+  "t_math|exit|127"
 )
 
 for row in "${rows[@]}"; do

@@ -1,0 +1,190 @@
+// Pure-AXIOM math library — NO libm/extern dependency.
+// All functions are self-contained (inline helpers, no internal calls that
+// hold floats across a call) to stay correct under the current native backend.
+// Algorithms: Newton (sqrt), range-reduction + Taylor (exp/ln/sin/cos),
+// exp/ln composition (pow).
+
+const PI: f64 = 3.14159265358979323846
+const TWO_PI: f64 = 6.28318530717958647692
+const HALF_PI: f64 = 1.57079632679489661923
+const LN2: f64 = 0.69314718055994530942
+const E: f64 = 2.71828182845904523536
+
+fn m_abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+fn m_floor(x: f64) -> f64:
+    let t = (x as i64) as f64
+    if t > x:
+        return t - 1.0
+    return t
+
+fn m_sqrt(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+// exp via range reduction: e^x = 2^k * e^r, k=round(x/ln2), |r|<=ln2/2
+fn m_exp(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    // Taylor e^r
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    // multiply by 2^k
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+// ln via ln(m * 2^e) = e*ln2 + ln(m), m in [1,2); ln(m)=2*atanh((m-1)/(m+1))
+fn m_ln(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut m := x
+    mut e := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        e = e + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        e = e - 1 as i64
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    mut term := t
+    mut sum := 0.0
+    mut n := 0 as i32
+    while n < 20:
+        sum = sum + term / ((2 * n + 1) as f64)
+        term = term * t2
+        n = n + 1
+    return (e as f64) * LN2 + 2.0 * sum
+
+// b^p = exp(p * ln b). MUST be fully self-contained: a float param held across
+// an internal call is corrupted by the backend (callee-saved XMM not preserved,
+// BUG#44), so ln/exp are inlined here rather than called.
+fn m_pow(b: f64, p: f64) -> f64:
+    if b <= 0.0:
+        return 0.0
+    // --- inline ln(b) ---
+    mut m := b
+    mut le := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        le = le + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        le = le - 1 as i64
+    let lt = (m - 1.0) / (m + 1.0)
+    let lt2 = lt * lt
+    mut lterm := lt
+    mut lsum := 0.0
+    mut ln_ := 0 as i32
+    while ln_ < 20:
+        lsum = lsum + lterm / ((2 * ln_ + 1) as f64)
+        lterm = lterm * lt2
+        ln_ = ln_ + 1
+    let lnb = (le as f64) * LN2 + 2.0 * lsum
+    // --- x = p * ln(b), inline exp(x) ---
+    let x = p * lnb
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut eterm := 1.0
+    mut esum := 1.0
+    mut en := 1 as i32
+    while en < 18:
+        eterm = eterm * r / (en as f64)
+        esum = esum + eterm
+        en = en + 1
+    mut res := esum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+// sin via range reduction to [-pi,pi] then Taylor
+fn m_sin(x: f64) -> f64:
+    mut a := x
+    // reduce mod 2pi
+    let q = (a / TWO_PI) as i64
+    a = a - (q as f64) * TWO_PI
+    if a > PI:
+        a = a - TWO_PI
+    if a < (0.0 - PI):
+        a = a + TWO_PI
+    let a2 = a * a
+    mut term := a
+    mut sum := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        sum = sum + term
+        n = n + 1
+    return sum
+
+fn m_cos(x: f64) -> f64:
+    return m_sin(x + HALF_PI)
+
+fn main() -> i32:
+    mut s := 0 as i32
+    // sqrt(2)=1.4142135
+    let a = m_sqrt(2.0)
+    if a > 1.41421 and a < 1.41422:
+        s = s + 1
+    // exp(1)=2.7182818
+    let b = m_exp(1.0)
+    if b > 2.71828 and b < 2.71829:
+        s = s + 2
+    // ln(e)=1.0
+    let c = m_ln(E)
+    if c > 0.99999 and c < 1.00001:
+        s = s + 4
+    // pow(2,10)=1024
+    let d = m_pow(2.0, 10.0)
+    if d > 1023.9 and d < 1024.1:
+        s = s + 8
+    // sin(pi/6)=0.5
+    let e1 = m_sin(0.5235987755982988)
+    if e1 > 0.49999 and e1 < 0.50001:
+        s = s + 16
+    // cos(0)=1.0
+    let f = m_cos(0.0)
+    if f > 0.99999 and f < 1.00001:
+        s = s + 32
+    // floor(3.7)=3
+    let g = m_floor(3.7)
+    if g > 2.999 and g < 3.001:
+        s = s + 64
+    return s
