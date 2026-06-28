@@ -1,0 +1,122 @@
+// examples/bigfloat128.ax — a 128-bit fixed-point real (Q64.64): the bigfloat
+// layer on top of the bignum integer foundation.
+//
+// A Fix128 stores `value * 2^64` in a 128-bit integer (U128): the high 64 bits
+// are the integer part, the low 64 bits the fraction. Addition is plain U128
+// add; multiplication is a 128x128 -> 256-bit widening product shifted right by
+// 64 (the fixed-point scale). Higher precision (f256, f512) just widens the
+// limb count; a true floating bigfloat pairs this mantissa with an exponent.
+// All pure AXIOM + operator overloading, no hardware float — so precision is
+// arbitrary and exact within the fixed grid.
+//
+// Run:  axc build examples/bigfloat128.ax -o bigfloat128 && ./bigfloat128 ; echo $?
+// Expected exit code: 15.
+
+struct U128:
+    lo: u64
+    hi: u64
+
+struct U256:
+    l0: u64
+    l1: u64
+    l2: u64
+    l3: u64
+
+// 64x64 -> 128 widening multiply.
+fn wmul(a: u64, b: u64) -> U128:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let cross = aL * bH + aH * bL
+    mut carry := 0 as u64
+    if cross < aL * bH:
+        carry = 1 as u64
+    let lo = aL * bL + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < aL * bL:
+        c2 = 1 as u64
+    let hi = aH * bH + (cross >> 32) + (carry << 32) + c2
+    return U128(lo: lo, hi: hi)
+
+// 256-bit ripple-carry add.
+fn add256(a: U256, b: U256) -> U256:
+    let r0 = a.l0 + b.l0
+    mut c := 0 as u64
+    if r0 < a.l0:
+        c = 1 as u64
+    let r1 = a.l1 + b.l1 + c
+    c = 0 as u64
+    if r1 < a.l1 or (r1 == a.l1 and (b.l1 != 0 as u64 or c == 1 as u64)):
+        c = 1 as u64
+    let r2 = a.l2 + b.l2 + c
+    c = 0 as u64
+    if r2 < a.l2 or (r2 == a.l2 and b.l2 != 0 as u64):
+        c = 1 as u64
+    let r3 = a.l3 + b.l3 + c
+    return U256(l0: r0, l1: r1, l2: r2, l3: r3)
+
+// 128x128 -> 256 multiply: sum of four limb-shifted partial products.
+fn mul_u128(a: U128, b: U128) -> U256:
+    let p00 = wmul(a.lo, b.lo)   // -> limbs 0,1
+    let p01 = wmul(a.lo, b.hi)   // -> limbs 1,2
+    let p10 = wmul(a.hi, b.lo)   // -> limbs 1,2
+    let p11 = wmul(a.hi, b.hi)   // -> limbs 2,3
+    mut acc := U256(l0: p00.lo, l1: p00.hi, l2: 0 as u64, l3: 0 as u64)
+    acc = add256(acc, U256(l0: 0 as u64, l1: p01.lo, l2: p01.hi, l3: 0 as u64))
+    acc = add256(acc, U256(l0: 0 as u64, l1: p10.lo, l2: p10.hi, l3: 0 as u64))
+    acc = add256(acc, U256(l0: 0 as u64, l1: 0 as u64, l2: p11.lo, l3: p11.hi))
+    return acc
+
+// --- Fix128 = Q64.64 fixed-point real (raw = value * 2^64) ---
+
+fn fix_from_int(n: u64) -> U128:
+    return U128(lo: 0 as u64, hi: n)            // n.0
+
+// add: plain 128-bit add.
+fn fix_add(a: U128, b: U128) -> U128:
+    let lo = a.lo + b.lo
+    mut carry := 0 as u64
+    if lo < a.lo:
+        carry = 1 as u64
+    return U128(lo: lo, hi: a.hi + b.hi + carry)
+
+// multiply: (A*B) >> 64. The 256-bit product's bits [64,192) are the result raw,
+// i.e. limbs l1 (low) and l2 (high) of the product.
+fn fix_mul(a: U128, b: U128) -> U128:
+    let p = mul_u128(a, b)
+    return U128(lo: p.l1, hi: p.l2)
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    let HALF = 9223372036854775808 as u64        // 0.5 * 2^64 = 2^63
+    let QUARTER = 4611686018427387904 as u64     // 0.25 * 2^64 = 2^62
+
+    // 1.5 = 1.0 + 0.5
+    let onehalf = U128(lo: HALF, hi: 1 as u64)
+    let two = fix_from_int(2 as u64)
+
+    // 1.5 * 2.0 = 3.0  -> raw hi = 3, lo = 0
+    let m = fix_mul(onehalf, two)
+    if m.hi == 3 as u64 and m.lo == 0 as u64:
+        s = s + 1
+
+    // 0.5 * 0.5 = 0.25 -> raw lo = 2^62, hi = 0
+    let half = U128(lo: HALF, hi: 0 as u64)
+    let q = fix_mul(half, half)
+    if q.hi == 0 as u64 and q.lo == QUARTER:
+        s = s + 2
+
+    // 0.5 + 0.25 = 0.75 -> raw lo = 2^63 + 2^62, hi = 0
+    let quarter = U128(lo: QUARTER, hi: 0 as u64)
+    let sum = fix_add(half, quarter)
+    if sum.hi == 0 as u64 and sum.lo == 13835058055282163712 as u64:
+        s = s + 4
+
+    // (1.5 * 1.5) = 2.25 -> integer part 2, fraction 0.25 (lo = 2^62)
+    let r = fix_mul(onehalf, onehalf)
+    if r.hi == 2 as u64 and r.lo == QUARTER:
+        s = s + 8
+
+    return s   // 1+2+4+8 = 15
