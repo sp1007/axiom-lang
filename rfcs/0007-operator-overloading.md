@@ -88,11 +88,16 @@ Khi bignum/user-type trộn với primitive trong cùng biểu thức, v1 có 3 
    `5 + big` → lhs là primitive → đi đường numeric → `OP_IADD(int, ptr-bignum)` = RÁC.
    → Hiện phải đặt user-type bên TRÁI. (Follow-up: dispatch đối xứng — nếu lhs
    primitive mà rhs là user-type, thử `rhs.<op>` hoặc reflected method.)
-2. **KHÔNG kiểm tra kiểu toán hạng PHẢI.** `resolve_op_method` chỉ khớp param đầu
-   (self) == kiểu lhs; KHÔNG kiểm rhs. `big + 5` resolve trúng `add(self,o:BigInt)`
-   rồi truyền `5` (int) vào chỗ cần BigInt → mismatch ABI/miscompile. Phải tự
-   convert `big + BigInt.from(5)`. (Follow-up: so kiểu rhs với param thứ 2; nếu
-   lệch → lỗi typecheck khi có error-infra BUG#35.)
+2. **Resolve theo CẢ HAI operand type (cập nhật 2026-06-28).** `resolve_op_method`
+   giờ khớp param0(self)==kiểu lhs VÀ param1==kiểu rhs (khi rhs type biết). →
+   (a) hỗ trợ operator method mixed-type đơn `add(self, o: i64)` cho `Num + i64`
+   (verified t_opmix.ax exit 13); (b) KHÔNG còn gọi nhầm `add(self,o:BigInt)` với
+   rhs khác kiểu (trả no-match thay vì miscompile thầm lặng). **NHƯNG** muốn có
+   ĐỒNG THỜI `add(self,o:BigInt)` VÀ `add(self,o:i64)` (method overloading cùng
+   tên) thì CHƯA được: 2 method cùng tên collision về 1 symbol (mangling theo tên,
+   không theo chữ ký) → segfault. → Hiện: MỘT operator method mỗi tên/type (có thể
+   mixed-type). Follow-up: method overloading cần signature-based mangling
+   (resolver+symtab+codegen) — RFC riêng, lớn.
 3. **KHÔNG ép kiểu ngầm primitive → user-type.** Mọi primitive phải convert tường
    minh sang bignum trước khi vào biểu thức. (Đồng nhất với chính sách RFC 0006:
    không lan kiểu thầm lặng.)

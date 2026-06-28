@@ -9467,7 +9467,11 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
                 let is_ne = op_tok == "!="
                 @free(get_str_ptr(op_tok))
                 if not (mname == ""):
-                    let msym = self.resolve_op_method(mname, lhs_t)
+                    let rhs_node_idx = self.mb.tree.nodes.data[child as i64].next_sibling
+                    mut rhs_t := 0 as u32
+                    if rhs_node_idx != 0 as u32:
+                        rhs_t = self.mb.node_types[rhs_node_idx as i64]
+                    let msym = self.resolve_op_method(mname, lhs_t, rhs_t)
                     if msym != 0 as u32:
                         return self.lower_op_overload(idx, node, child, msym, is_ne)
 
@@ -9554,18 +9558,29 @@ fn op_to_method_name(op: str) -> str:
         return "ge"
     return ""
 
-// RFC 0007: resolve a struct/sum method by conventional name on a receiver type.
-// Mirrors the non-generic method resolution in lower_call_expr: scan SYM_FUNC
-// symbols whose (mangled) name matches `method_name` and whose first parameter,
-// after unwrapping ptr/ref, equals the (unwrapped) receiver type. Returns 0 if
-// no matching method exists.
-pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u32) -> u32:
-    let method_id = self.mb.pool.intern(method_name)
-    mut unwrapped := rec_type
-    mut e := self.mb.typetable.entries.data[unwrapped as i64]
+// RFC 0007: unwrap ptr/ref layers off a type id (helper for method matching).
+fn op_unwrap_type(self: ptr[FuncLowering], t: u32) -> u32:
+    mut u := t
+    mut e := self.mb.typetable.entries.data[u as i64]
     while e.kind == TYPE_KIND_POINTER or e.kind == TYPE_KIND_REF:
-        unwrapped = e.extra as u32
-        e = self.mb.typetable.entries.data[unwrapped as i64]
+        u = e.extra as u32
+        e = self.mb.typetable.entries.data[u as i64]
+    return u
+
+// RFC 0007: resolve a struct/sum operator method by conventional name on a
+// receiver type. Mirrors the non-generic method resolution in lower_call_expr:
+// scan SYM_FUNC symbols whose (mangled) name matches `method_name`, whose first
+// parameter (self, unwrapped) equals the receiver type AND â€” when `rhs_type` is
+// known (non-zero) â€” whose second parameter (unwrapped) equals it. The rhs match
+// supports mixed-type overloads (`add(self, o: u32)`) and, crucially, avoids
+// silently calling `add(self, o: BigInt)` with a wrong-typed rhs. Returns 0 when
+// no method matches (the operand types have no defined operator).
+pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u32, rhs_type: u32) -> u32:
+    let method_id = self.mb.pool.intern(method_name)
+    let unwrapped = self.op_unwrap_type(rec_type)
+    mut rhs_unwrapped := 0 as u32
+    if rhs_type != 0 as u32:
+        rhs_unwrapped = self.op_unwrap_type(rhs_type)
     mut i := 0 as i64
     while i < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[i]
@@ -9574,13 +9589,19 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
             if t_entry.kind == TYPE_KIND_FUNC:
                 let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
                 if fi.params.len > 0 as i64:
-                    mut fp := fi.params.data[0]
-                    mut pe := self.mb.typetable.entries.data[fp as i64]
-                    while pe.kind == TYPE_KIND_POINTER or pe.kind == TYPE_KIND_REF:
-                        fp = pe.extra as u32
-                        pe = self.mb.typetable.entries.data[fp as i64]
+                    let fp = self.op_unwrap_type(fi.params.data[0] as u32)
                     if fp == unwrapped:
-                        return i as u32
+                        // Constrain the rhs (2nd param) only when its type is
+                        // known; binary operators always have a 2nd param.
+                        mut rhs_ok := true
+                        if rhs_unwrapped != 0 as u32:
+                            rhs_ok = false
+                            if fi.params.len > 1 as i64:
+                                let sp = self.op_unwrap_type(fi.params.data[1] as u32)
+                                if sp == rhs_unwrapped:
+                                    rhs_ok = true
+                        if rhs_ok:
+                            return i as u32
         i = i + 1 as i64
     return 0 as u32
 

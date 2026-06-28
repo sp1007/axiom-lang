@@ -46,6 +46,7 @@ rows=(
   "t_opover|exit|44"
   "t_bytes|exit|69"
   "t_u128|exit|91"
+  "t_opmix|exit|13"
 )
 
 for row in "${rows[@]}"; do

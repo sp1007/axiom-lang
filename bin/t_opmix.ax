@@ -1,0 +1,13 @@
+// RFC 0007: operator overloading resolves by BOTH operand types. A single
+// mixed-type operator method `add(self, o: i64)` is selected for `Num + i64`
+// (resolve_op_method matches param0==self-type AND param1==rhs-type). Expected
+// exit code: 13. (Multiple same-name methods / method overloading is a separate
+// unsupported feature — they collide on one symbol.)
+struct Num:
+    v: i64
+    fn add(self, o: i64) -> Num:
+        return Num(v: self.v + o)
+pub fn main() -> i32:
+    let a = Num(v: 10 as i64)
+    let d = a + (3 as i64)     // Num + i64 -> add(self, o: i64) -> 13
+    return d.v as i32
