@@ -1769,11 +1769,19 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
     if nparams <= 0 as i64:
         return
     let snaps = @alloc(nparams * 4 as i64) as ptr[u32]
-    // Phase 1: snapshot incoming integer arg registers (protected MOVs).
+    // Phase 1: snapshot incoming arg registers (protected MOVs).
+    // RFC 0006: a float param (f32/f64) arrives in the positional XMM arg reg
+    // (XMM0..XMM3 on win64), not the integer arg reg. Reading it from RCX/RDX
+    // yielded garbage → all float fn args were 0. The snapshot MOV preserves the
+    // raw 64 bits even if `snap` is GPR-classified (movq is bit-exact), and the
+    // param vreg (float-typed) is XMM-classified so phase-2 movq restores it.
     mut p := 0 as i64
     while p < nparams:
         snaps[p] = 0 as u32
-        let phys = abi_int_arg_reg(sel.abi_name, p)
+        let pty_snap = sel.fn_ptr.params.data[p] as u32
+        mut phys := abi_int_arg_reg(sel.abi_name, p)
+        if pty_snap == 9 as u32 or pty_snap == 10 as u32:
+            phys = abi_float_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = next_vreg(sel)
             snaps[p] = snap
@@ -1787,7 +1795,9 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
         let pty = sel.fn_ptr.params.data[p] as u32
         if pty < sel.table.entries.len as u32:
             psize = sel.table.entries.data[pty as i64].size
-        let phys = abi_int_arg_reg(sel.abi_name, p)
+        mut phys := abi_int_arg_reg(sel.abi_name, p)
+        if pty == 9 as u32 or pty == 10 as u32:
+            phys = abi_float_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = snaps[p]
             // RFC 0001: `str` (16-byte PRIMITIVE) is passed as a pointer and copied

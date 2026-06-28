@@ -11916,6 +11916,17 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
         vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
 
+    // BUG#40: float constants must NOT be integer-folded. eval_binary treats all
+    // operands as i64, but comparison opcodes (OP_EQ/NE/LT/LE/GT/GE) are shared by
+    // int and float (the selector picks comisd vs cmp by operand type). Folding a
+    // float comparison with integer semantics on its IEEE-754 bit pattern gives a
+    // wrong result (e.g. `1.41 > 10.0` at -O1). Track which constant regs came from
+    // OP_FCONST and skip folding any binary op with a float operand (float
+    // arithmetic uses distinct OP_F* opcodes that eval_binary already rejects; only
+    // the shared comparisons need this guard).
+    let is_flt = @alloc(max_reg as i64 + 1 as i64) as ptr[bool]
+    @memset(is_flt as ptr[void], 0 as u8, max_reg as i64 + 1 as i64)
+
     mut changed := false
     let out_val = @alloc(8 as i64) as ptr[u64]
     let addr_taken = mark_addr_taken_regs(f, max_reg)
@@ -11932,6 +11943,8 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                         vals[inst.dest] = ConstVal(known: true, val: full_val)
                     else:
                         vals[inst.dest] = ConstVal(known: true, val: inst.src1 as u64)
+                        if inst.dest <= max_reg:
+                            is_flt[inst.dest] = true
                 else:
                     vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
             i = i + 1 as i64
@@ -11946,7 +11959,9 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
         if opcode_is_binary_alu(inst.opcode):
             let src1_val = vals[inst.src1]
             let src2_val = vals[inst.src2]
-            if src1_val.known and src2_val.known:
+            // BUG#40: never integer-fold an op with a float constant operand.
+            let has_flt = is_flt[inst.src1] or is_flt[inst.src2]
+            if src1_val.known and src2_val.known and not has_flt:
                 let ok = eval_binary(inst.opcode, src1_val.val, src2_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST
@@ -11984,6 +11999,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
     @free(vals as ptr[u8])
     @free(out_val as ptr[u8])
     @free(addr_taken as ptr[u8])
+    @free(is_flt as ptr[u8])
     return changed
 
 pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
@@ -17468,11 +17484,19 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
     if nparams <= 0 as i64:
         return
     let snaps = @alloc(nparams * 4 as i64) as ptr[u32]
-    // Phase 1: snapshot incoming integer arg registers (protected MOVs).
+    // Phase 1: snapshot incoming arg registers (protected MOVs).
+    // RFC 0006: a float param (f32/f64) arrives in the positional XMM arg reg
+    // (XMM0..XMM3 on win64), not the integer arg reg. Reading it from RCX/RDX
+    // yielded garbage â†’ all float fn args were 0. The snapshot MOV preserves the
+    // raw 64 bits even if `snap` is GPR-classified (movq is bit-exact), and the
+    // param vreg (float-typed) is XMM-classified so phase-2 movq restores it.
     mut p := 0 as i64
     while p < nparams:
         snaps[p] = 0 as u32
-        let phys = abi_int_arg_reg(sel.abi_name, p)
+        let pty_snap = sel.fn_ptr.params.data[p] as u32
+        mut phys := abi_int_arg_reg(sel.abi_name, p)
+        if pty_snap == 9 as u32 or pty_snap == 10 as u32:
+            phys = abi_float_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = next_vreg(sel)
             snaps[p] = snap
@@ -17486,7 +17510,9 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
         let pty = sel.fn_ptr.params.data[p] as u32
         if pty < sel.table.entries.len as u32:
             psize = sel.table.entries.data[pty as i64].size
-        let phys = abi_int_arg_reg(sel.abi_name, p)
+        mut phys := abi_int_arg_reg(sel.abi_name, p)
+        if pty == 9 as u32 or pty == 10 as u32:
+            phys = abi_float_arg_reg(sel.abi_name, p)
         if phys != REG_NONE:
             let snap = snaps[p]
             // RFC 0001: `str` (16-byte PRIMITIVE) is passed as a pointer and copied
@@ -17637,6 +17663,19 @@ pub fn is_two_operand_read(op: u16) -> bool:
     if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR or op == MACH_NEG or op == MACH_NOT:
         return true
     if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
+        return true
+    // BUG#41: comisd (MACH_FCMP) READS its dst operand (the lhs float). Without
+    // this, the lhs's live interval is not extended to the compare, so it looks
+    // dead right after its FCONST and the rhs's FCONST can be allocated the SAME
+    // XMM -> comisd compares a value against itself -> every strict float compare
+    // is false. At -O0 a laundering COPY masked it; at -O1 copy-prop removes it.
+    if op == MACH_FCMP:
+        return true
+    // BUG#42: the float RMW ops lower to `op dst, src` (addsd/subsd/mulsd/divsd)
+    // which READ dst. Same liveness hazard as FCMP -- without marking dst a read,
+    // a chained result (e.g. `(a+b)*0.5`) is considered dead at the second op and
+    // its XMM is reused, corrupting the value. Treat dst as a use, like MACH_*.
+    if op == MACH_FADD or op == MACH_FSUB or op == MACH_FMUL or op == MACH_FDIV:
         return true
     return false
 

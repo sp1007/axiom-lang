@@ -48,6 +48,9 @@ rows=(
   "t_u128|exit|91"
   "t_opmix|exit|13"
   "t_mul128|exit|7"
+  "t_fcmp|exit|15"
+  "t_farg|exit|44"
+  "t_fret|exit|75"
 )
 
 for row in "${rows[@]}"; do

@@ -37,6 +37,19 @@ pub fn is_two_operand_read(op: u16) -> bool:
         return true
     if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
         return true
+    // BUG#41: comisd (MACH_FCMP) READS its dst operand (the lhs float). Without
+    // this, the lhs's live interval is not extended to the compare, so it looks
+    // dead right after its FCONST and the rhs's FCONST can be allocated the SAME
+    // XMM -> comisd compares a value against itself -> every strict float compare
+    // is false. At -O0 a laundering COPY masked it; at -O1 copy-prop removes it.
+    if op == MACH_FCMP:
+        return true
+    // BUG#42: the float RMW ops lower to `op dst, src` (addsd/subsd/mulsd/divsd)
+    // which READ dst. Same liveness hazard as FCMP -- without marking dst a read,
+    // a chained result (e.g. `(a+b)*0.5`) is considered dead at the second op and
+    // its XMM is reused, corrupting the value. Treat dst as a use, like MACH_*.
+    if op == MACH_FADD or op == MACH_FSUB or op == MACH_FMUL or op == MACH_FDIV:
+        return true
     return false
 
 pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec:

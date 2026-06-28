@@ -190,6 +190,17 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
         vals[reg_idx] = ConstVal(known: false, val: 0 as u64)
         reg_idx = reg_idx + 1 as u32
 
+    // BUG#40: float constants must NOT be integer-folded. eval_binary treats all
+    // operands as i64, but comparison opcodes (OP_EQ/NE/LT/LE/GT/GE) are shared by
+    // int and float (the selector picks comisd vs cmp by operand type). Folding a
+    // float comparison with integer semantics on its IEEE-754 bit pattern gives a
+    // wrong result (e.g. `1.41 > 10.0` at -O1). Track which constant regs came from
+    // OP_FCONST and skip folding any binary op with a float operand (float
+    // arithmetic uses distinct OP_F* opcodes that eval_binary already rejects; only
+    // the shared comparisons need this guard).
+    let is_flt = @alloc(max_reg as i64 + 1 as i64) as ptr[bool]
+    @memset(is_flt as ptr[void], 0 as u8, max_reg as i64 + 1 as i64)
+
     mut changed := false
     let out_val = @alloc(8 as i64) as ptr[u64]
     let addr_taken = mark_addr_taken_regs(f, max_reg)
@@ -206,6 +217,8 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
                         vals[inst.dest] = ConstVal(known: true, val: full_val)
                     else:
                         vals[inst.dest] = ConstVal(known: true, val: inst.src1 as u64)
+                        if inst.dest <= max_reg:
+                            is_flt[inst.dest] = true
                 else:
                     vals[inst.dest] = ConstVal(known: false, val: 0 as u64)
             i = i + 1 as i64
@@ -220,7 +233,9 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
         if opcode_is_binary_alu(inst.opcode):
             let src1_val = vals[inst.src1]
             let src2_val = vals[inst.src2]
-            if src1_val.known and src2_val.known:
+            // BUG#40: never integer-fold an op with a float constant operand.
+            let has_flt = is_flt[inst.src1] or is_flt[inst.src2]
+            if src1_val.known and src2_val.known and not has_flt:
                 let ok = eval_binary(inst.opcode, src1_val.val, src2_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST
@@ -258,6 +273,7 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
     @free(vals as ptr[u8])
     @free(out_val as ptr[u8])
     @free(addr_taken as ptr[u8])
+    @free(is_flt as ptr[u8])
     return changed
 
 pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
