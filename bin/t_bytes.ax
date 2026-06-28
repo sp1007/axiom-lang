@@ -1,0 +1,15 @@
+// Byte/bit extraction idioms — the pattern the compiler itself uses to emit
+// machine code (REX/ModRM, PE/COFF headers). Locks in correct interaction of
+// SHR-vs-SAR (BUG#34.2), narrow-cast masking (RFC 0006) and AND (BUG#36).
+// a = 65555 = 0x00010013. Expected exit code: 69.
+fn main() -> i32:
+    let a = 65555 as u32
+    let b0 = a as u8            // byte0 = 0x13 = 19
+    let b1 = (a >> 8) as u8     // byte1 = 0x00 = 0
+    let b2 = (a >> 16) as u8    // byte2 = 0x01 = 1
+    let b3 = (a >> 24) as u8    // byte3 = 0x00 = 0
+    let s8  = (a << 8) as u8    // left shift >=8 -> 0
+    let s24 = (a << 24) as u8   // left shift >=8 -> 0
+    let s4  = (a << 4) as u8    // 0x30 = 48
+    let bit0 = (a & 1) as i32   // 1
+    return (b0 as i32) + (b1 as i32) + (b2 as i32) + (b3 as i32) + (s8 as i32) + (s24 as i32) + (s4 as i32) + bit0
