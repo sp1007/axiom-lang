@@ -1,0 +1,24 @@
+// Regression: 128-bit add (two u64 limbs + carry) via operator overloading.
+// Proves operator `+`/`==` on a user type + u64 overflow-carry + 16-byte struct
+// return work together (the bignum building block). Expected exit code: 91.
+struct U128:
+    lo: u64
+    hi: u64
+    fn add(self, o: U128) -> U128:
+        let lo = self.lo + o.lo
+        mut carry := 0 as u64
+        if lo < self.lo:
+            carry = 1 as u64
+        let hi = self.hi + o.hi + carry
+        return U128(lo: lo, hi: hi)
+    fn eq(self, o: U128) -> bool:
+        return self.lo == o.lo and self.hi == o.hi
+
+pub fn main() -> i32:
+    let a = U128(lo: 18446744073709551615 as u64, hi: 5 as u64)
+    let b = U128(lo: 2 as u64, hi: 3 as u64)
+    let c = a + b
+    let expected = U128(lo: 1 as u64, hi: 9 as u64)
+    if c == expected:
+        return (c.hi as i32) * 10 + (c.lo as i32)
+    return 0

@@ -1,0 +1,39 @@
+// examples/bigint128.ax — arbitrary-precision integers, the building block.
+//
+// Demonstrates that AXIOM can express big-number arithmetic with natural `a + b`
+// syntax using RFC 0007 operator overloading. A 128-bit integer is two u64
+// limbs; `add` propagates carry by detecting unsigned wraparound (the sum of two
+// u64 is < an operand exactly when it overflowed). The same limb+carry technique
+// scales to an N-limb heap-backed BigInt in the standard library.
+//
+// Exercises end-to-end: operator `+` dispatch on a user type, u64 arithmetic
+// (BUG#34), overflow-detect carry, and 16-byte struct by-value return (RFC 0001).
+//
+// Run:  axc build examples/bigint128.ax -o bigint128 && ./bigint128 ; echo $?
+// Expected exit code: 91.
+
+struct U128:
+    lo: u64
+    hi: u64
+
+    fn add(self, o: U128) -> U128:
+        let lo = self.lo + o.lo
+        mut carry := 0 as u64
+        if lo < self.lo:            // unsigned wrap => carry out of the low limb
+            carry = 1 as u64
+        let hi = self.hi + o.hi + carry
+        return U128(lo: lo, hi: hi)
+
+    fn eq(self, o: U128) -> bool:
+        return self.lo == o.lo and self.hi == o.hi
+
+pub fn main() -> i32:
+    // a = (5 << 64) + (2^64 - 1),  b = (3 << 64) + 2
+    let a = U128(lo: 18446744073709551615 as u64, hi: 5 as u64)
+    let b = U128(lo: 2 as u64, hi: 3 as u64)
+
+    let c = a + b                  // low limb wraps to 1, carry: 5 + 3 + 1 = 9
+    let expected = U128(lo: 1 as u64, hi: 9 as u64)
+    if c == expected:              // operator == -> U128.eq
+        return (c.hi as i32) * 10 + (c.lo as i32)   // 9*10 + 1 = 91
+    return 0
