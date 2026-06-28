@@ -1,0 +1,131 @@
+// examples/bignum256.ax — scaling the limb pattern past 128 bits: U256, plus a
+// fixed-point fractional type (the basis for arbitrary-precision floats).
+//
+// Bignum is not limited to u128 — the SAME limb + carry technique scales to any
+// width (u256, u512, ...) by adding limbs, and to fractional / float types by
+// fixing a binary point (Q64.64 here) or, for a true bigfloat (f128/f256),
+// pairing a bignum mantissa with an exponent. This file demonstrates U256
+// integer arithmetic and Q64.64 fixed-point, all in pure AXIOM with operator
+// overloading. (Bignum is GPR/struct-based, so BUG#44 — float-across-call — does
+// not apply; these compose via ordinary calls.)
+//
+// Run:  axc build examples/bignum256.ax -o bignum256 && ./bignum256 ; echo $?
+// Expected exit code: 31.
+
+// --- 256-bit unsigned integer: four 64-bit limbs, l0 = least significant ---
+struct U256:
+    l0: u64
+    l1: u64
+    l2: u64
+    l3: u64
+
+    // ripple-carry add (operator +)
+    fn add(self, o: U256) -> U256:
+        let r0 = self.l0 + o.l0
+        mut c := 0 as u64
+        if r0 < self.l0:
+            c = 1 as u64
+        let r1 = self.l1 + o.l1 + c
+        c = 0 as u64
+        if r1 < self.l1 or (r1 == self.l1 and o.l1 != 0 as u64):
+            c = 1 as u64
+        let r2 = self.l2 + o.l2 + c
+        c = 0 as u64
+        if r2 < self.l2 or (r2 == self.l2 and o.l2 != 0 as u64):
+            c = 1 as u64
+        let r3 = self.l3 + o.l3 + c
+        return U256(l0: r0, l1: r1, l2: r2, l3: r3)
+
+fn u256_from(v: u64) -> U256:
+    return U256(l0: v, l1: 0 as u64, l2: 0 as u64, l3: 0 as u64)
+
+// 64x64 -> (hi,lo) widening multiply, returned as the low two limbs of a U256.
+fn wmul(a: u64, b: u64) -> U256:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let cross = aL * bH + aH * bL
+    mut carry := 0 as u64
+    if cross < aL * bH:
+        carry = 1 as u64
+    let lo = aL * bL + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < aL * bL:
+        c2 = 1 as u64
+    let hi = aH * bH + (cross >> 32) + (carry << 32) + c2
+    return U256(l0: lo, l1: hi, l2: 0 as u64, l3: 0 as u64)
+
+// U256 * u64 -> U256 (truncated): multiply each limb, ripple the high words up.
+fn mul_u64(x: U256, m: u64) -> U256:
+    let p0 = wmul(x.l0, m)
+    let p1 = wmul(x.l1, m)
+    let p2 = wmul(x.l2, m)
+    // result limb0 = p0.lo
+    // limb1 = p0.hi + p1.lo ; limb2 = p1.hi + p2.lo (+carries) ; limb3 = p2.hi...
+    let r0 = p0.l0
+    let s1 = p0.l1 + p1.l0
+    mut c1 := 0 as u64
+    if s1 < p0.l1:
+        c1 = 1 as u64
+    let s2 = p1.l1 + p2.l0 + c1
+    mut c2 := 0 as u64
+    if s2 < p1.l1:
+        c2 = 1 as u64
+    let s3 = p2.l1 + x.l3 * m + c2
+    return U256(l0: r0, l1: s1, l2: s2, l3: s3)
+
+// n! as a 256-bit integer (holds up to 57! ~ 4e76 < 2^256).
+fn fact_u256(n: i64) -> U256:
+    mut acc := u256_from(1 as u64)
+    mut k := 2 as u64
+    mut i := 2 as i64
+    while i <= n:
+        acc = mul_u64(acc, k)
+        k = k + 1 as u64
+        i = i + 1
+    return acc
+
+// --- Q64.64 fixed-point (a 128-bit fraction; basis for bigfloat mantissas) ---
+// value is stored as round(real * 2^64) in a u64 "fixed" word for the fraction.
+fn fixed_half() -> u64:
+    return 9223372036854775808 as u64       // 0.5 * 2^64 = 2^63
+
+fn fixed_quarter() -> u64:
+    return 4611686018427387904 as u64       // 0.25 * 2^64 = 2^62
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+
+    // U256 add with carry rippling past limb 0 into limb 2:
+    // (2^128 - 1 in low two limbs) + 1 = 2^128  -> l0=0, l1=0, l2=1
+    let big = U256(l0: 18446744073709551615 as u64, l1: 18446744073709551615 as u64, l2: 0 as u64, l3: 0 as u64)
+    let one = u256_from(1 as u64)
+    let sum = big + one
+    if sum.l0 == 0 as u64 and sum.l1 == 0 as u64 and sum.l2 == 1 as u64:
+        s = s + 1
+
+    // 40! ~ 8.16e47 > 2^128, so a limb above the low 128 bits must be set:
+    // proves we are genuinely past u128.
+    let f40 = fact_u256(40 as i64)
+    if f40.l2 != 0 as u64 or f40.l3 != 0 as u64:
+        s = s + 2
+
+    // 10! = 3628800 fits in limb0 exactly.
+    let f10 = fact_u256(10 as i64)
+    if f10.l0 == 3628800 as u64 and f10.l1 == 0 as u64:
+        s = s + 4
+
+    // Fixed-point: 0.5 + 0.25 = 0.75  ->  2^63 + 2^62 = 13835058055282163712
+    let q = fixed_half() + fixed_quarter()
+    if q == 13835058055282163712 as u64:
+        s = s + 8
+
+    // U256 multiply scaling: 1_000_000^3 = 1e18 (still in limb0, exact check)
+    let m1 = mul_u64(u256_from(1000000 as u64), 1000000 as u64)
+    let m2 = mul_u64(m1, 1000000 as u64)
+    if m2.l0 == 1000000000000000000 as u64 and m2.l1 == 0 as u64:
+        s = s + 16
+
+    return s   // 1+2+4+8+16 = 31

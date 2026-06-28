@@ -1,110 +1,312 @@
 // AXIOM Standard Library — std.math
 //
-// Mathematical constants and functions.
+// Pure-AXIOM mathematical constants and functions. NO libm / extern dependency:
+// every transcendental is implemented in AXIOM (Newton, range-reduction,
+// Taylor / atanh series).
+//
+// Backend note (BUG#44): the native backend does not yet preserve callee-saved
+// XMM registers across calls, so a float value held ACROSS an internal call is
+// corrupted. Functions here are therefore written either as leaves (no internal
+// call) or as single tail-style compositions where the float param is consumed
+// before the call (e.g. `ln(x) / LN2`). Compositions that need a float param
+// AFTER a call (pow, tan) inline their dependencies instead of calling them.
 
-/// Mathematical constants
-pub const PI:    f64 = 3.14159265358979323846
-pub const E:     f64 = 2.71828182845904523536
-pub const TAU:   f64 = 6.28318530717958647692
-pub const SQRT2: f64 = 1.41421356237309504880
-pub const LN2:   f64 = 0.69314718055994530942
-pub const LN10:  f64 = 2.30258509299404568402
+// --- Constants ---
+pub const PI:      f64 = 3.14159265358979323846
+pub const TAU:     f64 = 6.28318530717958647692
+pub const HALF_PI: f64 = 1.57079632679489661923
+pub const E:       f64 = 2.71828182845904523536
+pub const SQRT2:   f64 = 1.41421356237309504880
+pub const LN2:     f64 = 0.69314718055994530942
+pub const LN10:    f64 = 2.30258509299404568402
 
-pub const INF:   f64 = @compiler_intrinsic("f64_inf")
-pub const NAN:   f64 = @compiler_intrinsic("f64_nan")
+// --- Absolute value / rounding (leaf) ---
 
-// --- Extern libm wrappers (f64) ---
+pub fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
 
-pub extern fn sin(x: f64) -> f64
-pub extern fn cos(x: f64) -> f64
-pub extern fn tan(x: f64) -> f64
-pub extern fn asin(x: f64) -> f64
-pub extern fn acos(x: f64) -> f64
-pub extern fn atan(x: f64) -> f64
-pub extern fn atan2(y: f64, x: f64) -> f64
-pub extern fn exp(x: f64) -> f64
-pub extern fn log(x: f64) -> f64
-pub extern fn log2(x: f64) -> f64
-pub extern fn log10(x: f64) -> f64
-pub extern fn sqrt(x: f64) -> f64
-pub extern fn cbrt(x: f64) -> f64
-pub extern fn pow(base: f64, exp: f64) -> f64
-pub extern fn floor(x: f64) -> f64
-pub extern fn ceil(x: f64) -> f64
-pub extern fn round(x: f64) -> f64
-pub extern fn fmod(x: f64, y: f64) -> f64
-pub extern fn fabs(x: f64) -> f64
+pub fn floor(x: f64) -> f64:
+    let t = (x as i64) as f64
+    if t > x:
+        return t - 1.0
+    return t
 
-// --- AXIOM-implemented functions ---
+pub fn ceil(x: f64) -> f64:
+    let t = (x as i64) as f64
+    if t < x:
+        return t + 1.0
+    return t
 
-/// Returns the absolute value.
-pub fn abs(x: i64) -> i64 {
-    if x < 0 { -x } else { x }
-}
+pub fn round(x: f64) -> f64:
+    if x < 0.0:
+        return (x - 0.5) as i64 as f64
+    return (x + 0.5) as i64 as f64
 
-/// Returns the absolute value (i32).
-pub fn abs_i32(x: i32) -> i32 {
-    if x < 0 { -x } else { x }
-}
+pub fn fmod(x: f64, y: f64) -> f64:
+    if y == 0.0:
+        return 0.0
+    let q = (x / y) as i64 as f64
+    return x - q * y
 
-/// Returns the minimum of two values.
-pub fn min[T: Ord](a: T, b: T) -> T {
-    if a <= b { a } else { b }
-}
+// --- Roots / exp / log (leaf, self-contained) ---
 
-/// Returns the maximum of two values.
-pub fn max[T: Ord](a: T, b: T) -> T {
-    if a >= b { a } else { b }
-}
+// Newton-Raphson square root.
+pub fn sqrt(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
 
-/// Clamps a value to the range [lo, hi].
-pub fn clamp[T: Ord](x: T, lo: T, hi: T) -> T {
-    if x < lo { lo } else if x > hi { hi } else { x }
-}
+// e^x via range reduction (e^x = 2^k * e^r, k = round(x/ln2)) + Taylor on r.
+pub fn exp(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
 
-/// Integer power (i64).
-pub fn pow_i64(base: i64, exp: i64) -> i64 {
-    let mut result: i64 = 1
-    let mut b = base
-    let mut e = exp
-    while e > 0 {
-        if e % 2 == 1 {
+// Natural log via ln(m * 2^e) = e*ln2 + ln(m), m in [1,2),
+// ln(m) = 2 * atanh((m-1)/(m+1)).
+pub fn ln(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut m := x
+    mut e := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        e = e + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        e = e - 1 as i64
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    mut term := t
+    mut sum := 0.0
+    mut n := 0 as i32
+    while n < 20:
+        sum = sum + term / ((2 * n + 1) as f64)
+        term = term * t2
+        n = n + 1
+    return (e as f64) * LN2 + 2.0 * sum
+
+// Single tail-composition: param x is consumed by ln() before the divide, so it
+// is not held across the call (BUG#44-safe).
+pub fn log2(x: f64) -> f64:
+    return ln(x) / LN2
+
+pub fn log10(x: f64) -> f64:
+    return ln(x) / LN10
+
+// b^p = exp(p * ln b). Inlined (p must survive past the ln computation).
+pub fn pow(b: f64, p: f64) -> f64:
+    if b <= 0.0:
+        return 0.0
+    mut m := b
+    mut le := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        le = le + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        le = le - 1 as i64
+    let lt = (m - 1.0) / (m + 1.0)
+    let lt2 = lt * lt
+    mut lterm := lt
+    mut lsum := 0.0
+    mut li := 0 as i32
+    while li < 20:
+        lsum = lsum + lterm / ((2 * li + 1) as f64)
+        lterm = lterm * lt2
+        li = li + 1
+    let lnb = (le as f64) * LN2 + 2.0 * lsum
+    let x = p * lnb
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut eterm := 1.0
+    mut esum := 1.0
+    mut en := 1 as i32
+    while en < 18:
+        eterm = eterm * r / (en as f64)
+        esum = esum + eterm
+        en = en + 1
+    mut res := esum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+// --- Trigonometry ---
+
+// sin via reduction to [-pi, pi] then Taylor (leaf, self-contained).
+pub fn sin(x: f64) -> f64:
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    let a2 = a * a
+    mut term := a
+    mut sum := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        sum = sum + term
+        n = n + 1
+    return sum
+
+// cos(x) = sin(x + pi/2). Single tail-composition (x consumed before the call).
+pub fn cos(x: f64) -> f64:
+    return sin(x + HALF_PI)
+
+// tan = sin/cos, inlined (x is needed for both halves -> cannot survive a call).
+pub fn tan(x: f64) -> f64:
+    // reduce once
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    // sin(a)
+    let a2 = a * a
+    mut sterm := a
+    mut s := a
+    mut sn := 1 as i32
+    while sn < 12:
+        let sd = ((2 * sn) * (2 * sn + 1)) as f64
+        sterm = (0.0 - sterm) * a2 / sd
+        s = s + sterm
+        sn = sn + 1
+    // cos(a) = 1 - a^2/2! + ...
+    mut cterm := 1.0
+    mut c := 1.0
+    mut cn := 1 as i32
+    while cn < 12:
+        let cd = ((2 * cn - 1) * (2 * cn)) as f64
+        cterm = (0.0 - cterm) * a2 / cd
+        c = c + cterm
+        cn = cn + 1
+    if c == 0.0:
+        return 0.0
+    return s / c
+
+// --- Float predicates ---
+
+pub fn is_nan(x: f64) -> bool:
+    return x != x
+
+pub fn is_inf(x: f64) -> bool:
+    return x > 1.0e308 or x < (0.0 - 1.0e308)
+
+pub fn is_finite(x: f64) -> bool:
+    return not is_nan(x) and not is_inf(x)
+
+// --- Integer helpers ---
+
+pub fn abs_i64(x: i64) -> i64:
+    if x < 0 as i64:
+        return 0 as i64 - x
+    return x
+
+pub fn min_i64(a: i64, b: i64) -> i64:
+    if a <= b:
+        return a
+    return b
+
+pub fn max_i64(a: i64, b: i64) -> i64:
+    if a >= b:
+        return a
+    return b
+
+pub fn clamp_i64(x: i64, lo: i64, hi: i64) -> i64:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+pub fn min_f64(a: f64, b: f64) -> f64:
+    if a <= b:
+        return a
+    return b
+
+pub fn max_f64(a: f64, b: f64) -> f64:
+    if a >= b:
+        return a
+    return b
+
+// Fast integer exponentiation (exponentiation by squaring).
+pub fn pow_i64(base: i64, exp: i64) -> i64:
+    mut result := 1 as i64
+    mut b := base
+    mut e := exp
+    while e > 0 as i64:
+        if e % 2 as i64 == 1 as i64:
             result = result * b
-        }
         b = b * b
-        e = e / 2
-    }
-    result
-}
+        e = e / 2 as i64
+    return result
 
-/// Greatest common divisor.
-pub fn gcd(a: i64, b: i64) -> i64 {
-    let mut x = abs(a)
-    let mut y = abs(b)
-    while y != 0 {
+// Greatest common divisor (Euclid).
+pub fn gcd(a: i64, b: i64) -> i64:
+    mut x := a
+    if x < 0 as i64:
+        x = 0 as i64 - x
+    mut y := b
+    if y < 0 as i64:
+        y = 0 as i64 - y
+    while y != 0 as i64:
         let t = y
         y = x % y
         x = t
-    }
-    x
-}
+    return x
 
-/// Least common multiple.
-pub fn lcm(a: i64, b: i64) -> i64 {
-    if a == 0 || b == 0 { 0 } else { abs(a) / gcd(a, b) * abs(b) }
-}
-
-/// Check if a float is NaN.
-pub fn is_nan(x: f64) -> bool {
-    x != x
-}
-
-/// Check if a float is infinite.
-pub fn is_inf(x: f64) -> bool {
-    x == INF || x == -INF
-}
-
-/// Check if a float is finite (not NaN, not Inf).
-pub fn is_finite(x: f64) -> bool {
-    !is_nan(x) && !is_inf(x)
-}
+// Least common multiple.
+pub fn lcm(a: i64, b: i64) -> i64:
+    if a == 0 as i64 or b == 0 as i64:
+        return 0 as i64
+    mut g := gcd(a, b)
+    mut ax := a
+    if ax < 0 as i64:
+        ax = 0 as i64 - ax
+    mut bx := b
+    if bx < 0 as i64:
+        bx = 0 as i64 - bx
+    return ax / g * bx

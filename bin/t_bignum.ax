@@ -1,0 +1,134 @@
+// examples/bignum_math.ax — math functions operating on a big-number type.
+//
+// Demonstrates that std.math-style functions work on arbitrary-precision values,
+// not just primitives. A 128-bit unsigned integer (two u64 limbs) carries values
+// far beyond u64; arithmetic uses RFC 0007 operator overloading (`a + b`) plus a
+// schoolbook 64x64->128 multiply. Math functions (fibonacci, factorial, power)
+// then COMPOSE over U128 via ordinary function calls.
+//
+// Note: BUG#44 (float-across-call corruption) does NOT affect bignum — U128 is a
+// struct passed in GPRs / by-address, and GPR callee-saved registers ARE
+// preserved across calls, so bignum math composes freely (unlike f64 math).
+//
+// Run:  axc build examples/bignum_math.ax -o bignum_math && ./bignum_math ; echo $?
+// Expected exit code: 63.
+
+struct U128:
+    lo: u64
+    hi: u64
+
+    // 128-bit add with carry (operator +).
+    fn add(self, o: U128) -> U128:
+        let lo = self.lo + o.lo
+        mut carry := 0 as u64
+        if lo < self.lo:
+            carry = 1 as u64
+        return U128(lo: lo, hi: self.hi + o.hi + carry)
+
+    fn eq(self, o: U128) -> bool:
+        return self.lo == o.lo and self.hi == o.hi
+
+// 64x64 -> 128 widening multiply (half-limb schoolbook).
+fn mul64(a: u64, b: u64) -> U128:
+    let mask = 4294967295 as u64
+    let aL = a & mask
+    let aH = a >> 32
+    let bL = b & mask
+    let bH = b >> 32
+    let ll = aL * bL
+    let lh = aL * bH
+    let hl = aH * bL
+    let hh = aH * bH
+    let cross = lh + hl
+    mut carry := 0 as u64
+    if cross < lh:
+        carry = 1 as u64
+    let lo = ll + (cross << 32)
+    mut c2 := 0 as u64
+    if lo < ll:
+        c2 = 1 as u64
+    let hi = hh + (cross >> 32) + (carry << 32) + c2
+    return U128(lo: lo, hi: hi)
+
+// U128 * u64 -> U128 (truncated to 128 bits; sufficient for factorials < 2^128).
+fn mul_u64(x: U128, m: u64) -> U128:
+    let low = mul64(x.lo, m)
+    return U128(lo: low.lo, hi: low.hi + x.hi * m)
+
+fn u128_from(v: u64) -> U128:
+    return U128(lo: v, hi: 0 as u64)
+
+// --- Math functions over U128 (compose via calls) ---
+
+// Fibonacci F(n) as a 128-bit integer (uses operator + on U128).
+fn fib_big(n: i64) -> U128:
+    mut a := u128_from(0 as u64)
+    mut b := u128_from(1 as u64)
+    mut i := 0 as i64
+    while i < n:
+        let c = a + b
+        a = b
+        b = c
+        i = i + 1
+    return a
+
+// n! as a 128-bit integer (uses U128 * u64).
+fn fact_big(n: i64) -> U128:
+    mut acc := u128_from(1 as u64)
+    mut k := 2 as u64
+    mut i := 2 as i64
+    while i <= n:
+        acc = mul_u64(acc, k)
+        k = k + 1 as u64
+        i = i + 1
+    return acc
+
+// 2^n as a 128-bit integer (repeated doubling = self + self).
+fn pow2_big(n: i64) -> U128:
+    mut r := u128_from(1 as u64)
+    mut i := 0 as i64
+    while i < n:
+        r = r + r
+        i = i + 1
+    return r
+
+// Integer gcd (Euclid) — a math function reusable for limb-level work.
+fn gcd_i64(a: i64, b: i64) -> i64:
+    mut x := a
+    mut y := b
+    while y != 0 as i64:
+        let t = y
+        y = x % y
+        x = t
+    return x
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+
+    // F(100) = 354224848179261915075 = 19 * 2^64 + 3737010778780434371
+    let f = fib_big(100 as i64)
+    if f.hi == 19 as u64:
+        s = s + 1
+    if f.lo % 1000 as u64 == 371 as u64:
+        s = s + 2
+
+    // 20! = 2432902008176640000 (fits in u64, hi = 0)
+    let f20 = fact_big(20 as i64)
+    if f20.hi == 0 as u64 and f20.lo == 2432902008176640000 as u64:
+        s = s + 4
+
+    // 25! overflows u64 -> high limb is non-zero (big-number territory)
+    let f25 = fact_big(25 as i64)
+    if f25.hi > 0 as u64:
+        s = s + 8
+
+    // 2^100 = 2^36 * 2^64 -> hi = 68719476736, lo = 0
+    let p = pow2_big(100 as i64)
+    if p.hi == 68719476736 as u64 and p.lo == 0 as u64:
+        s = s + 16
+
+    // gcd(48, 36) = 12
+    if gcd_i64(48 as i64, 36 as i64) == 12 as i64:
+        s = s + 32
+
+    return s   // 1+2+4+8+16+32 = 63
