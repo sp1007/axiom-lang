@@ -52,7 +52,7 @@ Blockers that gate whole categories:
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
 | 23 | Quaternion | 🔒 | — | 4×f64=32B → **BUG#45** |
 | 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0 (oracle-verified). todo: zeta |
-| 25 | Numerical analysis | ⬜ | — | array-sampled trapezoid/simpson + scalar bisection/newton (generic f needs closures 🔒) |
+| 25 | Numerical analysis | 🔶 | numerical | sampled trapezoid/simpson/central+forward diff (oracle-verified). generic root-find/quadrature need closures 🔒 |
 | 26 | Signal processing | 🔶 | signal | window fns hann/hamming/blackman/bartlett/welch (oracle-verified). todo: FFT (complex arrays) |
 | 27 | Machine learning | ✅ | math,ml | sigmoid/relu/leaky_relu/softplus/swish/tanh (math) + gelu/mse/mae/bce/softmax (ml, oracle-verified) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
@@ -78,7 +78,7 @@ Blockers that gate whole categories:
 7. ~~bit math fill-ins (#18)~~ ✅ done (rotate_right/reverse_bits/bit_floor/bit_ceil/parity).
 8. ~~special fns (#24)~~ ✅ done (factorial_real/digamma/bessel_j0, oracle-verified vs scipy).
 9. ~~crypto (#34)~~ ✅ done (Miller-Rabin nt_is_probable_prime; detects Carmichael).
-10. **numerical analysis** (#25) — array-sampled trapezoid/simpson; scalar bisection.
+10. ~~numerical analysis (#25)~~ 🔶 done (sampled trapezoid/simpson/diff; generic-f forms need closures 🔒).
 
 ## Blocked until backend keystone
 - **BUG#45 fix** unlocks: Matrix (#21), Quaternion (#23), Vec4 (#36). Needs x86

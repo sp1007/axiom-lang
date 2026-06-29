@@ -1,0 +1,58 @@
+// Composite trapezoidal rule over n samples spaced h.
+fn nm_trapezoid(y: ptr[f64], n: i64, h: f64) -> f64:
+    mut acc := 0.5 * y[0] + 0.5 * y[n - 1 as i64]
+    mut i := 1 as i64
+    while i < n - 1 as i64:
+        acc = acc + y[i]
+        i = i + 1
+    return acc * h
+
+// Composite Simpson's rule (requires odd n = even # of intervals).
+fn nm_simpson(y: ptr[f64], n: i64, h: f64) -> f64:
+    mut acc := y[0] + y[n - 1 as i64]
+    mut i := 1 as i64
+    while i < n - 1 as i64:
+        if i % (2 as i64) == 1 as i64:
+            acc = acc + 4.0 * y[i]
+        else:
+            acc = acc + 2.0 * y[i]
+        i = i + 1
+    return acc * h / 3.0
+
+// Central-difference derivative at interior sample i.
+fn nm_diff_central(y: ptr[f64], i: i64, h: f64) -> f64:
+    return (y[i + 1 as i64] - y[i - 1 as i64]) / (2.0 * h)
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    let h = 0.25
+    let n = 9 as i64
+    let y2 = @alloc(n * 8 as i64) as ptr[f64]
+    let y3 = @alloc(n * 8 as i64) as ptr[f64]
+    mut i := 0 as i64
+    while i < n:
+        let x = (i as f64) * h
+        y2[i] = x * x
+        y3[i] = x * x * x
+        i = i + 1
+    mut s := 0 as i32
+    if near(nm_trapezoid(y2, n, h), 2.6875):
+        s = s + 1
+    if near(nm_simpson(y2, n, h), 2.666667):
+        s = s + 2
+    if near(nm_simpson(y3, n, h), 4.0):
+        s = s + 4
+    if near(nm_trapezoid(y3, n, h), 4.0625):
+        s = s + 8
+    if near(nm_diff_central(y2, 4 as i64, h), 2.0):
+        s = s + 16
+    if near(nm_diff_central(y3, 4 as i64, h), 3.0625):
+        s = s + 32
+    if near(nm_simpson(y2, n, h), 2.666667) and near(nm_trapezoid(y2, n, h), 2.6875):
+        s = s + 64
+    return s   // expect 127

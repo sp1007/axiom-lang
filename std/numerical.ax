@@ -1,0 +1,38 @@
+// AXIOM Standard Library — std.numerical
+//
+// Numerical analysis over SAMPLED data (ptr[f64] of n samples spaced h):
+// composite trapezoid/Simpson integration and central-difference derivative.
+// Pure arithmetic, no std.math dependency, BUG#45/46/48-immune.
+//
+// NOTE: root-finding / quadrature of an *arbitrary* function f need first-class
+// function values (closures), which the language does not yet support; those are
+// deferred. The sampled-data forms here cover the common case.
+
+// Composite trapezoidal rule: integral of n samples spaced h.
+pub fn nm_trapezoid(y: ptr[f64], n: i64, h: f64) -> f64:
+    mut acc := 0.5 * y[0] + 0.5 * y[n - 1 as i64]
+    mut i := 1 as i64
+    while i < n - 1 as i64:
+        acc = acc + y[i]
+        i = i + 1
+    return acc * h
+
+// Composite Simpson's rule; requires odd n (an even number of intervals).
+pub fn nm_simpson(y: ptr[f64], n: i64, h: f64) -> f64:
+    mut acc := y[0] + y[n - 1 as i64]
+    mut i := 1 as i64
+    while i < n - 1 as i64:
+        if i % (2 as i64) == 1 as i64:
+            acc = acc + 4.0 * y[i]
+        else:
+            acc = acc + 2.0 * y[i]
+        i = i + 1
+    return acc * h / 3.0
+
+// Central-difference first derivative at interior sample i.
+pub fn nm_diff_central(y: ptr[f64], i: i64, h: f64) -> f64:
+    return (y[i + 1 as i64] - y[i - 1 as i64]) / (2.0 * h)
+
+// Forward-difference derivative at sample i (for the left boundary).
+pub fn nm_diff_forward(y: ptr[f64], i: i64, h: f64) -> f64:
+    return (y[i + 1 as i64] - y[i]) / h

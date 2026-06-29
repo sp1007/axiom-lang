@@ -78,6 +78,7 @@ rows=(
   "t_bitmath|exit|127"
   "t_millerrabin|exit|127"
   "t_special|exit|127"
+  "t_numerical|exit|127"
 )
 
 for row in "${rows[@]}"; do
