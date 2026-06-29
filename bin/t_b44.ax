@@ -1,0 +1,12 @@
+// bin/t_b44.ax — regression for BUG#44 (callee-saved XMM6-15 preserved across
+// calls). `a` is a float held live across noop() calls; before the fix the
+// prologue did not save the XMM register holding it, so it was clobbered.
+// a=3.0 held across a call, b=noop(9.0)=10.0 -> 3*100 + 10 = 310; 310 & 255 = 54.
+
+fn noop(x: f64) -> f64:
+    return x + 1.0
+
+pub fn main() -> i32:
+    let a = 3.0
+    let b = noop(9.0)
+    return (a * 100.0 + b) as i32

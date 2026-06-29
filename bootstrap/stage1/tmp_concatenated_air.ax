@@ -18317,8 +18317,14 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     return RegAllocResult(allocs: allocs, max_vreg: max_vreg, spill_count: spill_count, pad0: 0 as i64)
 
 pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32, out_len: ptr[i64]) -> ptr[u8]:
-    let used = @alloc(16) as ptr[bool]
-    @memset(used as ptr[u8], 0 as u8, 16)
+    // Covers GPR phys 0-15 AND XMM phys 16-31. BUG#44: callee-saved XMM (win64
+    // XMM6-15) used for float vregs must be saved/restored across calls just like
+    // callee-saved GPRs. They are returned AFTER the GPRs so the prologue pushes
+    // GPRs first then movsd-saves XMMs; both occupy 8 bytes per slot, so every
+    // frame offset that keys off callee_saved_len (spills, str-lit, pushed_bytes)
+    // stays correct with no other change.
+    let used = @alloc(32) as ptr[bool]
+    @memset(used as ptr[u8], 0 as u8, 32)
 
     // BUG#17: `max_vreg as i64` (u32->i64 zero-extend) is mis-compiled by the
     // native backend, leaving garbage in the upper 32 bits -> garbage-large
@@ -18331,6 +18337,8 @@ pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32
             if abi == "win64":
                 if reg_is_win64_callee_saved(phys):
                     used[phys] = true
+                if reg_is_xmm(phys) and phys >= REG_XMM6:
+                    used[phys] = true
             else:
                 if reg_is_sysv_callee_saved(phys):
                     used[phys] = true
@@ -18338,7 +18346,7 @@ pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32
 
     mut count := 0 as i64
     mut r := 0 as i64
-    while r < 16:
+    while r < 32:
         if used[r]:
             count = count + 1
         r = r + 1
@@ -18346,7 +18354,7 @@ pub fn get_used_callee_saved(abi: str, allocs: ptr[RegAllocation], max_vreg: u32
     let result = @alloc(count) as ptr[u8]
     mut idx := 0 as i64
     r = 0
-    while r < 16:
+    while r < 32:
         if used[r]:
             result[idx] = r as u8
             idx = idx + 1
@@ -18392,7 +18400,16 @@ pub fn emit_prologue(frame: ptr[StackFrame], out_insts: ptr[MachInstVec]):
     mut i := 0 as i64
     while i < frame.callee_saved_len:
         let reg = frame.callee_saved[i]
-        out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if reg_is_xmm(reg):
+            // BUG#44: callee-saved XMM -> reserve a slot and movsd-save it. The
+            // slot is at rbp-(i+1)*8 (contiguous below the GPR pushes), matching
+            // what `sub rsp,8` just reserved; using rbp-relative movsd reuses the
+            // working spill encoding (avoids the rsp-base SIB edge case).
+            out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let xoff = 0 as i64 - (i + 1) * 8
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: xoff)))
+        else:
+            out_insts.push(MachInst(op: MACH_PUSH, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         i = i + 1
 
     if frame.total_size > 0:
@@ -18405,7 +18422,13 @@ pub fn emit_epilogue(frame: ptr[StackFrame], out_insts: ptr[MachInstVec]):
     mut i := frame.callee_saved_len - 1
     while i >= 0:
         let reg = frame.callee_saved[i]
-        out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if reg_is_xmm(reg):
+            // BUG#44: restore callee-saved XMM (movsd back) then release its slot.
+            let xoff = 0 as i64 - (i + 1) * 8
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: xoff)))
+            out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: reg, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         i = i - 1
 
     out_insts.push(MachInst(op: MACH_POP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))

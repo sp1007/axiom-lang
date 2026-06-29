@@ -1165,3 +1165,22 @@ Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất c�
 **FIX (workaround tại stage1 source, commit ...):** thay `let content = r2.unwrap(); return content` → **`return r2.unwrap()`** (trả call trực tiếp, không qua biến trung gian). NodeCallExpr ở vị trí return được cache nodeTypes đúng (=12) nên check pass đọc đúng. Đã CHỨNG MINH: concat-đã-fix + struct + Result-fn build OK qua stage0 (trước đó fail). ⇒ **TRẦN NÂNG: stage1 lại có thể thêm struct/hàm/code** → mở khóa BUG#44 fix + import-bundler extensibility + mọi mở rộng stage1.
 
 **QUY TẮC source stage1 (đến khi fix root Go sema):** tránh `let x = <generic-method-call như .unwrap()/.read_all()>` rồi dùng x ở chỗ cần type chính xác (return/so sánh); trả/dùng call TRỰC TIẾP. Nếu cần biến, cân nhắc annotation kiểu (chưa test kỹ). Root fix đúng = ổn định multi-pass inference cho let-bound generic-call trong Go sema (inference.go NodeVarDecl/NodeIdent + check pass TypeOf) — để phiên riêng; workaround này đủ mở khóa.
+
+---
+
+## 🟢 BUG#44 FIXED (2026-06-29) — callee-saved XMM6-15 save/restore
+
+Sau khi nâng trần stage0 (commit 23188e5), thêm được code vào stage1 → land fix BUG#44.
+
+**Cơ chế bug:** allocator cấp XMM8-15 (get_allocatable_xmms, phys 24-31) cho float vreg — đây là callee-saved theo win64 ABI — NHƯNG `get_used_callee_saved`/`reg_is_win64_callee_saved` chỉ xử lý GPR → prologue KHÔNG lưu XMM8-15 → callee clobber chúng → float giữ qua call hỏng. Repro `let a=3.0; noop(9.0); return (a*100) as i32` = 132 (a hỏng) thay vì 300&255=44.
+
+**FIX (3 chỗ trong x86_regalloc.ax, design "treat XMM như GPR push"):**
+1. `get_used_callee_saved`: mở rộng `used[]` 16→32 (cover XMM phys 16-31); thêm `if reg_is_xmm(phys) and phys >= REG_XMM6: used[phys]=true` cho win64; loop 0→32 → XMM callee-saved trả về SAU GPR trong cùng mảng `callee_saved`.
+2. `emit_prologue`: trong loop callee_saved, nếu `reg_is_xmm(reg)` → `sub rsp,8` + `movsd [rbp-(i+1)*8], reg` (MACH_STORE padding=8, dst=RBP, src1=xmm, src2=IMM off) thay vì PUSH. Dùng rbp-relative (reuse encoding spill đã chạy, né rsp-base SIB).
+3. `emit_epilogue`: reverse loop, nếu xmm → `movsd reg,[rbp-(i+1)*8]` (MACH_LOAD padding=8) + `add rsp,8` thay vì POP.
+
+**Vì sao low-risk:** XMM được đếm trong `callee_saved_len` y như GPR push (mỗi slot 8 byte) → MỌI offset math (spill `-(callee_saved_len+...)*8`, str-lit `callee_saved_len*8+...`, `pushed_bytes=(callee_saved_len+2)*8`) tự đúng, KHÔNG cần đổi total_size hay thêm field StackFrame hay sửa insert_spill_code/emitter. Call site (x86_coff.ax/asm_emitter) không đổi.
+
+**Verified:** repro canonical=44 (trước 132); 2 float=54; 3 float qua 2 call=155 — tất cả O1 đúng. Regression 43/43 (+ bin/t_b44.ax exit54). Fixpoint: stage3==stage4=fca6d684 (BẢO TOÀN).
+
+**HỆ QUẢ:** float COMPOSE qua call giờ an toàn → pattern `CONST op f(call)` (acos=HALF_PI-asin(x), atanh=0.5*ln(...)) hết hỏng → mở khóa thư viện float diện rộng (trig/hyperbolic/special/complex/quaternion) cho task toán lớn. Quy tắc "tránh CONST op f(call)" trong std/math.ax có thể nới (nhưng leaf impl hiện tại vẫn đúng, giữ nguyên).
