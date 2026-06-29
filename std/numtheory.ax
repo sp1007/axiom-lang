@@ -106,5 +106,52 @@ pub fn nt_is_perfect(n: u64) -> bool:
     if n < 2 as u64:
         return false
     return nt_divisor_sum(n) == n + n
+
+pub fn nt_is_coprime(a: u64, b: u64) -> bool:
+    return nt_gcd(a, b) == 1 as u64
+
+// Modular multiplicative inverse a^-1 mod m via the extended Euclidean
+// algorithm. Returns 0 when a and m are not coprime (no inverse exists).
+pub fn nt_mod_inverse(a: u64, m: u64) -> u64:
+    if m == 1 as u64:
+        return 0 as u64
+    let mm = m as i64
+    mut t := 0 as i64
+    mut newt := 1 as i64
+    mut r := mm
+    mut newr := (a % m) as i64
+    while newr != 0 as i64:
+        let q = r / newr
+        let tmpt = t - q * newt
+        t = newt
+        newt = tmpt
+        let tmpr = r - q * newr
+        r = newr
+        newr = tmpr
+    if r > 1 as i64:
+        return 0 as u64
+    if t < 0 as i64:
+        t = t + mm
+    return t as u64
+
+// Floor of log base `b` of `n` (number of times n divides by b). 0 if b < 2.
+pub fn nt_int_log(b: u64, n: u64) -> u64:
+    if b < 2 as u64:
+        return 0 as u64
+    mut c := 0 as u64
+    mut v := n
+    while v >= b:
+        v = v / b
+        c = c + (1 as u64)
+    return c
+
+// Sum of digits of n in the given base.
+pub fn nt_sum_digits(n: u64, base: u64) -> u64:
+    mut s := 0 as u64
+    mut v := n
+    while v > 0 as u64:
+        s = s + (v % base)
+        v = v / base
+    return s
 EOF
 echo "std/numtheory.ax written"
