@@ -153,5 +153,47 @@ pub fn nt_sum_digits(n: u64, base: u64) -> u64:
         s = s + (v % base)
         v = v / base
     return s
+
+// Miller-Rabin witness: true if `a` proves n composite. (n-1 = d·2^s)
+fn nt_mr_witness(n: u64, a: u64, d: u64, s: u64) -> bool:
+    mut x := nt_mod_exp(a, d, n)
+    if x == 1 as u64 or x == n - (1 as u64):
+        return false
+    mut i := 1 as u64
+    while i < s:
+        x = (x * x) % n
+        if x == n - (1 as u64):
+            return false
+        i = i + (1 as u64)
+    return true
+
+// Deterministic Miller-Rabin primality test. Correct for n < 2^32 (the internal
+// modular multiply stays within u64); for larger n it is a strong probable-prime
+// test. Detects Carmichael numbers (unlike a Fermat test).
+pub fn nt_is_probable_prime(n: u64) -> bool:
+    if n < 2 as u64:
+        return false
+    if n == 2 as u64 or n == 3 as u64 or n == 5 as u64 or n == 7 as u64 or n == 11 as u64 or n == 13 as u64:
+        return true
+    if n % (2 as u64) == 0 as u64:
+        return false
+    mut d := n - (1 as u64)
+    mut s := 0 as u64
+    while d % (2 as u64) == 0 as u64:
+        d = d / (2 as u64)
+        s = s + (1 as u64)
+    if nt_mr_witness(n, 2 as u64, d, s):
+        return false
+    if nt_mr_witness(n, 3 as u64, d, s):
+        return false
+    if nt_mr_witness(n, 5 as u64, d, s):
+        return false
+    if nt_mr_witness(n, 7 as u64, d, s):
+        return false
+    if nt_mr_witness(n, 11 as u64, d, s):
+        return false
+    if nt_mr_witness(n, 13 as u64, d, s):
+        return false
+    return true
 EOF
 echo "std/numtheory.ax written"

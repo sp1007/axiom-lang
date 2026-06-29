@@ -1,0 +1,77 @@
+fn modexp(base: u64, exp: u64, m: u64) -> u64:
+    if m == 1 as u64:
+        return 0 as u64
+    mut result := 1 as u64
+    mut b := base % m
+    mut e := exp
+    while e > 0 as u64:
+        if e % (2 as u64) == 1 as u64:
+            result = (result * b) % m
+        e = e / (2 as u64)
+        b = (b * b) % m
+    return result
+
+fn mr_witness(n: u64, a: u64, d: u64, s: u64) -> bool:
+    // returns true if a proves n composite
+    mut x := modexp(a, d, n)
+    if x == 1 as u64 or x == n - (1 as u64):
+        return false
+    mut i := 1 as u64
+    while i < s:
+        x = (x * x) % n
+        if x == n - (1 as u64):
+            return false
+        i = i + (1 as u64)
+    return true
+
+fn is_probable_prime(n: u64) -> bool:
+    if n < 2 as u64:
+        return false
+    // small primes
+    let sp0 = 2 as u64
+    mut wi := 0 as i32
+    // trial against witness primes directly
+    let w0 = 2 as u64
+    // quick small checks
+    if n == 2 as u64 or n == 3 as u64 or n == 5 as u64 or n == 7 as u64 or n == 11 as u64 or n == 13 as u64:
+        return true
+    if n % (2 as u64) == 0 as u64:
+        return false
+    // write n-1 = d * 2^s
+    mut d := n - (1 as u64)
+    mut s := 0 as u64
+    while d % (2 as u64) == 0 as u64:
+        d = d / (2 as u64)
+        s = s + (1 as u64)
+    // witnesses 2,3,5,7,11,13 (deterministic for n < 2^32 with safe modmul)
+    if mr_witness(n, 2 as u64, d, s):
+        return false
+    if mr_witness(n, 3 as u64, d, s):
+        return false
+    if mr_witness(n, 5 as u64, d, s):
+        return false
+    if mr_witness(n, 7 as u64, d, s):
+        return false
+    if mr_witness(n, 11 as u64, d, s):
+        return false
+    if mr_witness(n, 13 as u64, d, s):
+        return false
+    return true
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if is_probable_prime(2 as u64) and is_probable_prime(97 as u64):
+        s = s + 1
+    if is_probable_prime(561 as u64) == false:
+        s = s + 2
+    if is_probable_prime(7919 as u64):
+        s = s + 4
+    if is_probable_prime(104729 as u64) and (is_probable_prime(104730 as u64) == false):
+        s = s + 8
+    if is_probable_prime(1000003 as u64) and is_probable_prime(1000033 as u64):
+        s = s + 16
+    if is_probable_prime(1000005 as u64) == false:
+        s = s + 32
+    if is_probable_prime(1 as u64) == false and is_probable_prime(4 as u64) == false:
+        s = s + 64
+    return s   // expect 127

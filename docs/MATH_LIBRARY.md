@@ -61,7 +61,7 @@ Blockers that gate whole categories:
 | 31 | Utility | ✅ | math | clamp/saturate/approx_equal/sign/step |
 | 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
 | 33 | Big-int / decimal | 🔶 | bignum | u/i/f dynamic to 4096+. todo: decimal helpers |
-| 34 | Crypto math | 🔶 | numtheory | mod_exp/mod_inverse/gcd. todo: **miller_rabin/is_probable_prime** |
+| 34 | Crypto math | ✅ | numtheory | mod_exp/mod_inverse/gcd + Miller-Rabin is_probable_prime (det. < 2^32) |
 | 35 | Intrinsics | ✅ | math | popcount/clz/ctz/parity/bit_* as fns (true HW intrinsics = aspirational) |
 | 36 | Vector types | 🔶 | vec | Vec2/Vec3. Vec4 (32B) → **BUG#45** |
 
@@ -77,7 +77,7 @@ Blockers that gate whole categories:
 6. ~~math fill-ins~~ ✅ done (expm1/log_base/normalize_angle/copysign/round_to).
 7. ~~bit math fill-ins (#18)~~ ✅ done (rotate_right/reverse_bits/bit_floor/bit_ceil/parity).
 8. **special fns** (#24) — factorial_real(lgamma)/digamma/bessel_j0.
-9. **crypto** (#34) — miller_rabin probabilistic primality.
+9. ~~crypto (#34)~~ ✅ done (Miller-Rabin nt_is_probable_prime; detects Carmichael).
 10. **numerical analysis** (#25) — array-sampled trapezoid/simpson; scalar bisection.
 
 ## Blocked until backend keystone
