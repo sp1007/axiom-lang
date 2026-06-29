@@ -47,7 +47,7 @@ Blockers that gate whole categories:
 | 17 | Number theory | ✅ | numtheory | gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor*/is_perfect/is_coprime/mod_inverse/int_log/sum_digits |
 | 18 | Bit math | ✅ | math | popcount/clz/ctz/bit_width/rotate_left/rotate_right/reverse_bits/bit_floor/bit_ceil/parity/has_single_bit/mul_hi |
 | 19 | Interpolation | ✅ | interpolation,math | lerp/unlerp/remap/smoothstep/smootherstep/catmull/bezier3/bilerp/easing |
-| 20 | Geometry | 🔶 | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri. todo: circle/line-intersection/3D |
+| 20 | Geometry | ✅ | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri/circle/polygon-area/segment-dist + Vec3 (3D in vec) |
 | 21 | Matrix | 🔒 | — | needs Mat2/3/4 (≥32B f64) → **BUG#45**. Workaround: flat `ptr[f64]`+dims |
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
 | 23 | Quaternion | 🔒 | — | 4×f64=32B → **BUG#45** |

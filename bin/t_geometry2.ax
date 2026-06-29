@@ -1,0 +1,86 @@
+const PI: f64 = 3.14159265358979323846
+
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn g2_circle_area(r: f64) -> f64:
+    return PI * r * r
+
+fn g2_circle_circumference(r: f64) -> f64:
+    return 2.0 * PI * r
+
+// Shoelace area of a polygon given interleaved x,y in pts[0..2n).
+fn g2_polygon_area(pts: ptr[f64], n: i64) -> f64:
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        let j = (i + 1 as i64) % n
+        acc = acc + pts[2 as i64 * i] * pts[2 as i64 * j + 1 as i64] - pts[2 as i64 * j] * pts[2 as i64 * i + 1 as i64]
+        i = i + 1
+    if acc < 0.0:
+        acc = 0.0 - acc
+    return acc * 0.5
+
+// Distance from point (px,py) to segment (ax,ay)-(bx,by).
+fn g2_segment_point_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    let dx = bx - ax
+    let dy = by - ay
+    let l2 = dx * dx + dy * dy
+    mut t := 0.0
+    if l2 > 0.0:
+        t = ((px - ax) * dx + (py - ay) * dy) / l2
+    if t < 0.0:
+        t = 0.0
+    if t > 1.0:
+        t = 1.0
+    let cx = ax + t * dx
+    let cy = ay + t * dy
+    let ex = px - cx
+    let ey = py - cy
+    return sqrtf(ex * ex + ey * ey)
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    let sq = @alloc(8 * 8 as i64) as ptr[f64]
+    sq[0] = 0.0
+    sq[1] = 0.0
+    sq[2] = 4.0
+    sq[3] = 0.0
+    sq[4] = 4.0
+    sq[5] = 3.0
+    sq[6] = 0.0
+    sq[7] = 3.0
+    mut s := 0 as i32
+    if near(g2_circle_area(3.0), 28.274334):
+        s = s + 1
+    if near(g2_circle_circumference(3.0), 18.849556):
+        s = s + 2
+    if near(g2_polygon_area(sq, 4 as i64), 12.0):
+        s = s + 4
+    if near(g2_segment_point_dist(0.0, 1.0, 1.0, 0.0, 1.0, 2.0), 1.0):
+        s = s + 8
+    if near(g2_segment_point_dist(3.0, 1.0, 1.0, 0.0, 1.0, 2.0), 2.0):
+        s = s + 16
+    if near(g2_segment_point_dist(1.0, 5.0, 1.0, 0.0, 1.0, 2.0), 3.0):
+        s = s + 32
+    if near(g2_circle_area(1.0), PI):
+        s = s + 64
+    return s   // expect 127

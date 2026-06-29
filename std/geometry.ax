@@ -47,3 +47,37 @@ pub fn g2_point_in_triangle(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64
     if d1 > 0 as i32 or d2 > 0 as i32 or d3 > 0 as i32:
         has_pos = true
     return (has_neg and has_pos) == false
+
+pub fn g2_circle_area(r: f64) -> f64:
+    return PI * r * r
+
+pub fn g2_circle_circumference(r: f64) -> f64:
+    return 2.0 * PI * r
+
+// Shoelace area of a polygon given interleaved x,y coordinates in pts[0..2n).
+pub fn g2_polygon_area(pts: ptr[f64], n: i64) -> f64:
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        let j = (i + 1 as i64) % n
+        acc = acc + pts[2 as i64 * i] * pts[2 as i64 * j + 1 as i64] - pts[2 as i64 * j] * pts[2 as i64 * i + 1 as i64]
+        i = i + 1
+    if acc < 0.0:
+        acc = 0.0 - acc
+    return acc * 0.5
+
+// Shortest distance from point (px,py) to segment (ax,ay)-(bx,by).
+pub fn g2_segment_point_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    let dx = bx - ax
+    let dy = by - ay
+    let l2 = dx * dx + dy * dy
+    mut t := 0.0
+    if l2 > 0.0:
+        t = ((px - ax) * dx + (py - ay) * dy) / l2
+    if t < 0.0:
+        t = 0.0
+    if t > 1.0:
+        t = 1.0
+    let ex = px - (ax + t * dx)
+    let ey = py - (ay + t * dy)
+    return sqrt(ex * ex + ey * ey)
