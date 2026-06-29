@@ -1184,3 +1184,15 @@ Sau khi nâng trần stage0 (commit 23188e5), thêm được code vào stage1 �
 **Verified:** repro canonical=44 (trước 132); 2 float=54; 3 float qua 2 call=155 — tất cả O1 đúng. Regression 43/43 (+ bin/t_b44.ax exit54). Fixpoint: stage3==stage4=fca6d684 (BẢO TOÀN).
 
 **HỆ QUẢ:** float COMPOSE qua call giờ an toàn → pattern `CONST op f(call)` (acos=HALF_PI-asin(x), atanh=0.5*ln(...)) hết hỏng → mở khóa thư viện float diện rộng (trig/hyperbolic/special/complex/quaternion) cho task toán lớn. Quy tắc "tránh CONST op f(call)" trong std/math.ax có thể nới (nhưng leaf impl hiện tại vẫn đúng, giữ nguyên).
+
+---
+
+## ⚠️ NAMESPACING / symbol mangling (2026-06-29) — user fn trùng tên libc → collision
+
+**Triệu chứng:** đặt hàm user tên `close` → exit 139 (segfault); tên `ok` → exit 127. Đổi tên (close→myclose, ok→mok) là hết.
+
+**Root-cause:** user function emit symbol = TÊN THÔ. `resolve_binary_sym_name` (x86_coff.ax) chỉ redirect `alloc`→ax_alloc, `free`→ax_free, `std.string.len`→ax_str_len; mọi user fn khác `return name` (dòng 348) = tên thô KHÔNG mangle. → user fn dùng chung namespace symbol C toàn cục với runtime (ax_*.c) + CRT/libc. Trùng tên libc (close/open/read/write/...) → self-linker gộp/chọn nhầm → call vào libc (vd close(int fd) nhận bit f64 làm fd) → crash.
+
+**Trả lời "cùng tên khác lib/alias có khác nhau không":** ĐÚNG VỀ NGUYÊN TẮC — với mangling module-qualified thì user `A.close` ≠ libc `close` ≠ user `B.close`. NHƯNG hiện CHƯA mangle → KHÔNG khác nhau (cùng symbol thô). Alias cũng không cứu (vẫn trỏ cùng symbol).
+
+**FIX đúng (RFC-level, RỦI RO CAO — để phiên riêng):** mangle symbol user theo module-qualified (vd `ax_u__<module>__<fn>` hoặc hash signature) + whitelist `extern "C"` giữ tên thô. Đụng MỌI symbol → ảnh hưởng self-host fixpoint + linker + ranh giới ABI runtime → cần RFC + verify đầy đủ. **Workaround hiện tại:** đừng đặt hàm trùng tên libc/runtime (close/open/read/write/ok/...).
