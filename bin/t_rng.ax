@@ -1,0 +1,141 @@
+const PI: f64 = 3.14159265358979323846
+const TAU: f64 = 6.28318530717958647692
+const HALF_PI: f64 = 1.57079632679489661923
+const LN2: f64 = 0.69314718055994530942
+
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn lnf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut m := x
+    mut e := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        e = e + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        e = e - 1 as i64
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    mut term := t
+    mut sum := 0.0
+    mut n := 0 as i32
+    while n < 20:
+        sum = sum + term / ((2 * n + 1) as f64)
+        term = term * t2
+        n = n + 1
+    return (e as f64) * LN2 + 2.0 * sum
+
+fn sinf(x: f64) -> f64:
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    let a2 = a * a
+    mut term := a
+    mut sum := a
+    mut n := 1 as i32
+    while n < 13:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        sum = sum + term
+        n = n + 1
+    return sum
+
+fn cosf(x: f64) -> f64:
+    return sinf(x + HALF_PI)
+
+fn rng_seed(s: u64) -> ptr[u64]:
+    let st = @alloc(8 as i64) as ptr[u64]
+    mut v := s
+    if v == 0 as u64:
+        v = 1 as u64
+    st[0] = v
+    return st
+
+fn rng_next_u64(st: ptr[u64]) -> u64:
+    mut x := st[0]
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    st[0] = x
+    return x
+
+fn rng_next_f64(st: ptr[u64]) -> f64:
+    let n = rng_next_u64(st)
+    return ((n >> 11) as f64) * (1.0 / 9007199254740992.0)
+
+fn rng_range_i64(st: ptr[u64], lo: i64, hi: i64) -> i64:
+    let n = rng_next_u64(st)
+    let r = (hi - lo + 1 as i64) as u64
+    return lo + (n % r) as i64
+
+fn rng_next_range_f64(st: ptr[u64], lo: f64, hi: f64) -> f64:
+    return lo + (hi - lo) * rng_next_f64(st)
+
+fn rng_gaussian_transform(u1: f64, u2: f64) -> f64:
+    return sqrtf(0.0 - 2.0 * lnf(u1)) * cosf(TAU * u2)
+
+fn rng_gaussian(st: ptr[u64], mean: f64, sd: f64) -> f64:
+    mut u1 := rng_next_f64(st)
+    if u1 < 0.000000000001:
+        u1 = 0.000000000001
+    let z = rng_gaussian_transform(u1, rng_next_f64(st))
+    return mean + sd * z
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    let st = rng_seed(12345 as u64)
+    if rng_next_u64(st) == 13289605635609 as u64:
+        s = s + 1
+    if rng_next_u64(st) == 11245129090807876197 as u64:
+        s = s + 2
+    // next_f64 in [0,1)
+    let st2 = rng_seed(999 as u64)
+    let f = rng_next_f64(st2)
+    if f >= 0.0 and f < 1.0:
+        s = s + 4
+    // next_range_f64 in [10,20)
+    let rf = rng_next_range_f64(st2, 10.0, 20.0)
+    if rf >= 10.0 and rf < 20.0:
+        s = s + 8
+    // deterministic Box-Muller transform
+    if near(rng_gaussian_transform(0.5, 0.0), 1.177410):
+        s = s + 16
+    if near(rng_gaussian_transform(0.5, 0.5), 0.0 - 1.177410):
+        s = s + 32
+    // statistical: mean of many gaussians near 0
+    let st3 = rng_seed(7 as u64)
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < 2000:
+        acc = acc + rng_gaussian(st3, 0.0, 1.0)
+        i = i + 1
+    let mean = acc / 2000.0
+    if mean > (0.0 - 0.15) and mean < 0.15:
+        s = s + 64
+    return s   // expect 127

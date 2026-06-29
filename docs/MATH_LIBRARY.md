@@ -41,7 +41,7 @@ Blockers that gate whole categories:
 | 11 | FP-utils | ✅ | math | is_nan/is_inf/is_finite/approx_equal/fract/copysign |
 | 12 | Remainder | 🔶 | math | fmod. todo: ieee_remainder |
 | 13 | Comparison | ✅ | math | min/max/clamp/approx_equal/saturate |
-| 14 | Random | 🔶 | random | xorshift: next_u64/range_i64/next_f64/next_bool/shuffle. todo: **next_range_f64/gaussian** |
+| 14 | Random | ✅ | rng | working xorshift64: next_u64/next_f64/range_i64/next_range_f64/gaussian (oracle-verified). random.ax=aspirational |
 | 15 | Statistics | ✅ | stats | sum/mean/variance/stddev/min/max/median/percentile/covariance/correlation/skewness/kurtosis (oracle-verified) |
 | 16 | Combinatorics | ✅ | combinatorics | factorial/perm/binom/catalan/multichoose/double_factorial |
 | 17 | Number theory | ✅ | numtheory | gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor*/is_perfect/is_coprime/mod_inverse/int_log/sum_digits |

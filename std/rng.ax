@@ -1,0 +1,57 @@
+// AXIOM Standard Library — std.rng
+//
+// Grammar-conformant, working pseudo-random generator (xorshift64). State is a
+// 1-element heap buffer (ptr[u64]) so it mutates in place across calls. Integer
+// core is exact/deterministic; the float helpers compose std.math (sqrt/ln/cos).
+//
+// (std/random.ax holds an aspirational xoshiro256** design in a non-grammar
+// dialect — braces/impl/[u64;4]/intrinsics — that does not compile yet; this
+// module is the usable one.)
+
+const RNG_TWO_POW_53: f64 = 9007199254740992.0
+const RNG_TAU: f64 = 6.28318530717958647692
+
+// Create a seeded generator. Returns a heap state pointer (free with @free).
+pub fn rng_seed(s: u64) -> ptr[u64]:
+    let st = @alloc(8 as i64) as ptr[u64]
+    mut v := s
+    if v == 0 as u64:
+        v = 1 as u64
+    st[0] = v
+    return st
+
+// Next raw 64-bit value (xorshift64; state updated in place).
+pub fn rng_next_u64(st: ptr[u64]) -> u64:
+    mut x := st[0]
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    st[0] = x
+    return x
+
+// Uniform f64 in [0, 1).
+pub fn rng_next_f64(st: ptr[u64]) -> f64:
+    let n = rng_next_u64(st)
+    return ((n >> 11) as f64) * (1.0 / RNG_TWO_POW_53)
+
+// Uniform integer in [lo, hi].
+pub fn rng_range_i64(st: ptr[u64], lo: i64, hi: i64) -> i64:
+    let n = rng_next_u64(st)
+    let r = (hi - lo + 1 as i64) as u64
+    return lo + (n % r) as i64
+
+// Uniform f64 in [lo, hi).
+pub fn rng_next_range_f64(st: ptr[u64], lo: f64, hi: f64) -> f64:
+    return lo + (hi - lo) * rng_next_f64(st)
+
+// Box-Muller transform: standard normal from two uniforms u1 in (0,1], u2.
+pub fn rng_gaussian_transform(u1: f64, u2: f64) -> f64:
+    return sqrt(0.0 - 2.0 * ln(u1)) * cos(RNG_TAU * u2)
+
+// Normal sample with given mean and standard deviation.
+pub fn rng_gaussian(st: ptr[u64], mean: f64, sd: f64) -> f64:
+    mut u1 := rng_next_f64(st)
+    if u1 < 0.000000000001:
+        u1 = 0.000000000001
+    let z = rng_gaussian_transform(u1, rng_next_f64(st))
+    return mean + sd * z
