@@ -1,0 +1,128 @@
+// bin/t_gamma.ax — gamma/log-gamma via direct log-form Lanczos (no pow).
+// tgamma(5)=24, tgamma(0.5)=sqrt(pi), lgamma(10)=ln(9!), tgamma(6)=120 -> exit 63.
+const PI: f64 = 3.14159265358979323846
+const LN2: f64 = 0.69314718055994530942
+const LN2PI_HALF: f64 = 0.91893853320467274178   // 0.5*ln(2*pi)
+
+fn exp(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+fn ln(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut m := x
+    mut e := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        e = e + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        e = e - 1 as i64
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    mut term := t
+    mut sum := 0.0
+    mut n := 0 as i32
+    while n < 24:
+        sum = sum + term / ((2 * n + 1) as f64)
+        term = term * t2
+        n = n + 1
+    return (e as f64) * LN2 + 2.0 * sum
+
+fn sin(x: f64) -> f64:
+    mut a := x
+    let q = (a / (2.0 * PI)) as i64
+    a = a - (q as f64) * (2.0 * PI)
+    if a > PI:
+        a = a - 2.0 * PI
+    if a < (0.0 - PI):
+        a = a + 2.0 * PI
+    let a2 = a * a
+    mut term := a
+    mut sum := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        sum = sum + term
+        n = n + 1
+    return sum
+
+fn lanczos_sum(z: f64) -> f64:
+    mut x := 0.99999999999980993
+    x = x + 676.5203681218851 / (z + 1.0)
+    x = x + (0.0 - 1259.1392167224028) / (z + 2.0)
+    x = x + 771.32342877765313 / (z + 3.0)
+    x = x + (0.0 - 176.61502916214059) / (z + 4.0)
+    x = x + 12.507343278686905 / (z + 5.0)
+    x = x + (0.0 - 0.13857109526572012) / (z + 6.0)
+    x = x + 0.0000099843695780195716 / (z + 7.0)
+    x = x + 0.00000015056327351493116 / (z + 8.0)
+    return x
+
+// log-gamma, direct (no pow). z>0.
+fn lgamma(z: f64) -> f64:
+    if z < 0.5:
+        // reflection: ln|gamma(z)| = ln(pi/sin(pi z)) - lgamma(1-z)
+        mut sp := sin(PI * z)
+        if sp < 0.0:
+            sp = 0.0 - sp
+        let lg1 = lgamma(1.0 - z)
+        return ln(PI / sp) - lg1
+    let zz = z - 1.0
+    let t = zz + 7.5
+    let s = lanczos_sum(zz)
+    return LN2PI_HALF + (zz + 0.5) * ln(t) - t + ln(s)
+
+fn tgamma(z: f64) -> f64:
+    let lg = lgamma(z)
+    let g = exp(lg)
+    if z < 0.5:
+        // sign of gamma for z<0.5: reflection may be negative; handle via sin sign
+        let sp = sin(PI * z)
+        if sp < 0.0:
+            return 0.0 - g
+    return g
+
+fn mok(v: f64, w: f64, tol: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < tol
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if mok(tgamma(5.0), 24.0, 0.002):
+        s = s + 1
+    if mok(tgamma(0.5), 1.7724538509, 0.0005):
+        s = s + 2
+    if mok(tgamma(1.0), 1.0, 0.0005):
+        s = s + 4
+    if mok(lgamma(5.0), 3.1780538303, 0.0005):
+        s = s + 8
+    if mok(lgamma(10.0), 12.8018274801, 0.001):
+        s = s + 16
+    if mok(tgamma(6.0), 120.0, 0.02):
+        s = s + 32
+    if s == 63 as i32:
+        return 63 as i32
+    return s
