@@ -1,0 +1,73 @@
+// AXIOM Standard Library — std.interpolation
+//
+// Scalar f64 interpolation / easing the core std.math does not cover (math has
+// lerp/smoothstep/clamp/saturate). Every function is pure arithmetic (no loops,
+// no inter-function calls beyond clamp) → immune to BUG#44/45/46. For 2D/3D
+// vector lerp see std.vec.
+
+pub fn ip_clamp01(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+// Inverse lerp: where does v sit between a and b (0..1)?
+pub fn ip_unlerp(a: f64, b: f64, v: f64) -> f64:
+    if b == a:
+        return 0.0
+    return (v - a) / (b - a)
+
+// Map v from [a1,b1] onto [a2,b2] (no clamping).
+pub fn ip_remap(a1: f64, b1: f64, a2: f64, b2: f64, v: f64) -> f64:
+    let t = (v - a1) / (b1 - a1)
+    return a2 + (b2 - a2) * t
+
+// Ken Perlin's smootherstep: 6t^5 - 15t^4 + 10t^3, edges clamped.
+pub fn ip_smootherstep(e0: f64, e1: f64, x: f64) -> f64:
+    mut t := (x - e0) / (e1 - e0)
+    t = ip_clamp01(t)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+// Catmull-Rom spline through p1,p2 with neighbours p0,p3 (t in 0..1).
+pub fn ip_catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64:
+    let t2 = t * t
+    let t3 = t2 * t
+    let a = 2.0 * p1
+    let b = (0.0 - p0 + p2) * t
+    let c = (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+    let d = (0.0 - p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+    return 0.5 * (a + b + c + d)
+
+// Cubic Bézier in 1D with control values p0..p3.
+pub fn ip_bezier3(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64:
+    let u = 1.0 - t
+    let u2 = u * u
+    let t2 = t * t
+    return u2 * u * p0 + 3.0 * u2 * t * p1 + 3.0 * u * t2 * p2 + t2 * t * p3
+
+// Bilinear interpolation of a 2x2 grid (c00=bottom-left … c11=top-right).
+pub fn ip_bilerp(c00: f64, c10: f64, c01: f64, c11: f64, tx: f64, ty: f64) -> f64:
+    let x0 = c00 + (c10 - c00) * tx
+    let x1 = c01 + (c11 - c01) * tx
+    return x0 + (x1 - x0) * ty
+
+// --- easing (t in 0..1) ---
+pub fn ip_ease_in_quad(t: f64) -> f64:
+    return t * t
+
+pub fn ip_ease_out_quad(t: f64) -> f64:
+    return t * (2.0 - t)
+
+pub fn ip_ease_inout_quad(t: f64) -> f64:
+    if t < 0.5:
+        return 2.0 * t * t
+    let u = 0.0 - 2.0 * t + 2.0
+    return 1.0 - u * u / 2.0
+
+pub fn ip_ease_in_cubic(t: f64) -> f64:
+    return t * t * t
+
+pub fn ip_ease_out_cubic(t: f64) -> f64:
+    let u = t - 1.0
+    return u * u * u + 1.0
