@@ -1,0 +1,61 @@
+// AXIOM Standard Library — std.ml
+//
+// Machine-learning math: GELU activation, loss functions (MSE/MAE/BCE), and
+// softmax. Scalar activations (sigmoid/relu/leaky_relu/softplus/swish/tanh)
+// already live in std.math. Composes std.math (erf/ln/exp); kept few-float-live
+// per call (BUG#48). softmax writes through a ptr[f64] out-param (no aggregate
+// return). Requires std.math in scope when bundled.
+
+const ML_SQRT2: f64 = 1.4142135623730951
+
+// Exact GELU: 0.5 x (1 + erf(x/sqrt2)).
+pub fn ml_gelu(x: f64) -> f64:
+    let r = erf(x / ML_SQRT2)
+    return 0.5 * x * (1.0 + r)
+
+// Mean squared error over equal-length arrays.
+pub fn ml_mse(p: ptr[f64], t: ptr[f64], n: i64) -> f64:
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        let d = p[i] - t[i]
+        acc = acc + d * d
+        i = i + 1
+    return acc / (n as f64)
+
+// Mean absolute error.
+pub fn ml_mae(p: ptr[f64], t: ptr[f64], n: i64) -> f64:
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        mut d := p[i] - t[i]
+        if d < 0.0:
+            d = 0.0 - d
+        acc = acc + d
+        i = i + 1
+    return acc / (n as f64)
+
+// Binary cross-entropy for a single (pred, target). Argument-position lns keep
+// only one float call-result live at a time (robust under -O1, BUG#48).
+pub fn ml_bce(pred: f64, target: f64) -> f64:
+    return 0.0 - target * ln(pred) - (1.0 - target) * ln(1.0 - pred)
+
+// Numerically-stable softmax: out[i] = exp(x[i]-max) / sum.
+pub fn ml_softmax(x: ptr[f64], n: i64, out: ptr[f64]):
+    mut mx := x[0]
+    mut i := 0 as i64
+    while i < n:
+        if x[i] > mx:
+            mx = x[i]
+        i = i + 1
+    mut sum := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let e = exp(x[k] - mx)
+        out[k] = e
+        sum = sum + e
+        k = k + 1
+    mut j := 0 as i64
+    while j < n:
+        out[j] = out[j] / sum
+        j = j + 1
