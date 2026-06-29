@@ -1,0 +1,87 @@
+# AXIOM Math Library — Coverage Tracker (36 categories)
+
+Authoritative checklist for the scientific-computing math library the user
+requested (~300 functions across 36 categories). This file is the single source
+of truth for scope + status so it is never lost; every batch updates it.
+
+Legend: ✅ implemented · 🔶 partial (gaps listed) · ⬜ todo (BUG-immune, shippable) ·
+🔒 blocked (needs a backend keystone or hardware).
+
+Build/verify rule: library modules do NOT affect the self-host fixpoint (the
+compiler does not import `std.*`). Ship pattern per module: self-contained repro
+→ build O0+O1 with `bin/axc_stage1.exe` (exit must match) → `std/<m>.ax` +
+`bin/t_<m>.ax` + regression row → commit/push. No fixpoint verify needed.
+
+Blockers that gate whole categories:
+- **BUG#45** — struct >16 bytes containing f64 miscompiles (Vec3=24B OK, but
+  4×f64=32B fails). Blocks Mat2/3/4, Quaternion, Vec4. Backend keystone.
+- **BUG#46** — float call-result read across a following loop. Work around by
+  inlining; avoid holding a float call result across a loop.
+- **closures / function pointers** — not implemented (#38.7). Blocks generic
+  numerical-analysis (root-find/integrate of an arbitrary f); array-sampled
+  variants are still doable.
+- **SIMD / true intrinsics** — need hardware vector ABI; aspirational.
+
+---
+
+## Status by category
+
+| # | Category | Status | Module(s) | Gaps / notes |
+|---|----------|--------|-----------|--------------|
+| 1 | Constants | ✅ | math | PI/TAU/HALF_PI/E/SQRT2/LN2/LN10/LOG2E/LOG10E/SQRT1_2/EPSILON. todo: PHI |
+| 2 | Arithmetic | ✅ | math | abs/sign/min/max/clamp/square/cube/recip |
+| 3 | Rounding | ✅ | math | floor/ceil/round/trunc/fract. todo: round_to(n) |
+| 4 | Integer | ✅ | math,xmath | abs_i64/min/max/clamp_i64/gcd/lcm/pow_i64/isqrt |
+| 5 | Power | ✅ | math | pow/square/cube/cbrt/exp2/exp10/pow_i64 |
+| 6 | Exp | 🔶 | math | exp/exp2/exp10. todo: **expm1** |
+| 7 | Log | 🔶 | math | ln/log2/log10/log1p. todo: **log_base(b,x)** |
+| 8 | Trig | ✅ | math | sin/cos/tan/asin/acos/atan/atan2. todo: sec/csc/cot |
+| 9 | Hyperbolic | ✅ | math | sinh/cosh/tanh/asinh/acosh/atanh |
+| 10 | Angle | 🔶 | math | deg_to_rad/rad_to_deg. todo: **normalize_angle/wrap_pi** |
+| 11 | FP-utils | 🔶 | math | is_nan/is_inf/is_finite/approx_equal/fract. todo: **copysign** |
+| 12 | Remainder | 🔶 | math | fmod. todo: ieee_remainder |
+| 13 | Comparison | ✅ | math | min/max/clamp/approx_equal/saturate |
+| 14 | Random | 🔶 | random | xorshift: next_u64/range_i64/next_f64/next_bool/shuffle. todo: **next_range_f64/gaussian** |
+| 15 | Statistics | 🔶 | stats | sum/mean/variance/stddev/min/max. todo: **median/percentile/covariance/correlation/skew/kurtosis** |
+| 16 | Combinatorics | ✅ | combinatorics | factorial/perm/binom/catalan/multichoose/double_factorial |
+| 17 | Number theory | ✅ | numtheory | gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor*/is_perfect/is_coprime/mod_inverse/int_log/sum_digits |
+| 18 | Bit math | 🔶 | math | popcount/clz/ctz/bit_width/rotate_left/has_single_bit/mul_hi. todo: **rotate_right/reverse_bits/bit_floor/bit_ceil/parity** |
+| 19 | Interpolation | ✅ | interpolation,math | lerp/unlerp/remap/smoothstep/smootherstep/catmull/bezier3/bilerp/easing |
+| 20 | Geometry | 🔶 | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri. todo: circle/line-intersection/3D |
+| 21 | Matrix | 🔒 | — | needs Mat2/3/4 (≥32B f64) → **BUG#45**. Workaround: flat `ptr[f64]`+dims |
+| 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
+| 23 | Quaternion | 🔒 | — | 4×f64=32B → **BUG#45** |
+| 24 | Special functions | 🔶 | math | erf/erfc/gamma/lgamma/beta. todo: **factorial_real/digamma/bessel_j0/zeta** |
+| 25 | Numerical analysis | ⬜ | — | array-sampled trapezoid/simpson + scalar bisection/newton (generic f needs closures 🔒) |
+| 26 | Signal processing | ⬜ | — | **window fns** hann/hamming/blackman/bartlett (scalar). FFT needs complex arrays |
+| 27 | Machine learning | 🔶 | math | sigmoid/relu/leaky_relu/softplus/swish/tanh. todo: **gelu/mse/mae/cross_entropy** (softmax=array) |
+| 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
+| 29 | Coordinate systems | ⬜ | — | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) — in flight |
+| 30 | Color | ⬜ | — | RGB↔HSV↔HSL (via `ptr[f64]` out-param) |
+| 31 | Utility | ✅ | math | clamp/saturate/approx_equal/sign/step |
+| 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
+| 33 | Big-int / decimal | 🔶 | bignum | u/i/f dynamic to 4096+. todo: decimal helpers |
+| 34 | Crypto math | 🔶 | numtheory | mod_exp/mod_inverse/gcd. todo: **miller_rabin/is_probable_prime** |
+| 35 | Intrinsics | 🔶 | math | popcount/clz/ctz as fns. true HW intrinsics = aspirational |
+| 36 | Vector types | 🔶 | vec | Vec2/Vec3. Vec4 (32B) → **BUG#45** |
+
+---
+
+## Remaining BUG-immune work queue (drives the autonomous batch)
+
+1. **coordinates** (#29) — polar/cylindrical/spherical, per-component. *(in flight)*
+2. **color** (#30) — rgb↔hsv↔hsl via ptr out-param.
+3. **stats extensions** (#15) — median/percentile/covariance/correlation/skew/kurtosis (inline accumulators to dodge BUG#46).
+4. **signal windows** (#26) — hann/hamming/blackman/bartlett/welch (scalar).
+5. **ml extensions** (#27) — gelu/mse/mae/cross_entropy/softmax(array).
+6. **math fill-ins** — expm1/log_base/normalize_angle/copysign/round_to (#6/7/10/11/3).
+7. **bit math fill-ins** (#18) — rotate_right/reverse_bits/bit_floor/bit_ceil/parity.
+8. **special fns** (#24) — factorial_real(lgamma)/digamma/bessel_j0.
+9. **crypto** (#34) — miller_rabin probabilistic primality.
+10. **numerical analysis** (#25) — array-sampled trapezoid/simpson; scalar bisection.
+
+## Blocked until backend keystone
+- **BUG#45 fix** unlocks: Matrix (#21), Quaternion (#23), Vec4 (#36). Needs x86
+  struct-ABI work for >16B f64 + ~3h fixpoint verify.
+- **closures (#38.7)** unlock generic numerical analysis / function-of-f.
+- **SIMD/HW intrinsics** (#32/#35) aspirational.
