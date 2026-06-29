@@ -792,3 +792,34 @@ pub fn parity(x: u64) -> u64:
         c = c + (v & 1 as u64)
         v = v >> 1
     return c & 1 as u64
+
+// --- Special functions ---
+
+// Real-valued factorial x! = gamma(x+1).
+pub fn factorial_real(x: f64) -> f64:
+    return tgamma(x + 1.0)
+
+// Digamma psi(x): recurrence up to x>=6 then the asymptotic expansion.
+pub fn digamma(x: f64) -> f64:
+    mut xx := x
+    mut r := 0.0
+    while xx < 6.0:
+        r = r - 1.0 / xx
+        xx = xx + 1.0
+    let inv = 1.0 / xx
+    let inv2 = inv * inv
+    let tail = ln(xx) - 0.5 * inv - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 / 252.0))
+    return r + tail
+
+// Bessel function of the first kind, order 0, via the ascending power series
+// (accurate for |x| up to ~10).
+pub fn bessel_j0(x: f64) -> f64:
+    let h2 = x * x * 0.25
+    mut term := 1.0
+    mut sum := 1.0
+    mut m := 1 as i32
+    while m < 40:
+        term = term * (0.0 - h2) / ((m * m) as f64)
+        sum = sum + term
+        m = m + 1
+    return sum
