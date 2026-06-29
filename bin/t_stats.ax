@@ -1,0 +1,101 @@
+// bin/t_stats.ax — statistics over a ptr[f64] array (BUG#45-immune: no big structs).
+// data [2,4,4,4,5,5,7,9]: sum=40 mean=5 variance=4 stddev=2 min=2 max=9 -> exit 63.
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn st_sum(a: ptr[f64], n: i64) -> f64:
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    return s
+
+fn st_mean(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    return st_sum(a, n) / (n as f64)
+
+fn st_variance(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    // mean computed inline (not via a call) so it is not held across the
+    // accumulation loop — avoids a float-call-result-across-loop codegen bug.
+    mut sm := 0.0
+    mut k := 0 as i64
+    while k < n:
+        sm = sm + a[k]
+        k = k + 1
+    let m = sm / (n as f64)
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        let d = a[i] - m
+        acc = acc + d * d
+        i = i + 1
+    return acc / (n as f64)
+
+fn st_stddev(a: ptr[f64], n: i64) -> f64:
+    return sqrtf(st_variance(a, n))
+
+fn st_min(a: ptr[f64], n: i64) -> f64:
+    mut m := a[0]
+    mut i := 1 as i64
+    while i < n:
+        if a[i] < m:
+            m = a[i]
+        i = i + 1
+    return m
+
+fn st_max(a: ptr[f64], n: i64) -> f64:
+    mut m := a[0]
+    mut i := 1 as i64
+    while i < n:
+        if a[i] > m:
+            m = a[i]
+        i = i + 1
+    return m
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    let a = @alloc(8 * 8 as i64) as ptr[f64]
+    a[0] = 2.0
+    a[1] = 4.0
+    a[2] = 4.0
+    a[3] = 4.0
+    a[4] = 5.0
+    a[5] = 5.0
+    a[6] = 7.0
+    a[7] = 9.0
+    mut s := 0 as i32
+    if near(st_sum(a, 8 as i64), 40.0):
+        s = s + 1
+    if near(st_mean(a, 8 as i64), 5.0):
+        s = s + 2
+    if near(st_variance(a, 8 as i64), 4.0):
+        s = s + 4
+    if near(st_stddev(a, 8 as i64), 2.0):
+        s = s + 8
+    if near(st_min(a, 8 as i64), 2.0):
+        s = s + 16
+    if near(st_max(a, 8 as i64), 9.0):
+        s = s + 32
+    return s   // expect 63

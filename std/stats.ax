@@ -1,0 +1,61 @@
+// AXIOM Standard Library — std.stats
+//
+// Descriptive statistics over a contiguous f64 array (ptr[f64] + length).
+// Scalar results only (no aggregate structs), so unaffected by the >16-byte
+// float-struct codegen bug. st_stddev composes std.math.sqrt. Requires std.math
+// in scope when bundled.
+//
+// NOTE: st_variance computes the mean INLINE (not via st_mean) on purpose — a
+// float value returned by a call and then read across a following loop is
+// mis-allocated by the current backend; inlining keeps it in a stable slot.
+
+pub fn st_sum(a: ptr[f64], n: i64) -> f64:
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    return s
+
+pub fn st_mean(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    return st_sum(a, n) / (n as f64)
+
+pub fn st_variance(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    mut sm := 0.0
+    mut k := 0 as i64
+    while k < n:
+        sm = sm + a[k]
+        k = k + 1
+    let m = sm / (n as f64)
+    mut acc := 0.0
+    mut i := 0 as i64
+    while i < n:
+        let d = a[i] - m
+        acc = acc + d * d
+        i = i + 1
+    return acc / (n as f64)
+
+pub fn st_stddev(a: ptr[f64], n: i64) -> f64:
+    return sqrt(st_variance(a, n))
+
+pub fn st_min(a: ptr[f64], n: i64) -> f64:
+    mut m := a[0]
+    mut i := 1 as i64
+    while i < n:
+        if a[i] < m:
+            m = a[i]
+        i = i + 1
+    return m
+
+pub fn st_max(a: ptr[f64], n: i64) -> f64:
+    mut m := a[0]
+    mut i := 1 as i64
+    while i < n:
+        if a[i] > m:
+            m = a[i]
+        i = i + 1
+    return m

@@ -1211,3 +1211,9 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 3. constructor field = call-result + sret (`q_from_axis_angle` trả Quat(w: cosf(h),...)) → q.w/q.z sai (tách cosf ra local KHÔNG cứu).
 
 → Quaternion/Mat3/Mat4 (cần 32B+ f64 struct) BỊ CHẶN. Complex(16B)/Vec3(24B) OK nên ship được. **FIX:** debug backend struct-ABI cho >16-byte f64 (param materialization của struct-arg-sau-self + float field load/store qua by-address ptr + sret tương tác float register). Cùng họ với Family C (struct by-value) nhưng cho FLOAT fields + size 32. Cần phiên backend riêng + fixpoint verify. **Workaround tạm:** giữ struct toán học ≤24 byte (≤3 f64) hoặc dùng free-fn với args constructed tươi (không call-result), tránh method-với-struct-arg cho 32B f64.
+
+---
+
+## ⚠️ BUG#46 (2026-06-29) — float call-result đọc qua loop sau đó bị hỏng
+
+`let m = f(...)` (m: f64, kết quả 1 lời gọi) rồi đọc `m` trong một VÒNG LẶP tiếp theo (loop KHÔNG có call) → m sai. VD st_variance: `let m = st_mean(a,n); while: d = a[i]-m; acc+=d*d` → variance sai; nhưng tính mean INLINE (sum loop tại chỗ, không call) → ĐÚNG. Nghi liveness/regalloc của float-call-result bị tính sai khi sống qua loop (m bị scratch của loop đè), KHÁC BUG#44 (đã fix save/restore qua call). Workaround: inline giá trị (đừng giữ float-call-result qua loop), hoặc nạp lại. Cần debug liveness float trong x86_regalloc. Library tránh pattern này.
