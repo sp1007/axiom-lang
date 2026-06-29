@@ -59,3 +59,119 @@ pub fn st_max(a: ptr[f64], n: i64) -> f64:
             m = a[i]
         i = i + 1
     return m
+
+// Allocate a sorted copy of a[0..n) (insertion sort). Caller frees with @free.
+fn st_sort_copy(a: ptr[f64], n: i64) -> ptr[f64]:
+    let c = @alloc(n * 8 as i64) as ptr[f64]
+    mut i := 0 as i64
+    while i < n:
+        c[i] = a[i]
+        i = i + 1
+    mut k := 1 as i64
+    while k < n:
+        let v = c[k]
+        mut j := k - 1 as i64
+        while j >= 0 as i64 and c[j] > v:
+            c[j + 1 as i64] = c[j]
+            j = j - 1 as i64
+        c[j + 1 as i64] = v
+        k = k + 1
+    return c
+
+pub fn st_median(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    let c = st_sort_copy(a, n)
+    mut r := 0.0
+    if n % (2 as i64) == 1 as i64:
+        r = c[n / 2 as i64]
+    else:
+        r = (c[n / 2 as i64 - 1 as i64] + c[n / 2 as i64]) * 0.5
+    @free(c as ptr[u8])
+    return r
+
+// Linear-interpolated percentile p in [0,100] (numpy 'linear' method).
+pub fn st_percentile(a: ptr[f64], n: i64, p: f64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    let c = st_sort_copy(a, n)
+    let idx = p / 100.0 * ((n - 1 as i64) as f64)
+    let lo = idx as i64
+    let frac = idx - (lo as f64)
+    mut r := c[lo]
+    if lo + 1 as i64 < n:
+        r = c[lo] + frac * (c[lo + 1 as i64] - c[lo])
+    @free(c as ptr[u8])
+    return r
+
+// Population covariance of two equal-length arrays.
+pub fn st_covariance(x: ptr[f64], y: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    mut sx := 0.0
+    mut sy := 0.0
+    mut i := 0 as i64
+    while i < n:
+        sx = sx + x[i]
+        sy = sy + y[i]
+        i = i + 1
+    let mx = sx / (n as f64)
+    let my = sy / (n as f64)
+    mut acc := 0.0
+    mut k := 0 as i64
+    while k < n:
+        acc = acc + (x[k] - mx) * (y[k] - my)
+        k = k + 1
+    return acc / (n as f64)
+
+// Pearson correlation coefficient. Uses helper calls (covariance + variance) to
+// keep few float values live at once — robust under -O1 (see BUG#48).
+pub fn st_correlation(x: ptr[f64], y: ptr[f64], n: i64) -> f64:
+    let c = st_covariance(x, y, n)
+    let vx = st_variance(x, n)
+    let vy = st_variance(y, n)
+    return c / sqrt(vx * vy)
+
+// Population skewness (third standardized moment).
+pub fn st_skewness(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    let m = s / (n as f64)
+    mut m2 := 0.0
+    mut m3 := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let d = a[k] - m
+        m2 = m2 + d * d
+        m3 = m3 + d * d * d
+        k = k + 1
+    let v2 = m2 / (n as f64)
+    let v3 = m3 / (n as f64)
+    return v3 / (v2 * sqrt(v2))
+
+// Population excess kurtosis (fourth standardized moment minus 3).
+pub fn st_kurtosis(a: ptr[f64], n: i64) -> f64:
+    if n == 0 as i64:
+        return 0.0
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    let m = s / (n as f64)
+    mut m2 := 0.0
+    mut m4 := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let d = a[k] - m
+        m2 = m2 + d * d
+        m4 = m4 + d * d * d * d
+        k = k + 1
+    let v2 = m2 / (n as f64)
+    let v4 = m4 / (n as f64)
+    return v4 / (v2 * v2) - 3.0

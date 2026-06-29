@@ -1,0 +1,170 @@
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn sx_sort_copy(a: ptr[f64], n: i64) -> ptr[f64]:
+    let c = @alloc(n * 8 as i64) as ptr[f64]
+    mut i := 0 as i64
+    while i < n:
+        c[i] = a[i]
+        i = i + 1
+    mut k := 1 as i64
+    while k < n:
+        let v = c[k]
+        mut j := k - 1 as i64
+        while j >= 0 as i64 and c[j] > v:
+            c[j + 1] = c[j]
+            j = j - 1 as i64
+        c[j + 1] = v
+        k = k + 1
+    return c
+
+fn st_median(a: ptr[f64], n: i64) -> f64:
+    let c = sx_sort_copy(a, n)
+    mut r := 0.0
+    if n % (2 as i64) == 1 as i64:
+        r = c[n / 2 as i64]
+    else:
+        r = (c[n / 2 as i64 - 1 as i64] + c[n / 2 as i64]) * 0.5
+    @free(c as ptr[u8])
+    return r
+
+fn st_percentile(a: ptr[f64], n: i64, p: f64) -> f64:
+    let c = sx_sort_copy(a, n)
+    let idx = p / 100.0 * ((n - 1 as i64) as f64)
+    let lo = idx as i64
+    let frac = idx - (lo as f64)
+    mut r := c[lo]
+    if lo + 1 as i64 < n:
+        r = c[lo] + frac * (c[lo + 1 as i64] - c[lo])
+    @free(c as ptr[u8])
+    return r
+
+fn st_covariance(x: ptr[f64], y: ptr[f64], n: i64) -> f64:
+    mut sx := 0.0
+    mut sy := 0.0
+    mut i := 0 as i64
+    while i < n:
+        sx = sx + x[i]
+        sy = sy + y[i]
+        i = i + 1
+    let mx = sx / (n as f64)
+    let my = sy / (n as f64)
+    mut acc := 0.0
+    mut k := 0 as i64
+    while k < n:
+        acc = acc + (x[k] - mx) * (y[k] - my)
+        k = k + 1
+    return acc / (n as f64)
+
+fn st_pvar(a: ptr[f64], n: i64) -> f64:
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    let m = s / (n as f64)
+    mut acc := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let d = a[k] - m
+        acc = acc + d * d
+        k = k + 1
+    return acc / (n as f64)
+
+fn st_correlation(x: ptr[f64], y: ptr[f64], n: i64) -> f64:
+    let c = st_covariance(x, y, n)
+    let vx = st_pvar(x, n)
+    let vy = st_pvar(y, n)
+    return c / sqrtf(vx * vy)
+
+fn st_skewness(a: ptr[f64], n: i64) -> f64:
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    let m = s / (n as f64)
+    mut m2 := 0.0
+    mut m3 := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let d = a[k] - m
+        m2 = m2 + d * d
+        m3 = m3 + d * d * d
+        k = k + 1
+    let v2 = m2 / (n as f64)
+    let v3 = m3 / (n as f64)
+    return v3 / (v2 * sqrtf(v2))
+
+fn st_kurtosis(a: ptr[f64], n: i64) -> f64:
+    mut s := 0.0
+    mut i := 0 as i64
+    while i < n:
+        s = s + a[i]
+        i = i + 1
+    let m = s / (n as f64)
+    mut m2 := 0.0
+    mut m4 := 0.0
+    mut k := 0 as i64
+    while k < n:
+        let d = a[k] - m
+        m2 = m2 + d * d
+        m4 = m4 + d * d * d * d
+        k = k + 1
+    let v2 = m2 / (n as f64)
+    let v4 = m4 / (n as f64)
+    return v4 / (v2 * v2) - 3.0
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    let a = @alloc(5 * 8 as i64) as ptr[f64]
+    a[0] = 1.0
+    a[1] = 2.0
+    a[2] = 3.0
+    a[3] = 4.0
+    a[4] = 5.0
+    let y = @alloc(5 * 8 as i64) as ptr[f64]
+    y[0] = 2.0
+    y[1] = 4.0
+    y[2] = 5.0
+    y[3] = 4.0
+    y[4] = 5.0
+    let b = @alloc(4 * 8 as i64) as ptr[f64]
+    b[0] = 1.0
+    b[1] = 2.0
+    b[2] = 3.0
+    b[3] = 4.0
+    mut s := 0 as i32
+    if near(st_median(a, 5 as i64), 3.0):
+        s = s + 1
+    if near(st_percentile(a, 5 as i64, 25.0), 2.0) and near(st_percentile(a, 5 as i64, 75.0), 4.0):
+        s = s + 2
+    if near(st_covariance(a, y, 5 as i64), 1.2):
+        s = s + 4
+    if near(st_correlation(a, y, 5 as i64), 0.77459667):
+        s = s + 8
+    if near(st_skewness(a, 5 as i64), 0.0):
+        s = s + 16
+    if near(st_kurtosis(a, 5 as i64), 0.0 - 1.3):
+        s = s + 32
+    if near(st_median(b, 4 as i64), 2.5):
+        s = s + 64
+    return s   // expect 127

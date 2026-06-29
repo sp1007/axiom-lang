@@ -42,7 +42,7 @@ Blockers that gate whole categories:
 | 12 | Remainder | 🔶 | math | fmod. todo: ieee_remainder |
 | 13 | Comparison | ✅ | math | min/max/clamp/approx_equal/saturate |
 | 14 | Random | 🔶 | random | xorshift: next_u64/range_i64/next_f64/next_bool/shuffle. todo: **next_range_f64/gaussian** |
-| 15 | Statistics | 🔶 | stats | sum/mean/variance/stddev/min/max. todo: **median/percentile/covariance/correlation/skew/kurtosis** |
+| 15 | Statistics | ✅ | stats | sum/mean/variance/stddev/min/max/median/percentile/covariance/correlation/skewness/kurtosis (oracle-verified) |
 | 16 | Combinatorics | ✅ | combinatorics | factorial/perm/binom/catalan/multichoose/double_factorial |
 | 17 | Number theory | ✅ | numtheory | gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor*/is_perfect/is_coprime/mod_inverse/int_log/sum_digits |
 | 18 | Bit math | 🔶 | math | popcount/clz/ctz/bit_width/rotate_left/has_single_bit/mul_hi. todo: **rotate_right/reverse_bits/bit_floor/bit_ceil/parity** |
@@ -71,7 +71,7 @@ Blockers that gate whole categories:
 
 1. ~~coordinates (#29)~~ ✅ done (std.coordinates).
 2. ~~color (#30)~~ 🔶 done (std.color rgb↔hsv+luminance; HSL todo).
-3. **stats extensions** (#15) — median/percentile/covariance/correlation/skew/kurtosis (inline accumulators to dodge BUG#46).
+3. ~~stats extensions (#15)~~ ✅ done (median/percentile/covariance/correlation/skew/kurtosis, oracle-verified; correlation uses helper-calls to stay robust under -O1 / BUG#48).
 4. **signal windows** (#26) — hann/hamming/blackman/bartlett/welch (scalar).
 5. **ml extensions** (#27) — gelu/mse/mae/cross_entropy/softmax(array).
 6. **math fill-ins** — expm1/log_base/normalize_angle/copysign/round_to (#6/7/10/11/3).
