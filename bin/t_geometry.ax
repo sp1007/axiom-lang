@@ -1,0 +1,79 @@
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn g2_dist_sq(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    let dx = bx - ax
+    let dy = by - ay
+    return dx * dx + dy * dy
+
+fn g2_dist(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return sqrtf(g2_dist_sq(ax, ay, bx, by))
+
+fn g2_cross(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return ax * by - ay * bx
+
+fn g2_dot(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return ax * bx + ay * by
+
+fn g2_triangle_area(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> f64:
+    mut a := (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if a < 0.0:
+        a = 0.0 - a
+    return 0.5 * a
+
+fn g2_orient(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> i32:
+    let cr = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if cr > 0.0:
+        return 1 as i32
+    if cr < 0.0:
+        return 0 as i32 - 1 as i32
+    return 0 as i32
+
+fn g2_point_in_triangle(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> bool:
+    let d1 = g2_orient(px, py, ax, ay, bx, by)
+    let d2 = g2_orient(px, py, bx, by, cx, cy)
+    let d3 = g2_orient(px, py, cx, cy, ax, ay)
+    mut has_neg := false
+    mut has_pos := false
+    if d1 < 0 as i32 or d2 < 0 as i32 or d3 < 0 as i32:
+        has_neg = true
+    if d1 > 0 as i32 or d2 > 0 as i32 or d3 > 0 as i32:
+        has_pos = true
+    return (has_neg and has_pos) == false
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if near(g2_dist(0.0, 0.0, 3.0, 4.0), 5.0):
+        s = s + 1
+    if near(g2_dist_sq(0.0, 0.0, 3.0, 4.0), 25.0):
+        s = s + 2
+    if near(g2_cross(1.0, 0.0, 0.0, 1.0), 1.0):
+        s = s + 4
+    if near(g2_dot(1.0, 2.0, 3.0, 4.0), 11.0):
+        s = s + 8
+    if near(g2_triangle_area(0.0, 0.0, 4.0, 0.0, 0.0, 3.0), 6.0):
+        s = s + 16
+    if g2_orient(0.0, 0.0, 1.0, 0.0, 1.0, 1.0) == 1 as i32:
+        s = s + 32
+    if g2_point_in_triangle(1.0, 1.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0) and (g2_point_in_triangle(5.0, 5.0, 0.0, 0.0, 4.0, 0.0, 0.0, 4.0) == false):
+        s = s + 64
+    return s   // expect 127

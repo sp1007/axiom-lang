@@ -1,0 +1,49 @@
+// AXIOM Standard Library — std.geometry (2D)
+//
+// Scalar f64 planar geometry on raw (x,y) coordinates — distance, dot/cross,
+// triangle area, orientation, point-in-triangle. No >16-byte structs and no
+// float-call-result held across a loop → immune to BUG#45/46. g2_dist composes
+// std.math.sqrt across a frame (safe since BUG#44). For vector ops see std.vec.
+
+pub fn g2_dist_sq(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    let dx = bx - ax
+    let dy = by - ay
+    return dx * dx + dy * dy
+
+pub fn g2_dist(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return sqrt(g2_dist_sq(ax, ay, bx, by))
+
+// 2D scalar cross product (z-component of the 3D cross).
+pub fn g2_cross(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return ax * by - ay * bx
+
+pub fn g2_dot(ax: f64, ay: f64, bx: f64, by: f64) -> f64:
+    return ax * bx + ay * by
+
+pub fn g2_triangle_area(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> f64:
+    mut a := (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if a < 0.0:
+        a = 0.0 - a
+    return 0.5 * a
+
+// Orientation of (a,b,c): +1 counter-clockwise (left turn), -1 clockwise, 0 collinear.
+pub fn g2_orient(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> i32:
+    let cr = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if cr > 0.0:
+        return 1 as i32
+    if cr < 0.0:
+        return 0 as i32 - 1 as i32
+    return 0 as i32
+
+// Is point p inside (or on the boundary of) triangle a,b,c?
+pub fn g2_point_in_triangle(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> bool:
+    let d1 = g2_orient(px, py, ax, ay, bx, by)
+    let d2 = g2_orient(px, py, bx, by, cx, cy)
+    let d3 = g2_orient(px, py, cx, cy, ax, ay)
+    mut has_neg := false
+    mut has_pos := false
+    if d1 < 0 as i32 or d2 < 0 as i32 or d3 < 0 as i32:
+        has_neg = true
+    if d1 > 0 as i32 or d2 > 0 as i32 or d3 > 0 as i32:
+        has_pos = true
+    return (has_neg and has_pos) == false

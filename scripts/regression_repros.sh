@@ -66,6 +66,7 @@ rows=(
   "t_numtheory|exit|127"
   "t_combinatorics|exit|127"
   "t_interpolation|exit|127"
+  "t_geometry|exit|127"
 )
 
 for row in "${rows[@]}"; do
