@@ -1,0 +1,46 @@
+// AXIOM Standard Library — std.probability
+//
+// Scalar f64 probability distributions (normal, logistic). Composes std.math
+// (exp/erf/sqrt) across frames — safe since BUG#44. No structs / no float
+// call-result held across a loop → BUG#45/46-immune. Requires std.math in scope.
+
+const PR_SQRT_2PI: f64 = 2.5066282746310002
+const PR_SQRT2: f64 = 1.4142135623730951
+
+// Normal (Gaussian) probability density.
+pub fn pr_normal_pdf(x: f64, mu: f64, sigma: f64) -> f64:
+    let z = (x - mu) / sigma
+    return exp(0.0 - 0.5 * z * z) / (sigma * PR_SQRT_2PI)
+
+// Normal cumulative distribution via the error function.
+pub fn pr_normal_cdf(x: f64, mu: f64, sigma: f64) -> f64:
+    let z = (x - mu) / sigma
+    let r = erf(z / PR_SQRT2)
+    return 0.5 * (1.0 + r)
+
+pub fn pr_std_normal_pdf(x: f64) -> f64:
+    return pr_normal_pdf(x, 0.0, 1.0)
+
+pub fn pr_std_normal_cdf(x: f64) -> f64:
+    return pr_normal_cdf(x, 0.0, 1.0)
+
+// Logistic (sigmoid) cumulative distribution.
+pub fn pr_logistic_cdf(x: f64) -> f64:
+    return 1.0 / (1.0 + exp(0.0 - x))
+
+// Logistic probability density: e^-x / (1+e^-x)^2.
+pub fn pr_logistic_pdf(x: f64) -> f64:
+    let e = exp(0.0 - x)
+    let d = 1.0 + e
+    return e / (d * d)
+
+// Exponential distribution (rate lambda) density and CDF, x >= 0.
+pub fn pr_exp_pdf(x: f64, lambda: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    return lambda * exp(0.0 - lambda * x)
+
+pub fn pr_exp_cdf(x: f64, lambda: f64) -> f64:
+    if x < 0.0:
+        return 0.0
+    return 1.0 - exp(0.0 - lambda * x)

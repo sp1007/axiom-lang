@@ -1,0 +1,82 @@
+const SQRT_2PI: f64 = 2.5066282746310002
+const SQRT2: f64 = 1.4142135623730951
+
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn expf(x: f64) -> f64:
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 60:
+        term = term * x / (n as f64)
+        sum = sum + term
+        n = n + 1
+    return sum
+
+fn erff(x: f64) -> f64:
+    mut sign := 1.0
+    mut xx := x
+    if xx < 0.0:
+        sign = 0.0 - 1.0
+        xx = 0.0 - xx
+    let t = 1.0 / (1.0 + 0.3275911 * xx)
+    let e = expf(0.0 - xx * xx)
+    let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t
+    let y = 1.0 - poly * e
+    return sign * y
+
+fn pr_normal_pdf(x: f64, mu: f64, sigma: f64) -> f64:
+    let z = (x - mu) / sigma
+    return expf(0.0 - 0.5 * z * z) / (sigma * SQRT_2PI)
+
+fn pr_normal_cdf(x: f64, mu: f64, sigma: f64) -> f64:
+    let z = (x - mu) / sigma
+    let r = erff(z / SQRT2)
+    return 0.5 * (1.0 + r)
+
+fn pr_std_normal_pdf(x: f64) -> f64:
+    return pr_normal_pdf(x, 0.0, 1.0)
+
+fn pr_std_normal_cdf(x: f64) -> f64:
+    return pr_normal_cdf(x, 0.0, 1.0)
+
+fn pr_logistic_cdf(x: f64) -> f64:
+    return 1.0 / (1.0 + expf(0.0 - x))
+
+fn near(v: f64, w: f64, tol: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < tol
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if near(pr_std_normal_cdf(0.0), 0.5, 0.0001):
+        s = s + 1
+    if near(pr_std_normal_cdf(1.96), 0.975, 0.002):
+        s = s + 2
+    if near(pr_std_normal_pdf(0.0), 0.39894228, 0.001):
+        s = s + 4
+    if near(pr_logistic_cdf(0.0), 0.5, 0.0001):
+        s = s + 8
+    if pr_logistic_cdf(6.0) > 0.99:
+        s = s + 16
+    if near(pr_normal_cdf(10.0, 10.0, 2.0), 0.5, 0.0001):
+        s = s + 32
+    if near(pr_normal_pdf(10.0, 10.0, 2.0), 0.19947114, 0.001):
+        s = s + 64
+    return s   // expect 127
