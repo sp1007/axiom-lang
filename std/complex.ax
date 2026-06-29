@@ -1,0 +1,70 @@
+// AXIOM Standard Library — std.complex
+//
+// Complex numbers over f64. Arithmetic via RFC 0007 operator overloading
+// (`a + b`, `a - b`, `a * b` dispatch to methods); transcendental/polar helpers
+// compose std.math (sqrt/exp/ln/sin/cos/atan2) — safe across calls since the
+// callee-saved XMM fix (BUG#44). Requires std.math in scope when bundled.
+
+pub struct Complex:
+    re: f64
+    im: f64
+
+    fn add(self, o: Complex) -> Complex:
+        return Complex(re: self.re + o.re, im: self.im + o.im)
+
+    fn sub(self, o: Complex) -> Complex:
+        return Complex(re: self.re - o.re, im: self.im - o.im)
+
+    fn mul(self, o: Complex) -> Complex:
+        return Complex(re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re)
+
+pub fn complex(re: f64, im: f64) -> Complex:
+    return Complex(re: re, im: im)
+
+pub fn c_neg(a: Complex) -> Complex:
+    return Complex(re: 0.0 - a.re, im: 0.0 - a.im)
+
+pub fn c_scale(a: Complex, k: f64) -> Complex:
+    return Complex(re: a.re * k, im: a.im * k)
+
+pub fn c_div(a: Complex, b: Complex) -> Complex:
+    let d = b.re * b.re + b.im * b.im
+    return Complex(re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d)
+
+pub fn c_conj(a: Complex) -> Complex:
+    return Complex(re: a.re, im: 0.0 - a.im)
+
+// |a| = hypot(re, im)
+pub fn c_abs(a: Complex) -> f64:
+    return sqrt(a.re * a.re + a.im * a.im)
+
+// |a|^2 (no sqrt)
+pub fn c_norm(a: Complex) -> f64:
+    return a.re * a.re + a.im * a.im
+
+// arg(a) = atan2(im, re)
+pub fn c_arg(a: Complex) -> f64:
+    return atan2(a.im, a.re)
+
+// e^(a+bi) = e^a (cos b + i sin b)
+pub fn c_exp(a: Complex) -> Complex:
+    let ea = exp(a.re)
+    return Complex(re: ea * cos(a.im), im: ea * sin(a.im))
+
+// ln(a) = ln|a| + i*arg(a)
+pub fn c_ln(a: Complex) -> Complex:
+    let m = sqrt(a.re * a.re + a.im * a.im)
+    return Complex(re: ln(m), im: atan2(a.im, a.re))
+
+// from polar (r, theta) -> r(cos + i sin)
+pub fn c_from_polar(r: f64, theta: f64) -> Complex:
+    return Complex(re: r * cos(theta), im: r * sin(theta))
+
+// sqrt of a complex number (principal branch)
+pub fn c_sqrt(a: Complex) -> Complex:
+    let m = sqrt(a.re * a.re + a.im * a.im)
+    let rr = sqrt((m + a.re) * 0.5)
+    mut ii := sqrt((m - a.re) * 0.5)
+    if a.im < 0.0:
+        ii = 0.0 - ii
+    return Complex(re: rr, im: ii)

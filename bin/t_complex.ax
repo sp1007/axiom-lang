@@ -1,0 +1,128 @@
+// bin/t_complex.ax — complex numbers (struct f64 fields + operator overload).
+// add/mul via operators, abs/conj/div, exp (Euler e^(i*pi)=-1) -> exit 63.
+// Exercises float-field struct methods across calls (BUG#44 fix).
+const PI: f64 = 3.14159265358979323846
+const LN2: f64 = 0.69314718055994530942
+const TAU: f64 = 6.28318530717958647692
+const HALF_PI: f64 = 1.57079632679489661923
+
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn expf(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+fn sinf(x: f64) -> f64:
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    let a2 = a * a
+    mut term := a
+    mut sum := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        sum = sum + term
+        n = n + 1
+    return sum
+
+fn cosf(x: f64) -> f64:
+    return sinf(x + HALF_PI)
+
+struct Complex:
+    re: f64
+    im: f64
+
+    fn add(self, o: Complex) -> Complex:
+        return Complex(re: self.re + o.re, im: self.im + o.im)
+
+    fn sub(self, o: Complex) -> Complex:
+        return Complex(re: self.re - o.re, im: self.im - o.im)
+
+    fn mul(self, o: Complex) -> Complex:
+        return Complex(re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re)
+
+fn c_mk(re: f64, im: f64) -> Complex:
+    return Complex(re: re, im: im)
+
+fn c_div(a: Complex, b: Complex) -> Complex:
+    let d = b.re * b.re + b.im * b.im
+    return Complex(re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d)
+
+fn c_abs(a: Complex) -> f64:
+    return sqrtf(a.re * a.re + a.im * a.im)
+
+fn c_conj(a: Complex) -> Complex:
+    return Complex(re: a.re, im: 0.0 - a.im)
+
+// e^(a+bi) = e^a (cos b + i sin b)
+fn c_exp(a: Complex) -> Complex:
+    let ea = expf(a.re)
+    return Complex(re: ea * cosf(a.im), im: ea * sinf(a.im))
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    let x = c_mk(1.0, 2.0)
+    let y = c_mk(3.0, 4.0)
+    let sum = x + y                 // (4,6)
+    if near(sum.re, 4.0) and near(sum.im, 6.0):
+        s = s + 1
+    let prod = x * y               // (-5,10)
+    if near(prod.re, 0.0 - 5.0) and near(prod.im, 10.0):
+        s = s + 2
+    if near(c_abs(c_mk(3.0, 4.0)), 5.0):
+        s = s + 4
+    let cj = c_conj(x)             // (1,-2)
+    if near(cj.re, 1.0) and near(cj.im, 0.0 - 2.0):
+        s = s + 8
+    let q = c_div(x, x)           // (1,0)
+    if near(q.re, 1.0) and near(q.im, 0.0):
+        s = s + 16
+    // e^(i*pi) = -1 + 0i (Euler)
+    let ee = c_exp(c_mk(0.0, PI))
+    if near(ee.re, 0.0 - 1.0) and near(ee.im, 0.0):
+        s = s + 32
+    return s   // expect 63

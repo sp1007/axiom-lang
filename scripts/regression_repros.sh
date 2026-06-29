@@ -60,6 +60,7 @@ rows=(
   "t_b44|exit|54"
   "t_erf|exit|15"
   "t_gamma|exit|63"
+  "t_complex|exit|63"
 )
 
 for row in "${rows[@]}"; do
