@@ -1196,3 +1196,18 @@ Sau khi nâng trần stage0 (commit 23188e5), thêm được code vào stage1 �
 **Trả lời "cùng tên khác lib/alias có khác nhau không":** ĐÚNG VỀ NGUYÊN TẮC — với mangling module-qualified thì user `A.close` ≠ libc `close` ≠ user `B.close`. NHƯNG hiện CHƯA mangle → KHÔNG khác nhau (cùng symbol thô). Alias cũng không cứu (vẫn trỏ cùng symbol).
 
 **FIX đúng (RFC-level, RỦI RO CAO — để phiên riêng):** mangle symbol user theo module-qualified (vd `ax_u__<module>__<fn>` hoặc hash signature) + whitelist `extern "C"` giữ tên thô. Đụng MỌI symbol → ảnh hưởng self-host fixpoint + linker + ranh giới ABI runtime → cần RFC + verify đầy đủ. **Workaround hiện tại:** đừng đặt hàm trùng tên libc/runtime (close/open/read/write/ok/...).
+
+---
+
+## 🔴 BUG#45 (2026-06-29) — struct 32-byte (4×f64) codegen sai nhiều kịch bản
+
+Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct CÓ FIELD FLOAT bị miscompile ở nhiều pattern, dù **U256 (4×i64, 32 byte) HOẠT ĐỘNG** (t_bn256=31) và **Complex/Vec (≤24 byte, f64) HOẠT ĐỘNG** (t_complex/t_vec=63). → đặc thù **>16-byte struct + field f64**.
+
+**Kịch bản ĐÚNG (đã kiểm):** return-only copy (`fn mk()->Quat`); 1 struct-arg→scalar (`sumq(a:Quat)->f64`=10); FREE-fn 2 struct-arg→struct (`q_mul(a,b:Quat)->Quat` với constructed args = 30 ĐÚNG).
+
+**Kịch bản SAI:** 
+1. METHOD `fn mul(self, o: Quat)->Quat` đọc field của `o` (32B f64 arg sau self) → ra 0 (q2/q7, cả O0/O1). (U256.add cùng shape với i64 thì ĐÚNG → float-specific.)
+2. struct call-RESULT làm arg cho call khác (`qp=q_mul(q,p); q_mul(qp,...)`) → sai.
+3. constructor field = call-result + sret (`q_from_axis_angle` trả Quat(w: cosf(h),...)) → q.w/q.z sai (tách cosf ra local KHÔNG cứu).
+
+→ Quaternion/Mat3/Mat4 (cần 32B+ f64 struct) BỊ CHẶN. Complex(16B)/Vec3(24B) OK nên ship được. **FIX:** debug backend struct-ABI cho >16-byte f64 (param materialization của struct-arg-sau-self + float field load/store qua by-address ptr + sret tương tác float register). Cùng họ với Family C (struct by-value) nhưng cho FLOAT fields + size 32. Cần phiên backend riêng + fixpoint verify. **Workaround tạm:** giữ struct toán học ≤24 byte (≤3 f64) hoặc dùng free-fn với args constructed tươi (không call-result), tránh method-với-struct-arg cho 32B f64.
