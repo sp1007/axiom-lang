@@ -53,7 +53,7 @@ Blockers that gate whole categories:
 | 23 | Quaternion | 🔒 | — | 4×f64=32B → **BUG#45** |
 | 24 | Special functions | 🔶 | math | erf/erfc/gamma/lgamma/beta. todo: **factorial_real/digamma/bessel_j0/zeta** |
 | 25 | Numerical analysis | ⬜ | — | array-sampled trapezoid/simpson + scalar bisection/newton (generic f needs closures 🔒) |
-| 26 | Signal processing | ⬜ | — | **window fns** hann/hamming/blackman/bartlett (scalar). FFT needs complex arrays |
+| 26 | Signal processing | 🔶 | signal | window fns hann/hamming/blackman/bartlett/welch (oracle-verified). todo: FFT (complex arrays) |
 | 27 | Machine learning | 🔶 | math | sigmoid/relu/leaky_relu/softplus/swish/tanh. todo: **gelu/mse/mae/cross_entropy** (softmax=array) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
 | 29 | Coordinate systems | ✅ | coordinates | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) |
@@ -72,7 +72,7 @@ Blockers that gate whole categories:
 1. ~~coordinates (#29)~~ ✅ done (std.coordinates).
 2. ~~color (#30)~~ 🔶 done (std.color rgb↔hsv+luminance; HSL todo).
 3. ~~stats extensions (#15)~~ ✅ done (median/percentile/covariance/correlation/skew/kurtosis, oracle-verified; correlation uses helper-calls to stay robust under -O1 / BUG#48).
-4. **signal windows** (#26) — hann/hamming/blackman/bartlett/welch (scalar).
+4. ~~signal windows (#26)~~ 🔶 done (hann/hamming/blackman/bartlett/welch; FFT todo).
 5. **ml extensions** (#27) — gelu/mse/mae/cross_entropy/softmax(array).
 6. **math fill-ins** — expm1/log_base/normalize_angle/copysign/round_to (#6/7/10/11/3).
 7. **bit math fill-ins** (#18) — rotate_right/reverse_bits/bit_floor/bit_ceil/parity.

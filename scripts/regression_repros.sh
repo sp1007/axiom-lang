@@ -72,6 +72,7 @@ rows=(
   "t_coordinates|exit|127"
   "t_color|exit|127"
   "t_statx|exit|127"
+  "t_signal|exit|127"
 )
 
 for row in "${rows[@]}"; do

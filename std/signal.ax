@@ -1,0 +1,31 @@
+// AXIOM Standard Library — std.signal
+//
+// Window functions for spectral analysis / FIR design: sample i in [0, n-1].
+// Scalar f64 composing std.math (cos/abs) — BUG#45/46/48-immune (few live
+// floats). FFT/convolution need complex arrays (see std.complex) — future work.
+// Requires std.math in scope when bundled.
+
+const SG_TAU: f64 = 6.28318530717958647692
+
+// Hann (raised-cosine) window.
+pub fn sg_hann(i: i64, n: i64) -> f64:
+    return 0.5 * (1.0 - cos(SG_TAU * (i as f64) / ((n - 1 as i64) as f64)))
+
+// Hamming window.
+pub fn sg_hamming(i: i64, n: i64) -> f64:
+    return 0.54 - 0.46 * cos(SG_TAU * (i as f64) / ((n - 1 as i64) as f64))
+
+// Blackman window.
+pub fn sg_blackman(i: i64, n: i64) -> f64:
+    let t = (i as f64) / ((n - 1 as i64) as f64)
+    return 0.42 - 0.5 * cos(SG_TAU * t) + 0.08 * cos(2.0 * SG_TAU * t)
+
+// Bartlett (triangular) window.
+pub fn sg_bartlett(i: i64, n: i64) -> f64:
+    return 1.0 - abs(2.0 * (i as f64) / ((n - 1 as i64) as f64) - 1.0)
+
+// Welch (parabolic) window.
+pub fn sg_welch(i: i64, n: i64) -> f64:
+    let h = ((n - 1 as i64) as f64) * 0.5
+    let u = ((i as f64) - h) / h
+    return 1.0 - u * u
