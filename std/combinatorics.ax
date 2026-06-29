@@ -1,0 +1,63 @@
+// AXIOM Standard Library — std.combinatorics
+//
+// Exact integer combinatorics over u64. All-integer (no float) so immune to the
+// float-ABI codegen bugs (BUG#44/45/46). cb_binom divides inside its loop, so
+// the repro (bin/t_combinatorics.ax) also guards BUG#47 (unsigned div clobber).
+//
+// Ranges stay exact while results fit u64: cb_factorial up to 20!, cb_binom up
+// to C(62,31). Larger n needs bignum (std.bignum) or the real-valued log-gamma
+// form (std.math.lgamma) — out of scope here.
+
+pub fn cb_factorial(n: u64) -> u64:
+    mut r := 1 as u64
+    mut i := 2 as u64
+    while i <= n:
+        r = r * i
+        i = i + (1 as u64)
+    return r
+
+// Falling factorial n·(n-1)···(n-k+1) = n! / (n-k)!  (number of k-permutations).
+pub fn cb_perm(n: u64, k: u64) -> u64:
+    if k > n:
+        return 0 as u64
+    mut r := 1 as u64
+    mut i := 0 as u64
+    while i < k:
+        r = r * (n - i)
+        i = i + (1 as u64)
+    return r
+
+// Binomial coefficient C(n,k), computed multiplicatively with exact division
+// each step (no overflow until the true result exceeds u64).
+pub fn cb_binom(n: u64, k: u64) -> u64:
+    if k > n:
+        return 0 as u64
+    mut kk := k
+    if kk > n - kk:
+        kk = n - kk
+    mut r := 1 as u64
+    mut i := 0 as u64
+    while i < kk:
+        r = r * (n - kk + i + (1 as u64))
+        r = r / (i + (1 as u64))
+        i = i + (1 as u64)
+    return r
+
+// Catalan number C_n = C(2n,n)/(n+1).
+pub fn cb_catalan(n: u64) -> u64:
+    return cb_binom(n + n, n) / (n + (1 as u64))
+
+// Multiset coefficient: ways to choose k from n with repetition = C(n+k-1,k).
+pub fn cb_multichoose(n: u64, k: u64) -> u64:
+    if n == 0 as u64:
+        return 0 as u64
+    return cb_binom(n + k - (1 as u64), k)
+
+// Double factorial n!! = n·(n-2)·(n-4)···
+pub fn cb_double_factorial(n: u64) -> u64:
+    mut r := 1 as u64
+    mut i := n
+    while i > 1 as u64:
+        r = r * i
+        i = i - (2 as u64)
+    return r

@@ -1,0 +1,58 @@
+// Regression repro for std.combinatorics (+ BUG#47 div-in-loop guard via cb_binom).
+// Self-contained (own helpers). Expect exit 127.
+
+fn cb_factorial(n: u64) -> u64:
+    mut r := 1 as u64
+    mut i := 2 as u64
+    while i <= n:
+        r = r * i
+        i = i + (1 as u64)
+    return r
+
+fn cb_perm(n: u64, k: u64) -> u64:
+    if k > n:
+        return 0 as u64
+    mut r := 1 as u64
+    mut i := 0 as u64
+    while i < k:
+        r = r * (n - i)
+        i = i + (1 as u64)
+    return r
+
+fn cb_binom(n: u64, k: u64) -> u64:
+    if k > n:
+        return 0 as u64
+    mut kk := k
+    if kk > n - kk:
+        kk = n - kk
+    mut r := 1 as u64
+    mut i := 0 as u64
+    while i < kk:
+        r = r * (n - kk + i + (1 as u64))
+        r = r / (i + (1 as u64))
+        i = i + (1 as u64)
+    return r
+
+fn cb_catalan(n: u64) -> u64:
+    return cb_binom(n + n, n) / (n + (1 as u64))
+
+fn cb_multichoose(n: u64, k: u64) -> u64:
+    return cb_binom(n + k - (1 as u64), k)
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if cb_factorial(10 as u64) == 3628800 as u64:
+        s = s + 1
+    if cb_perm(10 as u64, 3 as u64) == 720 as u64:
+        s = s + 2
+    if cb_binom(10 as u64, 3 as u64) == 120 as u64:
+        s = s + 4
+    if cb_binom(52 as u64, 5 as u64) == 2598960 as u64:   // poker hands; multi-iter div
+        s = s + 8
+    if cb_catalan(5 as u64) == 42 as u64:
+        s = s + 16
+    if cb_catalan(10 as u64) == 16796 as u64:
+        s = s + 32
+    if cb_multichoose(5 as u64, 3 as u64) == 35 as u64:
+        s = s + 64
+    return s   // expect 127
