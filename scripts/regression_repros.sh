@@ -58,6 +58,7 @@ rows=(
   "t_bndyn|exit|99"
   "t_mathx|exit|28"
   "t_b44|exit|54"
+  "t_erf|exit|15"
 )
 
 for row in "${rows[@]}"; do

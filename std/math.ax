@@ -656,3 +656,19 @@ pub fn mul_hi(a: u64, b: u64) -> u64:
         c2 = 1 as u64
     return aH * bH + (cross >> 32) + (carry << 32) + c2
 
+
+// --- Error function (Abramowitz-Stegun 7.1.26, ~1e-7; composes exp) ---
+pub fn erf(x: f64) -> f64:
+    mut sgn := 1.0
+    mut a := x
+    if a < 0.0:
+        sgn = 0.0 - 1.0
+        a = 0.0 - a
+    let t = 1.0 / (1.0 + 0.3275911 * a)
+    let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t
+    let e = exp(0.0 - a * a)
+    return sgn * (1.0 - poly * e)
+
+pub fn erfc(x: f64) -> f64:
+    let v = erf(x)
+    return 1.0 - v

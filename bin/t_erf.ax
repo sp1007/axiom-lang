@@ -1,0 +1,62 @@
+// bin/t_erf.ax — regression for the error function (erf/erfc), a composing
+// float function (calls exp across a frame) — exercises the BUG#44 fix. Uses
+// Abramowitz-Stegun 7.1.26 (~1e-7). Self-contained.
+// erf(1)=0.84270, erfc(1)=0.15730, erf(0)=0, erf(-0.5)=-0.52050 -> exit 15.
+
+const LN2: f64 = 0.69314718055994530942
+
+fn exp(x: f64) -> f64:
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut term := 1.0
+    mut sum := 1.0
+    mut n := 1 as i32
+    while n < 18:
+        term = term * r / (n as f64)
+        sum = sum + term
+        n = n + 1
+    mut res := sum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+fn erf(x: f64) -> f64:
+    mut sgn := 1.0
+    mut a := x
+    if a < 0.0:
+        sgn = 0.0 - 1.0
+        a = 0.0 - a
+    let t = 1.0 / (1.0 + 0.3275911 * a)
+    let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t
+    let e = exp(0.0 - a * a)
+    let y = 1.0 - poly * e
+    return sgn * y
+
+fn erfc(x: f64) -> f64:
+    let v = erf(x)
+    return 1.0 - v
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.0001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if near(erf(1.0), 0.8427007929):
+        s = s + 1
+    if near(erfc(1.0), 0.1572992071):
+        s = s + 2
+    if near(erf(0.0), 0.0):
+        s = s + 4
+    if near(erf(0.0 - 0.5), 0.0 - 0.5204998778):
+        s = s + 8
+    return s
