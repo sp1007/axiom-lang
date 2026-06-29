@@ -1,0 +1,110 @@
+// AXIOM Standard Library — std.numtheory
+//
+// Elementary number theory over u64. All-integer (no float) so immune to the
+// float-ABI codegen bugs (BUG#44/45/46). Trial-division loops with `%` exercise
+// the unsigned-div register-clobber path fixed in BUG#47 — keep this module's
+// repro (bin/t_numtheory.ax) in the regression set as a guard against regression.
+//
+// nt_mod_exp keeps products within u64; for moduli up to ~2^32 there is no
+// overflow. Larger moduli need a 128-bit mulmod (see std.bignum) — out of scope.
+
+pub fn nt_gcd(a: u64, b: u64) -> u64:
+    mut x := a
+    mut y := b
+    while y != 0 as u64:
+        let t = x % y
+        x = y
+        y = t
+    return x
+
+pub fn nt_lcm(a: u64, b: u64) -> u64:
+    if a == 0 as u64:
+        return 0 as u64
+    if b == 0 as u64:
+        return 0 as u64
+    let g = nt_gcd(a, b)
+    return (a / g) * b
+
+pub fn nt_is_prime(n: u64) -> bool:
+    if n < 2 as u64:
+        return false
+    if n < 4 as u64:
+        return true
+    if n % (2 as u64) == 0 as u64:
+        return false
+    mut i := 3 as u64
+    while i * i <= n:
+        if n % i == 0 as u64:
+            return false
+        i = i + (2 as u64)
+    return true
+
+pub fn nt_next_prime(n: u64) -> u64:
+    mut c := n + (1 as u64)
+    while nt_is_prime(c) == false:
+        c = c + (1 as u64)
+    return c
+
+// (base^exp) mod m. No overflow for m up to ~2^32 (products stay < 2^64).
+pub fn nt_mod_exp(base: u64, exp: u64, m: u64) -> u64:
+    if m == 1 as u64:
+        return 0 as u64
+    mut result := 1 as u64
+    mut b := base % m
+    mut e := exp
+    while e > 0 as u64:
+        if e % (2 as u64) == 1 as u64:
+            result = (result * b) % m
+        e = e / (2 as u64)
+        b = (b * b) % m
+    return result
+
+// Euler's totient phi(n) via trial-division factorisation.
+pub fn nt_totient(n: u64) -> u64:
+    mut result := n
+    mut nn := n
+    mut p := 2 as u64
+    while p * p <= nn:
+        if nn % p == 0 as u64:
+            while nn % p == 0 as u64:
+                nn = nn / p
+            result = result - (result / p)
+        p = p + (1 as u64)
+    if nn > 1 as u64:
+        result = result - (result / nn)
+    return result
+
+pub fn nt_divisor_count(n: u64) -> u64:
+    if n == 0 as u64:
+        return 0 as u64
+    mut cnt := 0 as u64
+    mut i := 1 as u64
+    while i * i <= n:
+        if n % i == 0 as u64:
+            if i * i == n:
+                cnt = cnt + (1 as u64)
+            else:
+                cnt = cnt + (2 as u64)
+        i = i + (1 as u64)
+    return cnt
+
+pub fn nt_divisor_sum(n: u64) -> u64:
+    if n == 0 as u64:
+        return 0 as u64
+    mut sm := 0 as u64
+    mut i := 1 as u64
+    while i * i <= n:
+        if n % i == 0 as u64:
+            sm = sm + i
+            let j = n / i
+            if j != i:
+                sm = sm + j
+        i = i + (1 as u64)
+    return sm
+
+pub fn nt_is_perfect(n: u64) -> bool:
+    if n < 2 as u64:
+        return false
+    return nt_divisor_sum(n) == n + n
+EOF
+echo "std/numtheory.ax written"

@@ -415,17 +415,21 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         iv_idx = iv_idx + 1
     @free(call_pos as ptr[u8])
 
-    // MACH_IDIV clobbers RAX and RDX (the `cqo; idiv` sequence). Any vreg whose
-    // live range SPANS an idiv — not just the dividend (handled above) — must not
-    // be assigned RAX/RDX, otherwise the division silently destroys it. This bit
-    // the reverse-loop counter `i` (held in RDX) across `len / 2`: `cqo` wiped RDX
-    // → infinite loop; and any function doing `/`/`%` with a live RDX/RAX value
-    // (incl. the parser → stage3 token misread). Mirror the spans_call logic.
+    // MACH_IDIV / MACH_DIV clobber RAX and RDX (the `cqo; idiv` and `mov rdx,0;
+    // div` sequences). Any vreg whose live range SPANS a division — not just the
+    // dividend/divisor (handled above) — must not be assigned RAX/RDX, otherwise
+    // the division silently destroys it. This bit the reverse-loop counter `i`
+    // (held in RDX) across `len / 2`: `cqo` wiped RDX → infinite loop; and any
+    // function doing `/`/`%` with a live RDX/RAX value (incl. the parser → stage3
+    // token misread). BUG#47: the UNSIGNED path emits MACH_DIV (not MACH_IDIV),
+    // so this span pass must scan BOTH — otherwise an unsigned `%`/`/` in a loop
+    // wipes a loop-carried value sitting in RDX (e.g. the dividend `n` across a
+    // trial-division primality loop). Mirror the spans_call logic.
     let idiv_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
     mut idiv_count := 0 as i64
     mut di_scan := 0 as i64
     while di_scan < insts_len:
-        if insts[di_scan].op == MACH_IDIV:
+        if insts[di_scan].op == MACH_IDIV or insts[di_scan].op == MACH_DIV:
             idiv_pos[idiv_count] = di_scan as i32
             idiv_count = idiv_count + 1
         di_scan = di_scan + 1

@@ -63,6 +63,7 @@ rows=(
   "t_complex|exit|63"
   "t_vec|exit|63"
   "t_stats|exit|63"
+  "t_numtheory|exit|127"
 )
 
 for row in "${rows[@]}"; do

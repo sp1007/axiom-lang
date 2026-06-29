@@ -1217,3 +1217,18 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 ## ⚠️ BUG#46 (2026-06-29) — float call-result đọc qua loop sau đó bị hỏng
 
 `let m = f(...)` (m: f64, kết quả 1 lời gọi) rồi đọc `m` trong một VÒNG LẶP tiếp theo (loop KHÔNG có call) → m sai. VD st_variance: `let m = st_mean(a,n); while: d = a[i]-m; acc+=d*d` → variance sai; nhưng tính mean INLINE (sum loop tại chỗ, không call) → ĐÚNG. Nghi liveness/regalloc của float-call-result bị tính sai khi sống qua loop (m bị scratch của loop đè), KHÁC BUG#44 (đã fix save/restore qua call). Workaround: inline giá trị (đừng giữ float-call-result qua loop), hoặc nạp lại. Cần debug liveness float trong x86_regalloc. Library tránh pattern này.
+
+---
+
+## ✅ BUG#47 (2026-06-29) — unsigned `%`/`/` trong loop làm hỏng giá trị sống qua phép chia (FIXED)
+
+**Triệu chứng:** Vòng trial-division `while i*i<=n: if n%i==0: return …; i=i+2` với u64 cho kết quả SAI khi loop chạy >1 vòng VÀ thân loop trả về HẰNG (`return 0`/`return false`/`return 99`). Trả về biến `i` thì ĐÚNG. → số hợp (91=7·13, 25=5·5) bị coi là nguyên tố. Lặp ở CẢ -O0 lẫn -O1 (codegen tất định, KHÔNG phải lỗi tối ưu).
+
+**Root cause:** `x86_regalloc.ax` có 2 cơ chế cấm RAX/RDX quanh phép chia:
+1. dòng ~357: cấm chính **toán hạng chia** (src1 của MACH_IDIV/MACH_DIV) — đã xử cả 2.
+2. dòng ~428 (span pass): cấm RAX/RDX cho **mọi vreg có live-range bắc qua** phép chia (vd số bị chia `n`, hay biến vòng lặp) — vì `cqo`/`mov rdx,0` + `div` ghi đè RAX:RDX. **CHỖ NÀY CHỈ QUÉT `MACH_IDIV`** (đường ký hiệu/signed). Đường **unsigned** (u8/u16/u32/u64) phát `MACH_DIV`, nên span pass bỏ sót → một giá trị sống (vd `n`) nằm trong RDX bị `mov rdx,0; div` xoá → vòng sau đọc `n` sai. Khi thân trả về `i`, allocator giữ `i`/`n` ở thanh ghi an toàn khác nên không lộ; trả hằng thì `n` rơi vào RDX.
+
+**Fix:** span pass quét cả `MACH_DIV`:
+`if insts[di_scan].op == MACH_IDIV or insts[di_scan].op == MACH_DIV:` (x86_regalloc.ax ~L428). Chỉ THÊM thanh ghi bị cấm → bảo toàn/ngặt hơn, không đổi ngữ nghĩa hợp lệ. Verify repro: rc0/rc7 (return const) trong loop trial-division u64 đúng ở O0+O1; numtheory (gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor_count) = 127.
+
+**Ảnh hưởng:** rất phổ biến — mọi `%`/`/` unsigned có giá trị sống qua phép chia trong loop (hash, đổi cơ số, gcd-bằng-%, primality...). Là lỗi tất định ⇒ phải fixpoint verify (đổi codegen của chính compiler). Cùng họ BUG#34.1 (signextend div) và phần "spans idiv" cũ.
