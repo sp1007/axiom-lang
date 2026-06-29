@@ -1,0 +1,83 @@
+// AXIOM Standard Library — std.vec
+//
+// 2D/3D vectors over f64 for geometry/graphics. add/sub via RFC 0007 operator
+// overloading; dot/cross/length/normalize/lerp as free functions. length /
+// normalize compose std.math.sqrt across frames (safe since BUG#44 fix).
+// Requires std.math in scope when bundled.
+
+pub struct Vec2:
+    x: f64
+    y: f64
+
+    fn add(self, o: Vec2) -> Vec2:
+        return Vec2(x: self.x + o.x, y: self.y + o.y)
+
+    fn sub(self, o: Vec2) -> Vec2:
+        return Vec2(x: self.x - o.x, y: self.y - o.y)
+
+pub struct Vec3:
+    x: f64
+    y: f64
+    z: f64
+
+    fn add(self, o: Vec3) -> Vec3:
+        return Vec3(x: self.x + o.x, y: self.y + o.y, z: self.z + o.z)
+
+    fn sub(self, o: Vec3) -> Vec3:
+        return Vec3(x: self.x - o.x, y: self.y - o.y, z: self.z - o.z)
+
+pub fn vec2(x: f64, y: f64) -> Vec2:
+    return Vec2(x: x, y: y)
+
+pub fn vec3(x: f64, y: f64, z: f64) -> Vec3:
+    return Vec3(x: x, y: y, z: z)
+
+// --- Vec2 ---
+pub fn v2_dot(a: Vec2, b: Vec2) -> f64:
+    return a.x * b.x + a.y * b.y
+
+pub fn v2_len(a: Vec2) -> f64:
+    return sqrt(a.x * a.x + a.y * a.y)
+
+pub fn v2_scale(a: Vec2, k: f64) -> Vec2:
+    return Vec2(x: a.x * k, y: a.y * k)
+
+pub fn v2_normalize(a: Vec2) -> Vec2:
+    let l = v2_len(a)
+    if l == 0.0:
+        return a
+    return Vec2(x: a.x / l, y: a.y / l)
+
+// --- Vec3 ---
+pub fn v3_dot(a: Vec3, b: Vec3) -> f64:
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+pub fn v3_cross(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x)
+
+pub fn v3_len(a: Vec3) -> f64:
+    return sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+
+pub fn v3_len_sq(a: Vec3) -> f64:
+    return a.x * a.x + a.y * a.y + a.z * a.z
+
+pub fn v3_scale(a: Vec3, k: f64) -> Vec3:
+    return Vec3(x: a.x * k, y: a.y * k, z: a.z * k)
+
+pub fn v3_neg(a: Vec3) -> Vec3:
+    return Vec3(x: 0.0 - a.x, y: 0.0 - a.y, z: 0.0 - a.z)
+
+pub fn v3_normalize(a: Vec3) -> Vec3:
+    let l = v3_len(a)
+    if l == 0.0:
+        return a
+    return Vec3(x: a.x / l, y: a.y / l, z: a.z / l)
+
+pub fn v3_dist(a: Vec3, b: Vec3) -> f64:
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    let dz = a.z - b.z
+    return sqrt(dx * dx + dy * dy + dz * dz)
+
+pub fn v3_lerp(a: Vec3, b: Vec3, t: f64) -> Vec3:
+    return Vec3(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t)
