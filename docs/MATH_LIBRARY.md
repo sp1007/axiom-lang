@@ -30,15 +30,15 @@ Blockers that gate whole categories:
 |---|----------|--------|-----------|--------------|
 | 1 | Constants | ✅ | math | PI/TAU/HALF_PI/E/SQRT2/LN2/LN10/LOG2E/LOG10E/SQRT1_2/EPSILON. todo: PHI |
 | 2 | Arithmetic | ✅ | math | abs/sign/min/max/clamp/square/cube/recip |
-| 3 | Rounding | ✅ | math | floor/ceil/round/trunc/fract. todo: round_to(n) |
+| 3 | Rounding | ✅ | math | floor/ceil/round/trunc/fract/round_to |
 | 4 | Integer | ✅ | math,xmath | abs_i64/min/max/clamp_i64/gcd/lcm/pow_i64/isqrt |
 | 5 | Power | ✅ | math | pow/square/cube/cbrt/exp2/exp10/pow_i64 |
-| 6 | Exp | 🔶 | math | exp/exp2/exp10. todo: **expm1** |
-| 7 | Log | 🔶 | math | ln/log2/log10/log1p. todo: **log_base(b,x)** |
+| 6 | Exp | ✅ | math | exp/exp2/exp10/expm1 |
+| 7 | Log | ✅ | math | ln/log2/log10/log1p/log_base |
 | 8 | Trig | ✅ | math | sin/cos/tan/asin/acos/atan/atan2. todo: sec/csc/cot |
 | 9 | Hyperbolic | ✅ | math | sinh/cosh/tanh/asinh/acosh/atanh |
-| 10 | Angle | 🔶 | math | deg_to_rad/rad_to_deg. todo: **normalize_angle/wrap_pi** |
-| 11 | FP-utils | 🔶 | math | is_nan/is_inf/is_finite/approx_equal/fract. todo: **copysign** |
+| 10 | Angle | ✅ | math | deg_to_rad/rad_to_deg/normalize_angle |
+| 11 | FP-utils | ✅ | math | is_nan/is_inf/is_finite/approx_equal/fract/copysign |
 | 12 | Remainder | 🔶 | math | fmod. todo: ieee_remainder |
 | 13 | Comparison | ✅ | math | min/max/clamp/approx_equal/saturate |
 | 14 | Random | 🔶 | random | xorshift: next_u64/range_i64/next_f64/next_bool/shuffle. todo: **next_range_f64/gaussian** |
@@ -74,7 +74,7 @@ Blockers that gate whole categories:
 3. ~~stats extensions (#15)~~ ✅ done (median/percentile/covariance/correlation/skew/kurtosis, oracle-verified; correlation uses helper-calls to stay robust under -O1 / BUG#48).
 4. ~~signal windows (#26)~~ 🔶 done (hann/hamming/blackman/bartlett/welch; FFT todo).
 5. ~~ml extensions (#27)~~ ✅ done (gelu/mse/mae/bce/softmax, oracle-verified).
-6. **math fill-ins** — expm1/log_base/normalize_angle/copysign/round_to (#6/7/10/11/3).
+6. ~~math fill-ins~~ ✅ done (expm1/log_base/normalize_angle/copysign/round_to).
 7. **bit math fill-ins** (#18) — rotate_right/reverse_bits/bit_floor/bit_ceil/parity.
 8. **special fns** (#24) — factorial_real(lgamma)/digamma/bessel_j0.
 9. **crypto** (#34) — miller_rabin probabilistic primality.

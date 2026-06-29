@@ -74,6 +74,7 @@ rows=(
   "t_statx|exit|127"
   "t_signal|exit|127"
   "t_ml|exit|127"
+  "t_mathfill|exit|127"
 )
 
 for row in "${rows[@]}"; do

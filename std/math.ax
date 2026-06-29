@@ -714,3 +714,35 @@ pub fn tgamma(z: f64) -> f64:
 // beta(a,b) = gamma(a)gamma(b)/gamma(a+b), via lgamma (no overflow).
 pub fn beta(a: f64, b: f64) -> f64:
     return exp(lgamma(a) + lgamma(b) - lgamma(a + b))
+
+// --- Fill-ins: exp/log/angle/fp utility ---
+
+// e^x - 1 (composition; param consumed before the call).
+pub fn expm1(x: f64) -> f64:
+    return exp(x) - 1.0
+
+// Logarithm of x in an arbitrary base b: ln(x)/ln(b).
+pub fn log_base(b: f64, x: f64) -> f64:
+    return ln(x) / ln(b)
+
+// Wrap an angle into [-PI, PI).
+pub fn normalize_angle(a: f64) -> f64:
+    return a - TAU * floor((a + PI) / TAU)
+
+// Magnitude of `mag` with the sign of `sgn`.
+pub fn copysign(mag: f64, sgn: f64) -> f64:
+    mut m := mag
+    if m < 0.0:
+        m = 0.0 - m
+    if sgn < 0.0:
+        return 0.0 - m
+    return m
+
+// Round x to `d` decimal places.
+pub fn round_to(x: f64, d: i64) -> f64:
+    mut p := 1.0
+    mut i := 0 as i64
+    while i < d:
+        p = p * 10.0
+        i = i + 1
+    return round(x * p) / p
