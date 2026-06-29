@@ -1232,3 +1232,17 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 `if insts[di_scan].op == MACH_IDIV or insts[di_scan].op == MACH_DIV:` (x86_regalloc.ax ~L428). Chỉ THÊM thanh ghi bị cấm → bảo toàn/ngặt hơn, không đổi ngữ nghĩa hợp lệ. Verify repro: rc0/rc7 (return const) trong loop trial-division u64 đúng ở O0+O1; numtheory (gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor_count) = 127.
 
 **Ảnh hưởng:** rất phổ biến — mọi `%`/`/` unsigned có giá trị sống qua phép chia trong loop (hash, đổi cơ số, gcd-bằng-%, primality...). Là lỗi tất định ⇒ phải fixpoint verify (đổi codegen của chính compiler). Cùng họ BUG#34.1 (signextend div) và phần "spans idiv" cũ.
+
+---
+
+## 🔴 BUG#48 (2026-06-29, documented, CHƯA fix) — float spill khi áp lực thanh ghi cao (≥8 float sống đồng thời)
+
+**Triệu chứng:** ≥8 giá trị f64 (kết quả lời gọi) sống ĐỒNG THỜI vượt 8 thanh ghi XMM cấp phát (XMM8-15) → giá trị bị spill (vd `a` đầu tiên) bị HỎNG. Repro `bin/`-style: 8 `let x_i = sq(c_i)` rồi check → exit thiếu bit của `a` (254 thay 255); N≤5 ĐÚNG. Lặp O0+O1 (tất định). Cùng họ BUG#46 (float-call-result qua loop = cũng do spill).
+
+**Root cause (một phần, xác định qua đọc x86_regalloc.ax):** đường lưu **DEST bị spill** (~L929-958) LUÔN dùng **R11 (GPR) + mov 8-byte** cho mọi dest, kể cả float → `mov r11, xmm` sai register-file → giá trị float hỏng. Đường RELOAD operand spill (~L887-915) ĐÃ xử đúng float (XMM0/XMM1 + movsd) nhưng đường STORE dest thì CHƯA.
+
+**Fix thử (CHƯA đủ, đã revert):** thêm nhánh float ở dest-spill dùng XMM2 + movsd (padding 8). Build lại nhưng repro VẪN 254 → còn nguyên nhân nữa: nghi `is_float_vreg(dst_alloc.vreg)` trả false cho vreg bắt return-value (MOV bắt XMM0 có type_id=0 không phải 10), HOẶC reload tại điểm dùng cũng cần sửa. Cần điều tra thêm + sửa CẢ store lẫn nhận diện float-vreg, rồi fixpoint verify (~3h). Đã revert để giữ stage1 ở mốc xanh 5c398609.
+
+**Ảnh hưởng/độ ưu tiên:** HẸP — cần ≥8 float-local sống đồng thời (hiếm; thư viện toán hiện tại KHÔNG dính: hàm dùng đối-số-trực-tiếp / ít local). Là KEYSTONE backend float (gộp với BUG#45 struct>16B-f64, BUG#46 float-qua-loop) cho phiên chuyên sâu. **std.math đã KIỂM CHỨNG CHÍNH XÁC** (tests/mathlib, sai số <1e-5) — bug này là codegen áp-lực-thanh-ghi, không phải sai công thức.
+
+**Quy tắc tạm cho thư viện/test toán:** tránh giữ ≥8 float-call-result trong local đồng thời; dùng giá trị ở vị trí đối số hoặc tính lại; verify bằng probe đối-số-trực-tiếp (tests/mathlib).

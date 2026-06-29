@@ -1,0 +1,24 @@
+// Curated accuracy probe for std.math — concatenate AFTER std/math.ax and build.
+// Each std.math result is checked IN ARGUMENT POSITION against a tight band whose
+// bounds were computed by an independent oracle (Python math). Exit 127 = every
+// function accurate to ~1e-5. (Argument position avoids holding many float
+// call-results in locals at once — see BUG#48.)
+//
+//   cat std/math.ax tests/mathlib/accuracy_probe.ax > /tmp/p.ax
+//   bin/axc_stage1.exe build /tmp/p.ax -O1 -o /tmp/p.exe && /tmp/p.exe   # expect 127
+
+fn ck(got: f64, lo: f64, hi: f64) -> i32:
+    if got >= lo and got <= hi:
+        return 1 as i32
+    return 0 as i32
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    s = s + ck(sqrt(2.0), 1.41421, 1.41422) * (1 as i32)
+    s = s + ck(sin(0.5), 0.47942, 0.47943) * (2 as i32)
+    s = s + ck(exp(1.0), 2.71828, 2.71829) * (4 as i32)
+    s = s + ck(erf(1.0), 0.84270, 0.84271) * (8 as i32)
+    s = s + ck(asin(0.5), 0.52359, 0.52360) * (16 as i32)
+    s = s + ck(cbrt(100.0), 4.64158, 4.64159) * (32 as i32)
+    s = s + ck(tgamma(0.5), 1.77245, 1.77246) * (64 as i32)
+    return s   // 127 if all accurate
