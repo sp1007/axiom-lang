@@ -1,0 +1,53 @@
+// AXIOM Standard Library — std.coordinates
+//
+// Coordinate-system conversions (polar, cylindrical, spherical ↔ cartesian),
+// per-component scalar f64. Composes std.math (sin/cos/sqrt/atan2/acos) across
+// frames — safe since BUG#44; no structs → BUG#45/46-immune. Requires std.math.
+//
+// Conventions: theta = azimuth (angle in xy-plane from +x), phi = inclination
+// (polar angle measured from +z). Cylindrical z passes through unchanged.
+
+// --- 2D polar ---
+pub fn co_polar_to_x(r: f64, theta: f64) -> f64:
+    return r * cos(theta)
+
+pub fn co_polar_to_y(r: f64, theta: f64) -> f64:
+    return r * sin(theta)
+
+pub fn co_cart_to_r(x: f64, y: f64) -> f64:
+    return sqrt(x * x + y * y)
+
+pub fn co_cart_to_theta(x: f64, y: f64) -> f64:
+    return atan2(y, x)
+
+// --- cylindrical (rho, theta, z) --- (z unchanged; rho/theta as 2D polar)
+pub fn co_cyl_to_x(rho: f64, theta: f64) -> f64:
+    return rho * cos(theta)
+
+pub fn co_cyl_to_y(rho: f64, theta: f64) -> f64:
+    return rho * sin(theta)
+
+pub fn co_cart_to_rho(x: f64, y: f64) -> f64:
+    return sqrt(x * x + y * y)
+
+// --- spherical (r, theta=azimuth, phi=inclination) ---
+pub fn co_sph_to_x(r: f64, theta: f64, phi: f64) -> f64:
+    return r * sin(phi) * cos(theta)
+
+pub fn co_sph_to_y(r: f64, theta: f64, phi: f64) -> f64:
+    return r * sin(phi) * sin(theta)
+
+pub fn co_sph_to_z(r: f64, phi: f64) -> f64:
+    return r * cos(phi)
+
+pub fn co_cart_to_sph_r(x: f64, y: f64, z: f64) -> f64:
+    return sqrt(x * x + y * y + z * z)
+
+pub fn co_cart_to_sph_theta(x: f64, y: f64) -> f64:
+    return atan2(y, x)
+
+pub fn co_cart_to_sph_phi(x: f64, y: f64, z: f64) -> f64:
+    let r = sqrt(x * x + y * y + z * z)
+    if r == 0.0:
+        return 0.0
+    return acos(z / r)

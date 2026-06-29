@@ -56,7 +56,7 @@ Blockers that gate whole categories:
 | 26 | Signal processing | ⬜ | — | **window fns** hann/hamming/blackman/bartlett (scalar). FFT needs complex arrays |
 | 27 | Machine learning | 🔶 | math | sigmoid/relu/leaky_relu/softplus/swish/tanh. todo: **gelu/mse/mae/cross_entropy** (softmax=array) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
-| 29 | Coordinate systems | ⬜ | — | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) — in flight |
+| 29 | Coordinate systems | ✅ | coordinates | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) |
 | 30 | Color | ⬜ | — | RGB↔HSV↔HSL (via `ptr[f64]` out-param) |
 | 31 | Utility | ✅ | math | clamp/saturate/approx_equal/sign/step |
 | 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
@@ -69,8 +69,8 @@ Blockers that gate whole categories:
 
 ## Remaining BUG-immune work queue (drives the autonomous batch)
 
-1. **coordinates** (#29) — polar/cylindrical/spherical, per-component. *(in flight)*
-2. **color** (#30) — rgb↔hsv↔hsl via ptr out-param.
+1. ~~coordinates (#29)~~ ✅ done (std.coordinates).
+2. **color** (#30) — rgb↔hsv↔hsl via ptr out-param. *(next)*
 3. **stats extensions** (#15) — median/percentile/covariance/correlation/skew/kurtosis (inline accumulators to dodge BUG#46).
 4. **signal windows** (#26) — hann/hamming/blackman/bartlett/welch (scalar).
 5. **ml extensions** (#27) — gelu/mse/mae/cross_entropy/softmax(array).
