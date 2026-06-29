@@ -1,0 +1,38 @@
+// AXIOM Standard Library — std.decimal
+//
+// Exact base-10 fixed-point with 4 fractional digits (scale = 10000), value
+// stored as a scaled i64 ("d4"). Add/sub are exact; mul/div round to the scale.
+// All-integer → no float rounding error (ideal for money). Range: |value| up to
+// ~9.2e14 before the i64 store overflows; dec_mul's a*b intermediate limits exact
+// operands further. For arbitrary precision use std.bignum.
+
+pub const DEC_SCALE: i64 = 10000
+
+pub fn dec_from_int(n: i64) -> i64:
+    return n * DEC_SCALE
+
+// whole + frac4 (frac4 = fractional part in ten-thousandths, e.g. 0.25 -> 2500).
+pub fn dec_from_parts(whole: i64, frac4: i64) -> i64:
+    return whole * DEC_SCALE + frac4
+
+pub fn dec_add(a: i64, b: i64) -> i64:
+    return a + b
+
+pub fn dec_sub(a: i64, b: i64) -> i64:
+    return a - b
+
+pub fn dec_mul(a: i64, b: i64) -> i64:
+    return (a * b) / DEC_SCALE
+
+pub fn dec_div(a: i64, b: i64) -> i64:
+    return (a * DEC_SCALE) / b
+
+pub fn dec_whole(a: i64) -> i64:
+    return a / DEC_SCALE
+
+pub fn dec_frac(a: i64) -> i64:
+    return a % DEC_SCALE
+
+// Round a decimal to the nearest whole integer (half up, for a >= 0).
+pub fn dec_round_to_int(a: i64) -> i64:
+    return (a + DEC_SCALE / 2 as i64) / DEC_SCALE

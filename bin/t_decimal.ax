@@ -1,0 +1,48 @@
+// Fixed-point base-10 decimal with 4 fractional digits (scale = 10000),
+// value stored as a scaled i64. Exact for add/sub; mul/div round to scale.
+const DEC_SCALE: i64 = 10000
+
+fn dec_from_int(n: i64) -> i64:
+    return n * DEC_SCALE
+
+fn dec_from_parts(whole: i64, frac4: i64) -> i64:
+    return whole * DEC_SCALE + frac4
+
+fn dec_add(a: i64, b: i64) -> i64:
+    return a + b
+
+fn dec_sub(a: i64, b: i64) -> i64:
+    return a - b
+
+fn dec_mul(a: i64, b: i64) -> i64:
+    return (a * b) / DEC_SCALE
+
+fn dec_div(a: i64, b: i64) -> i64:
+    return (a * DEC_SCALE) / b
+
+fn dec_whole(a: i64) -> i64:
+    return a / DEC_SCALE
+
+fn dec_frac(a: i64) -> i64:
+    return a % DEC_SCALE
+
+fn dec_round_to_int(a: i64) -> i64:
+    return (a + DEC_SCALE / 2 as i64) / DEC_SCALE
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    if dec_from_int(5 as i64) == 50000 as i64:
+        s = s + 1
+    if dec_add(dec_from_parts(2 as i64, 5000 as i64), dec_from_parts(1 as i64, 2500 as i64)) == 37500 as i64:
+        s = s + 2
+    if dec_mul(dec_from_parts(2 as i64, 5000 as i64), dec_from_int(4 as i64)) == 100000 as i64:
+        s = s + 4
+    if dec_div(dec_from_int(10 as i64), dec_from_int(4 as i64)) == 25000 as i64:
+        s = s + 8
+    if dec_whole(37500 as i64) == 3 as i64 and dec_frac(37500 as i64) == 7500 as i64:
+        s = s + 16
+    if dec_round_to_int(37500 as i64) == 4 as i64 and dec_round_to_int(34000 as i64) == 3 as i64:
+        s = s + 32
+    if dec_sub(dec_from_int(10 as i64), dec_from_parts(3 as i64, 2500 as i64)) == 67500 as i64:
+        s = s + 64
+    return s   // expect 127

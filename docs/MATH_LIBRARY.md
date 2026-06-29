@@ -60,7 +60,7 @@ Blockers that gate whole categories:
 | 30 | Color | ✅ | color | RGB↔HSV, RGB↔HSL, luminance, lerp (ptr out-param) |
 | 31 | Utility | ✅ | math | clamp/saturate/approx_equal/sign/step |
 | 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
-| 33 | Big-int / decimal | 🔶 | bignum | u/i/f dynamic to 4096+. todo: decimal helpers |
+| 33 | Big-int / decimal | ✅ | bignum,decimal | bignum u/i/f to 4096+ ; decimal exact base-10 fixed-point (d4) |
 | 34 | Crypto math | ✅ | numtheory | mod_exp/mod_inverse/gcd + Miller-Rabin is_probable_prime (det. < 2^32) |
 | 35 | Intrinsics | ✅ | math | popcount/clz/ctz/parity/bit_* as fns (true HW intrinsics = aspirational) |
 | 36 | Vector types | 🔶 | vec | Vec2/Vec3. Vec4 (32B) → **BUG#45** |
