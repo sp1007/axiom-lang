@@ -70,6 +70,7 @@ rows=(
   "t_probability|exit|127"
   "t_numtheory2|exit|127"
   "t_coordinates|exit|127"
+  "t_color|exit|127"
 )
 
 for row in "${rows[@]}"; do
