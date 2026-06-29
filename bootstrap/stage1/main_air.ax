@@ -143,8 +143,12 @@ fn read_file_content(path: str) -> str:
         let file = r.unwrap()
         let r2 = file.read_all()
         if r2.is_ok():
-            let content = r2.unwrap()
-            return content
+            // NOTE: returning the generic .unwrap() directly (not via an
+            // intermediate `let content = ...`) sidesteps a stage0 (Go) inference
+            // bug where a let-bound generic-method-call result is typed as 0 in
+            // the check pass once the type table grows — which otherwise caps how
+            // much code can be added to stage1 ("stage0 ceiling"). See knowledge/bugs.md.
+            return r2.unwrap()
         else:
             ax_puts_local("Error: read_all failed: ")
             ax_puts_local(r2.unwrap_err())

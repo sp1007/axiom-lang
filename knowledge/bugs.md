@@ -1153,3 +1153,15 @@ Audit toàn bộ GRAMMAR.ebnf vs parser/typecheck/air_builder/selector. Tất c�
 2. **Struct-return field-bind rồi mutate / struct aliasing trong loop → SEGFAULT hoặc kết quả 0:** `mut x := bu_divmod(a,m).r` trong HÀM (không phải main) rồi mutate x trong loop → segfault; Euclid `let t=y; let d=bu_divmod(x,y); y=d.r; x=t` → trả 0 (aliasing vreg OP_COPY). divmod gọi 1 lần trong hàm rồi return field thì OK (e.ax). ⇒ modpow/lcm-Euclid/binomial (divmod-in-loop) CHƯA ship được — pending fix codegen struct-copy/aliasing. Binary-gcd (shift, không divmod) thì OK → đã ship trong xmath. divmod prototype giữ ở scratch.
 
 **Footgun tên hàm:** đặt hàm tên `close` (hoặc tên trùng libc) → LINK ngầm vào libc `close(int fd)`, không phải hàm user → truyền bit f64 làm fd → SEGFAULT. Không phải bug AXIOM nhưng compiler nên cảnh báo shadow extern. Tránh: đừng đặt tên trùng symbol C (close/open/read/write/...).
+
+---
+
+## 🔓 KEYSTONE GIẢI: "trần stage0" KHÔNG phải size — là bug inference let-bound generic-call (2026-06-29)
+
+**Tái hiện chính xác:** concat stage1 source (25585 dòng) build OK qua stage0; +1 hàm tầm thường OK; +40 hàm (~321 dòng) OK → **KHÔNG phải giới hạn kích thước**. NHƯNG **+1 struct mới** HOẶC **+1 hàm dùng Result/.unwrap()** → FAIL ngay tại `read_file_content` (main_air.ax) dòng `return content`: `error[E3005] return type mismatch: expected 12, found 0`. Bug có ở CẢ stage0 cũ (Jun22) lẫn `go build` mới → bug Go source hiện hành.
+
+**Root-cause (đào bằng debug printf trong compiler/sema/inference.go):** `read_file_content` có `let content = r2.unwrap(); return content` với r2: Result[str,str]. Inference pass tính `r2.unwrap()` ĐÚNG = str(12) (DBG: objType=252 gargs=[string,string] subRet=12). NHƯNG ở **CHECK pass** (check_stmt.go:347 `exprType := tc.infer.TypeOf(content-ident)`) ident `content` đọc type=**0**. Tức symbol-type của biến `content` (let-bound từ generic method call) bị 0 ở check pass khi type-table đủ lớn (thêm struct/Result-inst làm dịch/đụng type-id → multi-pass inference cache/ordering cho ra 0). Bug = **multi-pass type-inference instability cho biến let-bound = kết quả gọi generic method**, KHÔNG phải tổng-size.
+
+**FIX (workaround tại stage1 source, commit ...):** thay `let content = r2.unwrap(); return content` → **`return r2.unwrap()`** (trả call trực tiếp, không qua biến trung gian). NodeCallExpr ở vị trí return được cache nodeTypes đúng (=12) nên check pass đọc đúng. Đã CHỨNG MINH: concat-đã-fix + struct + Result-fn build OK qua stage0 (trước đó fail). ⇒ **TRẦN NÂNG: stage1 lại có thể thêm struct/hàm/code** → mở khóa BUG#44 fix + import-bundler extensibility + mọi mở rộng stage1.
+
+**QUY TẮC source stage1 (đến khi fix root Go sema):** tránh `let x = <generic-method-call như .unwrap()/.read_all()>` rồi dùng x ở chỗ cần type chính xác (return/so sánh); trả/dùng call TRỰC TIẾP. Nếu cần biến, cân nhắc annotation kiểu (chưa test kỹ). Root fix đúng = ổn định multi-pass inference cho let-bound generic-call trong Go sema (inference.go NodeVarDecl/NodeIdent + check pass TypeOf) — để phiên riêng; workaround này đủ mở khóa.
