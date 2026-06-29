@@ -746,3 +746,49 @@ pub fn round_to(x: f64, d: i64) -> f64:
         p = p * 10.0
         i = i + 1
     return round(x * p) / p
+
+// --- Bit math fill-ins (u64) ---
+
+// Rotate the 64-bit value right by k bits.
+pub fn rotate_right(x: u64, k: u64) -> u64:
+    if k == 0 as u64:
+        return x
+    return (x >> k) | (x << (64 as u64 - k))
+
+// Reverse the order of all 64 bits.
+pub fn reverse_bits(x: u64) -> u64:
+    mut r := 0 as u64
+    mut v := x
+    mut i := 0 as i32
+    while i < 64:
+        r = (r << 1) | (v & 1 as u64)
+        v = v >> 1
+        i = i + 1
+    return r
+
+// Largest power of two <= x (0 for x == 0).
+pub fn bit_floor(x: u64) -> u64:
+    if x == 0 as u64:
+        return 0 as u64
+    mut p := (1 as u64) << 63
+    while p > x:
+        p = p >> 1
+    return p
+
+// Smallest power of two >= x (1 for x <= 1).
+pub fn bit_ceil(x: u64) -> u64:
+    if x <= 1 as u64:
+        return 1 as u64
+    let f = bit_floor(x)
+    if f == x:
+        return x
+    return f << 1
+
+// 1 if x has an odd number of set bits, else 0.
+pub fn parity(x: u64) -> u64:
+    mut v := x
+    mut c := 0 as u64
+    while v != 0 as u64:
+        c = c + (v & 1 as u64)
+        v = v >> 1
+    return c & 1 as u64

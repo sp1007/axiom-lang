@@ -45,7 +45,7 @@ Blockers that gate whole categories:
 | 15 | Statistics | ✅ | stats | sum/mean/variance/stddev/min/max/median/percentile/covariance/correlation/skewness/kurtosis (oracle-verified) |
 | 16 | Combinatorics | ✅ | combinatorics | factorial/perm/binom/catalan/multichoose/double_factorial |
 | 17 | Number theory | ✅ | numtheory | gcd/lcm/is_prime/next_prime/mod_exp/totient/divisor*/is_perfect/is_coprime/mod_inverse/int_log/sum_digits |
-| 18 | Bit math | 🔶 | math | popcount/clz/ctz/bit_width/rotate_left/has_single_bit/mul_hi. todo: **rotate_right/reverse_bits/bit_floor/bit_ceil/parity** |
+| 18 | Bit math | ✅ | math | popcount/clz/ctz/bit_width/rotate_left/rotate_right/reverse_bits/bit_floor/bit_ceil/parity/has_single_bit/mul_hi |
 | 19 | Interpolation | ✅ | interpolation,math | lerp/unlerp/remap/smoothstep/smootherstep/catmull/bezier3/bilerp/easing |
 | 20 | Geometry | 🔶 | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri. todo: circle/line-intersection/3D |
 | 21 | Matrix | 🔒 | — | needs Mat2/3/4 (≥32B f64) → **BUG#45**. Workaround: flat `ptr[f64]`+dims |
@@ -62,7 +62,7 @@ Blockers that gate whole categories:
 | 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
 | 33 | Big-int / decimal | 🔶 | bignum | u/i/f dynamic to 4096+. todo: decimal helpers |
 | 34 | Crypto math | 🔶 | numtheory | mod_exp/mod_inverse/gcd. todo: **miller_rabin/is_probable_prime** |
-| 35 | Intrinsics | 🔶 | math | popcount/clz/ctz as fns. true HW intrinsics = aspirational |
+| 35 | Intrinsics | ✅ | math | popcount/clz/ctz/parity/bit_* as fns (true HW intrinsics = aspirational) |
 | 36 | Vector types | 🔶 | vec | Vec2/Vec3. Vec4 (32B) → **BUG#45** |
 
 ---
@@ -75,7 +75,7 @@ Blockers that gate whole categories:
 4. ~~signal windows (#26)~~ 🔶 done (hann/hamming/blackman/bartlett/welch; FFT todo).
 5. ~~ml extensions (#27)~~ ✅ done (gelu/mse/mae/bce/softmax, oracle-verified).
 6. ~~math fill-ins~~ ✅ done (expm1/log_base/normalize_angle/copysign/round_to).
-7. **bit math fill-ins** (#18) — rotate_right/reverse_bits/bit_floor/bit_ceil/parity.
+7. ~~bit math fill-ins (#18)~~ ✅ done (rotate_right/reverse_bits/bit_floor/bit_ceil/parity).
 8. **special fns** (#24) — factorial_real(lgamma)/digamma/bessel_j0.
 9. **crypto** (#34) — miller_rabin probabilistic primality.
 10. **numerical analysis** (#25) — array-sampled trapezoid/simpson; scalar bisection.
