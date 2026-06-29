@@ -1,0 +1,99 @@
+fn fabsf(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+fn fmaxf(a: f64, b: f64) -> f64:
+    if a > b:
+        return a
+    return b
+fn fminf(a: f64, b: f64) -> f64:
+    if a < b:
+        return a
+    return b
+
+fn cl_rgb_to_hsl(r: f64, g: f64, b: f64, out: ptr[f64]):
+    let mx = fmaxf(r, fmaxf(g, b))
+    let mn = fminf(r, fminf(g, b))
+    let delta = mx - mn
+    let l = (mx + mn) * 0.5
+    out[2] = l
+    if delta == 0.0:
+        out[0] = 0.0
+        out[1] = 0.0
+        return
+    out[1] = delta / (1.0 - fabsf(2.0 * l - 1.0))
+    mut h := 0.0
+    if mx == r:
+        h = 60.0 * ((g - b) / delta)
+    elif mx == g:
+        h = 60.0 * ((b - r) / delta + 2.0)
+    else:
+        h = 60.0 * ((r - g) / delta + 4.0)
+    if h < 0.0:
+        h = h + 360.0
+    out[0] = h
+
+fn cl_hsl_to_rgb(h: f64, s: f64, l: f64, out: ptr[f64]):
+    let c = (1.0 - fabsf(2.0 * l - 1.0)) * s
+    let hh = h / 60.0
+    let k = (hh / 2.0) as i64
+    let hmod2 = hh - (k as f64) * 2.0
+    let x = c * (1.0 - fabsf(hmod2 - 1.0))
+    let m = l - c * 0.5
+    let sext = hh as i64
+    mut r1 := 0.0
+    mut g1 := 0.0
+    mut b1 := 0.0
+    if sext == 0 as i64:
+        r1 = c
+        g1 = x
+    elif sext == 1 as i64:
+        r1 = x
+        g1 = c
+    elif sext == 2 as i64:
+        g1 = c
+        b1 = x
+    elif sext == 3 as i64:
+        g1 = x
+        b1 = c
+    elif sext == 4 as i64:
+        r1 = x
+        b1 = c
+    else:
+        r1 = c
+        b1 = x
+    out[0] = r1 + m
+    out[1] = g1 + m
+    out[2] = b1 + m
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.001
+
+pub fn main() -> i32:
+    let o = @alloc(8 * 3 as i64) as ptr[f64]
+    mut s := 0 as i32
+    cl_rgb_to_hsl(1.0, 0.0, 0.0, o)
+    if near(o[0], 0.0) and near(o[1], 1.0) and near(o[2], 0.5):
+        s = s + 1
+    cl_rgb_to_hsl(0.5, 0.25, 0.75, o)
+    if near(o[0], 270.0) and near(o[1], 0.5) and near(o[2], 0.5):
+        s = s + 2
+    cl_rgb_to_hsl(0.2, 0.6, 0.4, o)
+    if near(o[0], 150.0) and near(o[1], 0.5) and near(o[2], 0.4):
+        s = s + 4
+    cl_hsl_to_rgb(0.0, 1.0, 0.5, o)
+    if near(o[0], 1.0) and near(o[1], 0.0) and near(o[2], 0.0):
+        s = s + 8
+    cl_hsl_to_rgb(120.0, 1.0, 0.5, o)
+    if near(o[0], 0.0) and near(o[1], 1.0) and near(o[2], 0.0):
+        s = s + 16
+    cl_hsl_to_rgb(270.0, 0.5, 0.5, o)
+    if near(o[0], 0.5) and near(o[1], 0.25) and near(o[2], 0.75):
+        s = s + 32
+    cl_rgb_to_hsl(0.3, 0.3, 0.3, o)
+    if near(o[1], 0.0) and near(o[2], 0.3):
+        s = s + 64
+    return s   // expect 127

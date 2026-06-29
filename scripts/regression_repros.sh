@@ -80,6 +80,7 @@ rows=(
   "t_special|exit|127"
   "t_numerical|exit|127"
   "t_geometry2|exit|127"
+  "t_colorhsl|exit|127"
 )
 
 for row in "${rows[@]}"; do

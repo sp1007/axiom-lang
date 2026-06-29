@@ -57,7 +57,7 @@ Blockers that gate whole categories:
 | 27 | Machine learning | ✅ | math,ml | sigmoid/relu/leaky_relu/softplus/swish/tanh (math) + gelu/mse/mae/bce/softmax (ml, oracle-verified) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
 | 29 | Coordinate systems | ✅ | coordinates | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) |
-| 30 | Color | 🔶 | color | RGB↔HSV + luminance + lerp (ptr out-param). todo: HSL |
+| 30 | Color | ✅ | color | RGB↔HSV, RGB↔HSL, luminance, lerp (ptr out-param) |
 | 31 | Utility | ✅ | math | clamp/saturate/approx_equal/sign/step |
 | 32 | SIMD | 🔒 | arch (stub) | hardware vector ABI |
 | 33 | Big-int / decimal | 🔶 | bignum | u/i/f dynamic to 4096+. todo: decimal helpers |
