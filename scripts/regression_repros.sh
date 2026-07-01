@@ -84,6 +84,7 @@ rows=(
   "t_rng|exit|127"
   "t_decimal|exit|127"
   "t_quaternion|exit|127"
+  "t_matrix|exit|127"
 )
 
 for row in "${rows[@]}"; do

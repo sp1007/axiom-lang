@@ -1,0 +1,125 @@
+// Matrices as flat row-major ptr[f64]: Mat3 = 9 elems, Mat4 = 16. Array-based,
+// no >16-byte struct -> immune to BUG#45. Expect exit 127.
+
+fn m3_identity(out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 9 as i64:
+        out[i] = 0.0
+        i = i + 1
+    out[0] = 1.0
+    out[4] = 1.0
+    out[8] = 1.0
+
+fn m3_mul(a: ptr[f64], b: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 3 as i64:
+        mut j := 0 as i64
+        while j < 3 as i64:
+            mut acc := 0.0
+            mut k := 0 as i64
+            while k < 3 as i64:
+                acc = acc + a[3 as i64 * i + k] * b[3 as i64 * k + j]
+                k = k + 1
+            out[3 as i64 * i + j] = acc
+            j = j + 1
+        i = i + 1
+
+fn m3_transpose(a: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 3 as i64:
+        mut j := 0 as i64
+        while j < 3 as i64:
+            out[3 as i64 * j + i] = a[3 as i64 * i + j]
+            j = j + 1
+        i = i + 1
+
+fn m3_det(a: ptr[f64]) -> f64:
+    return a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) + a[2] * (a[3] * a[7] - a[4] * a[6])
+
+fn m3_mul_vec(a: ptr[f64], vx: f64, vy: f64, vz: f64, out: ptr[f64]):
+    out[0] = a[0] * vx + a[1] * vy + a[2] * vz
+    out[1] = a[3] * vx + a[4] * vy + a[5] * vz
+    out[2] = a[6] * vx + a[7] * vy + a[8] * vz
+
+fn m4_mul(a: ptr[f64], b: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 4 as i64:
+        mut j := 0 as i64
+        while j < 4 as i64:
+            mut acc := 0.0
+            mut k := 0 as i64
+            while k < 4 as i64:
+                acc = acc + a[4 as i64 * i + k] * b[4 as i64 * k + j]
+                k = k + 1
+            out[4 as i64 * i + j] = acc
+            j = j + 1
+        i = i + 1
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.001
+
+pub fn main() -> i32:
+    let a = @alloc(9 * 8 as i64) as ptr[f64]
+    a[0] = 1.0
+    a[1] = 2.0
+    a[2] = 3.0
+    a[3] = 4.0
+    a[4] = 5.0
+    a[5] = 6.0
+    a[6] = 7.0
+    a[7] = 8.0
+    a[8] = 10.0
+    let b = @alloc(9 * 8 as i64) as ptr[f64]
+    b[0] = 1.0
+    b[1] = 0.0
+    b[2] = 1.0
+    b[3] = 0.0
+    b[4] = 1.0
+    b[5] = 0.0
+    b[6] = 2.0
+    b[7] = 0.0
+    b[8] = 1.0
+    let o = @alloc(9 * 8 as i64) as ptr[f64]
+    mut s := 0 as i32
+    m3_mul(a, b, o)
+    if near(o[0], 7.0) and near(o[3], 16.0) and near(o[8], 17.0):
+        s = s + 1
+    if near(m3_det(a), 0.0 - 3.0):
+        s = s + 2
+    m3_transpose(a, o)
+    if near(o[1], 4.0) and near(o[3], 2.0) and near(o[7], 6.0):
+        s = s + 4
+    m3_mul_vec(a, 1.0, 2.0, 3.0, o)
+    if near(o[0], 14.0) and near(o[1], 32.0) and near(o[2], 53.0):
+        s = s + 8
+    let id = @alloc(9 * 8 as i64) as ptr[f64]
+    m3_identity(id)
+    m3_mul(a, id, o)
+    if near(o[0], 1.0) and near(o[4], 5.0) and near(o[8], 10.0):
+        s = s + 16
+    // Mat4
+    let m4 = @alloc(16 * 8 as i64) as ptr[f64]
+    mut i := 0 as i64
+    while i < 16 as i64:
+        m4[i] = (i + 1 as i64) as f64
+        i = i + 1
+    let o4 = @alloc(16 * 8 as i64) as ptr[f64]
+    m4_mul(m4, m4, o4)
+    if near(o4[0], 90.0) and near(o4[15], 600.0):
+        s = s + 32
+    let id4 = @alloc(16 * 8 as i64) as ptr[f64]
+    mut j := 0 as i64
+    while j < 16 as i64:
+        id4[j] = 0.0
+        j = j + 1
+    id4[0] = 1.0
+    id4[5] = 1.0
+    id4[10] = 1.0
+    id4[15] = 1.0
+    m4_mul(id4, m4, o4)
+    if near(o4[0], 1.0) and near(o4[15], 16.0):
+        s = s + 64
+    return s   // expect 127

@@ -1,0 +1,82 @@
+// AXIOM Standard Library — std.matrix
+//
+// Dense matrices as flat row-major ptr[f64] (Mat3 = 9 elems, Mat4 = 16). Being
+// array-based (not a >16-byte struct) they are immune to BUG#45; all ops are
+// verified at O0 and O1. Caller owns the buffers. Pure arithmetic, no std.math
+// dependency.
+
+// --- 3x3 ---
+pub fn m3_identity(out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 9 as i64:
+        out[i] = 0.0
+        i = i + 1
+    out[0] = 1.0
+    out[4] = 1.0
+    out[8] = 1.0
+
+pub fn m3_mul(a: ptr[f64], b: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 3 as i64:
+        mut j := 0 as i64
+        while j < 3 as i64:
+            mut acc := 0.0
+            mut k := 0 as i64
+            while k < 3 as i64:
+                acc = acc + a[3 as i64 * i + k] * b[3 as i64 * k + j]
+                k = k + 1
+            out[3 as i64 * i + j] = acc
+            j = j + 1
+        i = i + 1
+
+pub fn m3_transpose(a: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 3 as i64:
+        mut j := 0 as i64
+        while j < 3 as i64:
+            out[3 as i64 * j + i] = a[3 as i64 * i + j]
+            j = j + 1
+        i = i + 1
+
+pub fn m3_det(a: ptr[f64]) -> f64:
+    return a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) + a[2] * (a[3] * a[7] - a[4] * a[6])
+
+// out = A * (vx,vy,vz), a 3-vector.
+pub fn m3_mul_vec(a: ptr[f64], vx: f64, vy: f64, vz: f64, out: ptr[f64]):
+    out[0] = a[0] * vx + a[1] * vy + a[2] * vz
+    out[1] = a[3] * vx + a[4] * vy + a[5] * vz
+    out[2] = a[6] * vx + a[7] * vy + a[8] * vz
+
+// --- 4x4 ---
+pub fn m4_identity(out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 16 as i64:
+        out[i] = 0.0
+        i = i + 1
+    out[0] = 1.0
+    out[5] = 1.0
+    out[10] = 1.0
+    out[15] = 1.0
+
+pub fn m4_mul(a: ptr[f64], b: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 4 as i64:
+        mut j := 0 as i64
+        while j < 4 as i64:
+            mut acc := 0.0
+            mut k := 0 as i64
+            while k < 4 as i64:
+                acc = acc + a[4 as i64 * i + k] * b[4 as i64 * k + j]
+                k = k + 1
+            out[4 as i64 * i + j] = acc
+            j = j + 1
+        i = i + 1
+
+pub fn m4_transpose(a: ptr[f64], out: ptr[f64]):
+    mut i := 0 as i64
+    while i < 4 as i64:
+        mut j := 0 as i64
+        while j < 4 as i64:
+            out[4 as i64 * j + i] = a[4 as i64 * i + j]
+            j = j + 1
+        i = i + 1

@@ -48,7 +48,7 @@ Blockers that gate whole categories:
 | 18 | Bit math | ✅ | math | popcount/clz/ctz/bit_width/rotate_left/rotate_right/reverse_bits/bit_floor/bit_ceil/parity/has_single_bit/mul_hi |
 | 19 | Interpolation | ✅ | interpolation,math | lerp/unlerp/remap/smoothstep/smootherstep/catmull/bezier3/bilerp/easing |
 | 20 | Geometry | ✅ | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri/circle/polygon-area/segment-dist + Vec3 (3D in vec) |
-| 21 | Matrix | 🔒 | — | needs Mat2/3/4 (≥32B f64) → **BUG#45**. Workaround: flat `ptr[f64]`+dims |
+| 21 | Matrix | ✅ | matrix | Mat3/Mat4 flat ptr[f64]: identity/mul/transpose/det/mul_vec (array-based, O0+O1, immune) |
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
 | 23 | Quaternion | 🔶 | quaternion | core algebra (mul/add/sub/scale/conj/dot/norm/normalize/inverse) via FREE FNs, O0+O1. from_axis_angle/rotate deferred (BUG#45/#48) |
 | 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0 (oracle-verified). todo: zeta |
