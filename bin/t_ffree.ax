@@ -1,0 +1,17 @@
+// Free-function control for BUG#45 case (1): same struct + sret return, but a
+// free function instead of a method. Expected to WORK (per prior triage).
+
+struct V4:
+    x: f64
+    y: f64
+    z: f64
+    w: f64
+
+fn v4_add(a: V4, o: V4) -> V4:
+    return V4(x: a.x + o.x, y: a.y + o.y, z: a.z + o.z, w: a.w + o.w)
+
+pub fn main() -> i32:
+    let v = V4(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    let o = V4(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    let r = v4_add(v, o)
+    return (r.x + r.y + r.z + r.w) as i32

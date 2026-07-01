@@ -883,7 +883,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 elif is_16:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                elif is_float_vreg(fn_ptr, v):
+                elif is_float_vreg(fn_ptr, v, table, symbols):
                     // RFC 0006: a spilled FLOAT operand must be reloaded into an
                     // XMM scratch via movsd (MACH_LOAD with xmm dst). Reloading
                     // into a GP scratch (R10) would leave the value in the wrong
@@ -909,7 +909,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16_s2:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                elif is_float_vreg(fn_ptr, v):
+                elif is_float_vreg(fn_ptr, v, table, symbols):
                     // RFC 0006: spilled FLOAT src2 → XMM1 scratch via movsd (see src1).
                     result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
@@ -961,13 +961,38 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
         i = i + 1
     return result
 
-pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32) -> bool:
+pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32, table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> bool:
     if vreg == 0 as u32:
         return false
+    // A float-typed PARAMETER is passed in an XMM arg register; its type lives
+    // in fn_ptr.params, not in a defining instruction.
+    if vreg >= 1 as u32 and vreg <= fn_ptr.params.len as u32:
+        let pt = fn_ptr.params.data[vreg as i64 - 1 as i64] as u32
+        return pt == 9 as u32 or pt == 10 as u32
     mut i := 0 as i64
     while i < fn_ptr.insts.len:
         let inst = &fn_ptr.insts.data[i]
         if inst.dest == vreg:
+            // BUG#48: OP_CALL overloads type_id — for a DIRECT call (src1==0) it
+            // holds the callee SYMBOL INDEX, not the result type. Resolve the
+            // callee's return type instead. Without this, a float-returning
+            // call's result vreg is classified as integer, allocated a GPR, and
+            // every addsd/mulsd that consumes it encodes the operand by
+            // hardware index into the WRONG register file (e.g. rsi index 6 ->
+            // xmm6) → silent garbage. Mirrors get_register_type / regalloc_is_16byte.
+            if inst.opcode == OP_CALL and inst.src1 == 0 as u32:
+                let sym_idx = inst.type_id as u32
+                if symbols != null as ptr[SymbolTable] and sym_idx != 0 as u32 and (sym_idx as i64) < symbols.symbols.len:
+                    let sym = &symbols.symbols.data[sym_idx as i64]
+                    if sym.kind == SYM_FUNC:
+                        let fn_type_id = sym.type_id as u32
+                        if fn_type_id != 0 as u32 and (fn_type_id as i64) < table.entries.len:
+                            let entry = &table.entries.data[fn_type_id as i64]
+                            if entry.kind == TYPE_KIND_FUNC:
+                                let fi = &table.funcs.data[entry.extra as i64]
+                                let rt = fi.ret
+                                return rt == 9 as u32 or rt == 10 as u32
+                return false
             let t_id = inst.type_id
             return t_id == 9 as u32 or t_id == 10 as u32
         i = i + 1
@@ -1007,7 +1032,7 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
     mut i := 0 as i64
     while i < intervals.len:
         let iv = intervals.data[i]
-        if is_float_vreg(fn_ptr, iv.vreg):
+        if is_float_vreg(fn_ptr, iv.vreg, table, symbols):
             xmm_intervals.push(iv)
         else:
             gpr_intervals.push(iv)

@@ -86,6 +86,9 @@ rows=(
   "t_quaternion|exit|127"
   "t_matrix|exit|127"
   "t_vec4|exit|127"
+  "t_fspill|exit|78"
+  "t_fctor|exit|40"
+  "t_ffree|exit|110"
 )
 
 for row in "${rows[@]}"; do

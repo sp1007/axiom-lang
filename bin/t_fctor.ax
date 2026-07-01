@@ -1,0 +1,27 @@
+// Repro BUG#45 case (2): a struct field constructor whose value is a
+// float-call-result, at -O1. free-fn cosf/sinf-style. If the call-result float
+// is misallocated to a GPR, the stored field is garbage.
+// half=0 -> cosf(0)=1, sinf(0)=0. q=(1,0,0,0). Return (1+0+0+0)*40=40.
+
+fn cosf(x: f64) -> f64:
+    // crude: cos(0)=1 for x==0 else passthrough (repro only needs x=0)
+    if x == 0.0:
+        return 1.0
+    return x
+
+fn sinf(x: f64) -> f64:
+    return x
+
+struct Q:
+    w: f64
+    x: f64
+    y: f64
+    z: f64
+
+fn q_make(angle: f64) -> Q:
+    let h = angle * 0.5
+    return Q(w: cosf(h), x: sinf(h), y: sinf(h), z: sinf(h))
+
+pub fn main() -> i32:
+    let q = q_make(0.0)
+    return ((q.w + q.x + q.y + q.z) * 40.0) as i32
