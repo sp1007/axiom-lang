@@ -1,0 +1,75 @@
+// Regression repro for std.quaternion core algebra (free-function form).
+// Self-contained. Expect exit 127. Pure arithmetic + sqrt (O0+O1 verified).
+
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut dd := ng - g
+        if dd < 0.0:
+            dd = 0.0 - dd
+        if dd < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+struct Quat:
+    w: f64
+    x: f64
+    y: f64
+    z: f64
+
+fn q_mul(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w)
+fn q_add(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w + b.w, x: a.x + b.x, y: a.y + b.y, z: a.z + b.z)
+fn q_sub(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w - b.w, x: a.x - b.x, y: a.y - b.y, z: a.z - b.z)
+fn q_scale(a: Quat, k: f64) -> Quat:
+    return Quat(w: a.w * k, x: a.x * k, y: a.y * k, z: a.z * k)
+fn q_conj(a: Quat) -> Quat:
+    return Quat(w: a.w, x: 0.0 - a.x, y: 0.0 - a.y, z: 0.0 - a.z)
+fn q_dot(a: Quat, b: Quat) -> f64:
+    return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z
+fn q_norm_sq(a: Quat) -> f64:
+    return a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z
+fn q_norm(a: Quat) -> f64:
+    return sqrtf(a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z)
+fn q_normalize(a: Quat) -> Quat:
+    let n = q_norm(a)
+    if n == 0.0:
+        return a
+    return Quat(w: a.w / n, x: a.x / n, y: a.y / n, z: a.z / n)
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    let p = Quat(w: 1.0, x: 2.0, y: 3.0, z: 4.0)
+    let cc = q_mul(p, q_conj(p))
+    if near(cc.w, 30.0) and near(cc.x, 0.0) and near(cc.y, 0.0) and near(cc.z, 0.0):
+        s = s + 1
+    if near(q_norm(p), 5.477226):
+        s = s + 2
+    if near(q_norm(q_normalize(p)), 1.0):
+        s = s + 4
+    if near(q_dot(p, p), 30.0) and near(q_norm_sq(p), 30.0):
+        s = s + 8
+    let a = q_add(p, q_scale(p, 2.0))
+    if near(a.w, 3.0) and near(a.z, 12.0):
+        s = s + 16
+    let b = q_sub(q_scale(p, 3.0), p)
+    if near(b.w, 2.0) and near(b.z, 8.0):
+        s = s + 32
+    let m = q_mul(p, Quat(w: 1.0, x: 0.0, y: 0.0, z: 0.0))
+    if near(m.w, 1.0) and near(m.x, 2.0) and near(m.y, 3.0) and near(m.z, 4.0):
+        s = s + 64
+    return s   // expect 127

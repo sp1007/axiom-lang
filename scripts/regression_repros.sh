@@ -83,6 +83,7 @@ rows=(
   "t_colorhsl|exit|127"
   "t_rng|exit|127"
   "t_decimal|exit|127"
+  "t_quaternion|exit|127"
 )
 
 for row in "${rows[@]}"; do

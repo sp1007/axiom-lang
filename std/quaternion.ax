@@ -1,0 +1,61 @@
+// AXIOM Standard Library — std.quaternion
+//
+// Quaternion algebra as FREE FUNCTIONS over a 4xf64 struct. Free-function form
+// is required: a 32-byte (4xf64) struct returned from a *method* miscompiles
+// (BUG#45), as does a struct built with a float-call-result field or a chained
+// struct-returning rotation under -O1 (float/aggregate liveness, BUG#48 family).
+// The pure-arithmetic ops below are verified correct at both -O0 and -O1.
+//
+// Deferred until the aggregate/float backend keystone lands: q_from_axis_angle
+// (Quat field = cos()/sin() call-result) and q_rotate (chained q_mul). Compose
+// std.math.sqrt for the norm.
+
+pub struct Quat:
+    w: f64
+    x: f64
+    y: f64
+    z: f64
+
+pub fn quat(w: f64, x: f64, y: f64, z: f64) -> Quat:
+    return Quat(w: w, x: x, y: y, z: z)
+
+pub fn q_identity() -> Quat:
+    return Quat(w: 1.0, x: 0.0, y: 0.0, z: 0.0)
+
+// Hamilton product a*b.
+pub fn q_mul(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w)
+
+pub fn q_add(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w + b.w, x: a.x + b.x, y: a.y + b.y, z: a.z + b.z)
+
+pub fn q_sub(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w - b.w, x: a.x - b.x, y: a.y - b.y, z: a.z - b.z)
+
+pub fn q_scale(a: Quat, k: f64) -> Quat:
+    return Quat(w: a.w * k, x: a.x * k, y: a.y * k, z: a.z * k)
+
+pub fn q_conj(a: Quat) -> Quat:
+    return Quat(w: a.w, x: 0.0 - a.x, y: 0.0 - a.y, z: 0.0 - a.z)
+
+pub fn q_dot(a: Quat, b: Quat) -> f64:
+    return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z
+
+pub fn q_norm_sq(a: Quat) -> f64:
+    return a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z
+
+pub fn q_norm(a: Quat) -> f64:
+    return sqrt(a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z)
+
+pub fn q_normalize(a: Quat) -> Quat:
+    let n = q_norm(a)
+    if n == 0.0:
+        return a
+    return Quat(w: a.w / n, x: a.x / n, y: a.y / n, z: a.z / n)
+
+// Inverse = conj / |q|^2.
+pub fn q_inverse(a: Quat) -> Quat:
+    let n2 = a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z
+    if n2 == 0.0:
+        return a
+    return Quat(w: a.w / n2, x: (0.0 - a.x) / n2, y: (0.0 - a.y) / n2, z: (0.0 - a.z) / n2)

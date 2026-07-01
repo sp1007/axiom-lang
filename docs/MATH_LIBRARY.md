@@ -50,7 +50,7 @@ Blockers that gate whole categories:
 | 20 | Geometry | ✅ | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri/circle/polygon-area/segment-dist + Vec3 (3D in vec) |
 | 21 | Matrix | 🔒 | — | needs Mat2/3/4 (≥32B f64) → **BUG#45**. Workaround: flat `ptr[f64]`+dims |
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
-| 23 | Quaternion | 🔒 | — | 4×f64=32B → **BUG#45** |
+| 23 | Quaternion | 🔶 | quaternion | core algebra (mul/add/sub/scale/conj/dot/norm/normalize/inverse) via FREE FNs, O0+O1. from_axis_angle/rotate deferred (BUG#45/#48) |
 | 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0 (oracle-verified). todo: zeta |
 | 25 | Numerical analysis | 🔶 | numerical | sampled trapezoid/simpson/central+forward diff (oracle-verified). generic root-find/quadrature need closures 🔒 |
 | 26 | Signal processing | 🔶 | signal | window fns hann/hamming/blackman/bartlett/welch (oracle-verified). todo: FFT (complex arrays) |
