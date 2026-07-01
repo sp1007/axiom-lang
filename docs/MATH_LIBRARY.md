@@ -63,7 +63,7 @@ Blockers that gate whole categories:
 | 33 | Big-int / decimal | ✅ | bignum,decimal | bignum u/i/f to 4096+ ; decimal exact base-10 fixed-point (d4) |
 | 34 | Crypto math | ✅ | numtheory | mod_exp/mod_inverse/gcd + Miller-Rabin is_probable_prime (det. < 2^32) |
 | 35 | Intrinsics | ✅ | math | popcount/clz/ctz/parity/bit_* as fns (true HW intrinsics = aspirational) |
-| 36 | Vector types | 🔶 | vec | Vec2/Vec3. Vec4 (32B) → **BUG#45** |
+| 36 | Vector types | ✅ | vec | Vec2/Vec3 (methods) + Vec4 (free-fn add/sub/scale/dot/len/normalize, O0+O1) |
 
 ---
 

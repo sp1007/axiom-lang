@@ -81,3 +81,35 @@ pub fn v3_dist(a: Vec3, b: Vec3) -> f64:
 
 pub fn v3_lerp(a: Vec3, b: Vec3, t: f64) -> Vec3:
     return Vec3(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t)
+
+// --- Vec4 (32-byte, 4xf64) --- FREE FUNCTIONS ONLY: a 32-byte struct returned
+// from a *method* miscompiles (BUG#45); these free functions are verified O0+O1.
+pub struct Vec4:
+    x: f64
+    y: f64
+    z: f64
+    w: f64
+
+pub fn vec4(x: f64, y: f64, z: f64, w: f64) -> Vec4:
+    return Vec4(x: x, y: y, z: z, w: w)
+
+pub fn v4_add(a: Vec4, b: Vec4) -> Vec4:
+    return Vec4(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z, w: a.w + b.w)
+
+pub fn v4_sub(a: Vec4, b: Vec4) -> Vec4:
+    return Vec4(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z, w: a.w - b.w)
+
+pub fn v4_scale(a: Vec4, k: f64) -> Vec4:
+    return Vec4(x: a.x * k, y: a.y * k, z: a.z * k, w: a.w * k)
+
+pub fn v4_dot(a: Vec4, b: Vec4) -> f64:
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+
+pub fn v4_len(a: Vec4) -> f64:
+    return sqrt(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w)
+
+pub fn v4_normalize(a: Vec4) -> Vec4:
+    let l = v4_len(a)
+    if l == 0.0:
+        return a
+    return Vec4(x: a.x / l, y: a.y / l, z: a.z / l, w: a.w / l)

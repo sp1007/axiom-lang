@@ -1,0 +1,67 @@
+fn sqrtf(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut dd := ng - g
+        if dd < 0.0:
+            dd = 0.0 - dd
+        if dd < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+struct Vec4:
+    x: f64
+    y: f64
+    z: f64
+    w: f64
+
+fn v4_add(a: Vec4, b: Vec4) -> Vec4:
+    return Vec4(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z, w: a.w + b.w)
+fn v4_sub(a: Vec4, b: Vec4) -> Vec4:
+    return Vec4(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z, w: a.w - b.w)
+fn v4_scale(a: Vec4, k: f64) -> Vec4:
+    return Vec4(x: a.x * k, y: a.y * k, z: a.z * k, w: a.w * k)
+fn v4_dot(a: Vec4, b: Vec4) -> f64:
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+fn v4_len(a: Vec4) -> f64:
+    return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w)
+fn v4_normalize(a: Vec4) -> Vec4:
+    let l = v4_len(a)
+    if l == 0.0:
+        return a
+    return Vec4(x: a.x / l, y: a.y / l, z: a.z / l, w: a.w / l)
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.001
+
+pub fn main() -> i32:
+    mut s := 0 as i32
+    let a = Vec4(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    let b = Vec4(x: 5.0, y: 6.0, z: 7.0, w: 8.0)
+    let sm = v4_add(a, b)
+    if near(sm.x, 6.0) and near(sm.w, 12.0):
+        s = s + 1
+    let df = v4_sub(b, a)
+    if near(df.x, 4.0) and near(df.w, 4.0):
+        s = s + 2
+    if near(v4_dot(a, b), 70.0):
+        s = s + 4
+    let sc = v4_scale(a, 2.0)
+    if near(sc.x, 2.0) and near(sc.w, 8.0):
+        s = s + 8
+    if near(v4_len(Vec4(x: 2.0, y: 0.0, z: 0.0, w: 0.0)), 2.0):
+        s = s + 16
+    if near(v4_len(a), 5.477226):
+        s = s + 32
+    let n = v4_normalize(a)
+    if near(v4_len(n), 1.0):
+        s = s + 64
+    return s   // expect 127
