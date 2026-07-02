@@ -92,6 +92,7 @@ rows=(
   "fmeth|exit|110"
   "fsmall|exit|37"
   "t_trecip|exit|8"
+  "t_ieeerem|exit|8"
 )
 
 for row in "${rows[@]}"; do

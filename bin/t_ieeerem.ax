@@ -1,0 +1,49 @@
+// bin/t_ieeerem.ax — regression for std.math.ieee_remainder (#12).
+// Self-contained. Exit 8 = all 8 oracle checks pass.
+// Oracle (Python math.remainder): rem(5.3,2)=-0.7, rem(5,2)=1, rem(7,2)=-1,
+// rem(1,2)=1, rem(-5.3,2)=0.7, rem(9,4)=1, rem(11,4)=-1, rem(10,4)=2 (tie->even).
+//
+// Build: axc_stage1 build bin/t_ieeerem.ax -o t_ieeerem && ./t_ieeerem ; echo $? (=>8)
+
+fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+fn floor(x: f64) -> f64:
+    let t = x as i64 as f64
+    if t > x:
+        return t - 1.0
+    return t
+
+fn ieee_remainder(x: f64, y: f64) -> f64:
+    if y == 0.0:
+        return 0.0
+    let q = x / y
+    let fl = floor(q)
+    let diff = q - fl
+    mut n := fl
+    if diff > 0.5:
+        n = fl + 1.0
+    elif diff == 0.5:
+        let h = fl * 0.5
+        if h != floor(h):
+            n = fl + 1.0
+    return x - n * y
+
+fn near(got: f64, want: f64) -> i32:
+    if abs(got - want) < 0.000001:
+        return 1
+    return 0
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    pass = pass + near(ieee_remainder(5.3, 2.0), 0.0 - 0.7)
+    pass = pass + near(ieee_remainder(5.0, 2.0), 1.0)
+    pass = pass + near(ieee_remainder(7.0, 2.0), 0.0 - 1.0)
+    pass = pass + near(ieee_remainder(1.0, 2.0), 1.0)
+    pass = pass + near(ieee_remainder(0.0 - 5.3, 2.0), 0.7)
+    pass = pass + near(ieee_remainder(9.0, 4.0), 1.0)
+    pass = pass + near(ieee_remainder(11.0, 4.0), 0.0 - 1.0)
+    pass = pass + near(ieee_remainder(10.0, 4.0), 2.0)
+    return pass

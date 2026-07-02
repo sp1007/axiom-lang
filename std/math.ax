@@ -51,6 +51,24 @@ pub fn fmod(x: f64, y: f64) -> f64:
     let q = (x / y) as i64 as f64
     return x - q * y
 
+// IEEE-754 remainder: x - n*y with n = round-half-to-even(x/y).
+// Result lies in [-|y|/2, |y|/2]; differs from fmod which truncates toward 0.
+pub fn ieee_remainder(x: f64, y: f64) -> f64:
+    if y == 0.0:
+        return 0.0
+    let q = x / y
+    let fl = floor(q)
+    let diff = q - fl
+    mut n := fl
+    if diff > 0.5:
+        n = fl + 1.0
+    elif diff == 0.5:
+        // tie -> round to even: bump only if fl is odd
+        let h = fl * 0.5
+        if h != floor(h):
+            n = fl + 1.0
+    return x - n * y
+
 // --- Roots / exp / log (leaf, self-contained) ---
 
 // Newton-Raphson square root.
