@@ -17,9 +17,10 @@ Blockers that gate whole categories:
   4×f64=32B fails). Blocks Mat2/3/4, Quaternion, Vec4. Backend keystone.
 - **BUG#46** — float call-result read across a following loop. Work around by
   inlining; avoid holding a float call result across a loop.
-- **closures / function pointers** — not implemented (#38.7). Blocks generic
-  numerical-analysis (root-find/integrate of an arbitrary f); array-sampled
-  variants are still doable.
+- **function pointers** — ✅ SHIPPED (BUG#49). First-class function values
+  (`fn(f64)->f64` params, `let f = add`) work O0+O1, fixpoint-verified. Generic
+  numerical-analysis (#25 integrate/root-find of an arbitrary f) now done.
+  Closures with captured environment (#38.7) remain future work.
 - **SIMD / true intrinsics** — need hardware vector ABI; aspirational.
 
 ---
@@ -52,7 +53,7 @@ Blockers that gate whole categories:
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
 | 23 | Quaternion | ✅ | quaternion | mul/add/sub/scale/conj/dot/norm/normalize/inverse + from_axis_angle/rotate (BUG#45/#48 fixed → field=cos/sin-call + chained q_mul now O0+O1, t_quatrot=8) |
 | 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0/zeta (oracle-verified) |
-| 25 | Numerical analysis | 🔶 | numerical | sampled trapezoid/simpson/central+forward diff (oracle-verified). generic root-find/quadrature need closures 🔒 |
+| 25 | Numerical analysis | ✅ | numerical | sampled trapezoid/simpson/central+forward diff + GENERIC over fn(f64)->f64: integrate/simpson/diff/bisection/newton (BUG#49 fn-ptr; oracle-verified O0+O1, t_numeric=5, t_nmf=9) |
 | 26 | Signal processing | ✅ | signal,fft | window fns hann/hamming/blackman/bartlett/welch + radix-2 Cooley-Tukey FFT/IFFT over parallel re/im ptr[f64] (n=2^k), oracle-verified O0+O1 (t_fft=18) |
 | 27 | Machine learning | ✅ | math,ml | sigmoid/relu/leaky_relu/softplus/swish/tanh (math) + gelu/mse/mae/bce/softmax (ml, oracle-verified) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
@@ -78,7 +79,7 @@ Blockers that gate whole categories:
 7. ~~bit math fill-ins (#18)~~ ✅ done (rotate_right/reverse_bits/bit_floor/bit_ceil/parity).
 8. ~~special fns (#24)~~ ✅ done (factorial_real/digamma/bessel_j0, oracle-verified vs scipy).
 9. ~~crypto (#34)~~ ✅ done (Miller-Rabin nt_is_probable_prime; detects Carmichael).
-10. ~~numerical analysis (#25)~~ 🔶 done (sampled trapezoid/simpson/diff; generic-f forms need closures 🔒).
+10. ~~numerical analysis (#25)~~ ✅ done (sampled forms + GENERIC integrate/simpson/diff/bisection/newton over fn(f64)->f64, unblocked by BUG#49 fn-ptr; oracle-verified O0+O1).
 11. ~~scalar fill-ins (#1/#8/#12/#24)~~ ✅ done (PHI; sec/csc/cot; ieee_remainder; zeta — oracle-verified).
 12. ~~quaternion rotation (#23)~~ ✅ done (from_axis_angle/rotate — unblocked by BUG#45/#48 fixes on main).
 13. ~~FFT (#26)~~ ✅ done (std.fft radix-2 Cooley-Tukey FFT/IFFT).
@@ -89,9 +90,9 @@ Matrix/Quaternion/Vec4 are done (array-based and/or method/free-fn f64 aggregate
 now compile correctly at -O1).
 
 ## Still blocked (cannot schedule without a new keystone)
-- **closures / function pointers (#38.7)** — needed for GENERIC numerical
-  analysis (#25: root-find/quadrature of an arbitrary f) and generic higher-order
-  math. Array-sampled variants already shipped. This is a language/backend
-  feature, not a library task.
+- **closures with captured environment (#38.7)** — bare function pointers are
+  ✅ shipped (BUG#49) and unblocked generic numerical analysis (#25) and generic
+  higher-order math. What remains is closures that CAPTURE free variables (a
+  heap/environment + ABI design), still future work.
 - **SIMD / true HW intrinsics (#32/#35)** — need a hardware vector ABI;
   aspirational.

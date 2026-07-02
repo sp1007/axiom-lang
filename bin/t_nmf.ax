@@ -1,0 +1,18 @@
+// Regression repro: generic numerical over f64 function pointers (BUG#49 + f64).
+// Self-contained. Exit 9 = integral of x^2 over [0,3] via trapezoid.
+extern "C" fn putchar(c: i32) -> i32
+fn sq(x: f64) -> f64:
+    return x * x
+fn integ(f: fn(f64) -> f64, a: f64, b: f64, n: i64) -> f64:
+    let h = (b - a) / (n as f64)
+    mut acc := f(a)
+    acc = acc + f(b)
+    acc = 0.5 * acc
+    mut i := 1 as i64
+    while i < n:
+        acc = acc + f(a + (i as f64) * h)
+        i = i + 1
+    return acc * h
+pub fn main() -> i32:
+    let r = integ(sq, 0.0, 3.0, 3000)
+    return (r + 0.5) as i32

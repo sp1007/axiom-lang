@@ -1,12 +1,17 @@
 // AXIOM Standard Library — std.numerical
 //
-// Numerical analysis over SAMPLED data (ptr[f64] of n samples spaced h):
-// composite trapezoid/Simpson integration and central-difference derivative.
-// Pure arithmetic, no std.math dependency, BUG#45/46/48-immune.
+// Numerical analysis in two flavours:
+//   1. SAMPLED data (ptr[f64] of n samples spaced h): composite trapezoid /
+//      Simpson integration and finite-difference derivative.
+//   2. GENERIC over an arbitrary function f: fn(f64)->f64 (unblocked by BUG#49,
+//      first-class function values): quadrature, numerical derivative, and
+//      root-finding (bisection / Newton) of an arbitrary f.
+// Pure arithmetic, no std.math dependency.
 //
-// NOTE: root-finding / quadrature of an *arbitrary* function f need first-class
-// function values (closures), which the language does not yet support; those are
-// deferred. The sampled-data forms here cover the common case.
+// Float-safety: every generic routine consumes each f(x) call-result IMMEDIATELY
+// inside its loop (acc = acc + f(x)); no float call-result is held across a loop
+// and few float locals are live at once, so BUG#46 (float-result-across-loop)
+// and BUG#48 (>=8 simultaneous float spills) do not apply.
 
 // Composite trapezoidal rule: integral of n samples spaced h.
 pub fn nm_trapezoid(y: ptr[f64], n: i64, h: f64) -> f64:
@@ -36,3 +41,82 @@ pub fn nm_diff_central(y: ptr[f64], i: i64, h: f64) -> f64:
 // Forward-difference derivative at sample i (for the left boundary).
 pub fn nm_diff_forward(y: ptr[f64], i: i64, h: f64) -> f64:
     return (y[i + 1 as i64] - y[i]) / h
+
+// ---------------------------------------------------------------------------
+// Generic forms over an arbitrary function f: fn(f64)->f64 (needs BUG#49).
+// ---------------------------------------------------------------------------
+
+// |x| — local to keep std.numerical free of a std.math dependency.
+fn nm_fabs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+// Composite trapezoid quadrature of f over [a, b] with n intervals.
+pub fn nm_integrate(f: fn(f64) -> f64, a: f64, b: f64, n: i64) -> f64:
+    let h = (b - a) / (n as f64)
+    mut acc := f(a)
+    acc = acc + f(b)
+    acc = 0.5 * acc
+    mut i := 1 as i64
+    while i < n:
+        let x = a + (i as f64) * h
+        acc = acc + f(x)
+        i = i + 1
+    return acc * h
+
+// Composite Simpson quadrature of f over [a, b]; n must be even.
+pub fn nm_integrate_simpson(f: fn(f64) -> f64, a: f64, b: f64, n: i64) -> f64:
+    let h = (b - a) / (n as f64)
+    mut acc := f(a)
+    acc = acc + f(b)
+    mut i := 1 as i64
+    while i < n:
+        let x = a + (i as f64) * h
+        if i % (2 as i64) == 1 as i64:
+            acc = acc + 4.0 * f(x)
+        else:
+            acc = acc + 2.0 * f(x)
+        i = i + 1
+    return acc * h / 3.0
+
+// Central-difference numerical derivative of f at x with step h.
+pub fn nm_diff(f: fn(f64) -> f64, x: f64, h: f64) -> f64:
+    let hi = f(x + h)
+    let lo = f(x - h)
+    return (hi - lo) / (2.0 * h)
+
+// Bisection root-finder: f(a) and f(b) must straddle a root. Returns the first
+// x with |f(x)| < tol, else the midpoint after maxit iterations.
+pub fn nm_bisection(f: fn(f64) -> f64, a: f64, b: f64, tol: f64, maxit: i64) -> f64:
+    mut lo := a
+    mut hi := b
+    mut flo := f(lo)
+    mut it := 0 as i64
+    while it < maxit:
+        let mid = 0.5 * (lo + hi)
+        let fmid = f(mid)
+        if nm_fabs(fmid) < tol:
+            return mid
+        // Same sign as f(lo) -> root lies in [mid, hi]; else in [lo, mid].
+        if (flo < 0.0 and fmid < 0.0) or (flo > 0.0 and fmid > 0.0):
+            lo = mid
+            flo = fmid
+        else:
+            hi = mid
+        it = it + 1
+    return 0.5 * (lo + hi)
+
+// Newton's method with an explicit derivative df. Returns the first x with
+// |f(x)| < tol, else the iterate after maxit steps.
+pub fn nm_newton(f: fn(f64) -> f64, df: fn(f64) -> f64, x0: f64, tol: f64, maxit: i64) -> f64:
+    mut x := x0
+    mut it := 0 as i64
+    while it < maxit:
+        let fx = f(x)
+        if nm_fabs(fx) < tol:
+            return x
+        let dfx = df(x)
+        x = x - fx / dfx
+        it = it + 1
+    return x

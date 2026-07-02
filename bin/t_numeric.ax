@@ -1,0 +1,94 @@
+// Regression repro: std.numerical generic forms over fn(f64)->f64 (BUG#49).
+// Self-contained (mirrors std/numerical.ax). Exit 5 = all 5 oracle checks pass.
+extern "C" fn putchar(c: i32) -> i32
+
+fn nm_fabs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+fn nm_integrate(f: fn(f64) -> f64, a: f64, b: f64, n: i64) -> f64:
+    let h = (b - a) / (n as f64)
+    mut acc := f(a)
+    acc = acc + f(b)
+    acc = 0.5 * acc
+    mut i := 1 as i64
+    while i < n:
+        acc = acc + f(a + (i as f64) * h)
+        i = i + 1
+    return acc * h
+
+fn nm_integrate_simpson(f: fn(f64) -> f64, a: f64, b: f64, n: i64) -> f64:
+    let h = (b - a) / (n as f64)
+    mut acc := f(a)
+    acc = acc + f(b)
+    mut i := 1 as i64
+    while i < n:
+        if i % (2 as i64) == 1 as i64:
+            acc = acc + 4.0 * f(a + (i as f64) * h)
+        else:
+            acc = acc + 2.0 * f(a + (i as f64) * h)
+        i = i + 1
+    return acc * h / 3.0
+
+fn nm_diff(f: fn(f64) -> f64, x: f64, h: f64) -> f64:
+    let hi = f(x + h)
+    let lo = f(x - h)
+    return (hi - lo) / (2.0 * h)
+
+fn nm_bisection(f: fn(f64) -> f64, a: f64, b: f64, tol: f64, maxit: i64) -> f64:
+    mut lo := a
+    mut hi := b
+    mut flo := f(lo)
+    mut it := 0 as i64
+    while it < maxit:
+        let mid = 0.5 * (lo + hi)
+        let fmid = f(mid)
+        if nm_fabs(fmid) < tol:
+            return mid
+        if (flo < 0.0 and fmid < 0.0) or (flo > 0.0 and fmid > 0.0):
+            lo = mid
+            flo = fmid
+        else:
+            hi = mid
+        it = it + 1
+    return 0.5 * (lo + hi)
+
+fn nm_newton(f: fn(f64) -> f64, df: fn(f64) -> f64, x0: f64, tol: f64, maxit: i64) -> f64:
+    mut x := x0
+    mut it := 0 as i64
+    while it < maxit:
+        let fx = f(x)
+        if nm_fabs(fx) < tol:
+            return x
+        let dfx = df(x)
+        x = x - fx / dfx
+        it = it + 1
+    return x
+
+fn sq(x: f64) -> f64:
+    return x * x
+fn quad2(x: f64) -> f64:
+    return x * x - 2.0
+fn dquad2(x: f64) -> f64:
+    return 2.0 * x
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    let third = 0.333333333333
+    // 1. trapezoid integral x^2 over [0,1] = 1/3
+    if nm_fabs(nm_integrate(sq, 0.0, 1.0, 1000) - third) < 0.001:
+        pass = pass + 1
+    // 2. Simpson integral x^2 over [0,1] = 1/3 (near-exact)
+    if nm_fabs(nm_integrate_simpson(sq, 0.0, 1.0, 1000) - third) < 0.00001:
+        pass = pass + 1
+    // 3. d/dx x^2 at 3 = 6
+    if nm_fabs(nm_diff(sq, 3.0, 0.0001) - 6.0) < 0.01:
+        pass = pass + 1
+    // 4. bisection root of x^2-2 in [1,2] = sqrt(2)
+    if nm_fabs(nm_bisection(quad2, 1.0, 2.0, 0.000000001, 100) - 1.41421356) < 0.0001:
+        pass = pass + 1
+    // 5. Newton root of x^2-2 from 1.5 = sqrt(2)
+    if nm_fabs(nm_newton(quad2, dquad2, 1.5, 0.000000000001, 50) - 1.41421356) < 0.0001:
+        pass = pass + 1
+    return pass as i32

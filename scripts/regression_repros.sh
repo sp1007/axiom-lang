@@ -99,6 +99,8 @@ rows=(
   "fp0i|exit|5"
   "fpBi|exit|5"
   "fpf|exit|14"
+  "t_nmf|exit|9"
+  "t_numeric|exit|5"
 )
 
 for row in "${rows[@]}"; do
