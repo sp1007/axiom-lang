@@ -79,9 +79,19 @@ Blockers that gate whole categories:
 8. ~~special fns (#24)~~ ✅ done (factorial_real/digamma/bessel_j0, oracle-verified vs scipy).
 9. ~~crypto (#34)~~ ✅ done (Miller-Rabin nt_is_probable_prime; detects Carmichael).
 10. ~~numerical analysis (#25)~~ 🔶 done (sampled trapezoid/simpson/diff; generic-f forms need closures 🔒).
+11. ~~scalar fill-ins (#1/#8/#12/#24)~~ ✅ done (PHI; sec/csc/cot; ieee_remainder; zeta — oracle-verified).
+12. ~~quaternion rotation (#23)~~ ✅ done (from_axis_angle/rotate — unblocked by BUG#45/#48 fixes on main).
+13. ~~FFT (#26)~~ ✅ done (std.fft radix-2 Cooley-Tukey FFT/IFFT).
 
-## Blocked until backend keystone
-- **BUG#45 fix** unlocks: Matrix (#21), Quaternion (#23), Vec4 (#36). Needs x86
-  struct-ABI work for >16B f64 + ~3h fixpoint verify.
-- **closures (#38.7)** unlock generic numerical analysis / function-of-f.
-- **SIMD/HW intrinsics** (#32/#35) aspirational.
+**BUG-immune queue is EMPTY.** Every category is ✅ except the two hard-blocked
+ones below. BUG#45 (all cases) + BUG#48 are FIXED on main (476b352, 07c51f0), so
+Matrix/Quaternion/Vec4 are done (array-based and/or method/free-fn f64 aggregates
+now compile correctly at -O1).
+
+## Still blocked (cannot schedule without a new keystone)
+- **closures / function pointers (#38.7)** — needed for GENERIC numerical
+  analysis (#25: root-find/quadrature of an arbitrary f) and generic higher-order
+  math. Array-sampled variants already shipped. This is a language/backend
+  feature, not a library task.
+- **SIMD / true HW intrinsics (#32/#35)** — need a hardware vector ABI;
+  aspirational.
