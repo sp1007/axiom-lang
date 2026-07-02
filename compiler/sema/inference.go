@@ -258,7 +258,7 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 	case ast.NodeFuncDecl:
 		var paramTypes []types.TypeID
 		var retType types.TypeID = types.TypeUnknown
-		
+
 		symIdx := node.Payload
 		hasExistingType := false
 		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
@@ -485,12 +485,11 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 	case ast.NodeConstDecl:
 		// ConstDecl children: optional type annotation, then init expr.
 		var expectedType types.TypeID = types.TypeUnknown
-		
+
 		symIdx := node.Payload
-		var sym *Symbol
-		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
-			sym = ie.symtable.SymbolAt(symIdx)
-			expectedType = types.TypeID(sym.TypeID)
+		hasSym := symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols)
+		if hasSym {
+			expectedType = types.TypeID(ie.symtable.SymbolAt(symIdx).TypeID)
 		}
 
 		var typeNode, initExpr uint32
@@ -506,14 +505,15 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 
 		if typeNode != 0 {
 			expectedType = ie.inferNode(typeNode, types.TypeUnknown)
-			if sym != nil {
-				sym.TypeID = uint32(expectedType)
+			// Write via index: inferNode may have appended to (and thus reallocated)
+			// the symbol slice, which would leave a captured *Symbol pointer stale.
+			if hasSym {
+				ie.symtable.Symbols[symIdx].TypeID = uint32(expectedType)
 			}
 		}
 
 		if initExpr != 0 {
 			inferred := ie.inferNode(initExpr, expectedType)
-			
 			if expectedType != types.TypeUnknown && expectedType != 0 {
 				if !ie.isAssignableTo(inferred, expectedType) {
 					ie.errorf(nodeIdx, 3001, "type mismatch: expected %d, found %d", expectedType, inferred)
@@ -522,8 +522,10 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			} else {
 				resultType = inferred
 				expectedType = inferred
-				if sym != nil {
-					sym.TypeID = uint32(inferred)
+				// Write via index (see note above): a *Symbol captured before
+				// inferNode may point into a stale (reallocated) backing array.
+				if hasSym {
+					ie.symtable.Symbols[symIdx].TypeID = uint32(inferred)
 				}
 			}
 		} else {
@@ -537,12 +539,11 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 		// node.Payload is the variable's NameID or SymbolIdx (if NameResolver ran).
 		
 		var expectedType types.TypeID = types.TypeUnknown
-		
+
 		symIdx := node.Payload
-		var sym *Symbol
-		if symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols) {
-			sym = ie.symtable.SymbolAt(symIdx)
-			expectedType = types.TypeID(sym.TypeID)
+		hasSym := symIdx != 0 && int(symIdx) < len(ie.symtable.Symbols)
+		if hasSym {
+			expectedType = types.TypeID(ie.symtable.SymbolAt(symIdx).TypeID)
 		}
 
 		var typeNode, initExpr uint32
@@ -558,14 +559,15 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 
 		if typeNode != 0 {
 			expectedType = ie.inferNode(typeNode, types.TypeUnknown)
-			if sym != nil {
-				sym.TypeID = uint32(expectedType)
+			// Write via index: inferNode may have appended to (and thus reallocated)
+			// the symbol slice, which would leave a captured *Symbol pointer stale.
+			if hasSym {
+				ie.symtable.Symbols[symIdx].TypeID = uint32(expectedType)
 			}
 		}
 
 		if initExpr != 0 {
 			inferred := ie.inferNode(initExpr, expectedType)
-			
 			if expectedType != types.TypeUnknown && expectedType != 0 {
 				if !ie.isAssignableTo(inferred, expectedType) {
 					ie.errorf(nodeIdx, 3001, "type mismatch: expected %d, found %d", expectedType, inferred)
@@ -574,8 +576,10 @@ func (ie *InferenceEngine) inferNode(nodeIdx uint32, expected types.TypeID) type
 			} else {
 				resultType = inferred
 				expectedType = inferred
-				if sym != nil {
-					sym.TypeID = uint32(inferred)
+				// Write via index (see note above): a *Symbol captured before
+				// inferNode may point into a stale (reallocated) backing array.
+				if hasSym {
+					ie.symtable.Symbols[symIdx].TypeID = uint32(inferred)
 				}
 			}
 		} else {
