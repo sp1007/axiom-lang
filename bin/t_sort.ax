@@ -1,0 +1,83 @@
+// Regression repro: std.sort generic comparator sorts + predicates (BUG#49).
+// Self-contained (mirrors std/sort.ax). Exit 4 = all 4 oracle checks pass.
+extern "C" fn putchar(c: i32) -> i32
+
+fn sort_i64(arr: ptr[i64], n: i64, less: fn(i64, i64) -> bool):
+    mut i := 1 as i64
+    while i < n:
+        let key = arr[i]
+        mut j := i - 1 as i64
+        while j >= 0 as i64 and less(key, arr[j]):
+            arr[j + 1 as i64] = arr[j]
+            j = j - 1 as i64
+        arr[j + 1 as i64] = key
+        i = i + 1
+
+fn find_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> i64:
+    mut i := 0 as i64
+    while i < n:
+        if pred(arr[i]):
+            return i
+        i = i + 1
+    return -1 as i64
+
+fn all_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> bool:
+    mut i := 0 as i64
+    while i < n:
+        if not pred(arr[i]):
+            return false
+        i = i + 1
+    return true
+
+fn asc(a: i64, b: i64) -> bool:
+    return a < b
+fn desc(a: i64, b: i64) -> bool:
+    return a > b
+fn is_neg(x: i64) -> bool:
+    return x < 0 as i64
+fn nonneg(x: i64) -> bool:
+    return x >= 0 as i64
+
+fn is_sorted_asc(arr: ptr[i64], n: i64) -> bool:
+    mut i := 1 as i64
+    while i < n:
+        if arr[i] < arr[i - 1 as i64]:
+            return false
+        i = i + 1
+    return true
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    let n = 8 as i64
+    let a = @alloc(n * 8 as i64) as ptr[i64]
+    // fill 5,-2,9,1,-7,3,0,4
+    a[0] = 5 as i64
+    a[1] = 0 as i64 - 2 as i64
+    a[2] = 9 as i64
+    a[3] = 1 as i64
+    a[4] = 0 as i64 - 7 as i64
+    a[5] = 3 as i64
+    a[6] = 0 as i64
+    a[7] = 4 as i64
+
+    // 1. ascending sort -> sorted, min at front
+    sort_i64(a, n, asc)
+    if is_sorted_asc(a, n) and a[0] == (0 as i64 - 7 as i64) and a[7] == 9 as i64:
+        pass = pass + 1
+
+    // 2. descending sort -> reversed
+    sort_i64(a, n, desc)
+    if a[0] == 9 as i64 and a[7] == (0 as i64 - 7 as i64):
+        pass = pass + 1
+
+    // 3. find first negative (after desc sort, negatives are at the tail)
+    // re-sort ascending so negatives lead: indices 0,1 are -7,-2
+    sort_i64(a, n, asc)
+    if find_i64(a, n, is_neg) == 0 as i64:
+        pass = pass + 1
+
+    // 4. all elements >= -7 is true; all nonneg is false
+    if all_i64(a, n, nonneg) == false:
+        pass = pass + 1
+
+    return pass as i32

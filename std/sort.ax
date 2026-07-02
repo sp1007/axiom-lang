@@ -1,0 +1,54 @@
+// AXIOM Standard Library — std.sort
+//
+// Generic in-place sorting driven by a comparator function pointer (BUG#49).
+// The comparator `less(a, b)` returns true iff `a` must come before `b`
+// (a strict weak ordering). Passing a reversed comparator sorts descending.
+//
+// Insertion sort: stable, O(n^2), no auxiliary allocation. Correctness-first;
+// a comparator-driven quicksort can layer on later without changing this API.
+//
+// Float-safe: the comparator result (a bool) is consumed immediately in the
+// loop test; no float value is held across the call beyond the element being
+// inserted (a single local), so BUG#46/#48 do not apply.
+
+// Sort arr[0..n) of i64 in place using `less`.
+pub fn sort_i64(arr: ptr[i64], n: i64, less: fn(i64, i64) -> bool):
+    mut i := 1 as i64
+    while i < n:
+        let key = arr[i]
+        mut j := i - 1 as i64
+        while j >= 0 as i64 and less(key, arr[j]):
+            arr[j + 1 as i64] = arr[j]
+            j = j - 1 as i64
+        arr[j + 1 as i64] = key
+        i = i + 1
+
+// Sort arr[0..n) of f64 in place using `less`.
+pub fn sort_f64(arr: ptr[f64], n: i64, less: fn(f64, f64) -> bool):
+    mut i := 1 as i64
+    while i < n:
+        let key = arr[i]
+        mut j := i - 1 as i64
+        while j >= 0 as i64 and less(key, arr[j]):
+            arr[j + 1 as i64] = arr[j]
+            j = j - 1 as i64
+        arr[j + 1 as i64] = key
+        i = i + 1
+
+// Linear scan for the first index whose element satisfies `pred`, else -1.
+pub fn find_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> i64:
+    mut i := 0 as i64
+    while i < n:
+        if pred(arr[i]):
+            return i
+        i = i + 1
+    return -1 as i64
+
+// True iff every element satisfies `pred` (vacuously true for n == 0).
+pub fn all_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> bool:
+    mut i := 0 as i64
+    while i < n:
+        if not pred(arr[i]):
+            return false
+        i = i + 1
+    return true

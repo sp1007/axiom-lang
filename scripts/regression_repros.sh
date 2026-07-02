@@ -101,6 +101,7 @@ rows=(
   "fpf|exit|14"
   "t_nmf|exit|9"
   "t_numeric|exit|5"
+  "t_sort|exit|4"
 )
 
 for row in "${rows[@]}"; do
