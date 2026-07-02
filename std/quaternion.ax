@@ -59,3 +59,28 @@ pub fn q_inverse(a: Quat) -> Quat:
     if n2 == 0.0:
         return a
     return Quat(w: a.w / n2, x: (0.0 - a.x) / n2, y: (0.0 - a.y) / n2, z: (0.0 - a.z) / n2)
+
+// Unit quaternion for a rotation of `angle` radians about axis (ax,ay,az).
+// The axis is normalized here. cos/sin call-results are bound to locals before
+// the struct build (BUG#45 case-2 / BUG#48 fixed on main, but locals keep it
+// unambiguous and cheap). Composes std.math.sin/cos/sqrt.
+pub fn q_from_axis_angle(ax: f64, ay: f64, az: f64, angle: f64) -> Quat:
+    let len = sqrt(ax * ax + ay * ay + az * az)
+    if len == 0.0:
+        return q_identity()
+    let nx = ax / len
+    let ny = ay / len
+    let nz = az / len
+    let half = angle * 0.5
+    let c = cos(half)
+    let s = sin(half)
+    return Quat(w: c, x: nx * s, y: ny * s, z: nz * s)
+
+// Rotate vector (vx,vy,vz) by unit quaternion q: v' = q * (0,v) * conj(q).
+// Result is a pure quaternion (w=0) carrying the rotated vector in x,y,z.
+// Chains q_mul (struct-returning calls; BUG#45 case-3 fixed on main).
+pub fn q_rotate(q: Quat, vx: f64, vy: f64, vz: f64) -> Quat:
+    let p = Quat(w: 0.0, x: vx, y: vy, z: vz)
+    let qp = q_mul(q, p)
+    let qi = q_conj(q)
+    return q_mul(qp, qi)

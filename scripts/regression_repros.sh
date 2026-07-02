@@ -94,6 +94,7 @@ rows=(
   "t_trecip|exit|8"
   "t_ieeerem|exit|8"
   "t_zeta|exit|5"
+  "t_quatrot|exit|8"
 )
 
 for row in "${rows[@]}"; do

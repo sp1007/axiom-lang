@@ -1,0 +1,118 @@
+// bin/t_quatrot.ax — regression for std.quaternion rotation (#23).
+// Exercises q_from_axis_angle (field = cos/sin call-result) and q_rotate
+// (chained q_mul struct-returning calls) — both previously deferred by BUG#45/
+// #48, now fixed on main. Self-contained; exit 8 = all 8 oracle checks pass.
+//
+// Build: axc_stage1 build bin/t_quatrot.ax -o t_quatrot && ./t_quatrot ; echo $? (=>8)
+
+const PI:      f64 = 3.14159265358979323846
+const HALF_PI: f64 = 1.57079632679489661923
+const TAU:     f64 = 6.28318530717958647692
+
+struct Quat:
+    w: f64
+    x: f64
+    y: f64
+    z: f64
+
+fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+fn sqrt(x: f64) -> f64:
+    if x <= 0.0:
+        return 0.0
+    mut g := x
+    mut i := 0 as i32
+    while i < 80:
+        let ng = (g + x / g) * 0.5
+        mut d := ng - g
+        if d < 0.0:
+            d = 0.0 - d
+        if d < 0.000000000001:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+fn sin(x: f64) -> f64:
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    let a2 = a * a
+    mut term := a
+    mut s := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        s = s + term
+        n = n + 1
+    return s
+
+fn cos(x: f64) -> f64:
+    return sin(x + HALF_PI)
+
+fn q_identity() -> Quat:
+    return Quat(w: 1.0, x: 0.0, y: 0.0, z: 0.0)
+
+fn q_mul(a: Quat, b: Quat) -> Quat:
+    return Quat(w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w)
+
+fn q_conj(a: Quat) -> Quat:
+    return Quat(w: a.w, x: 0.0 - a.x, y: 0.0 - a.y, z: 0.0 - a.z)
+
+fn q_from_axis_angle(ax: f64, ay: f64, az: f64, angle: f64) -> Quat:
+    let len = sqrt(ax * ax + ay * ay + az * az)
+    if len == 0.0:
+        return q_identity()
+    let nx = ax / len
+    let ny = ay / len
+    let nz = az / len
+    let half = angle * 0.5
+    let c = cos(half)
+    let s = sin(half)
+    return Quat(w: c, x: nx * s, y: ny * s, z: nz * s)
+
+fn q_rotate(q: Quat, vx: f64, vy: f64, vz: f64) -> Quat:
+    let p = Quat(w: 0.0, x: vx, y: vy, z: vz)
+    let qp = q_mul(q, p)
+    let qi = q_conj(q)
+    return q_mul(qp, qi)
+
+fn near(got: f64, want: f64) -> i32:
+    if abs(got - want) < 0.0001:
+        return 1
+    return 0
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+
+    // 90 deg about z: (1,0,0) -> (0,1,0)
+    let qz = q_from_axis_angle(0.0, 0.0, 1.0, HALF_PI)
+    let r1 = q_rotate(qz, 1.0, 0.0, 0.0)
+    pass = pass + near(r1.x, 0.0)
+    pass = pass + near(r1.y, 1.0)
+    pass = pass + near(r1.z, 0.0)
+
+    // 90 deg about z: (0,1,0) -> (-1,0,0)
+    let r2 = q_rotate(qz, 0.0, 1.0, 0.0)
+    pass = pass + near(r2.x, 0.0 - 1.0)
+    pass = pass + near(r2.y, 0.0)
+
+    // 90 deg about x: (0,0,1) -> (0,-1,0)
+    let qx = q_from_axis_angle(1.0, 0.0, 0.0, HALF_PI)
+    let r3 = q_rotate(qx, 0.0, 0.0, 1.0)
+    pass = pass + near(r3.y, 0.0 - 1.0)
+    pass = pass + near(r3.z, 0.0)
+
+    // axis normalization: (0,0,2) same as (0,0,1) -> w = cos(45) = 0.70710678
+    let qn = q_from_axis_angle(0.0, 0.0, 2.0, HALF_PI)
+    pass = pass + near(qn.w, 0.70710678118654752)
+
+    return pass

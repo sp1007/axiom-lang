@@ -28,18 +28,18 @@ Blockers that gate whole categories:
 
 | # | Category | Status | Module(s) | Gaps / notes |
 |---|----------|--------|-----------|--------------|
-| 1 | Constants | ✅ | math | PI/TAU/HALF_PI/E/SQRT2/LN2/LN10/LOG2E/LOG10E/SQRT1_2/EPSILON. todo: PHI |
+| 1 | Constants | ✅ | math | PI/TAU/HALF_PI/E/SQRT2/LN2/LN10/LOG2E/LOG10E/SQRT1_2/EPSILON/PHI |
 | 2 | Arithmetic | ✅ | math | abs/sign/min/max/clamp/square/cube/recip |
 | 3 | Rounding | ✅ | math | floor/ceil/round/trunc/fract/round_to |
 | 4 | Integer | ✅ | math,xmath | abs_i64/min/max/clamp_i64/gcd/lcm/pow_i64/isqrt |
 | 5 | Power | ✅ | math | pow/square/cube/cbrt/exp2/exp10/pow_i64 |
 | 6 | Exp | ✅ | math | exp/exp2/exp10/expm1 |
 | 7 | Log | ✅ | math | ln/log2/log10/log1p/log_base |
-| 8 | Trig | ✅ | math | sin/cos/tan/asin/acos/atan/atan2. todo: sec/csc/cot |
+| 8 | Trig | ✅ | math | sin/cos/tan/asin/acos/atan/atan2/sec/csc/cot |
 | 9 | Hyperbolic | ✅ | math | sinh/cosh/tanh/asinh/acosh/atanh |
 | 10 | Angle | ✅ | math | deg_to_rad/rad_to_deg/normalize_angle |
 | 11 | FP-utils | ✅ | math | is_nan/is_inf/is_finite/approx_equal/fract/copysign |
-| 12 | Remainder | 🔶 | math | fmod. todo: ieee_remainder |
+| 12 | Remainder | ✅ | math | fmod/ieee_remainder (round-half-to-even) |
 | 13 | Comparison | ✅ | math | min/max/clamp/approx_equal/saturate |
 | 14 | Random | ✅ | rng | working xorshift64: next_u64/next_f64/range_i64/next_range_f64/gaussian (oracle-verified). random.ax=aspirational |
 | 15 | Statistics | ✅ | stats | sum/mean/variance/stddev/min/max/median/percentile/covariance/correlation/skewness/kurtosis (oracle-verified) |
@@ -50,8 +50,8 @@ Blockers that gate whole categories:
 | 20 | Geometry | ✅ | geometry,vec | 2D dist/cross/dot/triangle/orient/point-in-tri/circle/polygon-area/segment-dist + Vec3 (3D in vec) |
 | 21 | Matrix | ✅ | matrix | Mat3/Mat4 flat ptr[f64]: identity/mul/transpose/det/mul_vec (array-based, O0+O1, immune) |
 | 22 | Complex | ✅ | complex | add/sub/mul/div/conj/abs/arg/exp/ln/sqrt/from_polar |
-| 23 | Quaternion | 🔶 | quaternion | core algebra (mul/add/sub/scale/conj/dot/norm/normalize/inverse) via FREE FNs, O0+O1. from_axis_angle/rotate deferred (BUG#45/#48) |
-| 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0 (oracle-verified). todo: zeta |
+| 23 | Quaternion | ✅ | quaternion | mul/add/sub/scale/conj/dot/norm/normalize/inverse + from_axis_angle/rotate (BUG#45/#48 fixed → field=cos/sin-call + chained q_mul now O0+O1, t_quatrot=8) |
+| 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0/zeta (oracle-verified) |
 | 25 | Numerical analysis | 🔶 | numerical | sampled trapezoid/simpson/central+forward diff (oracle-verified). generic root-find/quadrature need closures 🔒 |
 | 26 | Signal processing | 🔶 | signal | window fns hann/hamming/blackman/bartlett/welch (oracle-verified). todo: FFT (complex arrays) |
 | 27 | Machine learning | ✅ | math,ml | sigmoid/relu/leaky_relu/softplus/swish/tanh (math) + gelu/mse/mae/bce/softmax (ml, oracle-verified) |
