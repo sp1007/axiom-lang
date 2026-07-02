@@ -618,6 +618,59 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
     safe_free_str(field_name)
     return 0 as u32
 
+// BUG#45 case (1): resolve_method_sym only matches GENERIC method templates in
+// its fallback, so a plain (non-generic) method's field-expr is left UNTYPED and
+// node_types[call] stays 0. That is harmless for scalar returns (the value rides
+// RAX/XMM0 and the copy defaults to 8 bytes) but fatal for an aggregate return:
+// the `let r = obj.m()` copy then has size 0 and never copies the struct, so the
+// result reads back as zero. This helper returns ONLY the RETURN type of the
+// matching method (matched by name + receiver type, exactly like air_builder's
+// method dispatch) WITHOUT mutating any node/flag/payload — it never changes how
+// the method is resolved or called, only the type recorded for the call result.
+pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
+    let field_name = self.intern.get(field_name_id)
+    mut unwrapped_rec := rec_type
+    while unwrapped_rec != TYPE_UNKNOWN and (unwrapped_rec as i64) < self.types.entries.len:
+        let entry = self.types.entries.data[unwrapped_rec]
+        if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
+            unwrapped_rec = entry.extra
+        else:
+            break
+    if unwrapped_rec == TYPE_UNKNOWN:
+        safe_free_str(field_name)
+        return 0 as u32
+    mut result := 0 as u32
+    mut idx := 0 as i64
+    while idx < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[idx]
+        // Only consider methods whose signature is ALREADY inferred. Do NOT call
+        // pre_infer_func_signature here: sym.decl_node may index a DIFFERENT
+        // module's AST tree, but pre_infer uses self.tree, so forcing it reads out
+        // of bounds and crashes the compiler (regression: t_mathx bignum methods).
+        // Every index into the type table is bounds-checked for the same reason.
+        if sym.kind == SYM_FUNC and sym.type_id != TYPE_UNKNOWN and (sym.type_id as i64) < self.types.entries.len:
+            let sym_name = self.intern.get(sym.name_id)
+            if match_method_name(sym_name, field_name):
+                let f_entry = self.types.entries.data[sym.type_id]
+                if f_entry.kind == TYPE_KIND_FUNC and (f_entry.extra as i64) < self.types.funcs.len:
+                    let fi = self.types.funcs.data[f_entry.extra]
+                    if fi.params.len > 0:
+                        mut fp := fi.params.data[0]
+                        while fp != TYPE_UNKNOWN and (fp as i64) < self.types.entries.len:
+                            let pe = self.types.entries.data[fp]
+                            if pe.kind == TYPE_KIND_POINTER or pe.kind == TYPE_KIND_REF:
+                                fp = pe.extra
+                            else:
+                                break
+                        if fp == unwrapped_rec:
+                            result = fi.ret
+                            safe_free_str(sym_name)
+                            break
+            safe_free_str(sym_name)
+        idx = idx + 1 as i64
+    safe_free_str(field_name)
+    return result
+
 pub fn free_type_checker(mut self: ptr[TypeChecker]):
     @free(self.node_types as ptr[u8])
 
@@ -1602,7 +1655,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if entry.kind == TYPE_KIND_FUNC:
                     let fi = self.types.funcs.data[entry.extra]
                     result_type = fi.ret
-                    
+
 
                 elif entry.kind == TYPE_KIND_STRUCT:
                     result_type = callee_type
@@ -1622,7 +1675,29 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             result_type = TYPE_I64
                         elif name == "panic":
                             result_type = TYPE_VOID
-            
+
+            // BUG#45 case (1): a non-generic method call whose callee failed to
+            // type (resolve_method_sym only matches GENERIC methods) leaves the
+            // call UNTYPED. Recover the RETURN type — but ONLY for AGGREGATE
+            // returns, the case that is actually broken (an untyped copy of a
+            // scalar already works via the register return, so scalar method
+            // calls are left exactly as before to keep the blast radius minimal).
+            // This sets only the call's result type; it does NOT mutate the
+            // field-expr node/flag/payload, so method dispatch is unchanged.
+            if result_type == TYPE_UNKNOWN and callee_node.kind == NODE_FIELD_EXPR:
+                let rec_node2 = callee_node.first_child
+                if rec_node2 != 0 as u32:
+                    mut rt := TYPE_UNKNOWN
+                    if (rec_node2 as i64) < self.node_types_cap:
+                        rt = self.node_types[rec_node2 as i64]
+                    if rt == TYPE_UNKNOWN:
+                        rt = self.infer_node(rec_node2, TYPE_UNKNOWN)
+                    let mret = self.method_ret_type(callee_node.payload, rt)
+                    if mret != TYPE_UNKNOWN and mret != 0 as u32 and (mret as i64) < self.types.entries.len:
+                        let mk = self.types.entries.data[mret].kind
+                        if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT:
+                            result_type = mret
+
             // Infer arguments
             mut arg := self.tree.nodes.data[callee].next_sibling
             while arg != 0 as u32:

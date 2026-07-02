@@ -1,0 +1,17 @@
+// Repro BUG#45 case (1): a METHOD returning a >16-byte f64 struct (sret) with a
+// receiver. The free-function form (bin/ffree.ax) works; the method form is the
+// suspected bug. v.add(o) with v=(1,2,3,4), o=(10,20,30,40) -> (11,22,33,44); sum=110.
+
+struct V4:
+    x: f64
+    y: f64
+    z: f64
+    w: f64
+    fn add(self, o: V4) -> V4:
+        return V4(x: self.x + o.x, y: self.y + o.y, z: self.z + o.z, w: self.w + o.w)
+
+pub fn main() -> i32:
+    let v = V4(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    let o = V4(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    let r = v.add(o)
+    return (r.x + r.y + r.z + r.w) as i32
