@@ -853,3 +853,23 @@ pub fn bessel_j0(x: f64) -> f64:
         sum = sum + term
         m = m + 1
     return sum
+
+// Riemann zeta ζ(s) for real s > 1, via Euler-Maclaurin (N=10, 2 Bernoulli
+// correction terms). Accurate to ~1e-6 for s in (1, ~20]. s <= 1 is the
+// divergent/pole domain and returns 0.0 (unsupported).
+pub fn zeta(s: f64) -> f64:
+    if s <= 1.0:
+        return 0.0
+    let big = 10
+    mut acc := 0.0
+    mut n := 1
+    while n < big:
+        acc = acc + pow(n as f64, 0.0 - s)
+        n = n + 1
+    let nf = big as f64
+    acc = acc + 0.5 * pow(nf, 0.0 - s)
+    acc = acc + pow(nf, 1.0 - s) / (s - 1.0)
+    acc = acc + (s / 12.0) * pow(nf, 0.0 - s - 1.0)
+    let s3 = s * (s + 1.0) * (s + 2.0)
+    acc = acc - (s3 / 720.0) * pow(nf, 0.0 - s - 3.0)
+    return acc

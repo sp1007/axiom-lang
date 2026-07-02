@@ -1,0 +1,88 @@
+// bin/t_zeta.ax — regression for std.math.zeta (Riemann zeta, #24).
+// Self-contained. Exit 5 = all 5 oracle checks pass.
+// Oracle (Python): zeta(2)=1.6449340668, zeta(3)=1.2020569032,
+// zeta(4)=1.0823232337, zeta(6)=1.0173430620, zeta(1.5)=2.6123753487.
+//
+// Build: axc_stage1 build bin/t_zeta.ax -o t_zeta && ./t_zeta ; echo $? (=>5)
+
+const LN2:  f64 = 0.69314718055994530942
+
+fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+// pow copied verbatim from std.math (self-contained ln+exp).
+fn pow(b: f64, p: f64) -> f64:
+    if b <= 0.0:
+        return 0.0
+    mut m := b
+    mut le := 0 as i64
+    while m >= 2.0:
+        m = m * 0.5
+        le = le + 1 as i64
+    while m < 1.0:
+        m = m * 2.0
+        le = le - 1 as i64
+    let lt = (m - 1.0) / (m + 1.0)
+    let lt2 = lt * lt
+    mut lterm := lt
+    mut lsum := 0.0
+    mut li := 0 as i32
+    while li < 20:
+        lsum = lsum + lterm / ((2 * li + 1) as f64)
+        lterm = lterm * lt2
+        li = li + 1
+    let lnb = (le as f64) * LN2 + 2.0 * lsum
+    let x = p * lnb
+    mut k := (x / LN2 + 0.5) as i64
+    if x < 0.0:
+        k = (x / LN2 - 0.5) as i64
+    let r = x - (k as f64) * LN2
+    mut eterm := 1.0
+    mut esum := 1.0
+    mut en := 1 as i32
+    while en < 18:
+        eterm = eterm * r / (en as f64)
+        esum = esum + eterm
+        en = en + 1
+    mut res := esum
+    mut kk := k
+    while kk > 0 as i64:
+        res = res * 2.0
+        kk = kk - 1 as i64
+    while kk < 0 as i64:
+        res = res * 0.5
+        kk = kk + 1 as i64
+    return res
+
+fn zeta(s: f64) -> f64:
+    if s <= 1.0:
+        return 0.0
+    let big = 10
+    mut acc := 0.0
+    mut n := 1
+    while n < big:
+        acc = acc + pow(n as f64, 0.0 - s)
+        n = n + 1
+    let nf = big as f64
+    acc = acc + 0.5 * pow(nf, 0.0 - s)
+    acc = acc + pow(nf, 1.0 - s) / (s - 1.0)
+    acc = acc + (s / 12.0) * pow(nf, 0.0 - s - 1.0)
+    let s3 = s * (s + 1.0) * (s + 2.0)
+    acc = acc - (s3 / 720.0) * pow(nf, 0.0 - s - 3.0)
+    return acc
+
+fn near(got: f64, want: f64) -> i32:
+    if abs(got - want) < 0.0001:
+        return 1
+    return 0
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    pass = pass + near(zeta(2.0), 1.6449340668482264)
+    pass = pass + near(zeta(3.0), 1.2020569031595942)
+    pass = pass + near(zeta(4.0), 1.0823232337111382)
+    pass = pass + near(zeta(6.0), 1.0173430619844491)
+    pass = pass + near(zeta(1.5), 2.612375348685488)
+    return pass
