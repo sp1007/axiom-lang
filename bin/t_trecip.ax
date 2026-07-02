@@ -1,0 +1,67 @@
+// bin/t_trecip.ax — regression for std.math reciprocal trig + PHI constant.
+// Self-contained (import bundler does not compose std.math yet). Exit 8 = all
+// 8 oracle checks pass. Oracle (Python math): sec(0)=1, sec(pi/3)=2,
+// csc(pi/2)=1, csc(pi/6)=2, cot(pi/4)=1, cot(pi/3)=1/sqrt(3)=0.5773502691896,
+// PHI=1.6180339887, PHI*PHI==PHI+1.
+//
+// Build: axc_stage1 build bin/t_trecip.ax -o t_trecip && ./t_trecip ; echo $?  (=>8)
+
+const PI:      f64 = 3.14159265358979323846
+const HALF_PI: f64 = 1.57079632679489661923
+const TAU:     f64 = 6.28318530717958647692
+const PHI:     f64 = 1.61803398874989484820
+
+fn abs(x: f64) -> f64:
+    if x < 0.0:
+        return 0.0 - x
+    return x
+
+// sin via range-reduced Taylor (12 terms) — matches std.math.
+fn sin(x: f64) -> f64:
+    mut a := x
+    let q = (a / TAU) as i64
+    a = a - (q as f64) * TAU
+    if a > PI:
+        a = a - TAU
+    if a < (0.0 - PI):
+        a = a + TAU
+    let a2 = a * a
+    mut term := a
+    mut s := a
+    mut n := 1 as i32
+    while n < 12:
+        let d = ((2 * n) * (2 * n + 1)) as f64
+        term = (0.0 - term) * a2 / d
+        s = s + term
+        n = n + 1
+    return s
+
+fn cos(x: f64) -> f64:
+    return sin(x + HALF_PI)
+
+fn sec(x: f64) -> f64:
+    return 1.0 / cos(x)
+
+fn csc(x: f64) -> f64:
+    return 1.0 / sin(x)
+
+fn cot(x: f64) -> f64:
+    let s = sin(x)
+    return cos(x) / s
+
+fn near(got: f64, want: f64, tol: f64) -> i32:
+    if abs(got - want) < tol:
+        return 1
+    return 0
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    pass = pass + near(sec(0.0), 1.0, 0.000001)
+    pass = pass + near(sec(PI / 3.0), 2.0, 0.0001)
+    pass = pass + near(csc(HALF_PI), 1.0, 0.000001)
+    pass = pass + near(csc(PI / 6.0), 2.0, 0.0001)
+    pass = pass + near(cot(PI / 4.0), 1.0, 0.0001)
+    pass = pass + near(cot(PI / 3.0), 0.5773502691896258, 0.001)
+    pass = pass + near(PHI, 1.6180339887498949, 0.000000001)
+    pass = pass + near(PHI * PHI, PHI + 1.0, 0.000000001)
+    return pass
