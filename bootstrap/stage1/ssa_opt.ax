@@ -327,7 +327,13 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
             i = i + 1 as i64
             continue
 
-        if inst.src1 != 0 as u32 and inst.opcode != OP_JUMP:
+        // BUG (fn-ptr): OP_FUNC_ADDR encodes the FUNCTION SYMBOL INDEX (an
+        // immediate) in src1, not a value vreg — analogous to GET_FIELD/SET_FIELD
+        // src2 below (BUG#15). Copy-propagating it corrupts the symbol selector
+        // whenever the index numerically collides with a vreg id in a copy chain
+        // (e.g. `let f = add` renumbers vregs so add's sym_idx aliases a live
+        // copy) -> wrong function address -> crash. Leave src1 untouched here.
+        if inst.src1 != 0 as u32 and inst.opcode != OP_JUMP and inst.opcode != OP_FUNC_ADDR:
             mut curr := inst.src1
             mut depth := 0
             while curr != 0 as u32 and depth < 100:
@@ -336,7 +342,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                     break
                 curr = parent
                 depth = depth + 1
-            
+
             if curr != inst.src1:
                 inst.src1 = curr
                 changed = true
@@ -520,6 +526,13 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
                 if arg_reg != 0 as u32:
                     use_count[arg_reg] = use_count[arg_reg] + 1 as u32
                 idx = idx + 1 as u32
+            // BUG (fn-ptr): an INDIRECT call carries its target in src1 (the vreg
+            // holding the function address, e.g. from a local `let f = add`). It is
+            // a real use — without counting it, DCE sees the OP_FUNC_ADDR def as
+            // dead (no side effect) and deletes it, leaving the call target as
+            // garbage -> crash at -O1. Direct calls have src1==0 (no-op here).
+            if inst.src1 != 0 as u32:
+                use_count[inst.src1] = use_count[inst.src1] + 1 as u32
             i = i + 1 as i64
             continue
 

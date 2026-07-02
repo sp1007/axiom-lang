@@ -96,6 +96,9 @@ rows=(
   "t_zeta|exit|5"
   "t_quatrot|exit|8"
   "t_fft|exit|18"
+  "fp0i|exit|5"
+  "fpBi|exit|5"
+  "fpf|exit|14"
 )
 
 for row in "${rows[@]}"; do

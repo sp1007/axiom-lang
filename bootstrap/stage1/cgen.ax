@@ -629,6 +629,9 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 if op == 0x0201 as u16 or op == 0x0202 as u16: // OP_ICONST, OP_FCONST
                     scan_src1 = false
                     scan_src2 = false
+                elif op == OP_FUNC_ADDR: // src1 = function symbol index, not a register
+                    scan_src1 = false
+                    scan_src2 = false
                 elif op == 0x010D as u16 or op == 0x010E as u16: // OP_GET_FIELD, OP_SET_FIELD
                     scan_src2 = false
 
@@ -1313,6 +1316,13 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 ax_fprintf_local(self.file, "    return (%s){0};\n", (get_str_ptr(t_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 fputs(get_str_ptr("    return;\n"), self.file)
+
+    elif op == OP_FUNC_ADDR:
+        // Function pointer value: r_dest = &<mangled function name>.
+        // src1 holds the function's symbol index. Stored as void*; the
+        // indirect OP_CALL casts it to the right function-pointer type.
+        let faddr_name = self.get_mangled_name_by_sym(inst.src1)
+        ax_fprintf_local(self.file, "    r_%d = (void*)&%s;\n", inst.dest as i64, (get_str_ptr(faddr_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     elif op == OP_CALL or op == OP_SYSCALL:
         // Handle argument list

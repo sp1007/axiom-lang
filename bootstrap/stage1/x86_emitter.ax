@@ -185,6 +185,21 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                     addend: 0 as i64
                 ))
                 x86_encode_mov_ri64(dst, 0 as i64, buf)
+            elif inst.src1.vreg == 3 as u32: // Function address (RIP-relative, ASLR-safe)
+                // imm = function symbol index (positive → resolve_binary_sym_name
+                // yields the function's code symbol). lea reg,[rip+disp32] + a
+                // PC-relative reloc, so the address survives image rebasing under
+                // ASLR (an absolute movabs would not).
+                let f_offset = buf.len + 3 as i64
+                push_reloc(&e.relocs, Relocation(
+                    offset: f_offset,
+                    kind: RELOC_PC32,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: imm as u32,
+                    addend: -4 as i64
+                ))
+                x86_encode_lea_rip(dst, 0 as i32, buf)
             elif inst.src1.vreg == 2 as u32: // String literal!
                 let offset = buf.len + 3 as i64
                 let base: i64 = 3758096384
@@ -339,6 +354,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             else:
                 push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5, pad0: 0 as i64))
         x86_encode_call_rel32(disp, buf)
+    elif op == MACH_CALL_INDIRECT:
+        // Indirect call through a register (function pointer). src1 holds the
+        // target register (a phys reg, R11 from the selector). Encodes FF /2.
+        let treg = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_call_r(treg, buf)
     elif op == MACH_SYSCALL:
         x86_encode_syscall(buf)
     elif op == MACH_LEA:

@@ -653,6 +653,22 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
             if self.mb.typetable.entries.data[sym.type_id as i64].kind == TYPE_KIND_SUM:
                 return self.lower_variant_construct(sym_idx, 0 as u32)
 
+        if sym.kind == SYM_FUNC:
+            // Bare top-level function name used as a value -> function pointer.
+            // Emit its address; type_id carries the function symbol index.
+            let faddr = self.fb.fresh_reg()
+            // type_id = i64 so the result register is a plain 8-byte GPR value
+            // (a code address); the function's SYMBOL index rides in src1 for the
+            // backend relocation. (Overloading type_id with the symbol index
+            // would make get_register_type mis-type the register.)
+            self.fb.emit(AirInst(
+                opcode: OP_FUNC_ADDR,
+                type_id: 4 as u32,
+                dest: faddr,
+                src1: sym_idx,
+                src2: 0 as u32,
+            ))
+            return faddr
         if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
             return 0 as u32
         let reg = self.locals.local_map_get(sym_idx)

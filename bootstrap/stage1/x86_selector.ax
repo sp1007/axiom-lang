@@ -1349,6 +1349,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if inst.dest != 0 as u32:
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
+            // Indirect call: capture the target address into R11 BEFORE any
+            // argument register is written. The target lives in a vreg that
+            // regalloc may have placed in an argument register (rcx/rdx/...),
+            // so it must be saved first. R11 is a reserved scratch (not in the
+            // allocatable pool) and argument marshaling only uses R10 for its
+            // spill reloads, so R11 survives until the call.
+            if inst.src1 != 0 as u32:
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             mut shadow_size := 0 as i64
             if sel.abi_name == "win64":
                 shadow_size = 32 as i64
@@ -1402,8 +1410,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 reg_i = reg_i + 1 as u32
  
-            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
- 
+            if inst.src1 != 0 as u32:
+                // Indirect call: target was saved into R11 before arg marshaling.
+                out_insts.push(MachInst(op: MACH_CALL_INDIRECT, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
             if shadow_size > 0 as i64:
                 out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
  
@@ -1441,6 +1453,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if sel.abi_name == "win64":
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FUNC_ADDR:
+        // Function pointer: load the callee's address into inst.dest. src1 holds
+        // the function's symbol index. The MACH_MOV_IMM vreg=3 path emits a
+        // RIP-relative `lea reg,[rip+func]` + RELOC_PC32 — ASLR-safe (an absolute
+        // movabs would break when the image is rebased). type_id is i64 so the
+        // result register is typed as a plain 8-byte GPR.
+        out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 3 as u32, label: 0 as u32, imm: inst.src1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_SPAWN:
         let arg0 = abi_int_arg_reg(sel.abi_name, 0)

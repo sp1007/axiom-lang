@@ -1246,3 +1246,42 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 **Ảnh hưởng/độ ưu tiên:** HẸP — cần ≥8 float-local sống đồng thời (hiếm; thư viện toán hiện tại KHÔNG dính: hàm dùng đối-số-trực-tiếp / ít local). Là KEYSTONE backend float (gộp với BUG#45 struct>16B-f64, BUG#46 float-qua-loop) cho phiên chuyên sâu. **std.math đã KIỂM CHỨNG CHÍNH XÁC** (tests/mathlib, sai số <1e-5) — bug này là codegen áp-lực-thanh-ghi, không phải sai công thức.
 
 **Quy tắc tạm cho thư viện/test toán:** tránh giữ ≥8 float-call-result trong local đồng thời; dùng giá trị ở vị trí đối số hoặc tính lại; verify bằng probe đối-số-trực-tiếp (tests/mathlib).
+
+---
+
+## 🟢 BUG#49 (2026-07-02) — Function pointers / higher-order functions (native) + 2 lỗi optimizer -O1
+
+**Bối cảnh:** mở khóa #25 (numerical analysis generic: truyền hàm `f` bất kỳ vào quadrature/root-find) và higher-order tổng quát. Con trỏ hàm = giá trị địa chỉ hàm, gọi gián tiếp `MACH_CALL_INDIRECT`.
+
+### Phần A — Front-end đã có, thiếu 1 mắt xích `lower_ident`
+- Parser/typecheck/AIR đã hiểu type `fn(...)->T` và tham số con-trỏ-hàm. Nhưng `lower_ident` (air_builder.ax) khi gặp `SYM_FUNC` (tên hàm trần dùng như GIÁ TRỊ, vd `let f = add` hoặc `apply(add, ...)`) trả 0 → gọi rác → exit 127.
+- **Fix:** thêm nhánh `SYM_FUNC` → emit **`OP_FUNC_ADDR` (0x030D)** với `src1 = sym_idx` (chỉ số symbol hàm — **là IMMEDIATE, không phải vreg**), `type_id=4` (i64), `dest = faddr`.
+
+### Phần B — Native backend cho OP_FUNC_ADDR + gọi gián tiếp (keystone = ASLR)
+- **cgen.ax (C backend):** `r_%d = (void*)&%s;` qua `get_mangled_name_by_sym(inst.src1)`; thêm scan `max_reg` bỏ qua src1/src2 cho OP_FUNC_ADDR.
+- **x86_selector.ax:** (a) OP_FUNC_ADDR → `MACH_MOV_IMM dst, vreg=3 imm=sym_idx` (địa chỉ hàm RIP-relative). (b) Ở nhánh call thường: nếu `inst.src1 != 0` (gọi gián tiếp) → **bắt target vào R11 TRƯỚC khi marshaling arg** (nếu không, arg-setup ghi đè vreg target → segfault). (c) Khi phát call: `src1 != 0` → `MACH_CALL_INDIRECT` (FF/2) qua R11, ngược lại `MACH_CALL`.
+- **x86_emitter.ax:** (a) `MACH_CALL_INDIRECT` → `x86_encode_call_r(treg)`. (b) `MACH_MOV_IMM` vreg==3 → **lea RIP-relative + RELOC_PC32** (sym_name = sym_idx, addend −4). **ASLR keystone:** PE có `DllCharacteristics=0x0160` (DYNAMICBASE). `movabs` tuyệt đối vào địa chỉ hàm bị SAI khi loader rebase ASLR → segfault 139. Phải dùng **lea RIP-relative (RELOC_PC32)** — an toàn ASLR — thay cho movabs tuyệt đối.
+
+### Phần C — 2 lỗi optimizer -O1 làm hỏng `let f = add; f(...)` (biến con-trỏ-hàm local)
+Triệu chứng: `let f=add; return f(2,3)` chạy đúng ở **-O0 (=5)** nhưng **crash 139 ở -O1** (higher-order dạng THAM SỐ `apply(add,...)` thì -O1 vẫn OK — vì hàm là ARG). Data-dependent. Hai nguyên nhân trong `ssa_opt.ax`:
+
+1. **Copy-prop làm hỏng IMMEDIATE (giống BUG#15).** `OP_FUNC_ADDR.src1` là *symbol index* (immediate), KHÔNG phải vreg. Vòng copy-prop (~L330) rewrite `inst.src1` qua `copy_map` cho MỌI opcode (trừ JUMP). Khi sym_idx **trùng số** một vreg đang trong copy-chain (`let f=add` làm đổi cách đánh số vreg → dễ trùng) → symbol index bị ghi đè → **sai địa chỉ hàm**. Fix: thêm `and inst.opcode != OP_FUNC_ADDR` vào guard — y hệt cách GET_FIELD/SET_FIELD.src2 được loại trừ.
+
+2. **DCE xóa nhầm định nghĩa func_addr.** Trong pass đếm use (~L517), block `OP_CALL` chỉ đếm **args** (từ `extras`) rồi `continue` — **KHÔNG đếm `inst.src1`** (target vreg của gọi gián tiếp). `OP_FUNC_ADDR` không có side-effect ⇒ nếu use_count[target]=0, DCE biến nó thành NOP → call qua vreg rác → **crash 139**. (Vì sao `apply(add,...)` không dính: hàm là ARG nên được đếm ở nhánh arg; target của indirect-call bên trong `apply` là THAM SỐ, không do OP_FUNC_ADDR định nghĩa.) Fix: trong block OP_CALL, thêm `if inst.src1 != 0: use_count[inst.src1] += 1`.
+
+**Cả 2 fix đều strictly conservative:** #1 chỉ *chặn* một propagation (không thêm), #2 chỉ *tăng* use-count (không xóa) → không thể phá code đúng. CSE (`cse_func`, ~L1450) chỉ xử binary-ALU + NEG/NOT nên bỏ qua OP_FUNC_ADDR — an toàn.
+
+### Kết quả verify (binary rebuild với cả 2 fix)
+| test | O0 | O1 |
+|---|---|---|
+| fp0i (`let f=add; f(2,3)`) | 5 ✓ | **5 ✓** (trước = 139 crash) |
+| fpBi (`apply(add,2,3)` higher-order param) | 5 ✓ | 5 ✓ |
+| fpf (`sum3(sq)` higher-order) | 14 ✓ | 14 ✓ |
+
+Đã đăng ký `fp0i`/`fpBi`/`fpf` vào `scripts/regression_repros.sh`. Full regression (native -O1) + fixpoint verify (`verify_bug29_selfhost.sh`) đang chạy trước khi commit.
+
+### ⚠️ Bẫy chẩn đoán (ĐỪNG hiểu lầm): program cực tiểu không import gì
+`plain5` (`pub fn main()->i32: return 5`, KHÔNG có `extern`) khi self-link native → **STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139 = −1073741511)**: PE có import table rỗng, loader từ chối. Đây là **quirk của program không-import**, KHÔNG phải bug fn-ptr/codegen. Real program (có `extern "C" fn putchar`, hoặc bất kỳ import nào) load bình thường. Lúc test fn-ptr PHẢI thêm 1 extern (vd putchar) để PE load được — nếu không sẽ nhầm feature hỏng.
+- **git-bash `$?` là 8-bit:** 0xC0000139 & 0xFF = **57**, không phải giá trị return thật. Lấy exit code thật của Windows qua PowerShell `$LASTEXITCODE`.
+
+**Files:** air.ax (OP_FUNC_ADDR const), air_builder.ax (lower_ident SYM_FUNC), cgen.ax, x86_selector.ax, x86_emitter.ax, ssa_opt.ax (2 fix). **Blast radius:** `lower_ident SYM_FUNC` fire cho MỌI tên hàm trần trong toàn codebase (kể cả stdlib) → bắt buộc regression + fixpoint.

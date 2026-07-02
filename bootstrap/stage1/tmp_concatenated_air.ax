@@ -8386,6 +8386,9 @@ pub const OP_SEND: u16 = 0x0309
 pub const OP_RECV: u16 = 0x030A
 pub const OP_AWAIT: u16 = 0x030B
 pub const OP_SYSCALL: u16 = 0x030C
+// Address of a top-level function (function pointer). type_id carries the
+// function's SYMBOL index (same convention as a direct OP_CALL's type_id).
+pub const OP_FUNC_ADDR: u16 = 0x030D
 
 // SIMD class (0x04xx)
 pub const OP_SIMD_LOAD: u16 = 0x0401
@@ -9505,6 +9508,22 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
             if self.mb.typetable.entries.data[sym.type_id as i64].kind == TYPE_KIND_SUM:
                 return self.lower_variant_construct(sym_idx, 0 as u32)
 
+        if sym.kind == SYM_FUNC:
+            // Bare top-level function name used as a value -> function pointer.
+            // Emit its address; type_id carries the function symbol index.
+            let faddr = self.fb.fresh_reg()
+            // type_id = i64 so the result register is a plain 8-byte GPR value
+            // (a code address); the function's SYMBOL index rides in src1 for the
+            // backend relocation. (Overloading type_id with the symbol index
+            // would make get_register_type mis-type the register.)
+            self.fb.emit(AirInst(
+                opcode: OP_FUNC_ADDR,
+                type_id: 4 as u32,
+                dest: faddr,
+                src1: sym_idx,
+                src2: 0 as u32,
+            ))
+            return faddr
         if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
             return 0 as u32
         let reg = self.locals.local_map_get(sym_idx)
@@ -12128,7 +12147,13 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
             i = i + 1 as i64
             continue
 
-        if inst.src1 != 0 as u32 and inst.opcode != OP_JUMP:
+        // BUG (fn-ptr): OP_FUNC_ADDR encodes the FUNCTION SYMBOL INDEX (an
+        // immediate) in src1, not a value vreg â€” analogous to GET_FIELD/SET_FIELD
+        // src2 below (BUG#15). Copy-propagating it corrupts the symbol selector
+        // whenever the index numerically collides with a vreg id in a copy chain
+        // (e.g. `let f = add` renumbers vregs so add's sym_idx aliases a live
+        // copy) -> wrong function address -> crash. Leave src1 untouched here.
+        if inst.src1 != 0 as u32 and inst.opcode != OP_JUMP and inst.opcode != OP_FUNC_ADDR:
             mut curr := inst.src1
             mut depth := 0
             while curr != 0 as u32 and depth < 100:
@@ -12137,7 +12162,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                     break
                 curr = parent
                 depth = depth + 1
-            
+
             if curr != inst.src1:
                 inst.src1 = curr
                 changed = true
@@ -12321,6 +12346,13 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
                 if arg_reg != 0 as u32:
                     use_count[arg_reg] = use_count[arg_reg] + 1 as u32
                 idx = idx + 1 as u32
+            // BUG (fn-ptr): an INDIRECT call carries its target in src1 (the vreg
+            // holding the function address, e.g. from a local `let f = add`). It is
+            // a real use â€” without counting it, DCE sees the OP_FUNC_ADDR def as
+            // dead (no side effect) and deletes it, leaving the call target as
+            // garbage -> crash at -O1. Direct calls have src1==0 (no-op here).
+            if inst.src1 != 0 as u32:
+                use_count[inst.src1] = use_count[inst.src1] + 1 as u32
             i = i + 1 as i64
             continue
 
@@ -13930,6 +13962,9 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 if op == 0x0201 as u16 or op == 0x0202 as u16: // OP_ICONST, OP_FCONST
                     scan_src1 = false
                     scan_src2 = false
+                elif op == OP_FUNC_ADDR: // src1 = function symbol index, not a register
+                    scan_src1 = false
+                    scan_src2 = false
                 elif op == 0x010D as u16 or op == 0x010E as u16: // OP_GET_FIELD, OP_SET_FIELD
                     scan_src2 = false
 
@@ -14614,6 +14649,13 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 ax_fprintf_local(self.file, "    return (%s){0};\n", (get_str_ptr(t_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
                 fputs(get_str_ptr("    return;\n"), self.file)
+
+    elif op == OP_FUNC_ADDR:
+        // Function pointer value: r_dest = &<mangled function name>.
+        // src1 holds the function's symbol index. Stored as void*; the
+        // indirect OP_CALL casts it to the right function-pointer type.
+        let faddr_name = self.get_mangled_name_by_sym(inst.src1)
+        ax_fprintf_local(self.file, "    r_%d = (void*)&%s;\n", inst.dest as i64, (get_str_ptr(faddr_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
     elif op == OP_CALL or op == OP_SYSCALL:
         // Handle argument list
@@ -17139,6 +17181,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if inst.dest != 0 as u32:
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
+            // Indirect call: capture the target address into R11 BEFORE any
+            // argument register is written. The target lives in a vreg that
+            // regalloc may have placed in an argument register (rcx/rdx/...),
+            // so it must be saved first. R11 is a reserved scratch (not in the
+            // allocatable pool) and argument marshaling only uses R10 for its
+            // spill reloads, so R11 survives until the call.
+            if inst.src1 != 0 as u32:
+                out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             mut shadow_size := 0 as i64
             if sel.abi_name == "win64":
                 shadow_size = 32 as i64
@@ -17192,8 +17242,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 reg_i = reg_i + 1 as u32
  
-            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
- 
+            if inst.src1 != 0 as u32:
+                // Indirect call: target was saved into R11 before arg marshaling.
+                out_insts.push(MachInst(op: MACH_CALL_INDIRECT, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            else:
+                out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
             if shadow_size > 0 as i64:
                 out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
  
@@ -17231,6 +17285,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if sel.abi_name == "win64":
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_FUNC_ADDR:
+        // Function pointer: load the callee's address into inst.dest. src1 holds
+        // the function's symbol index. The MACH_MOV_IMM vreg=3 path emits a
+        // RIP-relative `lea reg,[rip+func]` + RELOC_PC32 â€” ASLR-safe (an absolute
+        // movabs would break when the image is rebased). type_id is i64 so the
+        // result register is typed as a plain 8-byte GPR.
+        out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 3 as u32, label: 0 as u32, imm: inst.src1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_SPAWN:
         let arg0 = abi_int_arg_reg(sel.abi_name, 0)
@@ -20848,6 +20910,21 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                     addend: 0 as i64
                 ))
                 x86_encode_mov_ri64(dst, 0 as i64, buf)
+            elif inst.src1.vreg == 3 as u32: // Function address (RIP-relative, ASLR-safe)
+                // imm = function symbol index (positive â†’ resolve_binary_sym_name
+                // yields the function's code symbol). lea reg,[rip+disp32] + a
+                // PC-relative reloc, so the address survives image rebasing under
+                // ASLR (an absolute movabs would not).
+                let f_offset = buf.len + 3 as i64
+                push_reloc(&e.relocs, Relocation(
+                    offset: f_offset,
+                    kind: RELOC_PC32,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: imm as u32,
+                    addend: -4 as i64
+                ))
+                x86_encode_lea_rip(dst, 0 as i32, buf)
             elif inst.src1.vreg == 2 as u32: // String literal!
                 let offset = buf.len + 3 as i64
                 let base: i64 = 3758096384
@@ -21002,6 +21079,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             else:
                 push_fixup(&e.fixups, Fixup(offset: buf.len + 1, label_id: inst.src1.imm as u32, inst_size: 5, pad0: 0 as i64))
         x86_encode_call_rel32(disp, buf)
+    elif op == MACH_CALL_INDIRECT:
+        // Indirect call through a register (function pointer). src1 holds the
+        // target register (a phys reg, R11 from the selector). Encodes FF /2.
+        let treg = emitter_resolve_reg(inst.src1, allocs)
+        x86_encode_call_r(treg, buf)
     elif op == MACH_SYSCALL:
         x86_encode_syscall(buf)
     elif op == MACH_LEA:
