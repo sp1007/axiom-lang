@@ -53,7 +53,7 @@ Blockers that gate whole categories:
 | 23 | Quaternion | ✅ | quaternion | mul/add/sub/scale/conj/dot/norm/normalize/inverse + from_axis_angle/rotate (BUG#45/#48 fixed → field=cos/sin-call + chained q_mul now O0+O1, t_quatrot=8) |
 | 24 | Special functions | ✅ | math | erf/erfc/gamma/lgamma/beta/factorial_real/digamma/bessel_j0/zeta (oracle-verified) |
 | 25 | Numerical analysis | 🔶 | numerical | sampled trapezoid/simpson/central+forward diff (oracle-verified). generic root-find/quadrature need closures 🔒 |
-| 26 | Signal processing | 🔶 | signal | window fns hann/hamming/blackman/bartlett/welch (oracle-verified). todo: FFT (complex arrays) |
+| 26 | Signal processing | ✅ | signal,fft | window fns hann/hamming/blackman/bartlett/welch + radix-2 Cooley-Tukey FFT/IFFT over parallel re/im ptr[f64] (n=2^k), oracle-verified O0+O1 (t_fft=18) |
 | 27 | Machine learning | ✅ | math,ml | sigmoid/relu/leaky_relu/softplus/swish/tanh (math) + gelu/mse/mae/bce/softmax (ml, oracle-verified) |
 | 28 | Probability | ✅ | probability | normal/logistic/exp pdf+cdf |
 | 29 | Coordinate systems | ✅ | coordinates | polar/cylindrical/spherical ↔ cartesian (per-component, scalar) |
