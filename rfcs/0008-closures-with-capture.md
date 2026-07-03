@@ -1,6 +1,6 @@
 # RFC 0008 — Closures with captured environment
 
-- **Status:** Draft (2026-07-03)
+- **Status:** P1 Implemented (2026-07-03, commit 9d35e54 — zero-capture lambda-lift); P2 capture = Draft
 - **Author:** self-host team
 - **Tracking:** #38.7 (closures) / follows BUG#49 (bare function pointers)
 - **Liên quan:** air_builder (lower_ident SYM_FUNC / OP_FUNC_ADDR), x86_selector
