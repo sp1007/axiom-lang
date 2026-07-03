@@ -655,6 +655,10 @@ pub fn main() -> i32:
         ax_puts_local("[Debug] Finished Parsing.")
         fflush(null as ptr[void])
 
+    // RFC 0008: lambda-lift closures to top-level functions before resolution, so
+    // they resolve/typecheck/lower as ordinary functions (reusing fn-ptr lowering).
+    lift_closures(parser.tree, parser.pool)
+
     // 3. Resolve
     if not is_dump_air:
         ax_puts_local("[Debug] Creating symbol table...")

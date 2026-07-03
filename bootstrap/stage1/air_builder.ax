@@ -449,6 +449,19 @@ pub fn lower_expr(mut self: ptr[FuncLowering], idx: u32) -> u32:
         return self.lower_char_lit(node)
     if node.kind == NODE_IDENT:
         return self.lower_ident(node)
+    if node.kind == NODE_CLOSURE_EXPR:
+        // RFC 0008: a lambda-lifted closure reference. Its payload is the resolved
+        // symbol index of the synthesized top-level function (set by the resolver).
+        // Emit its address exactly like a bare function name (BUG#49 fn-ptr path).
+        let cl_faddr = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_FUNC_ADDR,
+            type_id: 4 as u32,
+            dest: cl_faddr,
+            src1: node.payload,
+            src2: 0 as u32,
+        ))
+        return cl_faddr
     if node.kind == NODE_BINARY_EXPR:
         return self.lower_binary_expr(idx, node)
     if node.kind == NODE_UNARY_EXPR:

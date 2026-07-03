@@ -937,9 +937,15 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
         self.symtable.pop_scope()
 
     elif kind == NODE_CLOSURE_EXPR:
-        self.symtable.push_scope(SCOPE_CLOSURE)
-        self.resolve_children(node_idx)
-        self.symtable.pop_scope()
+        // RFC 0008: lambda-lifting (lift_closures, pre-resolve) already turned the
+        // lambda body into a top-level function and left the interned function NAME
+        // in this node's payload. Resolve it to that function's symbol, like an
+        // identifier; air_builder then lowers this node to OP_FUNC_ADDR.
+        let cl_name_id = self.tree.nodes.data[node_idx].payload
+        let cl_sym = self.symtable.resolve(cl_name_id)
+        if cl_sym != 0 as u32:
+            self.tree.nodes.data[node_idx].payload = cl_sym
+            self.symtable.symbols.data[cl_sym].flags = self.symtable.symbols.data[cl_sym].flags | SYM_FLAG_USED
 
     elif kind == NODE_IDENT:
         if (self.tree.nodes.data[node_idx].flags & 4096 as u16) == 0 as u16:

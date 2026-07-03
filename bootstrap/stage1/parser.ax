@@ -214,6 +214,13 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
     if tok.kind == TK_NIL:
         self.consume()
         return self.tree.add_node(NODE_NIL_LIT, self.token_idx(tok))
+    // RFC 0008: closure/lambda `|params| -> RetType body-expr`. A leading `|` in
+    // NUD (prefix) position is unambiguous (infix bitwise-or is a LED, and sum
+    // types never begin an expression). MVP: params + return type are annotated
+    // (no inference); body is a single expression. Lifted to a top-level function
+    // by lift_closures() before name resolution, then reuses fn-ptr lowering.
+    if tok.kind == TK_PIPE:
+        return self.parse_closure_expr()
     if tok.kind == TK_MINUS or tok.kind == TK_TILDE or tok.kind == TK_AMP:
         self.consume()
         let node = self.tree.add_node(NODE_UNARY_EXPR, self.token_idx(tok))
@@ -1193,6 +1200,127 @@ pub fn parse_program(mut self: ptr[Parser]):
 
         if self.pos == prev_pos:
             self.consume()
+
+// RFC 0008: parse `|p0: T0, p1: T1| -> RetType body-expr` -> NODE_CLOSURE_EXPR
+// with children [NODE_PARAM_DECL...] , ret-type (NODE_TYPE_EXPR) , body-expr.
+// Params reuse parse_param (annotation required); the `-> RetType` is required in
+// the MVP (typecheck does not infer function return types). lift_closures() later
+// rewrites this node into a NODE_IDENT to a synthesized top-level function.
+pub fn parse_closure_expr(mut self: ptr[Parser]) -> u32:
+    let pipe_tok = self.expect(TK_PIPE)
+    let node = self.tree.add_node(NODE_CLOSURE_EXPR, self.token_idx(pipe_tok))
+    while not self.check(TK_PIPE) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let p = self.parse_param()
+        if p != 0 as u32:
+            self.append_child(node, p)
+        if not self.check(TK_PIPE):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_PIPE)
+    self.expect(TK_ARROW)
+    let ret = self.parse_type_expr()
+    if ret != 0 as u32:
+        self.append_child(node, ret)
+    let body = self.parse_expr_with_prec(BP_NONE)
+    if body != 0 as u32:
+        self.append_child(node, body)
+    return node
+
+// Intern a fresh lambda name "__lam<n>" (n = the closure's node index, unique per
+// compilation). No int-to-string helper exists in stage1, so build it by hand.
+fn make_lam_name(pool: ptr[InternPool], n: i64) -> u32:
+    let buf = @alloc(32 as i64) as ptr[u8]
+    buf[0] = 95 as u8   // '_'
+    buf[1] = 95 as u8   // '_'
+    buf[2] = 108 as u8  // 'l'
+    buf[3] = 97 as u8   // 'a'
+    buf[4] = 109 as u8  // 'm'
+    mut len := 5 as i64
+    let digs = @alloc(24 as i64) as ptr[u8]
+    mut dn := 0 as i64
+    mut v := n
+    if v <= 0 as i64:
+        digs[0] = 48 as u8
+        dn = 1 as i64
+    while v > 0 as i64:
+        digs[dn] = (48 as i64 + (v % 10 as i64)) as u8
+        v = v / 10 as i64
+        dn = dn + 1 as i64
+    mut i := 0 as i64
+    while i < dn:
+        buf[len] = digs[dn - 1 as i64 - i]
+        len = len + 1 as i64
+        i = i + 1 as i64
+    let s = alloc_str_from_raw(buf, len)
+    let id = pool.intern(s)
+    @free(buf)
+    @free(digs)
+    return id
+
+// Rewrite one NODE_CLOSURE_EXPR (at index ci) into a top-level NODE_FUNC_DECL plus
+// a NODE_IDENT reference to it. Zero-capture MVP: the lambda body may only use its
+// own params + globals (a captured local would fail to resolve in the lifted fn).
+fn lift_one_closure(tree: ptr[AstTree], pool: ptr[InternPool], ci: u32):
+    let first = tree.nodes.data[ci as i64].first_child
+    if first == NULL_IDX:
+        return
+    // last child = body, second-to-last = ret-type node; the rest are params.
+    mut prevprev := NULL_IDX
+    mut prev := NULL_IDX
+    mut cur := first
+    while cur != NULL_IDX:
+        prevprev = prev
+        prev = cur
+        cur = tree.nodes.data[cur as i64].next_sibling
+    let body = prev
+    let ret = prevprev
+    if body == NULL_IDX or ret == NULL_IDX:
+        return
+    let name_id = make_lam_name(pool, ci as i64)
+    let tok = tree.nodes.data[ci as i64].token_idx
+    let fd = tree.add_node(NODE_FUNC_DECL, tok)
+    let blk = tree.add_node(NODE_BLOCK, tok)
+    let rst = tree.add_node(NODE_RETURN_STMT, tok)
+    // return-stmt wraps the body; block wraps the return-stmt.
+    tree.nodes.data[body as i64].next_sibling = NULL_IDX
+    tree.nodes.data[rst as i64].first_child = body
+    tree.nodes.data[rst as i64].next_sibling = NULL_IDX
+    tree.nodes.data[blk as i64].first_child = rst
+    tree.nodes.data[blk as i64].next_sibling = NULL_IDX
+    // func-decl children = existing params->ret chain, then block replaces body.
+    tree.nodes.data[fd as i64].payload = name_id
+    tree.nodes.data[fd as i64].first_child = first
+    tree.nodes.data[ret as i64].next_sibling = blk
+    tree.nodes.data[fd as i64].next_sibling = NULL_IDX
+    // append func-decl to the program root (node 0).
+    mut rc := tree.nodes.data[0].first_child
+    if rc == NULL_IDX:
+        tree.nodes.data[0].first_child = fd
+    else:
+        while tree.nodes.data[rc as i64].next_sibling != NULL_IDX:
+            rc = tree.nodes.data[rc as i64].next_sibling
+        tree.nodes.data[rc as i64].next_sibling = fd
+    // Keep the node as NODE_CLOSURE_EXPR but detach its (now-reparented) children
+    // and stash the lifted function's NAME in payload. The resolver rewrites this
+    // payload to the function's symbol index; air_builder lowers it to OP_FUNC_ADDR.
+    // (We deliberately do NOT turn it into a NODE_IDENT: lower_ident re-derives the
+    // name from the node's token text, which here is the `|` glyph, not the lambda
+    // name — so the sanity check would reject it. A dedicated closure-ref path
+    // trusts the resolved payload instead.)
+    tree.nodes.data[ci as i64].payload = name_id
+    tree.nodes.data[ci as i64].first_child = NULL_IDX
+
+// Lambda-lifting pass: run after parse, before name resolution. Rewrites every
+// NODE_CLOSURE_EXPR into a top-level function + reference. Reuses fn-ptr lowering.
+pub fn lift_closures(tree: ptr[AstTree], pool: ptr[InternPool]):
+    let orig_len = tree.nodes.len
+    mut ci := 1 as i64
+    while ci < orig_len:
+        if tree.nodes.data[ci].kind == NODE_CLOSURE_EXPR:
+            lift_one_closure(tree, pool, ci as u32)
+        ci = ci + 1 as i64
 
 pub fn parse_param(mut self: ptr[Parser]) -> u32:
     let param_tok = self.peek()
