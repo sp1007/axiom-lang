@@ -62,6 +62,47 @@ fn qsort_i64(arr: ptr[i64], lo: i64, hi: i64, less: fn(i64, i64) -> bool):
 pub fn sort_quick_i64(arr: ptr[i64], n: i64, less: fn(i64, i64) -> bool):
     qsort_i64(arr, 0 as i64, n - 1 as i64, less)
 
+// Comparator-driven quicksort over f64 (same shape as qsort_i64).
+fn qsort_f64(arr: ptr[f64], lo: i64, hi: i64, less: fn(f64, f64) -> bool):
+    if lo >= hi:
+        return
+    let pivot = arr[hi]
+    mut i := lo - 1 as i64
+    mut j := lo
+    while j < hi:
+        if less(arr[j], pivot):
+            i = i + 1 as i64
+            let t = arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+        j = j + 1 as i64
+    let p = i + 1 as i64
+    let tp = arr[p]
+    arr[p] = arr[hi]
+    arr[hi] = tp
+    qsort_f64(arr, lo, p - 1 as i64, less)
+    qsort_f64(arr, p + 1 as i64, hi, less)
+
+// Sort arr[0..n) of f64 in place via quicksort ordered by `less`.
+pub fn sort_quick_f64(arr: ptr[f64], n: i64, less: fn(f64, f64) -> bool):
+    qsort_f64(arr, 0 as i64, n - 1 as i64, less)
+
+// Binary search in an ASCENDING-sorted i64 array. Returns an index of `key`, or
+// -1 if absent. O(log n).
+pub fn binary_search_i64(arr: ptr[i64], n: i64, key: i64) -> i64:
+    mut lo := 0 as i64
+    mut hi := n - 1 as i64
+    while lo <= hi:
+        let mid = lo + (hi - lo) / 2 as i64
+        let v = arr[mid]
+        if v == key:
+            return mid
+        if v < key:
+            lo = mid + 1 as i64
+        else:
+            hi = mid - 1 as i64
+    return -1 as i64
+
 // Linear scan for the first index whose element satisfies `pred`, else -1.
 pub fn find_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> i64:
     mut i := 0 as i64
