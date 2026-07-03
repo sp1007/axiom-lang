@@ -1314,3 +1314,41 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 - Hiện tại an toàn (không va chạm) nhưng là **bất nhất tiềm ẩn**: tính năng bảo mật capability của spec chưa được nối dây. Nếu sau này hiện thực (capability-check HOẶC selective-bind tên trần), lúc đó **mới** cần chính sách va chạm rõ ràng (báo lỗi ambiguous vs overload). Việc này đụng semantic import → cần **RFC** trước khi làm.
 - **Thực nghiệm cô lập chưa hoàn tất:** build thử `lib_a.close(0)+lib_b.close(0)` (kỳ vọng 101) từng cho kết quả rác (2/99/NO-EXE) NHƯNG bị nhiễu do regression chạy song song giẫm lên file trung gian tên-cố-định `axiom_temp.obj` (build đồng thời không reentrant). Cần build cô lập (không concurrent) để xác nhận `lib_a.close` vs `lib_b.close` có map đúng hai symbol khác nhau qua concatenation không. **TODO: chạy lại khi máy rảnh.**
 - **Phụ đề — non-reentrant temp:** compiler ghi obj trung gian ra tên cố định `axiom_temp.obj` ở cwd → **không thể build song song nhiều tiến trình cùng cwd**. Ảnh hưởng CI/parallel build. Đáng cân nhắc đặt tên tạm theo output/PID.
+
+---
+
+## 🟢 BUG#50 (2026-07-03) — "First import wins": hàm cùng tên ở 2 module gộp về module import đầu
+
+**Repro:** `lib_a.close(x)=x+1`, `lib_b.close(x)=x+100`; `lib_a.close(0)+lib_b.close(0)` → 2 (cả hai chạy lib_a); đảo thứ tự import → 200. Thậm chí `lib_b.close(0)` một mình → 1. Silent, không diagnostic. Repro: bin/t_modcollide.ax (+ lib_a.ax, lib_b.ax ở root; oracle=101).
+
+**Root cause (2 tầng):**
+1. **Resolver dedup sai:** `define()` (resolver.ax) dedup overload bằng `decl_node == decl_node` — nhưng decl_node là node index CỤC BỘ THEO CÂY của từng module. Hai module cấu trúc giống nhau → close của lib_b trùng index với lib_a → bị coi là cùng declaration → trả symbol lib_a. **Fix:** so thêm `symbol_trees.data[curr_idx] == current_tree` (bảng cây-của-symbol đã có sẵn).
+2. **Mangling trùng:** cả hai backend (cgen `get_mangled_name_by_sym`, native `x86_resolve_sym_name`) sinh tên từ bare `sym.name_id` → cả hai hàm = `ax_close` → link-time gộp về định nghĩa đầu. **Fix:** flag `SYM_FLAG_MODDUP=2048` set tại define() khi chain-head thuộc cây khác; mangler thấy flag → emit `ax_<name>__m<sym_idx>` (deterministic; cả 2 backend cùng quy tắc).
+
+**Verify:** oracle 4/4 (1/100/101/101 hai chiều import) trên native-built; C-backend inspect thấy `ax_close` + `ax_close__m187` với call-site khớp; full regression 92/93 (fail duy nhất = t_mathx = BUG#51 pre-existing, chứng minh có/không fix đều crash); fast fixpoint a3==a4 converged. Registered `t_modcollide|exit|101` (⚠️ flaky vì BUG#52 cho tới khi BUG#52 fixed).
+
+**Còn lại (không thuộc scope này):** bare-name call `close()` khi đã import module có hàm cùng tên → vẫn resolve về chain head (cần diagnostic ambiguity); intra-module bare call trong module bị trùng tên chưa được bảo vệ.
+
+---
+
+## 🔴 BUG#51 (2026-07-03) — Native-built compiler MISCOMPILED: segfault deterministic khi compile t_mathx
+
+**Phát hiện chấn động:** mọi binary compiler build bằng NATIVE backend (stage2/stage3/converged chains) **segfault 4/4 deterministic** khi `build bin/t_mathx.ax -O1`; binary build bằng stage0 C-backend/gcc compile t_mathx OK (=28). Cùng source (fixpoint!). ⟹ native backend miscompile ≥1 hàm của chính compiler; chỉ lộ khi compile t_mathx (pattern đặc thù).
+
+**Hệ quả cực quan trọng:** **SHA fixpoint convergence ≠ correctness** — stage3==stage4 hội tụ trên code SAI đồng nhất. Runtime check hiện tại (t_param5/t_strip) quá yếu. **Quy trình mới bắt buộc: chạy FULL regression suite bằng chính converged binary** (không chỉ SHA + 2 test).
+
+**Ý nghĩa hiệu năng:** native-built compiler nhanh hơn stage0-built ~1200x (8s vs 2h50m cho 790 hàm self-build) — là daily-driver lý tưởng NHƯNG bị block bởi bug này. Fix BUG#51 = mở khóa vòng dev 8 giây.
+
+**Trạng thái:** OPEN — cần binary-search hàm bị miscompile (build từng phần / chèn probe, so stage1-built vs stage3-built hành vi từng function).
+
+---
+
+## 🔴 BUG#52 (2026-07-03) — Lazy module loading: memory corruption PHI-TẤT-ĐỊNH (works/crash/hang ngẫu nhiên)
+
+**Repro:** cùng binary stage1, cùng input `tcollide.ax` (import 2 module local), chạy 4 lần liên tiếp: OK(2), OK(2), crash(127), **HANG** (>2min). ASLR/allocator-layout dependent.
+
+**Nghi phạm:** cleanup cuối `ax_driver_load_module` (main_air.ax ~1085-1094) free lexer arrays trong khi ModuleInfo giữ con trỏ (`tokens_leak`/`tokens_data`, node_types của checker...); hoặc temp_stack swap/restore; hoặc export-loop đọc str đã free. Use-after-free biểu hiện tùy layout.
+
+**Hệ quả:** MỌI test có import module local = flaky (t_modcollide sẽ chập chờn trong regression cho tới khi fix). Vi phạm nguyên tắc deterministic compilation (CLAUDE.md §3). Đã đốt ~1h debug BUG#50 vì crash giả từ bug này. **Bài học chẩn đoán: crash không tái lập ổn định → chạy lặp ≥5 lần TRƯỚC khi đổ cho thay đổi mới.**
+
+**Trạng thái:** OPEN — ưu tiên cao nhất cùng BUG#51.

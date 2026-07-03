@@ -37,6 +37,9 @@ pub const SYM_FLAG_MOVED: u16 = 128
 pub const SYM_FLAG_USED: u16 = 256
 pub const SYM_FLAG_COMPTIME: u16 = 512
 pub const SYM_FLAG_GENERIC: u16 = 1024
+// BUG#50: same-named fn from a DIFFERENT module tree chained as overload;
+// manglers must emit a distinct symbol name ("__m<sym_idx>" suffix).
+pub const SYM_FLAG_MODDUP: u16 = 2048
 
 // ScopeKind constants
 pub const SCOPE_GLOBAL: u8 = 0
@@ -517,17 +520,27 @@ pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, de
         if self.symbols.data[prev.symbol_idx].kind == SYM_FUNC and kind == SYM_FUNC:
             mut curr_idx := prev.symbol_idx
             while true:
-                if self.symbols.data[curr_idx].decl_node == decl_node:
+                // BUG#50: decl_node is a node INDEX local to each module's AST.
+                // Two modules with same-shaped trees (e.g. both define `close`)
+                // get equal indices, so dedup MUST also match the owning tree,
+                // else module B's fn aliases module A's symbol ("first import wins").
+                if self.symbols.data[curr_idx].decl_node == decl_node and self.symbol_trees.data[curr_idx] == self.current_tree:
                     return curr_idx
                 if self.symbols.data[curr_idx].next_overload == 0 as u32:
                     break
                 curr_idx = self.symbols.data[curr_idx].next_overload
             let sym_idx = self.symbols.len as u32
+            // BUG#50: if the chain head lives in another module's tree, this is a
+            // cross-module same-name fn, not a real overload set member of that
+            // module. Tag it so codegen emits a unique symbol name.
+            mut dup_flags := flags
+            if self.symbol_trees.data[prev.symbol_idx] != self.current_tree:
+                dup_flags = dup_flags | SYM_FLAG_MODDUP
             (&self.symbols).push(Symbol(
                 name_id: name_id,
                 kind: kind,
                 padding: 0 as u8,
-                flags: flags,
+                flags: dup_flags,
                 type_id: 0 as u32,
                 decl_node: decl_node,
                 scope_id: scope_idx,

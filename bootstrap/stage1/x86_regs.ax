@@ -233,6 +233,34 @@ pub fn x86_resolve_sym_name(sym_idx: u32, symbols: ptr[SymbolTable], pool: ptr[I
     if is_extern:
         return fn_name
 
+    // BUG#50: cross-module same-name fn — emit unique symbol "ax_<name>__m<idx>"
+    // so two modules' `close` don't merge at link time (first-import-wins bug).
+    if (sym.flags & 2048 as u16) != 0 as u16:
+        let base_len = std.string.len(fn_name)
+        mut digits := @alloc(16) as ptr[u8]
+        mut dval := sym_idx as i64
+        mut dlen := 0
+        if dval == 0 as i64:
+            digits[0] = '0' as u8
+            dlen = 1
+        while dval > 0 as i64:
+            digits[dlen] = ('0' as u8 + (dval % 10 as i64) as u8)
+            dlen = dlen + 1
+            dval = dval / 10 as i64
+        let total = 3 + base_len + 3 + dlen
+        mut mres := @alloc(total + 1) as ptr[u8]
+        @memcpy(mres, "ax_" as ptr[u8], 3)
+        @memcpy(((mres as u64) + 3 as u64) as ptr[u8], get_str_ptr(fn_name), base_len)
+        @memcpy(((mres as u64) + 3 as u64 + base_len as u64) as ptr[u8], "__m" as ptr[u8], 3)
+        mut mk := 0
+        while mk < dlen:
+            mres[3 + base_len + 3 + mk] = digits[dlen - 1 - mk]
+            mk = mk + 1
+        mres[total] = 0 as u8
+        @free(digits)
+        let ms_val = AxiomString(ptr: mres, len: total)
+        return (&ms_val as ptr[str])[0]
+
     if sym.type_id != 0 as u32 and table != null as ptr[TypeTable] and (sym.type_id as i64) < table.entries.len:
         let entry = table.entries.data[sym.type_id as i64]
         if entry.kind == TYPE_KIND_FUNC:

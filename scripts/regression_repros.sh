@@ -106,6 +106,7 @@ rows=(
   "t_sort2|exit|5"
   "t_func|exit|6"
   "t_lambda|exit|5"
+  "t_modcollide|exit|101"
 )
 
 for row in "${rows[@]}"; do

@@ -3323,6 +3323,9 @@ pub const SYM_FLAG_MOVED: u16 = 128
 pub const SYM_FLAG_USED: u16 = 256
 pub const SYM_FLAG_COMPTIME: u16 = 512
 pub const SYM_FLAG_GENERIC: u16 = 1024
+// BUG#50: same-named fn from a DIFFERENT module tree chained as overload;
+// manglers must emit a distinct symbol name ("__m<sym_idx>" suffix).
+pub const SYM_FLAG_MODDUP: u16 = 2048
 
 // ScopeKind constants
 pub const SCOPE_GLOBAL: u8 = 0
@@ -3803,17 +3806,27 @@ pub fn define(mut self: ptr[SymbolTable], name_id: u32, kind: u8, flags: u16, de
         if self.symbols.data[prev.symbol_idx].kind == SYM_FUNC and kind == SYM_FUNC:
             mut curr_idx := prev.symbol_idx
             while true:
-                if self.symbols.data[curr_idx].decl_node == decl_node:
+                // BUG#50: decl_node is a node INDEX local to each module's AST.
+                // Two modules with same-shaped trees (e.g. both define `close`)
+                // get equal indices, so dedup MUST also match the owning tree,
+                // else module B's fn aliases module A's symbol ("first import wins").
+                if self.symbols.data[curr_idx].decl_node == decl_node and self.symbol_trees.data[curr_idx] == self.current_tree:
                     return curr_idx
                 if self.symbols.data[curr_idx].next_overload == 0 as u32:
                     break
                 curr_idx = self.symbols.data[curr_idx].next_overload
             let sym_idx = self.symbols.len as u32
+            // BUG#50: if the chain head lives in another module's tree, this is a
+            // cross-module same-name fn, not a real overload set member of that
+            // module. Tag it so codegen emits a unique symbol name.
+            mut dup_flags := flags
+            if self.symbol_trees.data[prev.symbol_idx] != self.current_tree:
+                dup_flags = dup_flags | SYM_FLAG_MODDUP
             (&self.symbols).push(Symbol(
                 name_id: name_id,
                 kind: kind,
                 padding: 0 as u8,
-                flags: flags,
+                flags: dup_flags,
                 type_id: 0 as u32,
                 decl_node: decl_node,
                 scope_id: scope_idx,
@@ -13719,6 +13732,35 @@ pub fn get_mangled_name_by_sym(self: ptr[CGenerator], sym_idx: u32) -> str:
             let mangled = std.string.replace(fn_name, ".", "_")
             return alloc_str(mangled)
 
+        // BUG#50: cross-module same-name fn â€” emit unique "ax_<name>__m<idx>"
+        // (mirror of x86_resolve_sym_name; both backends must agree).
+        if (sym.flags & 2048 as u16) != 0 as u16:
+            let base_len = std.string.len(fn_name)
+            mut digits := @alloc(16) as ptr[u8]
+            mut dval := sym_idx as i64
+            mut dlen := 0
+            if dval == 0 as i64:
+                digits[0] = '0' as u8
+                dlen = 1
+            while dval > 0 as i64:
+                digits[dlen] = ('0' as u8 + (dval % 10 as i64) as u8)
+                dlen = dlen + 1
+                dval = dval / 10 as i64
+            let total = 3 + base_len + 3 + dlen
+            mut mres := @alloc(total + 1) as ptr[u8]
+            @memcpy(mres, "ax_" as ptr[u8], 3)
+            @memcpy(((mres as u64) + 3 as u64) as ptr[u8], get_str_ptr(fn_name), base_len)
+            @memcpy(((mres as u64) + 3 as u64 + base_len as u64) as ptr[u8], "__m" as ptr[u8], 3)
+            mut mk := 0
+            while mk < dlen:
+                mres[3 + base_len + 3 + mk] = digits[dlen - 1 - mk]
+                mk = mk + 1
+            mres[total] = 0 as u8
+            @free(digits)
+            let mres_str = alloc_str_from_raw(mres, total)
+            @free(mres)
+            return mres_str
+
         if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.typetable.entries.len:
             let entry = self.typetable.entries.data[sym.type_id as i64]
             
@@ -15936,6 +15978,34 @@ pub fn x86_resolve_sym_name(sym_idx: u32, symbols: ptr[SymbolTable], pool: ptr[I
     let is_extern = ((sym.flags & 4 as u16) != 0 as u16)
     if is_extern:
         return fn_name
+
+    // BUG#50: cross-module same-name fn â€” emit unique symbol "ax_<name>__m<idx>"
+    // so two modules' `close` don't merge at link time (first-import-wins bug).
+    if (sym.flags & 2048 as u16) != 0 as u16:
+        let base_len = std.string.len(fn_name)
+        mut digits := @alloc(16) as ptr[u8]
+        mut dval := sym_idx as i64
+        mut dlen := 0
+        if dval == 0 as i64:
+            digits[0] = '0' as u8
+            dlen = 1
+        while dval > 0 as i64:
+            digits[dlen] = ('0' as u8 + (dval % 10 as i64) as u8)
+            dlen = dlen + 1
+            dval = dval / 10 as i64
+        let total = 3 + base_len + 3 + dlen
+        mut mres := @alloc(total + 1) as ptr[u8]
+        @memcpy(mres, "ax_" as ptr[u8], 3)
+        @memcpy(((mres as u64) + 3 as u64) as ptr[u8], get_str_ptr(fn_name), base_len)
+        @memcpy(((mres as u64) + 3 as u64 + base_len as u64) as ptr[u8], "__m" as ptr[u8], 3)
+        mut mk := 0
+        while mk < dlen:
+            mres[3 + base_len + 3 + mk] = digits[dlen - 1 - mk]
+            mk = mk + 1
+        mres[total] = 0 as u8
+        @free(digits)
+        let ms_val = AxiomString(ptr: mres, len: total)
+        return (&ms_val as ptr[str])[0]
 
     if sym.type_id != 0 as u32 and table != null as ptr[TypeTable] and (sym.type_id as i64) < table.entries.len:
         let entry = table.entries.data[sym.type_id as i64]

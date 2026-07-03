@@ -1,0 +1,8 @@
+// BUG#50 repro: same-named fn `close` in two imported modules must stay
+// distinct symbols (module-qualified access + per-module mangling __m<idx>).
+// lib_a.close(x)=x+1, lib_b.close(x)=x+100 -> 1 + 100 = 101.
+import lib_a
+import lib_b
+
+fn main() -> i64:
+    return lib_a.close(0) + lib_b.close(0)
