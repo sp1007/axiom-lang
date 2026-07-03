@@ -174,3 +174,61 @@ sau khi RFC drop-glue (owned-struct-fields) land.
 - Thuần bổ sung: cú pháp `|...|` mới, kiểu Closure mới. Không đổi ngữ nghĩa hàm trần
   (BUG#49) → mọi code hiện tại giữ nguyên hành vi. std.sort/std.numerical vẫn dùng
   `fn(...)` trần; có thể thêm overload nhận closure ở follow-up.
+
+---
+
+## Appendix A — Blueprint P1 (grounded theo code stage1 hiện tại, 2026-07-03)
+
+Khảo sát code cho thấy đã có **scaffold một phần** — tận dụng để giảm việc:
+
+**Đã có:**
+- `token.ax` `TK_PIPE = 52`; lexer emit `|` ([lexer.ax:446](../bootstrap/stage1/lexer.ax#L446)).
+- `ast.ax` `NODE_CLOSURE_EXPR = 35` (slot đã đặt trước).
+- `resolver.ax` `SCOPE_CLOSURE = 3` + handler [resolver.ax:939](../bootstrap/stage1/resolver.ax#L939)
+  (push SCOPE_CLOSURE → resolve_children → pop). Chưa ghi lại free-vars.
+- `parser.ax` `parse_param` ([parser.ax:1197](../bootstrap/stage1/parser.ax#L1197)) tái dùng cho param lambda.
+- BUG#49: `air_builder` lower_ident SYM_FUNC → `OP_FUNC_ADDR`; `x86_selector`
+  MACH_CALL_INDIRECT + R11-capture; `x86_emitter` RIP-relative code addr. Tái dùng
+  cho gọi closure (chỉ thêm env arg 0).
+
+**Chưa có (việc P1):**
+- **Parser (nud):** `|` hiện CHỈ là infix bitwise-or (`left_binding_power` [parser.ax:153]
+  → BP_BIT_OR) và separator sum-type. Lambda ở **vị trí nud** (prefix) nên KHÔNG đụng
+  infix. Thêm nhánh vào `parse_nud` ([parser.ax:189](../bootstrap/stage1/parser.ax#L189)):
+  ```
+  if tok.kind == TK_PIPE:
+      return self.parse_closure_expr()
+  ```
+  `parse_closure_expr`: consume `|`; loop `parse_param` phân tách bởi `,` tới `|`
+  thứ hai; rồi thân = một expr (`parse_expr_with_prec`) HOẶC khối indent (nếu theo
+  sau là `:`). Dựng `NODE_CLOSURE_EXPR` với con: [NODE_PARAM_DECL...] + body.
+  ⚠️ Disambiguation: `parse_nud` gặp `|` → lambda; infix `a | b` vẫn do `parse_led`
+  xử (khác vị trí) → không hồi quy. Ghi rõ trong parser cho người sau.
+- **Resolver (mở rộng handler có sẵn):** khi resolve thân closure, một `NODE_IDENT`
+  giải ra symbol định nghĩa ở scope BAO NGOÀI closure = **capture**. Ghi danh sách
+  capture (sym_idx) vào node closure (payload/child phụ) — cần cho lower. Đơn giản:
+  đánh dấu symbol `SYM_FLAG_CAPTURED` + thu thập theo thứ tự xuất hiện.
+- **Typecheck:** thêm nhánh NODE_CLOSURE_EXPR trong infer: kiểu = Closure với chữ ký
+  từ param types + kiểu thân. Lưu vào `node_types[closure]` (mảng ở [typecheck.ax:78]).
+  MVP có thể yêu cầu annotate param type để né inference.
+- **air_builder (lower — phần chính):**
+  1. Thu `EnvN` = struct các capture (POD-only ở MVP) theo thứ tự tất định.
+  2. Sinh hàm top-level `__lambda_k(env: ptr[EnvN], params...)`; thân closure hạ như
+     thân hàm thường, biến-capture đọc qua `env.vK` (rewrite NODE_IDENT captured →
+     field-load từ env param), tham số thường như cũ.
+  3. Tại site: `@alloc(sizeof EnvN)` → ghi từng capture → giá trị closure 16B
+     `{code_ptr = OP_FUNC_ADDR(__lambda_k), env_ptr = env}`.
+  4. Call-site closure `c(a,b)`: nạp `c.env_ptr` làm arg 0, dịch a,b sang phải, target
+     = `c.code_ptr` → MACH_CALL_INDIRECT (tái dùng R11-capture BUG#49).
+- **Backend:** không opcode máy mới bắt buộc; closure value = aggregate 16B (RFC 0001
+  ABI), gọi = indirect call đã có.
+
+**Thứ tự làm + verify:** parser → (test parse-only, `-dump-ast`) → resolver/typecheck →
+air_builder lower → oracle repro (`make_adder`, `|x| x*k` integrate) O0+O1 →
+`scripts/regression_repros.sh` → `verify_bug29_selfhost.sh` (đổi air_builder/backend
+→ BẮT BUỘC fixpoint trước commit). std.iter theo sau = library-only.
+
+**Rủi ro cần canh:** (1) blast-radius `parse_nud` thêm nhánh `|` — chạy full regression
+vì đổi parser đụng MỌI biểu thức; (2) rewrite NODE_IDENT-captured trong air_builder
+phải chính xác (nhầm → đọc sai env offset); (3) `@alloc` env escape đúng (đừng để
+alias-reuse/escape tái dùng nhầm ô env của closure thoát frame).
