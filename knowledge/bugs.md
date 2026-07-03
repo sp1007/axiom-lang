@@ -1289,3 +1289,28 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 - **git-bash `$?` là 8-bit:** 0xC0000139 & 0xFF = **57**, không phải giá trị return thật. Lấy exit code thật của Windows qua PowerShell `$LASTEXITCODE` hoặc `cmd //c`.
 
 **Files:** air.ax (OP_FUNC_ADDR const), air_builder.ax (lower_ident SYM_FUNC), cgen.ax, x86_selector.ax, x86_emitter.ax, ssa_opt.ax (2 fix). **Blast radius:** `lower_ident SYM_FUNC` fire cho MỌI tên hàm trần trong toàn codebase (kể cả stdlib) → bắt buộc regression + fixpoint.
+
+---
+
+## 🟡 KNOWN-GAP (2026-07-03) — Selective/capability import `import X { a, b }` parse-được-nhưng-trơ
+
+**Câu hỏi khơi nguồn:** "2 thư viện cùng có hàm `close()`, import cả hai, dùng chung một chỗ — có gây lỗi không?"
+
+**Trả lời:** KHÔNG va chạm, nhưng vì một lý do đáng lưu ý: **danh sách trong ngoặc `{...}` hiện là cú pháp chết.**
+
+### Mô hình import thực tế của AXIOM (module-qualified)
+- `import lib_a` chỉ tạo **một** symbol `SYM_MODULE` tên `lib_a` (resolver.ax:716-753). KHÔNG đổ hàm của thư viện vào namespace người dùng dưới tên trần.
+- Truy cập thành viên qua `lib_a.close()` (`NODE_FIELD_EXPR`): resolver phân giải `lib_a`→module rồi gọi `lazy_resolver_resolve_field(lib_a, close)` — **chỉ duyệt bảng export của đúng module đó** (resolver.ax:1023-1065). `lib_a.close` và `lib_b.close` đi qua hai bảng export khác nhau → hai symbol riêng biệt → không va chạm.
+- **Không có glob-import** (`import *`) trong ngôn ngữ. Nên tên trần của thư viện không bao giờ bị trộn vào scope người dùng.
+- Va chạm THẬT chỉ khi hai hàm cùng tên + cùng chữ ký định nghĩa trong **cùng một file/scope**: `define()` (resolver.ax:517-538) dựng **overload chain** (`next_overload`), phân giải theo kiểu tham số ở call-site; `resolve()` trả đầu chuỗi.
+
+### Cú pháp `import X { a, b, c }` — spec vs implementation
+- **Spec:** grammar chính `ImportDecl ::= "import" Identifier ["as" Identifier]`. Ngoài ra spec §permissions định nghĩa `import std.fs { read, write }` = **khai báo quyền tĩnh (capability)** để compiler theo dõi trên AST và chặn build nếu module bên thứ 3 dùng quyền chưa khai báo. ĐÂY KHÔNG PHẢI selective-name-import kiểu Python.
+- **Parser (parser.ax:1445-1460):** CÓ đọc `{ a, b, c }`, gắn mỗi tên thành `NODE_IDENT` con của node import.
+- **Nhưng toàn pipeline chỉ có ĐÚNG một chỗ chạm `NODE_IMPORT_DECL` = resolver.ax:716**, và handler đó **không duyệt các con**. typecheck/air_builder không tham chiếu. Không có capability/permission pass nào tồn tại (grep=rỗng).
+- ⟹ Danh sách `{...}` bị **parse rồi vứt (inert)**. Không bind tên trần, không kiểm quyền. Trơ hoàn toàn.
+
+### Hệ quả & việc cần làm sau
+- Hiện tại an toàn (không va chạm) nhưng là **bất nhất tiềm ẩn**: tính năng bảo mật capability của spec chưa được nối dây. Nếu sau này hiện thực (capability-check HOẶC selective-bind tên trần), lúc đó **mới** cần chính sách va chạm rõ ràng (báo lỗi ambiguous vs overload). Việc này đụng semantic import → cần **RFC** trước khi làm.
+- **Thực nghiệm cô lập chưa hoàn tất:** build thử `lib_a.close(0)+lib_b.close(0)` (kỳ vọng 101) từng cho kết quả rác (2/99/NO-EXE) NHƯNG bị nhiễu do regression chạy song song giẫm lên file trung gian tên-cố-định `axiom_temp.obj` (build đồng thời không reentrant). Cần build cô lập (không concurrent) để xác nhận `lib_a.close` vs `lib_b.close` có map đúng hai symbol khác nhau qua concatenation không. **TODO: chạy lại khi máy rảnh.**
+- **Phụ đề — non-reentrant temp:** compiler ghi obj trung gian ra tên cố định `axiom_temp.obj` ở cwd → **không thể build song song nhiều tiến trình cùng cwd**. Ảnh hưởng CI/parallel build. Đáng cân nhắc đặt tên tạm theo output/PID.
