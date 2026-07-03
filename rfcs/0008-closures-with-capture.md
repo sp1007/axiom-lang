@@ -232,3 +232,41 @@ air_builder lower → oracle repro (`make_adder`, `|x| x*k` integrate) O0+O1 →
 vì đổi parser đụng MỌI biểu thức; (2) rewrite NODE_IDENT-captured trong air_builder
 phải chính xác (nhầm → đọc sai env offset); (3) `@alloc` env escape đúng (đừng để
 alias-reuse/escape tái dùng nhầm ô env của closure thoát frame).
+
+---
+
+## Appendix B — Kết quả SPIKE parser (2026-07-03)
+
+Đã spike phần parser end-to-end (rồi revert để giữ main sạch — lowering chưa xong):
+
+**Parser: DỄ và HOẠT ĐỘNG.** Thêm nhánh `if tok.kind == TK_PIPE: return
+self.parse_closure_expr()` vào `parse_nud` + hàm `parse_closure_expr` (loop
+`parse_param` giữa hai `|`, body = `parse_expr_with_prec(BP_NONE)`). Kết quả spike:
+- Compiler rebuild qua stage0 OK; chương trình BÌNH THƯỜNG vẫn compile đúng
+  (t_sort=4) → nhánh `|` ở nud KHÔNG đụng infix bitwise-or / sum-type.
+- Chương trình lambda `apply2(|a: i64, b: i64| a + b, 2, 3)` **parse + typecheck +
+  codegen + self-link đều QUA** (không lỗi parse). Xác nhận cú pháp đúng.
+- Params MVP cần annotate kiểu (`|a: i64, b: i64|`) vì `parse_param` bắt buộc `: T`.
+
+**Blocker thật = LOWERING** (không phải parser). Lambda parse ra `NODE_CLOSURE_EXPR`
+nhưng `air_builder.lower_expr` không có nhánh cho nó → trả 0 → arg fn-ptr = null →
+**segfault 139** khi chạy. Hai đường lower cho zero-capture:
+1. **AST-lift TRƯỚC resolve** (sạch nhất): biến `NODE_CLOSURE_EXPR` → `NODE_FUNC_DECL`
+   top-level `__lambda_N` (reparent params + body thành `return`) + đổi node closure
+   thành `NODE_IDENT(__lambda_N)`. Resolver/typecheck tự tạo symbol+type → tái dùng
+   BUG#49 lower_ident→OP_FUNC_ADDR trọn vẹn. **Vướng:** synthesize `NODE_FUNC_DECL`
+   cần node RETURN-TYPE; nếu compiler bắt buộc annotate ret-type thì phải suy ra kiểu
+   thân TRƯỚC typecheck (chicken-egg) — cần kiểm typecheck có infer ret-type không.
+2. **Inline AirFunc synthesis trong lower_expr** (dùng `self.mb` — `FuncLowering` CÓ
+   `mb: ptr[AirModuleBuilder]`): dựng AirFunc cho lambda + push `self.mb.module.funcs`
+   + tạo Symbol thủ công (`symtable` push) + emit OP_FUNC_ADDR. **Vướng:** đột biến
+   symbol-table GIỮA air-build (nhạy invariant mangler/linker) + căn ret-type.
+
+**Hạ tầng thiếu:** typecheck/air_builder KHÔNG có cơ chế diagnostics/error → không thể
+biến lambda-chưa-lower thành lỗi-compile-sạch dễ dàng (đó là lý do spike revert thay
+vì ship parser trần segfault — nghịch "diagnostics là product feature" của CLAUDE.md).
+
+**Việc còn lại của P1 (đã thu hẹp nhờ spike):** chọn đường lower (1) hoặc (2); giải
+ret-type (kiểm `infer` của typecheck cho hàm không-annotate); implement + oracle repro
+(`apply2(|a,b| a+b,..)=5`) + regression + fixpoint. Parser code đã kiểm chứng, sẵn sàng
+tái áp dụng.
