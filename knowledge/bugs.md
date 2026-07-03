@@ -1284,8 +1284,8 @@ Triệu chứng: `let f=add; return f(2,3)` chạy đúng ở **-O0 (=5)** nhưn
 
 Đã đăng ký `fp0i`/`fpBi`/`fpf` vào `scripts/regression_repros.sh`. Full regression (native -O1) + fixpoint verify (`verify_bug29_selfhost.sh`) đang chạy trước khi commit.
 
-### ⚠️ Bẫy chẩn đoán (ĐỪNG hiểu lầm): program cực tiểu không import gì
-`plain5` (`pub fn main()->i32: return 5`, KHÔNG có `extern`) khi self-link native → **STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139 = −1073741511)**: PE có import table rỗng, loader từ chối. Đây là **quirk của program không-import**, KHÔNG phải bug fn-ptr/codegen. Real program (có `extern "C" fn putchar`, hoặc bất kỳ import nào) load bình thường. Lúc test fn-ptr PHẢI thêm 1 extern (vd putchar) để PE load được — nếu không sẽ nhầm feature hỏng.
-- **git-bash `$?` là 8-bit:** 0xC0000139 & 0xFF = **57**, không phải giá trị return thật. Lấy exit code thật của Windows qua PowerShell `$LASTEXITCODE`.
+### ⚠️ Bẫy chẩn đoán — STATUS_ENTRYPOINT_NOT_FOUND KHÔNG phải bug "no-import" (ĐÍNH CHÍNH 2026-07-03)
+Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) self-link native → **STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139 = −1073741511)** là "quirk program không-import". **SAI.** Đã kiểm lại trên máy KHỎE: no-import program (plain return / direct call / local fn-ptr) đều CHẠY ĐÚNG ở O0+O1 qua bash/cmd/PowerShell (=5). Triệu chứng cũ chỉ xuất hiện khi máy **quá tải nặng** (build trivial 84-112s do browser/thrash) → self-linker sinh PE hỏng dưới áp lực bộ nhớ = **artifact resource-starvation**, KHÔNG phải lỗi xử-lý-no-import. ⇒ Thấy STATUS_ENTRYPOINT_NOT_FOUND thì **kiểm tải hệ thống trước**, đừng đuổi "no-import bug". (Follow-up robustness khả dĩ: self-linker nên fail-loud thay vì phát PE hỏng khi alloc/write thất bại.)
+- **git-bash `$?` là 8-bit:** 0xC0000139 & 0xFF = **57**, không phải giá trị return thật. Lấy exit code thật của Windows qua PowerShell `$LASTEXITCODE` hoặc `cmd //c`.
 
 **Files:** air.ax (OP_FUNC_ADDR const), air_builder.ax (lower_ident SYM_FUNC), cgen.ax, x86_selector.ax, x86_emitter.ax, ssa_opt.ax (2 fix). **Blast radius:** `lower_ident SYM_FUNC` fire cho MỌI tên hàm trần trong toàn codebase (kể cả stdlib) → bắt buộc regression + fixpoint.
