@@ -1,0 +1,73 @@
+// Regression repro: comparator quicksort (recursive fn-ptr) — mirrors std.sort.
+// Self-contained. Exit 6 = all 6 oracle checks pass.
+extern "C" fn putchar(c: i32) -> i32
+
+fn qsort_i64(arr: ptr[i64], lo: i64, hi: i64, less: fn(i64, i64) -> bool):
+    if lo >= hi:
+        return
+    let pivot = arr[hi]
+    mut i := lo - 1 as i64
+    mut j := lo
+    while j < hi:
+        if less(arr[j], pivot):
+            i = i + 1 as i64
+            let t = arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+        j = j + 1 as i64
+    let p = i + 1 as i64
+    let tp = arr[p]
+    arr[p] = arr[hi]
+    arr[hi] = tp
+    qsort_i64(arr, lo, p - 1 as i64, less)
+    qsort_i64(arr, p + 1 as i64, hi, less)
+
+fn sort_quick_i64(arr: ptr[i64], n: i64, less: fn(i64, i64) -> bool):
+    qsort_i64(arr, 0 as i64, n - 1 as i64, less)
+
+fn asc(a: i64, b: i64) -> bool:
+    return a < b
+fn desc(a: i64, b: i64) -> bool:
+    return a > b
+
+fn is_sorted_asc(arr: ptr[i64], n: i64) -> bool:
+    mut i := 1 as i64
+    while i < n:
+        if arr[i] < arr[i - 1 as i64]:
+            return false
+        i = i + 1
+    return true
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    let n = 10 as i64
+    let a = @alloc(n * 8 as i64) as ptr[i64]
+    a[0] = 9 as i64
+    a[1] = 0 as i64 - 3 as i64
+    a[2] = 5 as i64
+    a[3] = 5 as i64
+    a[4] = 0 as i64
+    a[5] = 0 as i64 - 8 as i64
+    a[6] = 7 as i64
+    a[7] = 2 as i64
+    a[8] = 1 as i64
+    a[9] = 6 as i64
+
+    sort_quick_i64(a, n, asc)
+    if is_sorted_asc(a, n):
+        pass = pass + 1
+    if a[0] == (0 as i64 - 8 as i64):
+        pass = pass + 1
+    if a[9] == 9 as i64:
+        pass = pass + 1
+    // duplicates preserved: sorted [-8,-3,0,1,2,5,5,6,7,9] -> the two 5s at a[5],a[6]
+    if a[5] == 5 as i64 and a[6] == 5 as i64:
+        pass = pass + 1
+
+    sort_quick_i64(a, n, desc)
+    if a[0] == 9 as i64 and a[9] == (0 as i64 - 8 as i64):
+        pass = pass + 1
+    if is_sorted_asc(a, n) == false:
+        pass = pass + 1
+
+    return pass as i32

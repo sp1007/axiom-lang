@@ -102,6 +102,7 @@ rows=(
   "t_nmf|exit|9"
   "t_numeric|exit|5"
   "t_sort|exit|4"
+  "t_qsort|exit|6"
 )
 
 for row in "${rows[@]}"; do

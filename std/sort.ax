@@ -35,6 +35,33 @@ pub fn sort_f64(arr: ptr[f64], n: i64, less: fn(f64, f64) -> bool):
         arr[j + 1 as i64] = key
         i = i + 1
 
+// Comparator-driven quicksort (Lomuto partition, recursive, in place). O(n log n)
+// average. `less` is threaded unchanged through the recursion — exercises a
+// function pointer passed down recursive calls. Use over sort_i64 for large n.
+fn qsort_i64(arr: ptr[i64], lo: i64, hi: i64, less: fn(i64, i64) -> bool):
+    if lo >= hi:
+        return
+    let pivot = arr[hi]
+    mut i := lo - 1 as i64
+    mut j := lo
+    while j < hi:
+        if less(arr[j], pivot):
+            i = i + 1 as i64
+            let t = arr[i]
+            arr[i] = arr[j]
+            arr[j] = t
+        j = j + 1 as i64
+    let p = i + 1 as i64
+    let tp = arr[p]
+    arr[p] = arr[hi]
+    arr[hi] = tp
+    qsort_i64(arr, lo, p - 1 as i64, less)
+    qsort_i64(arr, p + 1 as i64, hi, less)
+
+// Sort arr[0..n) of i64 in place via quicksort ordered by `less`.
+pub fn sort_quick_i64(arr: ptr[i64], n: i64, less: fn(i64, i64) -> bool):
+    qsort_i64(arr, 0 as i64, n - 1 as i64, less)
+
 // Linear scan for the first index whose element satisfies `pred`, else -1.
 pub fn find_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> i64:
     mut i := 0 as i64
