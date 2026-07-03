@@ -1214,9 +1214,11 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 
 ---
 
-## ⚠️ BUG#46 (2026-06-29) — float call-result đọc qua loop sau đó bị hỏng
+## ✅ BUG#46 (2026-06-29; FIXED — verified 2026-07-03) — float call-result đọc qua loop sau đó bị hỏng
 
-`let m = f(...)` (m: f64, kết quả 1 lời gọi) rồi đọc `m` trong một VÒNG LẶP tiếp theo (loop KHÔNG có call) → m sai. VD st_variance: `let m = st_mean(a,n); while: d = a[i]-m; acc+=d*d` → variance sai; nhưng tính mean INLINE (sum loop tại chỗ, không call) → ĐÚNG. Nghi liveness/regalloc của float-call-result bị tính sai khi sống qua loop (m bị scratch của loop đè), KHÁC BUG#44 (đã fix save/restore qua call). Workaround: inline giá trị (đừng giữ float-call-result qua loop), hoặc nạp lại. Cần debug liveness float trong x86_regalloc. Library tránh pattern này.
+`let m = f(...)` (m: f64, kết quả 1 lời gọi) rồi đọc `m` trong một VÒNG LẶP tiếp theo (loop KHÔNG có call) → m sai. VD st_variance: `let m = st_mean(a,n); while: d = a[i]-m; acc+=d*d` → variance sai; nhưng tính mean INLINE (sum loop tại chỗ, không call) → ĐÚNG. Nguyên nhân cùng họ BUG#48 (float-call-result bị spill; đường lưu dest-spill dùng R11/GPR thay vì XMM/movsd).
+
+**FIXED bởi commit `476b352`** ("float call-result vregs mis-allocated to GPR pool"). **Verified 2026-07-03:** tái hiện pattern GỐC verbatim (`st_mean` là call riêng, rồi đọc `m` trong loop variance của dữ liệu [2,4,4,4,5,5,7,9]) → variance=4 ĐÚNG ở **cả -O0 và -O1**. Entry cũ (⚠️ open) đã STALE. Ghi chú: std/stats.ax vẫn tính mean inline (an toàn, không cần đổi).
 
 ---
 
@@ -1235,9 +1237,11 @@ Khi viết std.quaternion (Quat = 4×f64 = 32 byte) phát hiện 32-byte struct 
 
 ---
 
-## 🔴 BUG#48 (2026-06-29, documented, CHƯA fix) — float spill khi áp lực thanh ghi cao (≥8 float sống đồng thời)
+## ✅ BUG#48 (2026-06-29; FIXED — verified 2026-07-03) — float spill khi áp lực thanh ghi cao (≥8 float sống đồng thời)
 
-**Triệu chứng:** ≥8 giá trị f64 (kết quả lời gọi) sống ĐỒNG THỜI vượt 8 thanh ghi XMM cấp phát (XMM8-15) → giá trị bị spill (vd `a` đầu tiên) bị HỎNG. Repro `bin/`-style: 8 `let x_i = sq(c_i)` rồi check → exit thiếu bit của `a` (254 thay 255); N≤5 ĐÚNG. Lặp O0+O1 (tất định). Cùng họ BUG#46 (float-call-result qua loop = cũng do spill).
+**FIXED bởi commit `476b352`** ("float call-result vregs mis-allocated to GPR pool") — đúng root cause dest-spill-dùng-GPR mô tả bên dưới. **Verified 2026-07-03:** stress repro giữ **10** f64 call-result (`sq(c_i)`) sống ĐỒNG THỜI (vượt 8 XMM → ép ≥2 spill) rồi cộng tất cả → tổng ĐÚNG (110) ở **cả -O0 và -O1**; bản 8-live cũng đúng (204). ⚠️ Chưa tìm lại được FILE repro gốc "254/255" verbatim, nhưng cơ chế (float spill, giá trị đầu `a` được dùng lại sau spill) đã bị stress nhiều cách và đều đúng. Entry cũ (🔴 CHƯA fix) đã STALE.
+
+**Triệu chứng (lịch sử):** ≥8 giá trị f64 (kết quả lời gọi) sống ĐỒNG THỜI vượt 8 thanh ghi XMM cấp phát (XMM8-15) → giá trị bị spill (vd `a` đầu tiên) bị HỎNG. Repro `bin/`-style: 8 `let x_i = sq(c_i)` rồi check → exit thiếu bit của `a` (254 thay 255); N≤5 ĐÚNG. Lặp O0+O1 (tất định). Cùng họ BUG#46 (float-call-result qua loop = cũng do spill).
 
 **Root cause (một phần, xác định qua đọc x86_regalloc.ax):** đường lưu **DEST bị spill** (~L929-958) LUÔN dùng **R11 (GPR) + mov 8-byte** cho mọi dest, kể cả float → `mov r11, xmm` sai register-file → giá trị float hỏng. Đường RELOAD operand spill (~L887-915) ĐÃ xử đúng float (XMM0/XMM1 + movsd) nhưng đường STORE dest thì CHƯA.
 
