@@ -1,0 +1,89 @@
+// Regression repro: std.functional map/filter/reduce over fn-ptr (mirrors module).
+// Self-contained. Exit 6 = all 6 oracle checks pass.
+extern "C" fn putchar(c: i32) -> i32
+
+fn map_i64(arr: ptr[i64], n: i64, f: fn(i64) -> i64):
+    mut i := 0 as i64
+    while i < n:
+        arr[i] = f(arr[i])
+        i = i + 1
+
+fn filter_i64(src: ptr[i64], n: i64, dst: ptr[i64], pred: fn(i64) -> bool) -> i64:
+    mut w := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        let v = src[i]
+        if pred(v):
+            dst[w] = v
+            w = w + 1 as i64
+        i = i + 1
+    return w
+
+fn reduce_i64(arr: ptr[i64], n: i64, init: i64, f: fn(i64, i64) -> i64) -> i64:
+    mut acc := init
+    mut i := 0 as i64
+    while i < n:
+        acc = f(acc, arr[i])
+        i = i + 1
+    return acc
+
+fn reduce_f64(arr: ptr[f64], n: i64, init: f64, f: fn(f64, f64) -> f64) -> f64:
+    mut acc := init
+    mut i := 0 as i64
+    while i < n:
+        acc = f(acc, arr[i])
+        i = i + 1
+    return acc
+
+fn dbl(x: i64) -> i64:
+    return x * 2 as i64
+fn is_even(x: i64) -> bool:
+    return x % 2 as i64 == 0 as i64
+fn add(a: i64, b: i64) -> i64:
+    return a + b
+fn fadd(a: f64, b: f64) -> f64:
+    return a + b
+
+pub fn main() -> i32:
+    mut pass := 0 as i32
+    let n = 6 as i64
+    let a = @alloc(n * 8 as i64) as ptr[i64]
+    mut i := 0 as i64
+    while i < n:
+        a[i] = i + 1 as i64
+        i = i + 1
+    // a = [1,2,3,4,5,6]
+
+    // 1. reduce sum = 21
+    if reduce_i64(a, n, 0 as i64, add) == 21 as i64:
+        pass = pass + 1
+
+    // 2. filter evens -> [2,4,6], count 3
+    let d = @alloc(n * 8 as i64) as ptr[i64]
+    let kept = filter_i64(a, n, d, is_even)
+    if kept == 3 as i64 and d[0] == 2 as i64 and d[2] == 6 as i64:
+        pass = pass + 1
+
+    // 3. map double in place -> [2,4,6,8,10,12]
+    map_i64(a, n, dbl)
+    if a[0] == 2 as i64 and a[5] == 12 as i64:
+        pass = pass + 1
+
+    // 4. reduce sum after doubling = 42
+    if reduce_i64(a, n, 0 as i64, add) == 42 as i64:
+        pass = pass + 1
+
+    // 5. map-then-reduce composition: filtered evens [2,4,6] sum = 12
+    if reduce_i64(d, kept, 0 as i64, add) == 12 as i64:
+        pass = pass + 1
+
+    // 6. reduce_f64 sum of [0.5,1.5,2.0] = 4.0
+    let g = @alloc(3 * 8 as i64) as ptr[f64]
+    g[0] = 0.5
+    g[1] = 1.5
+    g[2] = 2.0
+    let s = reduce_f64(g, 3 as i64, 0.0, fadd)
+    if s > 3.9 and s < 4.1:
+        pass = pass + 1
+
+    return pass as i32

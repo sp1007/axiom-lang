@@ -1,0 +1,64 @@
+// AXIOM Standard Library — std.functional
+//
+// Array higher-order primitives driven by function pointers (BUG#49): map,
+// filter, reduce over flat ptr[T] buffers. Companion to std.sort / std.numerical.
+// Pure, no allocation of its own (caller supplies destination buffers where a
+// separate output is needed).
+//
+// Float-safe: each f(x) call-result is consumed immediately (stored to the
+// destination slot or folded into the accumulator), so BUG#46/#48 do not apply.
+
+// In-place map: arr[i] = f(arr[i]) for i in [0, n).
+pub fn map_i64(arr: ptr[i64], n: i64, f: fn(i64) -> i64):
+    mut i := 0 as i64
+    while i < n:
+        arr[i] = f(arr[i])
+        i = i + 1
+
+// In-place map over f64.
+pub fn map_f64(arr: ptr[f64], n: i64, f: fn(f64) -> f64):
+    mut i := 0 as i64
+    while i < n:
+        arr[i] = f(arr[i])
+        i = i + 1
+
+// Copy elements of src[0..n) satisfying `pred` into dst (dst must hold up to n).
+// Returns the number of elements kept.
+pub fn filter_i64(src: ptr[i64], n: i64, dst: ptr[i64], pred: fn(i64) -> bool) -> i64:
+    mut w := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        let v = src[i]
+        if pred(v):
+            dst[w] = v
+            w = w + 1 as i64
+        i = i + 1
+    return w
+
+// Left fold: acc = init; for each element acc = f(acc, arr[i]); return acc.
+pub fn reduce_i64(arr: ptr[i64], n: i64, init: i64, f: fn(i64, i64) -> i64) -> i64:
+    mut acc := init
+    mut i := 0 as i64
+    while i < n:
+        acc = f(acc, arr[i])
+        i = i + 1
+    return acc
+
+// Left fold over f64.
+pub fn reduce_f64(arr: ptr[f64], n: i64, init: f64, f: fn(f64, f64) -> f64) -> f64:
+    mut acc := init
+    mut i := 0 as i64
+    while i < n:
+        acc = f(acc, arr[i])
+        i = i + 1
+    return acc
+
+// Count elements satisfying `pred`.
+pub fn count_i64(arr: ptr[i64], n: i64, pred: fn(i64) -> bool) -> i64:
+    mut c := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        if pred(arr[i]):
+            c = c + 1 as i64
+        i = i + 1
+    return c

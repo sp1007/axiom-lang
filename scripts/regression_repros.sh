@@ -104,6 +104,7 @@ rows=(
   "t_sort|exit|4"
   "t_qsort|exit|6"
   "t_sort2|exit|5"
+  "t_func|exit|6"
 )
 
 for row in "${rows[@]}"; do
