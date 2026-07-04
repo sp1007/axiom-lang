@@ -1,0 +1,13 @@
+// HARNESS: SKIP — a `library`-marked DLL source (RFC 0011 P4 export-all-pub).
+// tests/ffi/libapi.ax — no #[export] attributes: the `library` marker alone makes
+// EVERY pub fn part of the DLL's public API, so the .dll surface matches the .lib.
+// Build:  axc build libapi.ax -o libapi.dll --shared --no-stdlib -self-link -O1
+//   → libapi.dll  exports  lib_add / lib_sub  (PE IMAGE_EXPORT_DIRECTORY)
+//   → libapi_ffi.ax  binds  BOTH  (pub extern "C" from "libapi.dll" ...)
+library libapi
+
+pub fn lib_add(a: i32, b: i32) -> i32:
+    return a + b
+
+pub fn lib_sub(a: i32, b: i32) -> i32:
+    return a - b

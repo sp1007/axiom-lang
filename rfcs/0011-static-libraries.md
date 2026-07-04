@@ -17,10 +17,13 @@
   module is auto-lib'd by DEFAULT (no flag), while unmarked app-modules stay on source —
   so opting in is explicit and safe. inc3e lets **`--staticlib --shared`** emit BOTH
   `<base>.lib` and `<base>.dll` from one compile (consumers pick static-link or bind-by-name;
-  no separate import library). Remaining under P4: DLL should export all `pub` for a marked
-  library (today follows `#[export]`), and structs/consts in the interface (inc4). P5
-  (generics through the interface) and the stdlib-as-`std.lib` endgame (retiring
-  whole-program `concatenate_stdlib`) remain.
+  no separate import library). inc3f auto-generates `<base>_ffi.ax` (a `pub extern "C" from`
+  binding per exported fn) when building a DLL, so a consumer `import`s ONE file. inc3g makes
+  a **`library`-marked** module export its FULL public API when built as a DLL (every `pub`
+  fn, not just `#[export]`) so the `.dll` surface matches the `.lib` and the FFI wrapper;
+  unmarked `--shared` keeps the `#[export]`-only behavior. Remaining under P4: structs/consts
+  in the interface (inc4). P5 (generics through the interface) and the stdlib-as-`std.lib`
+  endgame (retiring whole-program `concatenate_stdlib`) remain.
 - **Author:** self-host team
 - **Tracking:** follows [[0009-ffi-dynamic-linking]] (P1 import / P2 export shipped);
   addresses the "compile chậm" (slow build) thread from the perf session.

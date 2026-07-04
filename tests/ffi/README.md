@@ -99,6 +99,25 @@ Consumers then choose: static-link the `.lib` (`-l`, code embedded) or bind the 
 dynamically (`extern "C" from "axmath.dll"`). The DLL exports follow `#[export]`; the
 `.lib` exposes every defined symbol.
 
+## `library`-marked DLL exports its full public API (RFC 0011 P4)
+
+A module with the `library` marker at the top (e.g. `library libapi`) exports EVERY
+`pub` function when built as a DLL — no `#[export]` needed — so the `.dll` surface
+matches the `.lib` and the auto-generated FFI wrapper. Unmarked `--shared` keeps the
+`#[export]`-only behavior (backward compatible).
+
+```sh
+# libapi.ax has `library libapi` + two plain `pub fn`s (no #[export])
+../../bin/axc_native.exe build libapi.ax -o libapi.dll --shared --no-stdlib -self-link -O1
+objdump -p libapi.dll | grep -A4 "Ordinal   Hint"   # BOTH lib_add and lib_sub exported
+cat libapi_ffi.ax                                    # wrapper binds BOTH pub fns
+
+# consumer imports the wrapper and calls the DLL by name
+../../bin/axc_native.exe build libapi_use.ax -o libapi_use.exe -self-link -O1
+cp ../../bin/ax_runtime.dll .
+./libapi_use.exe ; echo "exit=$?"   # expect exit=34  ((40+2)-8), libapi.dll in .idata
+```
+
 ## Auto-generated FFI wrapper for a DLL (RFC 0011 P4 inc3f)
 
 Building a DLL also emits `<base>_ffi.ax` — `pub extern "C" from "<dll>"` bindings for every

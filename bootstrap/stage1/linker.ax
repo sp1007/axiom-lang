@@ -1177,8 +1177,10 @@ pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], t
 // `#[export]`ed function it emits `pub extern "C" from "<dll>" fn <name>(p0: T0, …) -> T`,
 // so a consumer `import`s ONE wrapper instead of hand-writing an extern per function. Types
 // use the interface tokens (primitive sigs today). `dll_filename` is the bare DLL name used
-// in the `from` clause (resolved by the OS loader at runtime).
-pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable], dll_filename: str) -> str:
+// in the `from` clause (resolved by the OS loader at runtime). When `export_all` is true
+// (a `library`-marked module) every pub fn is bound so the wrapper matches the DLL's full
+// public API; otherwise only `#[export]`ed functions are bound (RFC 0009 P2 behavior).
+pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable], dll_filename: str, export_all: bool) -> str:
     mut bv := new_byte_vec()
     iface_push_str(&bv, "// Auto-generated FFI bindings for ")
     iface_push_str(&bv, dll_filename)
@@ -1190,12 +1192,13 @@ pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool],
         let sym_tid = symtable.symbols.data[si].type_id
         let sym_nid = symtable.symbols.data[si].name_id
         if sym_kind == SYM_FUNC and (sym_flags & SYM_FLAG_PUB) != 0 as u16 and sym_tid != 0 as u32:
-            mut is_exp := false
-            mut ek := 0 as i64
-            while ek < symtable.export_syms.len:
-                if symtable.export_syms.data[ek] == sym_nid:
-                    is_exp = true
-                ek = ek + 1
+            mut is_exp := export_all
+            if not export_all:
+                mut ek := 0 as i64
+                while ek < symtable.export_syms.len:
+                    if symtable.export_syms.data[ek] == sym_nid:
+                        is_exp = true
+                    ek = ek + 1
             if is_exp and (sym_tid as i64) < types.entries.len and types.entries.data[sym_tid].kind == TYPE_KIND_FUNC:
                 let f_idx = types.entries.data[sym_tid].extra
                 if (f_idx as i64) < types.funcs.len:
