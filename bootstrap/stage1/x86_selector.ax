@@ -598,7 +598,21 @@ pub fn regalloc_is_16byte_cached(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[Typ
                     let type_id = inst.type_id as u32
                     if type_id < table.entries.len as u32:
                         let size = table.entries.data[type_id].size
-                        if size == 16 as u32:
+                        // BUG#56: a tagged pointer-repr value (sum/option/result,
+                        // kinds 6/11/12) has size 16 (box = [tag,payload]) but its
+                        // vreg holds the 8-byte BOX POINTER, not 16 inline bytes.
+                        // This case defines e.g. an OP_GET_FIELD dest; without the
+                        // guard a sum-typed field load reported 16-byte, so the spill
+                        // reload used LEA(&slot) instead of MOV(slot→reg) when the reg
+                        // was later a GET_FIELD base — reading the slot ADDRESS as the
+                        // box, i.e. a nested-sum payload extraction miscompile. Only
+                        // these tagged kinds are excluded; size-16 struct/array/tuple
+                        // handling is unchanged (they keep the prior classification).
+                        mut tk := 0 as u8
+                        if type_id < table.entries.len as u32:
+                            tk = table.entries.data[type_id].kind
+                        let is_tagged_ptr = tk == 6 as u8 or tk == 11 as u8 or tk == 12 as u8
+                        if size == 16 as u32 and not is_tagged_ptr:
                             return true
                     return false
         i = i + 1

@@ -1,0 +1,37 @@
+// Regression (BUG#56, native backend): a variant whose PAYLOAD is itself a sum
+// (`Wrap(Inner)`). Extracting the payload in a match arm (`Wrap(i)`) and then
+// USING it (a nested match, or passing it to a function) must load the inner box
+// POINTER, not the address of its spill slot.
+//
+// Root cause was in x86_selector.regalloc_is_16byte: a sum/option/result value
+// has box size 16 ([tag,payload]) but its register holds an 8-byte box pointer
+// (pointer-repr). The default classifier reported such a GET_FIELD result as
+// 16-byte-inline, so once that register spilled and was reused as a GET_FIELD
+// base, the spill reload emitted LEA(&slot) instead of MOV(slot->reg) — reading
+// the slot address as the box and corrupting the extracted value. Pre-fix the
+// native backend returned 0 / garbage here; the C backend was always correct.
+type Inner = A | B
+type Outer = Wrap(Inner) | Empty
+
+fn describe_inner(i: Inner) -> string:
+    match i:
+        A:
+            return "inner-A"
+        B:
+            return "inner-B"
+
+fn main() -> i32:
+    let o = Wrap(B)
+    match o:
+        Wrap(i):
+            // nested match on the extracted sum payload
+            match i:
+                A:
+                    println("nested-A")
+                B:
+                    println("nested-B")
+            // and pass the extracted payload to a function
+            println(describe_inner(i))
+        Empty:
+            println("empty")
+    return 0
