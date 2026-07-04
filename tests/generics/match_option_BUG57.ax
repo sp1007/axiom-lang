@@ -1,0 +1,28 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#57, native backend). Tracks a silent miscompile.
+//
+// `match` on a builtin Option/Result scrutinee (a bare `Some(x)`/`None`/`Ok`/`Err`,
+// TYPE_KIND_OPTION=11 / TYPE_KIND_RESULT=12) generates NO code on the native
+// backend: `lower_match` (air_builder.ax) only handles TYPE_KIND_SUM (user ADTs,
+// kind 6) and integer scrutinees, and returns early for kinds 11/12. The match
+// becomes a no-op, so the arm result is whatever value is left in the return
+// register — here `match Some(42)` returns 0 instead of 42.
+//
+// This is NOT the user-sum path (that works — cf. nested_sum_payload.ax). Option/
+// Result use a POINTER-tagged layout — None = null, Some = box pointer (payload at
+// [box+0]); Ok = even box, Err = box|1 — so they need their own null/low-bit tag
+// dispatch, not the user-sum "tag at field 0" logic. The C backend (bin/axc.exe)
+// compiles this correctly (returns 42). Pre-existing; found 2026-07-04 while
+// fixing BUG#54/55/56. Remove the SKIP when native gains Option/Result match.
+//
+// NOTE: `let x = Option.Some(7)` (qualified) happens to return 7, but only because
+// the constructed value is coincidentally left in the return register — the match
+// still emits no dispatch. Do not mistake that for working.
+fn make() -> Option[i32]:
+    return Some(42)
+
+fn main() -> i32:
+    match make():
+        Some(v):
+            return v
+        None:
+            return 0
