@@ -123,3 +123,18 @@ lvalue-alias (OP_INDEX / GET_FIELD trả địa chỉ / DEREF):
 - Fix targeted BUG#51 gỡ được mà t_mathx vẫn 28/28.
 - Self-build time tăng ≤15% so với baseline 8s.
 - Full regression + fixpoint GREEN trên native driver.
+
+## 8. Audit sơ bộ write-through (2026-07-03)
+
+Quét bootstrap/stage1 tìm `let/mut x := <vec>.data[i]` (aggregate) rồi ghi `x.field = ...`:
+- Đa số hit là **con trỏ tường minh** `let x = &arr.data[i]` (vd air.ax:277 `&self.blocks.data[..]`,
+  linker.ax:866 `&obj.relocs.data[..]`) — RFC 0010 **KHÔNG đụng** (giữ alias). An toàn.
+- Các **value-bind** (không `&`) kiểm mẫu (air_builder.ax:642/653/1305/1526, v.v.): đều
+  **chỉ ĐỌC** field (`if sym.kind == ...`, `sym.name_id`); ghi-lại luôn qua **direct-index**
+  `self.symtable.symbols.data[idx].type_id = X` (xác nhận ở typecheck.ax). Không có
+  write-through-qua-value-bind.
+- **Kết luận sơ bộ:** style codebase = "value-bind để đọc, direct-index để ghi" ⟹ flip
+  copy-semantics **có vẻ an toàn** (không phá write-through). NHƯNG chưa rà nghiêm ngặt
+  toàn bộ 196 site (grep cross-line khó tự động; cần pass tay hoặc tool AST). **Điều kiện
+  tiên quyết P1:** hoàn tất audit này (mọi value-bind aggregate → xác nhận read-only HOẶC
+  đổi sang `&`) trước khi bật copy trong lower_let.
