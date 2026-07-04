@@ -1,0 +1,22 @@
+// Regression: qualified nullary-variant construction `EnumType.Variant`
+// (e.g. `Color.Blue`). Before the fix this lowered to an OP_GET_FIELD on the
+// type name, read a garbage receiver, and segfaulted at runtime. It must now
+// build the same tagged value a bare `Blue` does — as a local, as a direct
+// call argument, and interchangeably with the bare form.
+type Color = Red | Green | Blue
+
+fn describe(c: Color) -> string:
+    match c:
+        Red:
+            return "red"
+        Green:
+            return "green"
+        Blue:
+            return "blue"
+
+fn main() -> i32:
+    let c = Color.Blue
+    println(describe(c))              // qualified, via local
+    println(describe(Color.Red))     // qualified, direct call argument
+    println(describe(Green))         // bare form still works
+    return 0
