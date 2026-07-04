@@ -1446,6 +1446,7 @@ pub const FLAG_IS_GENERIC: u16 = 512
 pub const FLAG_IS_MOVED: u16 = 1024
 pub const FLAG_IS_SUBSTITUTED: u16 = 2048
 pub const FLAG_IS_RESOLVED: u16 = 4096
+pub const FLAG_FROM_DLL: u16 = 8192 // RFC 0009: extern "C" from "x.dll" â€” dll_name_id stored in AstNode.extra_idx
 
 pub const NULL_IDX: u32 = 0
 
@@ -3229,11 +3230,33 @@ pub fn parse_extern_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
     // Expect ABI string literal, e.g. "C"
     self.expect(TK_STRING_LIT)
 
+    // RFC 0009: optional `from "lib.dll"` DLL binding. `from` lexes as TK_IDENT
+    // (contextual keyword). String-lit token includes both surrounding quotes.
+    mut dll_name_id := 0 as u32
+    let peeked = self.peek()
+    if peeked.kind == TK_IDENT:
+        let ptext = self.token_text(peeked)
+        if ptext == "from":
+            self.consume() // consume 'from'
+            let dll_tok = self.expect(TK_STRING_LIT)
+            let raw = self.token_text(dll_tok)
+            let raw_len = std.string.len(raw)
+            if raw_len >= 2:
+                let inner_ptr = ((raw as ptr[u8]) as i64 + 1) as ptr[u8]
+                let inner = alloc_str_from_raw(inner_ptr, raw_len - 2)
+                dll_name_id = self.pool.intern(inner)
+                @free(inner as ptr[u8])
+            @free(raw as ptr[u8])
+        @free(ptext as ptr[u8])
+
     let fn_tok = self.expect(TK_FN)
     let node = self.tree.add_node(NODE_FUNC_DECL, self.token_idx(fn_tok))
     self.set_flags(node, FLAG_IS_EXTERN as u16)
     if is_pub:
         self.set_flags(node, FLAG_IS_PUB as u16)
+    if dll_name_id != 0 as u32:
+        self.tree.nodes.data[node].extra_idx = dll_name_id
+        self.set_flags(node, FLAG_FROM_DLL)
 
     let name_tok = self.expect(TK_IDENT)
     let name_text = self.token_text(name_tok)
@@ -3707,6 +3730,9 @@ pub struct SymbolTable:
     pub current_tree: ptr[AstTree]
     pub symbol_trees: AstTreePtrVec
     pub intern: ptr[void]
+    // RFC 0009: FFI dynamic-linking. Parallel arrays: extern fn name_id -> dll name_id.
+    pub dll_bind_syms: U32Vec
+    pub dll_bind_dlls: U32Vec
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -3717,6 +3743,8 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.current_tree = null as ptr[AstTree]
     st.symbol_trees = new_ast_tree_ptr_vec()
     st.intern = intern as ptr[void]
+    st.dll_bind_syms = new_u32_vec()
+    st.dll_bind_dlls = new_u32_vec()
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
@@ -3991,6 +4019,10 @@ pub fn pre_define_top_levels(mut self: ptr[NameResolver]):
             if (flags & FLAG_IS_GENERIC) != 0 as u16:
                 sym_flags = sym_flags | SYM_FLAG_GENERIC
             self.symtable.define(name_id, SYM_FUNC, sym_flags, child)
+            // RFC 0009: record extern "C" from "x.dll" bindings (dll_name_id in extra_idx)
+            if (flags & FLAG_FROM_DLL) != 0 as u16:
+                self.symtable.dll_bind_syms.push(name_id)
+                self.symtable.dll_bind_dlls.push(child_node.extra_idx)
         elif kind == NODE_STRUCT_DECL:
             let name_id = child_node.payload
             mut sym_flags := 0 as u16
@@ -23242,12 +23274,59 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
 // Unified Linker Implementation
 // --------------------------------------------------------------------------
 
+// RFC 0009: per-DLL import bucket for user `extern "C" from "x.dll"` symbols.
+// Built-in DLLs (kernel32/ax_runtime/ucrtbase) keep their dedicated code path;
+// user DLLs are handled additively via a vector of these buckets.
+pub struct UserDllBucket:
+    pub name: str            // DLL filename, e.g. "anylib.dll"
+    pub imports: LinkerStrVec // imported symbol names
+    pub iat_offset: i64      // offset within idata_buf (computed during layout)
+    pub ilt_offset: i64
+    pub name_offset: i64
+    pub hn_rvas: ptr[u32]    // hint-name RVAs, one per import
+
+pub struct UserDllBucketVec:
+    pub data: ptr[UserDllBucket]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_user_dll_bucket_vec() -> UserDllBucketVec:
+    return UserDllBucketVec(data: null as ptr[UserDllBucket], len: 0, cap: 0)
+
+pub fn push_user_dll_bucket(mut self: ptr[UserDllBucketVec], b: UserDllBucket):
+    if self.len == self.cap:
+        mut new_cap := 8 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let esize = @compiler_intrinsic("size_of")[UserDllBucket]()
+        let new_data = @alloc(new_cap * esize) as ptr[UserDllBucket]
+        if self.data != null as ptr[UserDllBucket]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * esize)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = b
+    self.len = self.len + 1
+
+// Find the bucket index for dll_name, creating a new empty bucket if absent.
+pub fn user_bucket_find_or_add(mut buckets: ptr[UserDllBucketVec], dll_name: str) -> i64:
+    mut i := 0 as i64
+    while i < buckets.len:
+        if buckets.data[i].name == dll_name:
+            return i
+        i = i + 1
+    push_user_dll_bucket(buckets, UserDllBucket(name: dll_name, imports: new_linker_str_vec(), iat_offset: 0, ilt_offset: 0, name_offset: 0, hn_rvas: null as ptr[u32]))
+    return buckets.len - 1
+
 pub struct AxiomLinker:
     pub input_files: LinkerStrVec
     pub output_path: str
+    // RFC 0009: parallel arrays mapping a user extern symbol name -> its DLL name.
+    pub user_dll_syms: LinkerStrVec
+    pub user_dll_names: LinkerStrVec
 
 pub fn new_axiom_linker() -> AxiomLinker:
-    return AxiomLinker(input_files: new_linker_str_vec(), output_path: "")
+    return AxiomLinker(input_files: new_linker_str_vec(), output_path: "", user_dll_syms: new_linker_str_vec(), user_dll_names: new_linker_str_vec())
 
 
 pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
@@ -23339,6 +23418,16 @@ pub fn add_unique_import(imports: ptr[LinkerStrVec], name: str):
         i = i + 1
     if not found:
         push_linker_str(imports, name)
+
+// RFC 0009: return the user-declared DLL for `name` (from `extern "C" from`),
+// or "" if the symbol has no explicit binding (falls back to whitelist).
+pub fn user_dll_for_symbol(self: ptr[AxiomLinker], name: str) -> str:
+    mut i := 0 as i64
+    while i < self.user_dll_syms.len:
+        if self.user_dll_syms.data[i] == name:
+            return self.user_dll_names.data[i]
+        i = i + 1
+    return ""
 
 pub fn write_buf_u32_le(data: ptr[u8], off: i64, val: u32):
     data[off] = (val & 0xFF as u32) as u8
@@ -23659,7 +23748,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut kernel32_imports := new_linker_str_vec()
     mut ax_runtime_imports := new_linker_str_vec()
     mut ucrtbase_imports := new_linker_str_vec()
-    
+    mut user_buckets := new_user_dll_bucket_vec() // RFC 0009: per-DLL user extern imports
+
     i = 0
     while i < objects.len:
         let obj = objects.data[i]
@@ -23678,24 +23768,37 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         search = search + 1
                     
                     if not is_defined:
-                        let dll = get_dll_for_symbol(target_name)
-                        let name_nt = x86_str_to_null_terminated(target_name)
-                        ax_printf_local("[Debug Linker Import] DLL=%s, symbol=%s\n", get_str_ptr(dll) as i64, name_nt as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                        @free(name_nt)
-                        if dll == "kernel32.dll":
-                            add_unique_import(&kernel32_imports, target_name)
-                        elif dll == "ax_runtime.dll":
-                            add_unique_import(&ax_runtime_imports, target_name)
-                        elif dll == "none" or dll == "":
-                            // Skip dynamic import for dummy/clashed field symbols
-                            is_defined = true
+                        let user_dll = user_dll_for_symbol(self, target_name)
+                        if user_dll != "":
+                            // RFC 0009: explicit `extern "C" from "x.dll"` binding.
+                            let ub = user_bucket_find_or_add(&user_buckets, user_dll)
+                            add_unique_import(&user_buckets.data[ub].imports, target_name)
                         else:
-                            add_unique_import(&ucrtbase_imports, target_name)
+                            let dll = get_dll_for_symbol(target_name)
+                            let name_nt = x86_str_to_null_terminated(target_name)
+                            ax_printf_local("[Debug Linker Import] DLL=%s, symbol=%s\n", get_str_ptr(dll) as i64, name_nt as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            @free(name_nt)
+                            if dll == "kernel32.dll":
+                                add_unique_import(&kernel32_imports, target_name)
+                            elif dll == "ax_runtime.dll":
+                                add_unique_import(&ax_runtime_imports, target_name)
+                            elif dll == "none" or dll == "":
+                                // Skip dynamic import for dummy/clashed field symbols
+                                is_defined = true
+                            else:
+                                add_unique_import(&ucrtbase_imports, target_name)
 
             r_i = r_i + 1
         i = i + 1
         
     mut thunk_count := kernel32_imports.len + ax_runtime_imports.len + ucrtbase_imports.len
+    // RFC 0009: user-DLL imports also get thunks + IAT slots
+    mut user_total_imports := 0 as i64
+    mut ubc_i := 0 as i64
+    while ubc_i < user_buckets.len:
+        user_total_imports = user_total_imports + user_buckets.data[ubc_i].imports.len
+        ubc_i = ubc_i + 1
+    thunk_count = thunk_count + user_total_imports
     
     // 3. Section Layout
     mut merged_code := new_byte_vec()
@@ -23755,7 +23858,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             K = K + 1
         if has_ucrtbase:
             K = K + 1
-            
+        K = K + user_buckets.len // RFC 0009: one IDT descriptor per user DLL
+
         let idt_size = (K + 1) * 20
         iat_offset = (idt_size + 7) & ~7
         
@@ -23782,7 +23886,13 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             ucrtbase_iat_offset = cur_iat_offset
             ucrtbase_iat_size = (ucrtbase_imports.len + 1) * 8
             cur_iat_offset = cur_iat_offset + ucrtbase_iat_size
-            
+
+        mut ub_i := 0 as i64
+        while ub_i < user_buckets.len:
+            user_buckets.data[ub_i].iat_offset = cur_iat_offset
+            cur_iat_offset = cur_iat_offset + (user_buckets.data[ub_i].imports.len + 1) * 8
+            ub_i = ub_i + 1
+
         total_iat_size = cur_iat_offset - iat_offset
         let ilt_offset = iat_offset + total_iat_size
         mut cur_ilt_offset := ilt_offset
@@ -23807,7 +23917,13 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             ucrtbase_ilt_offset = cur_ilt_offset
             ucrtbase_ilt_size = (ucrtbase_imports.len + 1) * 8
             cur_ilt_offset = cur_ilt_offset + ucrtbase_ilt_size
-            
+
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            user_buckets.data[ub_i].ilt_offset = cur_ilt_offset
+            cur_ilt_offset = cur_ilt_offset + (user_buckets.data[ub_i].imports.len + 1) * 8
+            ub_i = ub_i + 1
+
         let total_ilt_size = cur_ilt_offset - ilt_offset
         let dll_names_offset = ilt_offset + total_ilt_size
         mut cur_offset := dll_names_offset
@@ -23826,7 +23942,13 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         if has_ucrtbase:
             ucrtbase_name_offset = cur_offset
             cur_offset = cur_offset + 13
-            
+
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            user_buckets.data[ub_i].name_offset = cur_offset
+            cur_offset = cur_offset + std.string.len(user_buckets.data[ub_i].name) + 1
+            ub_i = ub_i + 1
+
         mut hint_name_start_offset := cur_offset
         if hint_name_start_offset % 2 != 0:
             hint_name_start_offset = hint_name_start_offset + 1
@@ -23894,7 +24016,32 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 if (len + 3) % 2 != 0:
                     push_byte(&idata_buf, 0 as u8)
                 j = j + 1
-                
+
+        // RFC 0009: hint-name entries for user-DLL imports
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            let imp = user_buckets.data[ub_i].imports
+            let nimp = imp.len
+            let hn = @alloc(nimp * 4) as ptr[u32]
+            user_buckets.data[ub_i].hn_rvas = hn
+            mut j := 0 as i64
+            while j < nimp:
+                hn[j] = (idata_rva as i64 + idata_buf.len) as u32
+                push_byte(&idata_buf, 0 as u8)
+                push_byte(&idata_buf, 0 as u8)
+                let name = imp.data[j]
+                let len = std.string.len(name)
+                let ptr = get_str_ptr(name)
+                mut c_i := 0 as i64
+                while c_i < len:
+                    push_byte(&idata_buf, ptr[c_i])
+                    c_i = c_i + 1
+                push_byte(&idata_buf, 0 as u8)
+                if (len + 3) % 2 != 0:
+                    push_byte(&idata_buf, 0 as u8)
+                j = j + 1
+            ub_i = ub_i + 1
+
         // Write active DLL names
         if has_kernel32:
             let name_ptr = "kernel32.dll" as ptr[u8]
@@ -23919,7 +24066,21 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 idata_buf.data[ucrtbase_name_offset as i64 + c_i] = name_ptr[c_i]
                 c_i = c_i + 1
             idata_buf.data[ucrtbase_name_offset as i64 + 12] = 0 as u8
-            
+
+        // RFC 0009: write user DLL name strings
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            let nm = user_buckets.data[ub_i].name
+            let noff = user_buckets.data[ub_i].name_offset
+            let nlen = std.string.len(nm)
+            let np = get_str_ptr(nm)
+            mut c_i := 0 as i64
+            while c_i < nlen:
+                idata_buf.data[noff + c_i] = np[c_i]
+                c_i = c_i + 1
+            idata_buf.data[noff + nlen] = 0 as u8
+            ub_i = ub_i + 1
+
         // Write ILT and IAT entries
         if has_kernel32:
             mut j := 0 as i64
@@ -23950,7 +24111,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 j = j + 1
             write_buf_u64_le(idata_buf.data, ucrtbase_iat_offset as i64 + ucrtbase_imports.len * 8, 0 as u64)
             write_buf_u64_le(idata_buf.data, ucrtbase_ilt_offset as i64 + ucrtbase_imports.len * 8, 0 as u64)
-            
+
+        // RFC 0009: write user-DLL ILT/IAT entries
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            let imp = user_buckets.data[ub_i].imports
+            let hn = user_buckets.data[ub_i].hn_rvas
+            let iato = user_buckets.data[ub_i].iat_offset
+            let ilto = user_buckets.data[ub_i].ilt_offset
+            mut j := 0 as i64
+            while j < imp.len:
+                let val = hn[j] as u64
+                write_buf_u64_le(idata_buf.data, iato + j * 8, val)
+                write_buf_u64_le(idata_buf.data, ilto + j * 8, val)
+                j = j + 1
+            write_buf_u64_le(idata_buf.data, iato + imp.len * 8, 0 as u64)
+            write_buf_u64_le(idata_buf.data, ilto + imp.len * 8, 0 as u64)
+            ub_i = ub_i + 1
+
         // Write IDT entries
         mut entry_idx := 0 as i64
         if has_kernel32:
@@ -23988,7 +24166,22 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             write_buf_u32_le(idata_buf.data, off + 12, name_rva)
             write_buf_u32_le(idata_buf.data, off + 16, iat_rva)
             entry_idx = entry_idx + 1
-            
+
+        // RFC 0009: IDT descriptors for user DLLs
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            let u_ilt_rva = (idata_rva as i64 + user_buckets.data[ub_i].ilt_offset) as u32
+            let u_name_rva = (idata_rva as i64 + user_buckets.data[ub_i].name_offset) as u32
+            let u_iat_rva = (idata_rva as i64 + user_buckets.data[ub_i].iat_offset) as u32
+            let uoff = entry_idx * 20
+            write_buf_u32_le(idata_buf.data, uoff, u_ilt_rva)
+            write_buf_u32_le(idata_buf.data, uoff + 4, 0 as u32)
+            write_buf_u32_le(idata_buf.data, uoff + 8, 0 as u32)
+            write_buf_u32_le(idata_buf.data, uoff + 12, u_name_rva)
+            write_buf_u32_le(idata_buf.data, uoff + 16, u_iat_rva)
+            entry_idx = entry_idx + 1
+            ub_i = ub_i + 1
+
         let off = entry_idx * 20
         write_buf_u32_le(idata_buf.data, off, 0 as u32)
         write_buf_u32_le(idata_buf.data, off + 4, 0 as u32)
@@ -24059,9 +24252,35 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             
             push_linker_str(&dyn_sym_names, sym_name)
             dyn_sym_rvas[thunk_i] = th_rva
-            
+
             thunk_i = thunk_i + 1
             u_j = u_j + 1
+
+        // RFC 0009: thunks for user-DLL imports (name-based reloc resolves via dyn_sym_names)
+        ub_i = 0
+        while ub_i < user_buckets.len:
+            let imp = user_buckets.data[ub_i].imports
+            let iato = user_buckets.data[ub_i].iat_offset
+            mut j := 0 as i64
+            while j < imp.len:
+                let sym_name = imp.data[j]
+                let th_rva = thunks_rva + thunk_i as u32 * 6 as u32
+                let iat_rva_sym = idata_rva as u32 + iato as u32 + j as u32 * 8 as u32
+                let disp32 = (iat_rva_sym as i32 - (th_rva + 6 as u32) as i32) as u32
+
+                push_byte(&merged_code, 0xFF as u8)
+                push_byte(&merged_code, 0x25 as u8)
+                push_byte(&merged_code, (disp32 & 0xFF as u32) as u8)
+                push_byte(&merged_code, ((disp32 >> 8 as u32) & 0xFF as u32) as u8)
+                push_byte(&merged_code, ((disp32 >> 16 as u32) & 0xFF as u32) as u8)
+                push_byte(&merged_code, ((disp32 >> 24 as u32) & 0xFF as u32) as u8)
+
+                push_linker_str(&dyn_sym_names, sym_name)
+                dyn_sym_rvas[thunk_i] = th_rva
+
+                thunk_i = thunk_i + 1
+                j = j + 1
+            ub_i = ub_i + 1
 
     // Construct dyn_buf for ELF64
     mut dyn_buf := new_byte_vec()
@@ -25973,6 +26192,15 @@ pub fn main() -> i32:
             mut linker := new_axiom_linker()
             axiom_linker_add_input(&linker, temp_obj)
             linker.output_path = output_file
+            // RFC 0009: resolve extern-from-DLL bindings (name_id pairs) into string
+            // pairs for the linker's per-symbol DLL attribution.
+            mut bind_i := 0 as i64
+            while bind_i < resolver.symtable.dll_bind_syms.len:
+                let sym_id = resolver.symtable.dll_bind_syms.data[bind_i]
+                let dll_id = resolver.symtable.dll_bind_dlls.data[bind_i]
+                push_linker_str(&linker.user_dll_syms, parser.pool.get(sym_id))
+                push_linker_str(&linker.user_dll_names, parser.pool.get(dll_id))
+                bind_i = bind_i + 1
             let link_success = axiom_linker_link(&linker)
             t_mark = time_phase(show_time, "self-link", t_mark)
             ax_puts_local("[Debug] Stage 6: Finished self-linking.")

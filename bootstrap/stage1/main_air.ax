@@ -862,6 +862,15 @@ pub fn main() -> i32:
             mut linker := new_axiom_linker()
             axiom_linker_add_input(&linker, temp_obj)
             linker.output_path = output_file
+            // RFC 0009: resolve extern-from-DLL bindings (name_id pairs) into string
+            // pairs for the linker's per-symbol DLL attribution.
+            mut bind_i := 0 as i64
+            while bind_i < resolver.symtable.dll_bind_syms.len:
+                let sym_id = resolver.symtable.dll_bind_syms.data[bind_i]
+                let dll_id = resolver.symtable.dll_bind_dlls.data[bind_i]
+                push_linker_str(&linker.user_dll_syms, parser.pool.get(sym_id))
+                push_linker_str(&linker.user_dll_names, parser.pool.get(dll_id))
+                bind_i = bind_i + 1
             let link_success = axiom_linker_link(&linker)
             t_mark = time_phase(show_time, "self-link", t_mark)
             ax_puts_local("[Debug] Stage 6: Finished self-linking.")

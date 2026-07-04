@@ -1,7 +1,9 @@
 # RFC 0009 — FFI dynamic linking (tiêu thụ & sản xuất DLL/.so/.dylib)
 
-- **Status:** Accepted (2026-07-03, user-approved) — P1 frontend prototyped; linker
-  integration scoped (§10, large careful change deferred to a focused effort)
+- **Status:** Accepted (2026-07-03) — **P1 SHIPPED 2026-07-04** (import PE: parse
+  `extern "C" from "x.dll"` → per-symbol DLL attribution → N-DLL `.idata`; verified
+  end-to-end with a gcc-built DLL, fixpoint + zero-regression). P2 (export/`--shared`)
+  and P3 (ELF/Mach-O) remain.
 - **Author:** self-host team
 - **Tracking:** #FFI — follows BUG#49 (bare function pointers), p12-t04 (dynamic-linking task)
 - **Liên quan:** parser (`parse_extern_decl`), AST/symbol metadata, resolver
@@ -234,3 +236,27 @@ plan §10 nhắm ĐÚNG file. `AxiomLinker` struct (linker.ax:443) chỉ có
 main_air (resolve `symtable.dll_bind_syms/dlls` qua `pool.get` thành `[sym,dll]`)
 TRƯỚC `axiom_linker_link`. **Còn lại đúng 1 việc: N-DLL `.idata` trong hàm 870 dòng
 đó** (§10 7-điểm-chèn) — focused effort riêng, cần byte-perfect PE + fixpoint.
+
+## 12. P1 SHIPPED — implementation record (2026-07-04)
+
+Frontend §11 re-applied verbatim + linker N-DLL `.idata` landed **additively** (không
+blind-rewrite theo CLAUDE.md §16): 3 bucket built-in (kernel32/ax_runtime/ucrtbase) giữ
+NGUYÊN từng dòng; user DLL xử lý qua `UserDllBucketVec` với vòng lặp `while ub_i <
+user_buckets.len` chèn sau MỖI section built-in (IAT/ILT/tên-DLL/hint-name/IDT/thunk).
+Khi 0 user DLL (mọi build của chính compiler) các vòng dormant ⇒ output **byte-identical**
+⇒ fixpoint tự giữ. Verify tăng-dần: (A) frontend-only fixpoint, (B) linker fixpoint
+(s2==s3=99C8EAA8…), (C) end-to-end.
+
+**Luồng dữ liệu:** `resolver.SymbolTable.dll_bind_syms/dll_bind_dlls` (name_id) →
+main_air resolve qua `parser.pool.get` → `AxiomLinker.user_dll_syms/user_dll_names`
+(cặp chuỗi) → routing loop `user_dll_for_symbol` route vào `user_bucket_find_or_add`
+thay vì whitelist → thunk `FF 25` + push `dyn_sym_names` (reloc name-based tự patch).
+
+**Test (scratch/ffi/):** `axffi_lib.c` (gcc `-shared` → `ffi_add`/`ffi_mul`) +
+`t_ffi.ax` (`extern "C" from "axffi_lib.dll"`, 2 symbol/1 DLL) → exit 84 = (40+2)*2;
+objdump xác nhận IDT descriptor thứ-4 `axffi_lib.dll` + hint-name; negative test (xoá
+DLL) → `0xC0000135 STATUS_DLL_NOT_FOUND` ⇒ dynamic-link thật. Regression run+err mode:
+5/14/62 và 11-err **y hệt baseline** (0 hồi quy).
+
+**Giới hạn P1:** chỉ COFF/PE. ELF path giữ nguyên built-in (user bucket không emit qua
+`.dynamic` — out-of-scope, khớp §10). DLL phải tìm được lúc load (thư mục exe/PATH).

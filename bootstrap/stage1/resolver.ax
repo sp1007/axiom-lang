@@ -388,6 +388,9 @@ pub struct SymbolTable:
     pub current_tree: ptr[AstTree]
     pub symbol_trees: AstTreePtrVec
     pub intern: ptr[void]
+    // RFC 0009: FFI dynamic-linking. Parallel arrays: extern fn name_id -> dll name_id.
+    pub dll_bind_syms: U32Vec
+    pub dll_bind_dlls: U32Vec
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -398,6 +401,8 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.current_tree = null as ptr[AstTree]
     st.symbol_trees = new_ast_tree_ptr_vec()
     st.intern = intern as ptr[void]
+    st.dll_bind_syms = new_u32_vec()
+    st.dll_bind_dlls = new_u32_vec()
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
@@ -672,6 +677,10 @@ pub fn pre_define_top_levels(mut self: ptr[NameResolver]):
             if (flags & FLAG_IS_GENERIC) != 0 as u16:
                 sym_flags = sym_flags | SYM_FLAG_GENERIC
             self.symtable.define(name_id, SYM_FUNC, sym_flags, child)
+            // RFC 0009: record extern "C" from "x.dll" bindings (dll_name_id in extra_idx)
+            if (flags & FLAG_FROM_DLL) != 0 as u16:
+                self.symtable.dll_bind_syms.push(name_id)
+                self.symtable.dll_bind_dlls.push(child_node.extra_idx)
         elif kind == NODE_STRUCT_DECL:
             let name_id = child_node.payload
             mut sym_flags := 0 as u16

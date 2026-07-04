@@ -1373,11 +1373,33 @@ pub fn parse_extern_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
     // Expect ABI string literal, e.g. "C"
     self.expect(TK_STRING_LIT)
 
+    // RFC 0009: optional `from "lib.dll"` DLL binding. `from` lexes as TK_IDENT
+    // (contextual keyword). String-lit token includes both surrounding quotes.
+    mut dll_name_id := 0 as u32
+    let peeked = self.peek()
+    if peeked.kind == TK_IDENT:
+        let ptext = self.token_text(peeked)
+        if ptext == "from":
+            self.consume() // consume 'from'
+            let dll_tok = self.expect(TK_STRING_LIT)
+            let raw = self.token_text(dll_tok)
+            let raw_len = std.string.len(raw)
+            if raw_len >= 2:
+                let inner_ptr = ((raw as ptr[u8]) as i64 + 1) as ptr[u8]
+                let inner = alloc_str_from_raw(inner_ptr, raw_len - 2)
+                dll_name_id = self.pool.intern(inner)
+                @free(inner as ptr[u8])
+            @free(raw as ptr[u8])
+        @free(ptext as ptr[u8])
+
     let fn_tok = self.expect(TK_FN)
     let node = self.tree.add_node(NODE_FUNC_DECL, self.token_idx(fn_tok))
     self.set_flags(node, FLAG_IS_EXTERN as u16)
     if is_pub:
         self.set_flags(node, FLAG_IS_PUB as u16)
+    if dll_name_id != 0 as u32:
+        self.tree.nodes.data[node].extra_idx = dll_name_id
+        self.set_flags(node, FLAG_FROM_DLL)
 
     let name_tok = self.expect(TK_IDENT)
     let name_text = self.token_text(name_tok)
