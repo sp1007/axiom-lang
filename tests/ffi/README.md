@@ -60,26 +60,28 @@ objdump -p app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbas
 
 ## Import-driven auto-library test (RFC 0011 P4 inc3b)
 
-`import x` auto-resolves a fresh `x.lib` — no `-l` needed. The compiler registers the
-library's public functions from its `__axiom_iface` member (typecheck against the
-interface, no source recompile) and the linker pulls the code from the `.lib`.
+With `--auto-lib`, `import x` finds-or-builds a fresh `x.lib` (no `-l`). The compiler
+registers the library's public functions from its `__axiom_iface` member (typecheck
+against the interface, no source recompile) and the linker pulls the code from the `.lib`.
+The flag is opt-in: without it, imports stay on the source path (AXIOM can't yet tell an
+app-module from a standalone library — an app-module may collide by name or need stdlib).
 
 ```sh
-# 1. Precompile the library (carries F triple 1 i32 -> i32 in __axiom_iface)
-../../bin/axc_native.exe build imp_mymath.ax -o imp_mymath.lib --staticlib --no-stdlib -self-link -O1
-../../bin/axc_native.exe iface imp_mymath.lib      # dumps raw + parsed round-trip
-
-# 2. Build the app WITHOUT -l — `import imp_mymath` finds imp_mymath.lib automatically
-../../bin/axc_native.exe build imp_app.ax -o imp_app.exe -self-link -O1
+# One command: --auto-lib builds imp_mymath.lib from source on first sight, caches it
+# (manifest hash), reuses it while unchanged, and rebuilds it when imp_mymath.ax changes.
+../../bin/axc_native.exe build imp_app.ax -o imp_app.exe --auto-lib -self-link -O1
 cp ../../bin/ax_runtime.dll .
-./imp_app.exe ; echo "exit=$?"     # expect exit=42
+./imp_app.exe ; echo "exit=$?"     # expect exit=42  (14*3, from the precompiled lib)
+../../bin/axc_native.exe iface imp_mymath.lib      # raw + parsed round-trip
 
-# 3. Negative: delete imp_mymath.lib and rebuild the app → falls back to compiling
-#    imp_mymath.ax from source (old behavior), still exit=42.
+# Or precompile the library by hand and let --auto-lib just reuse it:
+../../bin/axc_native.exe build imp_mymath.ax -o imp_mymath.lib --staticlib --no-stdlib -self-link -O1
 ```
 
-Note: build from a directory where both `std/*.ax` (for stdlib concat) and the `.lib` are
-found on the CWD-relative path the module name maps to (`import a.b` → `a/b.lib`).
+Libraries must be stdlib-free today (`--no-stdlib`, which `--auto-lib` uses); stdlib-using
+libraries await the separate-compilation stdlib cache (RFC 0011 §6). Build from a directory
+where both `std/*.ax` (stdlib concat) and the `.lib` resolve on the CWD-relative path the
+module name maps to (`import a.b` → `a/b.lib`).
 
 ## Multi-DLL test (RFC 0009 P1, N=2)
 

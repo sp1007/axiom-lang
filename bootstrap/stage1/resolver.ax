@@ -347,6 +347,10 @@ pub struct LazyResolver:
     symtable: ptr[SymbolTable]
     typetable: ptr[void]
     intern: ptr[void]
+    // RFC 0011 P4 inc3c: when true, `import x` resolves against a precompiled `x.lib`
+    // (register from its interface, link the archive) instead of the module source.
+    // Opt-in (`--auto-lib`) — see main_air ensure_import_libs; default keeps source path.
+    pub auto_lib: bool
 
 pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[LazyResolver]:
     let lr = @alloc(@compiler_intrinsic("size_of")[LazyResolver]()) as ptr[LazyResolver]
@@ -354,6 +358,7 @@ pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[L
     lr.symtable = symtable
     lr.typetable = null as ptr[void]
     lr.intern = intern
+    lr.auto_lib = false
     return lr
 
 pub struct AstTreePtrVec:

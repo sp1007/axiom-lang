@@ -579,6 +579,65 @@ fn file_exists(path: str) -> bool:
     fclose(f)
     return true
 
+// RFC 0011 P4 (increment 3c): auto-build / refresh a precompiled library per import.
+// Before resolution, for each non-`std.` `import x` whose source `x.ax` exists, ensure a
+// fresh `x.lib`: (re)build it via a self-invocation when the lib is missing or its manifest
+// hash no longer matches djb2(x.ax). The import-driven resolver (register_module_from_lib)
+// then binds x from the fresh interface and the linker pulls its code — so an unchanged
+// library is compiled ONCE and merely linked afterwards (the user's model: có→dùng,
+// không/đổi→biên dịch và tạo lib). Libraries must be stdlib-free today (--no-stdlib);
+// stdlib-using libs await the separate-compilation stdlib cache (RFC 0011 §6).
+fn ensure_import_libs(tree: ptr[AstTree], pool: ptr[InternPool], self_exe: str):
+    mut i := 0 as i64
+    while i < tree.nodes.len:
+        if tree.nodes.data[i].kind == NODE_IMPORT_DECL:
+            let name_id = tree.nodes.data[i].payload
+            let mod_name = pool.get(name_id)
+            if not std.string.starts_with(mod_name, "std."):
+                let rel = std.string.replace(mod_name, ".", "/")
+                let ax_path = std.string.concat(rel, ".ax")
+                let lib_path = std.string.concat(rel, ".lib")
+                if file_exists(ax_path):
+                    let src_x = read_file_content(ax_path)
+                    let h = djb2_hash_str(src_x)
+                    mut need_build := true
+                    if file_exists(lib_path):
+                        let man = std.string.concat(lib_path, ".manifest")
+                        let prev = read_lib_manifest_hash(man)
+                        @free(get_str_ptr(man))
+                        if prev == h:
+                            need_build = false
+                    if need_build:
+                        let p1 = std.string.concat("\"", self_exe)
+                        let p2 = std.string.concat(p1, "\" build \"")
+                        let p3 = std.string.concat(p2, ax_path)
+                        let p4 = std.string.concat(p3, "\" -o \"")
+                        let p5 = std.string.concat(p4, lib_path)
+                        let inner = std.string.concat(p5, "\" --staticlib --no-stdlib -self-link -O1")
+                        // Windows `cmd /c` strips the first/last quote of the command string
+                        // when it starts with a quote; wrap the whole thing in an outer pair
+                        // so the quoted exe/path arguments survive (cmd /c "…" convention).
+                        let wrapped = std.string.concat(std.string.concat("\"", inner), "\"")
+                        @free(get_str_ptr(p1))
+                        @free(get_str_ptr(p2))
+                        @free(get_str_ptr(p3))
+                        @free(get_str_ptr(p4))
+                        @free(get_str_ptr(p5))
+                        @free(get_str_ptr(inner))
+                        ax_puts_local("[import] building library from source:")
+                        ax_puts_local(ax_path)
+                        let cmd_nt = str_to_null_terminated(wrapped)
+                        let rc = system(cmd_nt as ptr[void])
+                        @free(cmd_nt)
+                        @free(get_str_ptr(wrapped))
+                        if rc != 0:
+                            ax_puts_local("[import] warning: library build failed; using source fallback")
+                    @free(get_str_ptr(src_x))
+                @free(get_str_ptr(ax_path))
+                @free(get_str_ptr(lib_path))
+                @free(get_str_ptr(rel))
+        i = i + 1
+
 pub fn main() -> i32:
     let argc_ptr = @alloc(4) as ptr[i32]
     argc_ptr[0] = 0 as i32
@@ -612,6 +671,9 @@ pub fn main() -> i32:
     mut is_shared := false  // RFC 0009 P2: --shared — emit a DLL with export table
     mut is_staticlib := false // RFC 0011 P1: --staticlib — emit a COFF .lib archive
     mut extra_libs := new_linker_str_vec() // RFC 0011 P2: -l <path> extra link inputs
+    mut auto_lib := false // RFC 0011 P4 inc3c: --auto-lib — auto-build/cache each non-std
+                          // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
+                          // (may collide/need stdlib) from a standalone library.
 
     // Parse commands
     let cmd = args[1]
@@ -686,6 +748,8 @@ pub fn main() -> i32:
             is_shared = true
         elif opt == "--staticlib":
             is_staticlib = true
+        elif opt == "--auto-lib":
+            auto_lib = true
         elif opt == "-l" or opt == "--link":
             if opt_idx + 1 < argc:
                 push_linker_str(&extra_libs, args[opt_idx as i64 + 1 as i64])
@@ -760,6 +824,14 @@ pub fn main() -> i32:
     // they resolve/typecheck/lower as ordinary functions (reusing fn-ptr lowering).
     lift_closures(parser.tree, parser.pool)
 
+    // RFC 0011 P4 (increment 3c): with --auto-lib, auto-(re)build any non-std import's
+    // `.lib` from source when missing/stale, so `import x` resolves against a fresh library
+    // instead of recompiling x every time. OPT-IN: auto-converting every import to a library
+    // is unsafe for app-modules that collide by name (BUG#50) or use stdlib, so the default
+    // leaves imports on the source path (existing user-built .libs are still auto-used).
+    if is_build and auto_lib:
+        ensure_import_libs(parser.tree, parser.pool, args[0])
+
     // 3. Resolve
     if not is_dump_air:
         ax_puts_local("[Debug] Creating symbol table...")
@@ -775,6 +847,7 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
     let lazy = new_lazy_resolver(symtable, parser.pool as ptr[void])
     lazy.typetable = typetable as ptr[void]
+    lazy.auto_lib = auto_lib // RFC 0011 P4 inc3c: enable import→.lib resolution (opt-in)
     symtable.lazy_resolver = lazy as ptr[void]
     
     if not self_link and not is_dump_air:
@@ -971,7 +1044,7 @@ pub fn main() -> i32:
             // was satisfied from a `<module>.lib` (register_module_from_lib) must have that
             // archive linked so its code is present. Re-derive the path from the module
             // name and add it when the file exists — mirrors the load-time decision.
-            if lazy != null as ptr[LazyResolver]:
+            if auto_lib and lazy != null as ptr[LazyResolver]:
                 mut ml_i := 0 as i64
                 while ml_i < lazy.modules.len:
                     let lmod = lazy.modules.data[ml_i]
@@ -1127,11 +1200,11 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     let rel_path = std.string.replace(mod_name, ".", "/")
     mut file_path := std.string.concat(rel_path, ".ax")
 
-    // RFC 0011 P4 (increment 3b): prefer a precompiled `<module>.lib` when present.
-    // Import-driven separate compilation — the library's code is pulled in by the linker
-    // (its path is threaded from lazy.modules), so its source is never recompiled.
+    // RFC 0011 P4 (increment 3b): under --auto-lib, prefer a precompiled `<module>.lib`
+    // when present. Import-driven separate compilation — the library's code is pulled in by
+    // the linker (its path is threaded from lazy.modules), so its source is never recompiled.
     let lib_path = std.string.concat(rel_path, ".lib")
-    if file_exists(lib_path):
+    if lazy.auto_lib and file_exists(lib_path):
         @free(get_str_ptr(rel_path))
         @free(get_str_ptr(file_path))
         let rc = register_module_from_lib(mod, st, tt as ptr[TypeTable], intern, lib_path, mod_name)
