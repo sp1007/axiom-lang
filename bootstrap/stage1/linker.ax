@@ -1093,7 +1093,7 @@ fn iface_push_int(out: ptr[ByteVec], val: i64):
 // slice recurse; everything else (structs, generics, sums) is a "?" placeholder until a
 // later increment teaches the interface to carry those declarations. The token must be
 // derivable identically by producer and consumer from the same primitive-ID contract.
-fn iface_type_token(types: ptr[TypeTable], type_id: u32) -> str:
+fn iface_type_token(types: ptr[TypeTable], type_id: u32, pool: ptr[InternPool]) -> str:
     if type_id == TYPE_I8:
         return "i8"
     if type_id == TYPE_I16:
@@ -1135,6 +1135,15 @@ fn iface_type_token(types: ptr[TypeTable], type_id: u32) -> str:
         return "ptr"
     if ekind == TYPE_KIND_SLICE:
         return "slice"
+    // RFC 0011 P4 inc4b: a struct type round-trips by NAME. The consumer re-registers the
+    // struct (from its `S` line) and maps the name back to a type_id, so functions/consts
+    // that reference the struct resolve exactly. Requires the pool to fetch the name.
+    if ekind == TYPE_KIND_STRUCT and pool != null as ptr[InternPool]:
+        let snid = types.entries.data[type_id].name_id
+        if snid != 0 as u32:
+            let sname = pool.get(snid)
+            if std.string.len(sname) > 0:
+                return sname
     return "?"
 
 // RFC 0011 P4 (increment 2): serialize the public interface of a translation unit into
@@ -1146,6 +1155,41 @@ fn iface_type_token(types: ptr[TypeTable], type_id: u32) -> str:
 pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable], tree: ptr[AstTree]) -> str:
     mut bv := new_byte_vec()
     iface_push_str(&bv, "AXIFACE1\n")
+    // RFC 0011 P4 inc4b: emit `S <name> <nfields> <fname> <ftok> ...` for each public struct
+    // whose fields are ALL primitive, BEFORE the F/C lines that may reference it by name. The
+    // consumer recomputes size/align from the same fields, so the layout matches exactly.
+    // Structs with pointer/nested-struct fields are a later slice (field-access typing needs
+    // the pointee/struct, which the token drops today).
+    mut ss := 0 as i64
+    while ss < symtable.symbols.len:
+        if symtable.symbols.data[ss].kind == SYM_STRUCT and (symtable.symbols.data[ss].flags & SYM_FLAG_PUB) != 0 as u16:
+            let st_tid = symtable.symbols.data[ss].type_id
+            if st_tid != 0 as u32 and (st_tid as i64) < types.entries.len and types.entries.data[st_tid].kind == TYPE_KIND_STRUCT:
+                let s_extra = types.entries.data[st_tid].extra
+                if (s_extra as i64) < types.structs.len:
+                    let sinfo = &types.structs.data[s_extra]
+                    mut all_prim := sinfo.fields.len > 0
+                    mut fk := 0 as i64
+                    while fk < sinfo.fields.len:
+                        if iface_token_to_type(iface_type_token(types, sinfo.fields.data[fk].type_id, pool)) == TYPE_UNKNOWN:
+                            all_prim = false
+                        fk = fk + 1
+                    if all_prim:
+                        let st_name = pool.get(symtable.symbols.data[ss].name_id)
+                        if std.string.len(st_name) > 0:
+                            iface_push_str(&bv, "S ")
+                            iface_push_str(&bv, st_name)
+                            push_byte(&bv, ' ' as u8)
+                            iface_push_int(&bv, sinfo.fields.len)
+                            mut fm := 0 as i64
+                            while fm < sinfo.fields.len:
+                                push_byte(&bv, ' ' as u8)
+                                iface_push_str(&bv, pool.get(sinfo.fields.data[fm].name_id))
+                                push_byte(&bv, ' ' as u8)
+                                iface_push_str(&bv, iface_type_token(types, sinfo.fields.data[fm].type_id, pool))
+                                fm = fm + 1
+                            push_byte(&bv, 0x0A as u8)
+        ss = ss + 1
     mut si := 0 as i64
     while si < symtable.symbols.len:
         let sym_kind = symtable.symbols.data[si].kind
@@ -1156,7 +1200,7 @@ pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], t
         // primitive-int type round-trip today (non-negative, <2^32); anything else is skipped.
         if sym_kind == SYM_CONST and (sym_flags & SYM_FLAG_PUB) != 0 as u16 and sym_tid != 0 as u32:
             let c_decl = symtable.symbols.data[si].decl_node
-            let c_tok = iface_type_token(types, sym_tid)
+            let c_tok = iface_type_token(types, sym_tid, pool)
             if c_decl != 0 as u32 and (c_decl as i64) < tree.nodes.len and c_tok != "?":
                 mut c_init := 0 as u32
                 mut c_child := tree.nodes.data[c_decl as i64].first_child
@@ -1196,10 +1240,10 @@ pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], t
                         mut pi := 0 as i64
                         while pi < fi.params.len:
                             push_byte(&bv, ' ' as u8)
-                            iface_push_str(&bv, iface_type_token(types, fi.params.data[pi]))
+                            iface_push_str(&bv, iface_type_token(types, fi.params.data[pi], pool))
                             pi = pi + 1
                         iface_push_str(&bv, " -> ")
-                        iface_push_str(&bv, iface_type_token(types, fi.ret))
+                        iface_push_str(&bv, iface_type_token(types, fi.ret, pool))
                         push_byte(&bv, 0x0A as u8)
         si = si + 1
     return alloc_str_from_raw(bv.data, bv.len)
@@ -1248,12 +1292,12 @@ pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool],
                             iface_push_str(&bv, "p")
                             iface_push_int(&bv, pi)
                             iface_push_str(&bv, ": ")
-                            iface_push_str(&bv, iface_type_token(types, fi.params.data[pi]))
+                            iface_push_str(&bv, iface_type_token(types, fi.params.data[pi], pool))
                             pi = pi + 1
                         push_byte(&bv, ')' as u8)
                         if fi.ret != TYPE_VOID:
                             iface_push_str(&bv, " -> ")
-                            iface_push_str(&bv, iface_type_token(types, fi.ret))
+                            iface_push_str(&bv, iface_type_token(types, fi.ret, pool))
                         push_byte(&bv, 0x0A as u8)
         si = si + 1
     return alloc_str_from_raw(bv.data, bv.len)
@@ -1699,10 +1743,10 @@ pub fn axiom_check_lib_iface(lib_path: str, types: ptr[TypeTable]) -> bool:
         mut pi := 0 as i64
         while pi < f.params.len:
             push_byte(&line, ' ' as u8)
-            iface_push_str(&line, iface_type_token(types, f.params.data[pi]))
+            iface_push_str(&line, iface_type_token(types, f.params.data[pi], null as ptr[InternPool]))
             pi = pi + 1
         iface_push_str(&line, " -> ")
-        iface_push_str(&line, iface_type_token(types, f.ret))
+        iface_push_str(&line, iface_type_token(types, f.ret, null as ptr[InternPool]))
         push_byte(&line, 0x0A as u8)
         print_raw_ptr(line.data, line.len)
         if line.data != null as ptr[u8]:

@@ -1257,41 +1257,122 @@ pub fn main() -> i32:
 
     return 0
 
-// RFC 0011 P4 (increment 3b): register a module's public symbols from a precompiled
+// Bind a body-less lib symbol under its qualified `mod.NAME` in the global scope and record
+// it as a module export, so the resolver's field lookup finds it (shared by fn/const/struct).
+fn register_lib_symbol(st: ptr[SymbolTable], intern: ptr[InternPool], mod: ptr[ModuleInfo], mod_name: str, local_name: str, local_name_id: u32, sym_idx: u32):
+    let dot_name = std.string.concat(".", local_name)
+    let full_name = std.string.concat(mod_name, dot_name)
+    let full_name_id = intern.intern_string(full_name)
+    @free(get_str_ptr(dot_name))
+    @free(get_str_ptr(full_name))
+    let gscope = &st.scopes.data[0]
+    gscope.scope_put(full_name_id, sym_idx)
+    (&mod.exports).push(ModuleExport(name_id: local_name_id, symbol_idx: sym_idx))
+
+// Resolve an interface type token to a TypeID: a primitive by name, else a struct registered
+// earlier in this module (name→id map from the `S` lines), else TYPE_UNKNOWN.
+fn iface_resolve_tok(tok: str, names: ptr[LinkerStrVec], ids: ptr[U32Vec]) -> u32:
+    let prim = iface_token_to_type(tok)
+    if prim != TYPE_UNKNOWN:
+        return prim
+    mut k := 0 as i64
+    while k < names.len:
+        if names.data[k] == tok:
+            return ids.data[k]
+        k = k + 1
+    return TYPE_UNKNOWN
+
+// RFC 0011 P4 (increment 3b/4a/4b): register a module's public symbols from a precompiled
 // `.lib`'s `__axiom_iface` — WITHOUT parsing/typechecking/codegen'ing the library source.
 // Each public function becomes a body-less SYM_FUNC (decl_node 0, ast_tree stays null ⇒
 // build_module never emits it — its body comes from the `.lib` at link time). The symbol
 // carries only SYM_FLAG_PUB, so cgen mangles the call target as plain `ax_<name>`, which
 // matches the library's exported symbol. Qualified `mod.fn` resolves via the global-scope
 // full-name binding and the module export list, exactly like the source-loaded path.
+// inc4b: structs (`S` lines) are registered FIRST — recomputing their layout from the same
+// fields — so function/const signatures can reference them by name.
 fn register_module_from_lib(mod: ptr[ModuleInfo], st: ptr[SymbolTable], tt: ptr[TypeTable], intern: ptr[InternPool], lib_path: str, mod_name: str) -> i32:
-    let funcs = parse_lib_iface(lib_path)
-    mut fi := 0 as i64
-    while fi < funcs.len:
-        let f = &funcs.data[fi]
-        let func_type = tt.register_function(f.params, f.ret)
-        let local_name_id = intern.intern_string(f.name)
-        let sym_idx = st.symbols.len as u32
-        (&st.symbols).push(Symbol(
-            name_id: local_name_id,
-            kind: SYM_FUNC,
-            padding: 0 as u8,
-            flags: SYM_FLAG_PUB,
-            type_id: func_type,
-            decl_node: 0 as u32,
-            scope_id: 0 as u32,
-            next_overload: 0 as u32,
-        ))
-        (&st.symbol_trees).push(null as ptr[AstTree])
-        let dot_name = std.string.concat(".", f.name)
-        let full_name = std.string.concat(mod_name, dot_name)
-        let full_name_id = intern.intern_string(full_name)
-        @free(get_str_ptr(dot_name))
-        @free(get_str_ptr(full_name))
-        let gscope = &st.scopes.data[0]
-        gscope.scope_put(full_name_id, sym_idx)
-        (&mod.exports).push(ModuleExport(name_id: local_name_id, symbol_idx: sym_idx))
-        fi = fi + 1
+    let text = read_lib_iface_bytes(lib_path)
+    let n = std.string.len(text)
+    let p = get_str_ptr(text)
+    // Struct name→type_id map built as we register `S` lines (pass 1).
+    mut smap_names := new_linker_str_vec()
+    mut smap_ids := new_u32_vec()
+    // PASS 1: register public structs so later function/const lines can name them.
+    mut li := 0 as i64
+    while li < n:
+        mut lj := li
+        while lj < n and p[lj] != 0x0A as u8:
+            lj = lj + 1
+        let stoks = iface_line_tokens(p, li, lj)
+        if stoks.len >= 3 and stoks.data[0] == "S":
+            let sname = stoks.data[1]
+            let nfields = iface_atoi(stoks.data[2])
+            mut fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
+            mut ft := 3 as i64
+            mut fcount := 0 as i64
+            while fcount < nfields and ft + 1 as i64 < stoks.len:
+                let f_name_id = intern.intern_string(stoks.data[ft])
+                let f_type = iface_token_to_type(stoks.data[ft + 1 as i64])
+                (&fields).push(StructField(name_id: f_name_id, type_id: f_type))
+                ft = ft + 2 as i64
+                fcount = fcount + 1
+            let s_name_id = intern.intern_string(sname)
+            let s_type_id = tt.register_struct(s_name_id, fields)
+            push_linker_str(&smap_names, sname)
+            smap_ids.push(s_type_id)
+            let s_sym_idx = st.symbols.len as u32
+            (&st.symbols).push(Symbol(
+                name_id: s_name_id,
+                kind: SYM_STRUCT,
+                padding: 0 as u8,
+                flags: SYM_FLAG_PUB,
+                type_id: s_type_id,
+                decl_node: 0 as u32,
+                scope_id: 0 as u32,
+                next_overload: 0 as u32,
+            ))
+            (&st.symbol_trees).push(null as ptr[AstTree])
+            register_lib_symbol(st, intern, mod, mod_name, sname, s_name_id, s_sym_idx)
+        li = lj + 1
+    // PASS 2: register public functions, resolving struct-typed params/returns via the map.
+    li = 0 as i64
+    while li < n:
+        mut lj := li
+        while lj < n and p[lj] != 0x0A as u8:
+            lj = lj + 1
+        let toks = iface_line_tokens(p, li, lj)
+        if toks.len >= 4 and toks.data[0] == "F":
+            let fname = toks.data[1]
+            let nparams = iface_atoi(toks.data[2])
+            mut params := new_u32_vec()
+            mut t := 3 as i64
+            mut pc := 0 as i64
+            while pc < nparams and t < toks.len:
+                params.push(iface_resolve_tok(toks.data[t], &smap_names, &smap_ids))
+                t = t + 1
+                pc = pc + 1
+            mut ret := TYPE_VOID
+            if t < toks.len and toks.data[t] == "->":
+                t = t + 1
+            if t < toks.len:
+                ret = iface_resolve_tok(toks.data[t], &smap_names, &smap_ids)
+            let func_type = tt.register_function(params, ret)
+            let local_name_id = intern.intern_string(fname)
+            let sym_idx = st.symbols.len as u32
+            (&st.symbols).push(Symbol(
+                name_id: local_name_id,
+                kind: SYM_FUNC,
+                padding: 0 as u8,
+                flags: SYM_FLAG_PUB,
+                type_id: func_type,
+                decl_node: 0 as u32,
+                scope_id: 0 as u32,
+                next_overload: 0 as u32,
+            ))
+            (&st.symbol_trees).push(null as ptr[AstTree])
+            register_lib_symbol(st, intern, mod, mod_name, fname, local_name_id, sym_idx)
+        li = lj + 1
     // RFC 0011 P4 inc4a: register the library's public integer constants. Each becomes a
     // body-less SYM_CONST (decl_node 0, no AST initializer); its value is stashed in
     // next_overload (unused for consts) and inlined by lower_field_expr at each `mod.NAME`

@@ -151,6 +151,25 @@ cp ../../bin/ax_runtime.dll .
 Only INT_LIT initializers of a primitive-int type round-trip today (non-negative, <2^32);
 float/bool/struct consts await a later increment.
 
+## Struct through the interface (RFC 0011 P4 inc4b)
+
+A `library`-marked module can export a `pub struct` (primitive fields today). The interface
+carries `S <name> <nfields> <fname> <ftype> ...`; the consumer re-registers the struct and
+recomputes its layout from the same fields, so size/align/offsets match exactly. Functions
+that take or return the struct reference it by name (`F origin 0 -> Point`), enabling
+struct-by-value ABI across separately-compiled units.
+
+```sh
+# geolib.ax: `library geolib` + `pub struct Point { x,y: i32 }` + origin()/add_pt()
+../../bin/axc_native.exe build geouse.ax -o geouse.exe -self-link -O1   # auto-builds geolib.lib
+../../bin/axc_native.exe iface geolib.lib | grep -E '^S |^F '   # S Point 2 x i32 y i32 ; F origin 0 -> Point
+cp ../../bin/ax_runtime.dll .
+./geouse.exe ; echo "exit=$?"   # expect exit=14  (add_pt(origin(), origin()) = (3+4)+(3+4))
+```
+
+Only structs with all-primitive fields round-trip today; pointer/nested-struct fields (which
+need the pointee/struct in the token) are a later slice.
+
 ## Multi-DLL test (RFC 0009 P1, N=2)
 
 ```sh
