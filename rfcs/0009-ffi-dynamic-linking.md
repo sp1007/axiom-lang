@@ -1,6 +1,7 @@
 # RFC 0009 — FFI dynamic linking (tiêu thụ & sản xuất DLL/.so/.dylib)
 
-- **Status:** Accepted (2026-07-03, user-approved) — implementation P1 pending
+- **Status:** Accepted (2026-07-03, user-approved) — P1 frontend prototyped; linker
+  integration scoped (§10, large careful change deferred to a focused effort)
 - **Author:** self-host team
 - **Tracking:** #FFI — follows BUG#49 (bare function pointers), p12-t04 (dynamic-linking task)
 - **Liên quan:** parser (`parse_extern_decl`), AST/symbol metadata, resolver
@@ -162,3 +163,39 @@ nạp plugin động không cần import-time binding.
 - Gọi được 1 hàm C bên thứ ba (vd `sqlite3_open` từ `sqlite3.dll`) qua native
   self-link, **không** cần C-backend/gcc.
 - Toàn bộ deterministic, qua regression + self-host fixpoint.
+
+## 10. Implementation notes — P1 COFF integration (reverse-engineered 2026-07-03)
+
+Khảo sát `linker.ax` cho thấy phần `.idata`/thunks là hàm **~600 dòng** hardcode
+cứng đúng 3 DLL (kernel32/ax_runtime/ucrtbase) qua `has_X` booleans + offset-math
+tuần tự, luồn qua CẢ COFF `.idata` LẪN ELF `.dynamic`/PLT. Đây là hàm **chịu tải
+nặng nhất toàn toolchain** (mọi build, kể cả tự-build compiler, phụ thuộc) → theo
+CLAUDE.md §16 phải sửa **có kiểm chứng tăng dần**, KHÔNG blind-rewrite.
+
+**Hợp đồng đã xác nhận (điểm mấu chốt để tích hợp an toàn):**
+- **Reloc resolution là name-based** (`dyn_sym_names`/`dyn_sym_rvas`, ~L1612): mọi
+  symbol có thunk trong `dyn_sym_names` được patch tự động. ⟹ user-DLL thunk chỉ
+  cần push vào `dyn_sym_names` là hoạt động — không cần logic reloc riêng.
+- **`thunk_count` (~L896)** = tổng imports 3 bucket, điều khiển `dyn_sym_rvas` alloc
+  + `thunks_offset`/`thunks_rva`/`idata_rva` (~L928-932). ⟹ user imports phải được
+  cộng vào count TRƯỚC L896 để layout-math tự chảy qua.
+- **IDT phải là MỘT mảng null-terminated liền** (loader đọc tới entry null) → mọi
+  DLL (built-in + user) chung một IDT; `K` (số entry, ~L957) phải += số user DLL.
+- Extern `from` symbol: `x86_resolve_sym_name` trả tên RAW (không prefix `ax_`), nên
+  `target_name` khớp trực tiếp `intern.get(name_id)` của binding.
+
+**Điểm chèn (7 nơi) cho path COFF:** (1) collection loop L859-895 route symbol có
+binding vào user-bucket thay vì ucrtbase; (2) thunk_count += user_total; (3) `K` +=
+#user_dll; (4) IAT/ILT/hint-name/DLL-name/IDT emit cho mỗi user bucket (offset qua
+mảng vì tên DLL dài biến thiên); (5) thunks + push dyn_sym.
+
+**Truyền dữ liệu:** resolve `SymbolTable.dll_binds` (name_id→dll_id) thành cặp CHUỖI
+`[sym_name, dll_name, ...]` tại call-site (main_air, nơi có symtable+pool) rồi truyền
+vào hàm linker — tránh cấp pool cho linker.
+
+**Fixpoint:** KHÔNG cần byte-identical với binary cũ; chỉ cần self-reproduce
+(stage_n==stage_n+1) — nên cho phép reorder bucket. ELF `from`-DLL out-of-scope P1
+(giữ mapping built-in libax_runtime.so/libc.so.6).
+
+**Ước lượng:** ~250 dòng mới, cần 3-4 vòng verify (8s build + fixpoint + t_ffi với
+DLL gcc-built). Là công việc tập trung riêng, không ghép cùng task khác.
