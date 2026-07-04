@@ -2547,6 +2547,13 @@ pub fn parse_expr_stmt(mut self: ptr[Parser]) -> u32:
     return expr
 
 pub fn parse_block(mut self: ptr[Parser]) -> u32:
+    // A suite must be an indented block on the following line. If there is no INDENT
+    // here the source used an inline `:` suite (e.g. `if COND: return X`), which is not
+    // supported â€” emit ONE actionable diagnostic and return an empty block so the driver
+    // halts (BUG#53) without cascading confusing follow-on errors from a desynced parser.
+    if not self.check(TK_INDENT):
+        self.errorf(self.peek(), "expected an indented block; inline ':' suites are not supported -- put the statement on the next line, indented")
+        return self.tree.add_node(NODE_BLOCK, self.token_idx(self.peek()))
     let tok = self.expect(TK_INDENT)
     let node = self.tree.add_node(NODE_BLOCK, self.token_idx(tok))
     while not self.check(TK_DEDENT) and not self.check(TK_EOF):
