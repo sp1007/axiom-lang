@@ -1,0 +1,27 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#56, native backend). Tracks a real miscompile.
+//
+// A variant whose PAYLOAD is itself a sum (`Wrap(Inner)`): extracting the payload
+// in a match arm (`Wrap(i)`) and then USING `i` (nested match, or passing it to a
+// function) yields a corrupted value on the NATIVE backend. The C backend
+// (bin/axc.exe) compiles this correctly (returns 2), so it is a native-codegen
+// bug in the sum-typed-payload path — the BUG#51 family (native by-address vs
+// pointer-repr handling of sums / register-type propagation through OP_GET_FIELD).
+//
+// Observed (2026-07-04): native `axc_native.exe` returns 0 (Empty branch value)
+// or other garbage; C backend returns 2. Isolation showed the OUTER arm fires
+// correctly and passing a sum value straight to a function works — only a payload
+// EXTRACTED from a sum-typed field is corrupted. Remove the SKIP when fixed.
+type Inner = A | B
+type Outer = Wrap(Inner) | Empty
+
+fn main() -> i32:
+    let o = Wrap(B)
+    match o:
+        Wrap(i):
+            match i:
+                A:
+                    return 1
+                B:
+                    return 2
+        Empty:
+            return 9
