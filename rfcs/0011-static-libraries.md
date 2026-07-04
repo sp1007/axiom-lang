@@ -12,10 +12,15 @@
   `.lib` from source and content-hash caches it (manifest djb2) — missing/changed source
   rebuilds, unchanged reuses. The whole import→`.lib` path is gated on `--auto-lib` because
   auto-converting every import to a library is unsafe for app-modules that collide by name
-  (BUG#50) or use stdlib; the default keeps imports on the source path. Remaining under P4:
-  a way to mark a module as a library (so auto-lib is safe without the flag), and
-  structs/consts in the interface (inc4). P5 (generics through the interface) and the
-  stdlib-as-`std.lib` endgame (retiring whole-program `concatenate_stdlib`) remain.
+  (BUG#50) or use stdlib; the default keeps imports on the source path. inc3d adds the
+  self-describing **`library <name>`** top-level marker (like Go's `package`): a marked
+  module is auto-lib'd by DEFAULT (no flag), while unmarked app-modules stay on source —
+  so opting in is explicit and safe. inc3e lets **`--staticlib --shared`** emit BOTH
+  `<base>.lib` and `<base>.dll` from one compile (consumers pick static-link or bind-by-name;
+  no separate import library). Remaining under P4: DLL should export all `pub` for a marked
+  library (today follows `#[export]`), and structs/consts in the interface (inc4). P5
+  (generics through the interface) and the stdlib-as-`std.lib` endgame (retiring
+  whole-program `concatenate_stdlib`) remain.
 - **Author:** self-host team
 - **Tracking:** follows [[0009-ffi-dynamic-linking]] (P1 import / P2 export shipped);
   addresses the "compile chậm" (slow build) thread from the perf session.
