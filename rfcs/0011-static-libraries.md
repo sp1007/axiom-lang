@@ -115,6 +115,59 @@ generic/monomorphized parts stay in-source until generic separate-comp lands.
 - A tiny `axc lib` driver verb can front the build/refresh (`axc lib build std`,
   `axc lib check`).
 
+## 3bis. DECISION — import-driven automatic libraries (finalized 2026-07-04)
+
+User feedback: manual `axc build app.ax -l x.lib` is inconvenient. Preferred: `import x`
+should **auto-resolve** to `x.lib` — if a fresh `x.lib` exists, link it; otherwise compile
+`x`'s source into an **optimized** `x.lib` and link that. Fully automatic, source-driven,
+cached. **This is the right model and is now the canonical design for P4/P6.**
+
+**Do other compilers do this? Yes — it is the modern standard.**
+- **Go:** `import "pkg"` → the `go` tool compiles each package to a cached archive
+  (`.a`) in the build cache, keyed by a content hash, and links them. Rebuilds only what
+  changed. This is *exactly* the proposed model.
+- **Rust/Cargo:** `use` + Cargo compiles each crate to an `.rlib` in `target/`, with a
+  fingerprint (hash) deciding staleness. Crate-granular rather than module-granular.
+- **Zig:** `@import` compiles+caches via the build cache.
+- **C/C++:** the *old* model — `#include` never links; you hand-manage `-l`/Makefiles.
+  That is precisely the inconvenience the user (correctly) wants to avoid.
+
+So the verdict: **adopt Go's import-driven, content-hash-cached separate compilation.**
+AXIOM already has the seed — the lazy resolver (`lazy_resolver_register_import`,
+resolver.ax:1027) loads `import x` from `x.ax` and registers its symbols. Today it works
+from source every time; the enhancement is to cache the *compiled* module as `x.lib` and
+reuse it when the source hash is unchanged.
+
+**Finalized design — the self-describing `.lib`:**
+1. `import x` (no `-l` needed): the driver locates `x` — prefer a fresh `x.lib`, else its
+   source `x.ax`.
+2. **Freshness:** `x.lib` carries a manifest (source hash + compiler hash + format
+   version), reusing the P3 mechanism. Fresh ⇒ use as-is; stale/absent ⇒ (re)compile
+   `x.ax` → `x.lib` at the app's `-O` level (**optimized once, reused many times**), then
+   use it. Recursive for `x`'s own imports (a small dependency graph + build cache dir).
+3. **The self-describing archive is the key idea (also how Go `.a` works):** `x.lib`
+   contains **two kinds of members** — the compiled COFF object(s) *and* a special
+   `__axiom_iface` member holding `x`'s serialized public **interface** (fn signatures,
+   struct layouts, consts, type aliases, generic templates). On `import x`, the frontend
+   loads `__axiom_iface` to resolve+typecheck the app **without re-parsing or recompiling
+   `x`'s bodies**; the linker pulls the code members. This is what makes it *fast* — no
+   source re-parse, no re-typecheck, no re-codegen of `x`.
+4. `-l x.lib` is **retained as the explicit escape hatch** for prebuilt third-party
+   archives that have no AXIOM source (e.g. a C static lib) — no interface member, so
+   the caller must `extern`-declare the symbols (as today).
+
+**Honest dependency:** step 3 (the interface member) *is* the separate-compilation lift
+(§3.3 Layer B) — the biggest remaining piece. Generics need the template body in the
+interface for on-demand monomorphization at the use site (P5). So the ergonomic
+`import`-driven model and the "skip recompiling stdlib" performance win are the **same**
+underlying feature: **interface-carrying `.lib` + content-hash build cache.** stdlib
+becomes just the first (always-fresh) cached library — no more whole-program concat.
+
+**Revised phasing:** P1–P3 shipped (archive I/O, static link, staleness). **P4 = the
+interface member + `import`-driven auto-compile/cache/link** (replaces the manual `-l`
+for AXIOM-source modules; stdlib as the first client). **P5 = generic separate-comp.**
+The manual `-l` and `--staticlib` stay as the low-level primitives P4 builds upon.
+
 ## 4. Alternatives
 
 - **Object-file cache (no archive).** Cache `axiom_temp.obj` keyed by TU hash. Doesn't
@@ -152,11 +205,15 @@ generic/monomorphized parts stay in-source until generic separate-comp lands.
   Verified: fresh build → codegen runs; re-run unchanged → skipped; append a fn →
   rebuilds with the new symbol. A dedicated `axc lib` verb is deferred (folded into
   `--staticlib` for now); multi-file source hashing (stdlib) is P4's concern.
-- **P4 — Separate compilation (Layer B), non-generic stdlib.** Module-interface digest
-  (`.axi`); typecheck user unit against stdlib signatures; link `std.lib`. Gate:
-  build a program with `--no-stdlib-source -l std.lib` faster than the concat path,
-  identical runtime behavior, fixpoint.
-- **P5 — Generic separate-comp.** On-demand monomorphization of archived generics.
+- **P4 — Import-driven auto-libraries (Layer B; see §3bis DECISION).** Self-describing
+  `.lib` with an `__axiom_iface` interface member; `import x` auto-resolves to a fresh
+  `x.lib` (or compiles `x.ax` → optimized `x.lib` and caches it); frontend typechecks
+  against the interface, linker pulls the code — no re-parse/re-typecheck/re-codegen of
+  `x`. stdlib is the first client (replaces whole-program concat). Gate: a program using
+  a cached module builds measurably faster than the concat path, identical runtime
+  behavior + fixpoint; editing the module triggers exactly one recompile.
+- **P5 — Generic separate-comp.** Interface carries generic templates; on-demand
+  monomorphization of archived generics at the use site.
 
 ## 7. Success criteria
 
