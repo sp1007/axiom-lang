@@ -1352,3 +1352,27 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 **Hệ quả:** MỌI test có import module local = flaky (t_modcollide sẽ chập chờn trong regression cho tới khi fix). Vi phạm nguyên tắc deterministic compilation (CLAUDE.md §3). Đã đốt ~1h debug BUG#50 vì crash giả từ bug này. **Bài học chẩn đoán: crash không tái lập ổn định → chạy lặp ≥5 lần TRƯỚC khi đổ cho thay đổi mới.**
 
 **Trạng thái:** OPEN — ưu tiên cao nhất cùng BUG#51.
+
+---
+
+## 🟢 BUG#51 + BUG#52 (2026-07-03) — Stale aggregate-alias qua vec-grow: native-built compiler segfault deterministic (t_mathx) + module-load flaky
+
+**Triệu chứng:**
+- #51: MỌI binary compiler build bằng native backend (stage2/3, a2/a3) segfault **deterministic** khi compile `bin/t_mathx.ax` (cả -O0 lẫn -O1); binary build bằng stage0/gcc compile OK. SHA fixpoint vẫn hội tụ (bug tự tái tạo y hệt) ⟹ **fixpoint ≠ correctness**.
+- #52: test import local module (t_modcollide) **phi-tất-định** — cùng binary+input lúc OK lúc crash/hang.
+
+**Hunt (kỹ thuật đáng tái dùng):**
+1. Bisect input: crash chỉ khi main() đủ lớn; **non-monotonic** ở -O1, sạch ở -O0; thêm 1 hàm đệm cũng crash ⟹ **size-threshold, không phải construct** — dấu hiệu grow-boundary.
+2. gdb: crash `movzbq (%r10)` với r10 = pointer heap-thấp "hợp lệ-nhìn-như-thật" (0x535b488) load từ spill slot; frame 18KB = mega-fn `infer_node` (161KB code, spill-all fallback).
+3. **Instrument-probe loop <1 phút**: chèn `ax_printf_local + fflush` vào typecheck.ax → rebuild concat → build bằng converged-binary (8s) → chạy repro. Build instrument ở **-O0** để thứ tự trung thực (probe -O1 bị optimizer reorder qua → bracket sai).
+4. Probe chốt: crash ĐÚNG tại lệnh đọc `callee_node.kind` (BUG#45 guard, NODE_CALL handler).
+
+**Root cause:** `let callee_node = self.tree.nodes.data[callee]` — native backend giữ aggregate **BY-ADDRESS** (x86_selector OP_INDEX, comment "Aggregates are held by-address in this backend") ⟹ `callee_node` = ALIAS vào nodes buffer. Generic instantiation (mono, ~L1612) GROW nodes vec → realloc + **@free buffer cũ** → alias dangling. Vì sao gcc-built sống: malloc giữ trang cũ mapped + nội dung nguyên (memcpy khi grow) → đọc stale trả **giá trị đúng y hệt** → chạy "đúng". Native: block lớn (~512KB) → ax_free → **VirtualFree(MEM_RELEASE)** unmap → segfault. #52 cùng cơ chế (module load grow vecs; block size dao động quanh ngưỡng free-list vs VirtualFree → phi-tất-định).
+
+**Fix (targeted, conservative):** typecheck.ax NODE_CALL handler — thay các use `callee_node` SAU điểm instantiation bằng fresh read `self.tree.nodes.data[callee].kind/payload/first_child` (2 vùng: else-branch syscall/panic + BUG#45 guard). Các site instantiate khác (L1957/L2282) đã dùng fresh reads sẵn.
+
+**Verify:** t_mathx = build OK + run 28/28 ×3 deterministic; t_modcollide 10/10 (hết flaky — #52 đóng cùng); fast-fixpoint n2==n3 OK; full regression bằng **binary native** (chuẩn mới).
+
+**⚠️ Landmine class còn lại:** MỌI `let s = arr[i]` (aggregate) giữ qua bất kỳ grow nào của vec đó = bom nổ chậm. Backend divergence: cgen COPY (C `r = arr[i]`) vs native ALIAS — hai ngữ nghĩa khác nhau cho cùng AIR! Cần fix hệ thống: **RFC 0010 — value semantics cho aggregate index-load** (emit block-copy vào stack slot). Cân nhắc: code hiện tại có thể VÔ TÌNH dựa alias (mut local ghi xuyên về array) — RFC phải audit trước khi đổi.
+
+**Hệ quả chiến lược:** mở khóa **daily-driver native** (self-build 790 hàm = 8s vs 2h50m stage0-built = 1200x) — perf root-cause thật của "compile chậm" là binary stage0-built chậm, không phải thuật toán compiler.

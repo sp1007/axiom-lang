@@ -1664,8 +1664,15 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
             else:
-                if callee_node.kind == NODE_IDENT:
-                    let sym_idx = callee_node.payload
+                // BUG#51: `callee_node` is an ADDRESS into the nodes buffer under the
+                // native backend (aggregates are held by-address). Generic
+                // instantiation above may have GROWN tree.nodes (realloc + free of
+                // the old buffer), leaving `callee_node` dangling — the gcc-built
+                // compiler read stale-but-intact pages, the native allocator
+                // (VirtualFree) unmaps them → deterministic segfault. Re-read the
+                // node fields through the CURRENT buffer here and below.
+                if self.tree.nodes.data[callee].kind == NODE_IDENT:
+                    let sym_idx = self.tree.nodes.data[callee].payload
                     if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                         let sym = self.symtable.symbols.data[sym_idx]
                         let name = self.intern.get(sym.name_id)
@@ -1684,15 +1691,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // calls are left exactly as before to keep the blast radius minimal).
             // This sets only the call's result type; it does NOT mutate the
             // field-expr node/flag/payload, so method dispatch is unchanged.
-            if result_type == TYPE_UNKNOWN and callee_node.kind == NODE_FIELD_EXPR:
-                let rec_node2 = callee_node.first_child
+            // (BUG#51: fresh nodes.data reads — see comment above.)
+            if result_type == TYPE_UNKNOWN and self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR:
+                let rec_node2 = self.tree.nodes.data[callee].first_child
                 if rec_node2 != 0 as u32:
                     mut rt := TYPE_UNKNOWN
                     if (rec_node2 as i64) < self.node_types_cap:
                         rt = self.node_types[rec_node2 as i64]
                     if rt == TYPE_UNKNOWN:
                         rt = self.infer_node(rec_node2, TYPE_UNKNOWN)
-                    let mret = self.method_ret_type(callee_node.payload, rt)
+                    let mret = self.method_ret_type(self.tree.nodes.data[callee].payload, rt)
                     if mret != TYPE_UNKNOWN and mret != 0 as u32 and (mret as i64) < self.types.entries.len:
                         let mk = self.types.entries.data[mret].kind
                         if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT:
