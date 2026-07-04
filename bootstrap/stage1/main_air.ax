@@ -941,7 +941,9 @@ pub fn main() -> i32:
             // RFC 0011 P1: --staticlib wraps the compiled object into a .lib archive
             // instead of linking an executable.
             if is_staticlib:
-                let lib_ok = axiom_write_static_lib(temp_obj, output_file, lib_src_hash)
+                // RFC 0011 P4: serialize the TU's public interface into the .lib.
+                let iface_text = build_lib_iface_text(resolver.symtable, parser.pool, typetable)
+                let lib_ok = axiom_write_static_lib(temp_obj, output_file, lib_src_hash, iface_text)
                 let temp_obj_nt2 = str_to_null_terminated(temp_obj)
                 @free(temp_obj_nt2)
                 if not lib_ok:
