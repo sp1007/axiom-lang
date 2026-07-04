@@ -7,10 +7,15 @@
   function signatures `F <name> <n> <p..> -> <ret>`; inc3a the interface reader), and
   `import x` auto-resolves a fresh `x.lib` — registering x's public functions from the
   interface with no source recompile, codegen skipping their bodies, and the linker
-  pulling the code (inc3b, commit 57c733c; `import` alone, no `-l`). Remaining under P4:
-  staleness/auto-rebuild of `x.lib` on the consumer side, and structs/consts in the
-  interface (inc4). P5 (generics through the interface) and the stdlib-as-`std.lib`
-  endgame (retiring whole-program `concatenate_stdlib`) remain.
+  pulling the code (inc3b, commit 57c733c; `import` alone, no `-l`). inc3c (commit d3d2c7c)
+  adds the opt-in **`--auto-lib`** flag: a pre-pass find-or-builds each non-std import's
+  `.lib` from source and content-hash caches it (manifest djb2) — missing/changed source
+  rebuilds, unchanged reuses. The whole import→`.lib` path is gated on `--auto-lib` because
+  auto-converting every import to a library is unsafe for app-modules that collide by name
+  (BUG#50) or use stdlib; the default keeps imports on the source path. Remaining under P4:
+  a way to mark a module as a library (so auto-lib is safe without the flag), and
+  structs/consts in the interface (inc4). P5 (generics through the interface) and the
+  stdlib-as-`std.lib` endgame (retiring whole-program `concatenate_stdlib`) remain.
 - **Author:** self-host team
 - **Tracking:** follows [[0009-ffi-dynamic-linking]] (P1 import / P2 export shipped);
   addresses the "compile chậm" (slow build) thread from the perf session.
