@@ -1133,6 +1133,38 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64) -> bo
     if osize % 2 != 0:
         push_byte(&ar, 0x0A as u8)
 
+    // RFC 0011 P4 (increment 1): self-describing interface member. Placed LAST so the
+    // symbol-index offsets (which point at the object member) are unaffected. The `ar`
+    // member name begins with "__" so the P2 consumer loop skips it (not linkable code).
+    // v1 payload is the archive's exported-symbol list; real type signatures land in
+    // increment 2. The member is additive — omitting/ignoring it changes nothing.
+    mut iface := new_byte_vec()
+    let ihdr = "AXIFACE1\n"
+    let ihp = get_str_ptr(ihdr)
+    mut ihi := 0 as i64
+    while ihi < std.string.len(ihdr):
+        push_byte(&iface, ihp[ihi])
+        ihi = ihi + 1
+    mut isn := 0 as i64
+    while isn < symnames.len:
+        push_byte(&iface, 'S' as u8)
+        push_byte(&iface, ' ' as u8)
+        let inm = symnames.data[isn]
+        let inp = get_str_ptr(inm)
+        let inl = std.string.len(inm)
+        mut ic := 0 as i64
+        while ic < inl:
+            push_byte(&iface, inp[ic])
+            ic = ic + 1
+        push_byte(&iface, 0x0A as u8)
+        isn = isn + 1
+    ar_write_header(&ar, "__axiom_iface/", iface.len)
+    push_bytes(&ar, iface.data, iface.len)
+    if iface.len % 2 != 0:
+        push_byte(&ar, 0x0A as u8)
+    if iface.data != null as ptr[u8]:
+        @free(iface.data)
+
     let out_nt = x86_str_to_null_terminated(out_path)
     let of = fopen(out_nt as ptr[void], get_str_ptr("wb"))
     @free(out_nt)
@@ -1174,6 +1206,50 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64) -> bo
     if ar.data != null as ptr[u8]:
         @free(ar.data)
     return true
+
+// RFC 0011 P4 (increment 1): locate the `__axiom_iface` member in a `.lib` archive and
+// print its raw payload to stdout. Round-trip verifier for the interface writer above;
+// later increments replace the printing with in-memory interface reconstruction. Returns
+// false if the file is unreadable, not an archive, or carries no interface member.
+pub fn axiom_read_lib_iface(lib_path: str) -> bool:
+    let path_nt = x86_str_to_null_terminated(lib_path)
+    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
+    @free(path_nt)
+    if f == null as ptr[void]:
+        ax_puts_local("Error: iface could not open .lib")
+        return false
+    fseek(f, 0, 2)
+    let size = ftell(f)
+    rewind(f)
+    let buf = @alloc(size) as ptr[u8]
+    fread(buf as ptr[void], 1, size, f)
+    fclose(f)
+    if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
+        ax_puts_local("Error: not a COFF !<arch> library")
+        @free(buf)
+        return false
+    mut apos := 8 as i64
+    mut found := false
+    while apos + 60 <= size:
+        mut msize := 0 as i64
+        mut dd := 0 as i64
+        while dd < 10:
+            let ch = buf[apos + 48 as i64 + dd]
+            if ch >= '0' as u8 and ch <= '9' as u8:
+                msize = msize * 10 as i64 + (ch as i64 - '0' as i64)
+            dd = dd + 1
+        let data_off = apos + 60 as i64
+        // Member name (offset 0, slash-terminated) — match "__axiom_iface".
+        if buf[apos] == '_' as u8 and buf[apos + 1 as i64] == '_' as u8:
+            print_raw_ptr((buf as i64 + data_off) as ptr[u8], msize)
+            found = true
+        apos = data_off + msize
+        if msize % 2 as i64 != 0:
+            apos = apos + 1
+    @free(buf)
+    if not found:
+        ax_puts_local("Error: no __axiom_iface member in library")
+    return found
 
 pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut objects := new_parsed_object_ptr_vec()
@@ -1223,8 +1299,9 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         msize = msize * 10 as i64 + (ch as i64 - '0' as i64)
                     dd = dd + 1
                 let data_off = apos + 60 as i64
-                // Skip special members: "/" (symbol index) and "//" (long names).
-                if buffer[apos] != '/' as u8:
+                // Skip special members: "/" (symbol index), "//" (long names), and any
+                // "__"-prefixed AXIOM metadata member (e.g. "__axiom_iface") — not code.
+                if buffer[apos] != '/' as u8 and not (buffer[apos] == '_' as u8 and buffer[apos + 1 as i64] == '_' as u8):
                     let mobj = linker_parse_coff((buffer as i64 + data_off) as ptr[u8], msize)
                     push_parsed_object_ptr(&objects, mobj)
                 apos = data_off + msize
