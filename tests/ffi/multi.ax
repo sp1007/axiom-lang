@@ -1,0 +1,12 @@
+// HARNESS: SKIP — needs libA.dll + libB.dll (gcc) present at runtime (see README.md)
+// tests/ffi/multi.ax — RFC 0009 P1: import from TWO distinct DLLs at once,
+// exercising the N-DLL .idata generalization (libA: 1 import, libB: 2 imports).
+// Build libA.dll/libB.dll from libA.c/libB.c (gcc -shared). Expected exit 100.
+extern "C" from "libA.dll" fn a_square(x: i32) -> i32
+extern "C" from "libB.dll" fn b_negate(x: i32) -> i32
+extern "C" from "libB.dll" fn b_double(x: i32) -> i32
+
+fn main() -> i32:
+    let s = a_square(5)
+    let d = b_double(s)
+    return b_double(d) + b_negate(0)

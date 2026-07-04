@@ -57,3 +57,13 @@ nm axmath_ns.lib | grep ax_ax_   # symbol index has ax_ax_add / ax_ax_mul
 objdump -p app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbase — NO axmath
 ./app_static.exe ; echo "exit=$?"             # expect exit=84, runs with no .lib present
 ```
+
+## Multi-DLL test (RFC 0009 P1, N=2)
+
+```sh
+gcc -shared -o libA.dll libA.c
+gcc -shared -o libB.dll libB.c
+../../bin/axc_native.exe build multi.ax -o multi.exe -self-link -O1
+objdump -p multi.exe | grep "DLL Name"   # both libA.dll and libB.dll present
+./multi.exe ; echo "exit=$?"             # expect exit=100
+```
