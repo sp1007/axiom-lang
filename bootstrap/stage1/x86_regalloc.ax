@@ -998,6 +998,59 @@ pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32, table: ptr[TypeTable], sym
         i = i + 1
     return false
 
+// PERF: is_float_vreg / regalloc_is_16byte each LINEAR-scan fn_ptr.insts for the
+// defining instruction of a vreg. Called once per interval in the orchestrator
+// split loop and once per spilled operand-use in insert_spill_code, that is
+// O(vregs × insts) — quadratic on mega-functions (select_inst: ~2s of codegen).
+// This builds, in one O(insts) pass, def_idx[vreg] = the index of the FIRST inst
+// whose dest == vreg (matching is_float_vreg's first-match semantics), or -1.
+// The cached wrappers then reuse the EXACT same per-inst classification logic via
+// an O(1) lookup — no logic duplication, so classification is byte-identical.
+pub fn build_vreg_def_idx(fn_ptr: ptr[AirFunc], size: i64) -> ptr[i32]:
+    let arr = @alloc(size * 4) as ptr[i32]
+    mut k := 0 as i64
+    while k < size:
+        arr[k] = -1 as i32
+        k = k + 1
+    mut i := 0 as i64
+    while i < fn_ptr.insts.len:
+        let d = fn_ptr.insts.data[i].dest as i64
+        if d >= 0 as i64 and d < size and arr[d] == -1 as i32:
+            arr[d] = i as i32
+        i = i + 1
+    return arr
+
+// Cached form of is_float_vreg. `def_idx` must be sized `def_size` (>= vreg+1 for
+// any vreg queried); a vreg beyond it (e.g. a selection scratch above max AIR
+// dest) is never an AIR dest → not float, same as the linear-scan fallthrough.
+pub fn is_float_vreg_cached(fn_ptr: ptr[AirFunc], vreg: u32, table: ptr[TypeTable], symbols: ptr[SymbolTable], def_idx: ptr[i32], def_size: i64) -> bool:
+    if vreg == 0 as u32:
+        return false
+    if vreg >= 1 as u32 and vreg <= fn_ptr.params.len as u32:
+        let pt = fn_ptr.params.data[vreg as i64 - 1 as i64] as u32
+        return pt == 9 as u32 or pt == 10 as u32
+    if (vreg as i64) >= def_size:
+        return false
+    let di = def_idx[vreg as i64]
+    if di < 0 as i32:
+        return false
+    let inst = &fn_ptr.insts.data[di as i64]
+    if inst.opcode == OP_CALL and inst.src1 == 0 as u32:
+        let sym_idx = inst.type_id as u32
+        if symbols != null as ptr[SymbolTable] and sym_idx != 0 as u32 and (sym_idx as i64) < symbols.symbols.len:
+            let sym = &symbols.symbols.data[sym_idx as i64]
+            if sym.kind == SYM_FUNC:
+                let fn_type_id = sym.type_id as u32
+                if fn_type_id != 0 as u32 and (fn_type_id as i64) < table.entries.len:
+                    let entry = &table.entries.data[fn_type_id as i64]
+                    if entry.kind == TYPE_KIND_FUNC:
+                        let fi = &table.funcs.data[entry.extra as i64]
+                        let rt = fi.ret
+                        return rt == 9 as u32 or rt == 10 as u32
+        return false
+    let t_id = inst.type_id
+    return t_id == 9 as u32 or t_id == 10 as u32
+
 pub fn get_allocatable_xmms(out_len: ptr[i64]) -> ptr[u8]:
     let arr = @alloc(8) as ptr[u8]
     arr[0] = REG_XMM8
@@ -1029,14 +1082,18 @@ pub fn allocate_registers_orchestrator(intervals: LiveIntervalVec, insts: ptr[Ma
     mut gpr_intervals := new_live_interval_vec()
     mut xmm_intervals := new_live_interval_vec()
 
+    // PERF: memoize the float/GPR classification. Formerly is_float_vreg (a linear
+    // scan of fn_ptr.insts) per interval → O(intervals × insts), ~2s on select_inst.
+    let def_idx = build_vreg_def_idx(fn_ptr, graph_size)
     mut i := 0 as i64
     while i < intervals.len:
         let iv = intervals.data[i]
-        if is_float_vreg(fn_ptr, iv.vreg, table, symbols):
+        if is_float_vreg_cached(fn_ptr, iv.vreg, table, symbols, def_idx, graph_size):
             xmm_intervals.push(iv)
         else:
             gpr_intervals.push(iv)
         i = i + 1
+    @free(def_idx as ptr[u8])
 
     mut gpr_len := 0 as i64
     let avail_gprs = get_allocatable_gprs(&gpr_len)
