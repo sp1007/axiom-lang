@@ -1,6 +1,6 @@
 # RFC 0010 — Value semantics cho aggregate `let` bindings (diệt lớp bug stale-alias)
 
-- **Status:** Draft (2026-07-03)
+- **Status:** Needs redesign (2026-07-03) — blanket copy-at-bind PROVEN unsafe (breaks self-host)
 - **Author:** self-host team
 - **Tracking:** follow-up bắt buộc của BUG#51/#52 (fix targeted 4d7949a)
 - **Liên quan:** air_builder (lower_let / lower_index_expr / OP_INDEX / OP_STORE),
@@ -138,3 +138,41 @@ Quét bootstrap/stage1 tìm `let/mut x := <vec>.data[i]` (aggregate) rồi ghi `
   toàn bộ 196 site (grep cross-line khó tự động; cần pass tay hoặc tool AST). **Điều kiện
   tiên quyết P1:** hoàn tất audit này (mọi value-bind aggregate → xác nhận read-only HOẶC
   đổi sang `&`) trước khi bật copy trong lower_let.
+
+## 9. ⛔ KẾT QUẢ THỰC NGHIỆM: blanket copy-at-bind PHÁ self-host (2026-07-03)
+
+Đã **thử** implement §3 (OP_ALLOC+OP_STORE copy trong lower_var_decl khi
+`let/mut x = arr[i]` với addr-aggregate, chỉ NODE_INDEX_EXPR). Kết quả:
+
+- ✅ Oracle `bin/t_aggcopy.ax` phân biệt đúng: cũ=99 (alias), fix=5 (copy) O0+O1.
+- ✅ Full regression **94/94** với compiler-được-build-bởi-OLD-backend + fix source.
+- ❌ **FIXPOINT FAIL:** compiler tự-build BỞI chính nó (copy-semantics áp vào việc
+  sinh code của compiler) **hỏng** — không self-build tiếp được, miscompile t_mathx.
+  Size +33KB (mọi `let cn = nodes.data[i]` — AstNode 24B struct — giờ copy).
+
+**Root cause của negative result:** compiler DỰA vào aliasing cho **read-after-mutate
+cùng buffer** (KHÔNG realloc): pattern `let node = tree.nodes.data[i]` rồi ở đâu đó
+`tree.nodes.data[i].payload = X` và đọc lại `node.payload` KỲ VỌNG thấy X qua alias.
+Blanket copy-at-bind biến `node` thành snapshot → đọc giá trị cũ → sai. Audit §8
+(`mut`+field-write) BỎ SÓT lớp này vì nó là `let`-bind + mutate-qua-direct-index +
+read-qua-alias-local.
+
+**Bài học phân biệt hai loại alias:**
+1. **Alias qua REALLOC** (buffer bị free) = BUG#51/#52 — cần fix.
+2. **Alias read-after-mutate cùng buffer** (không realloc) = compiler DỰA VÀO — không được phá.
+
+Blanket flip gộp cả hai → sai. **Fix targeted 4d7949a (re-fetch qua current buffer)
+thực chất là ĐÚNG hướng**, không phải copy.
+
+**Hướng redesign (P1 mới):**
+- (a) **Re-fetch discipline + lint:** giữ alias, nhưng cảnh báo/cấm giữ aggregate-index-
+  local qua một CALL (call = ranh giới có thể realloc); ép re-fetch. Nhắm đúng loại-1.
+- (b) **Copy chỉ khi escape-qua-call:** escape analysis xác định local aggregate-index
+  có sống qua call làm-grow-source-vec không; chỉ copy khi có. Phức tạp.
+- (c) **Realloc-stable buffers:** vec dùng cho AST/symbols cấp sẵn capacity lớn / dùng
+  arena không-free → alias không bao giờ dangle. Đổi allocation strategy thay ngữ nghĩa.
+⟹ (a) hoặc (c) khả thi hơn (b). Cần RFC con / thảo luận trước khi thử lại.
+
+**Trạng thái:** code thử đã REVERT (air_builder + regression sạch). Giữ `bin/t_aggcopy.ax`
+làm oracle tài liệu (chưa đăng ký regression vì hành vi hiện tại = 99/alias). Targeted
+fix 4d7949a vẫn là cơ chế bảo vệ hiện hành cho site đã biết.
