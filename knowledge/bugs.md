@@ -1392,3 +1392,17 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 **Verify (backend ⇒ fixpoint BẮT BUỘC):** self-build ×2 SHA giống hệt (72c9aefc…) = fixpoint; full regression **93/93** bằng binary mới; t_mathx output không đổi (exit=28).
 
 **Bài học tái dùng:** (1) hack "unique-vreg-bằng-offset-lớn" là **anti-pattern** — mọi array/loop keyed theo max_vreg trả giá; luôn dùng `next_vreg`/counter dense. (2) ssa_opt cũng dùng `max_reg+1` arrays — nếu tương lai lại có vreg thưa-cao thì cùng dính. (3) quy trình probe: `--time` (pha) → clock() bọc từng sub-phase trong vòng codegen → in min/max/graph_size để phát hiện thưa → truy ngược tới nơi sinh vreg lạc (quét result MachInsts theo op).
+
+---
+
+## PERF #2 — `is_float_vreg` linear-scan trong split-loop = O(V×N) trên mega-function ✅ ĐÃ FIX (bb58f18)
+
+**Triệu chứng:** sau PERF#1, compiler tự-build vẫn codegen 9560ms. Probe per-func (`fn-cost` in hàm >80ms): tập trung ở vài mega-function THẬT (không phải artifact): `select_inst` insts=27071/spills=12882 = **3045ms** (select_all 1341 + regalloc 2076), `infer_node` 660ms, `translate_inst` 524ms, `emit_inst` 174ms.
+
+**Root cause:** `allocate_registers_orchestrator` split từng live-interval thành bucket GPR/XMM bằng `is_float_vreg()` — hàm này **linear-scan `fn_ptr.insts`** tìm inst định nghĩa vreg. Gọi 1 lần/interval ⇒ **O(intervals × insts)**. select_inst (~13k vreg × ~13k inst) = ~2s chỉ để tra cùng 1 thứ lặp lại. (Lưu ý: hàm insts>5000 đi **spill-all fallback** trong graph_coloring, return sớm TRƯỚC interference — nên chi phí KHÔNG ở graph coloring mà ở split-loop + prescan.)
+
+**Fix:** `build_vreg_def_idx(fn_ptr, size)` = 1 lượt O(insts) map `vreg → index inst def đầu tiên` (khớp ngữ nghĩa first-match của is_float_vreg), + `is_float_vreg_cached(...def_idx...)` = **cùng logic phân loại per-inst** sau lookup O(1) (KHÔNG nhân đôi logic ⇒ byte-identical). Split-loop: O(intervals×insts) → O(insts).
+
+**Kết quả (full compiler self-build -O1, native đã promote):** codegen **9560ms → 4452ms (~2.1×)**; select_inst regalloc-phase **2076ms → 689ms**. Fixpoint SHA=c5316008 + regression 93/93.
+
+**CÒN LẠI → PERF #3 (defer, focused effort riêng):** `regalloc_is_16byte` (x86_selector.ax:446-566, ~120 dòng) VẪN linear-scan, gọi per-interval trong spill-all fallback (x86_regalloc.ax:482) + per-spilled-operand trong insert_spill_code (861/904/931) = quadratic còn sót (~689ms select_inst). KHÓ hơn is_float: có **đệ quy** (COPY/MOVE→src1, dòng 515), **inner-scan thứ 2** (OP_DEREF chase src1, 546-552), và **control-flow-skip** (dòng 464 — bỏ qua inst dest==vreg nếu op là branch/store/…). Cách an toàn: wrapper mỏng giữ signature cũ (16 caller nguyên) + `regalloc_is_16byte_cached(...def_idx...)` mang toàn bộ body (đệ quy gọi _cached, def_idx null→linear fallback). def_idx first-ANY dùng chung được VÌ control-flow inst có dest==0 (PERF#2 fixpoint đã ngầm xác nhận). Cần fixpoint + regression riêng — KHÔNG ride-along.
