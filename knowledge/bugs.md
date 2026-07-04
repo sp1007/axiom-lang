@@ -1415,4 +1415,12 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 
 **Kết quả:** codegen **4452ms → 2396ms** (riêng change này); **9560ms → 2396ms (~4×)** cộng dồn PERF#2. Fixpoint SHA=13ac5d05 + regression 93/93.
 
-**Tổng kết perf session (2026-07-04):** codegen native cho compiler tự-build **9560ms → 2396ms (~4×)**; cho chương trình float-heavy (t_mathx) **2074ms → 126ms (~16×)**. Bottleneck codegen từ ~80% xuống mức lành mạnh. Kỹ thuật xuyên suốt: `--time` → probe per-func/per-sub-phase (clock bracket) → phát hiện quadratic (in V/GS/spills/min-max) → memoize bằng def_idx (1 lượt O(N)) thay linear-scan-per-vreg. **Nguyên tắc: hàm scan-tìm-def gọi trong vòng O(V) = quadratic ẩn; luôn nghĩ tới def_idx.**
+## PERF #4 — `get_register_type` linear-scan trong selection = O(insts × N) ✅ ĐÃ FIX (1411787)
+
+**Root cause:** `get_register_type` (x86_selector.ax) linear-scan `sel.fn_ptr.insts` tìm def của reg; gọi ~25 lần trong `select_inst`, nhiều lần/inst lowered ⇒ quadratic (~747ms select_inst trong select_all).
+
+**Fix:** cache def_idx **trên struct `InstructionSelector`** (`def_idx: ptr[i32]`, `def_size: i64`) — đã threaded khắp selection qua `sel`. Build 1 lần trong `select_all` (sized max AIR dest+1), get_register_type jump-start tại `def_idx[reg]` (cùng pattern PERF#3). Chỉ 1 nơi khởi tạo InstructionSelector nên thêm field an toàn.
+
+**Kết quả:** codegen **2396→1442ms**. Fixpoint 966dfb09 + 93/93.
+
+**Tổng kết perf session (2026-07-04) — 4 fix:** codegen compiler-self-build **9560ms → 1442ms (~6.6×)**; float-heavy t_mathx **2074→126ms (~16×)**; tổng self-build wall-clock **~14.8s → ~4.1s (~3.6×)**. Kỹ thuật xuyên suốt: `--time` → probe per-func/per-sub-phase (clock bracket) → phát hiện quadratic (in V/GS/spills/min-max) → memoize bằng def_idx (1 lượt O(N), jump-to-def-index) thay linear-scan-per-vreg. **Nguyên tắc: hàm scan-tìm-def gọi trong vòng O(V) = quadratic ẩn; luôn nghĩ tới def_idx.** Sau PERF#1-4: 2 phase lớn nhất = typecheck 1233ms + codegen 1336ms (residual lành mạnh); typecheck chưa đụng (frontend, hotspot kế tiềm năng).
