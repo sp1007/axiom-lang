@@ -5731,10 +5731,25 @@ pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u
 pub fn match_method_name(sym_name: str, field_name: str) -> bool:
     if sym_name == field_name:
         return true
-    let dot_field = std.string.concat(".", field_name)
-    let res = std.string.ends_with(sym_name, dot_field)
-    @free(get_str_ptr(dot_field))
-    return res
+    // PERF: equivalent to ends_with(sym_name, "." + field_name) but WITHOUT the
+    // per-call concat/alloc/free â€” this runs tens of millions of times across the
+    // method-resolution symbol scans (resolve_method_sym / method_ret_type).
+    // True iff sym_name is longer than field_name, its last field_name.len bytes
+    // equal field_name, and the byte just before them is '.'.
+    let sl = std.string.len(sym_name)
+    let fl = std.string.len(field_name)
+    if sl <= fl:
+        return false
+    let sp = sym_name as ptr[u8]
+    let fp = field_name as ptr[u8]
+    if sp[sl - fl - 1 as i64] != 46 as u8:
+        return false
+    mut k := 0 as i64
+    while k < fl:
+        if sp[sl - fl + k] != fp[k]:
+            return false
+        k = k + 1
+    return true
 
 pub fn is_sym_generic(self: ptr[TypeChecker], sym_idx: u32) -> bool:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
