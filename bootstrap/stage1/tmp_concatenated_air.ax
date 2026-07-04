@@ -7660,12 +7660,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                             found = true
                                             break
                                         j = j + 1
-                            // RFC 0004: qualified nullary-variant construction
-                            // `EnumType.Variant` (e.g. `Color.Blue`). The base resolves to a
-                            // user sum type; a matching no-payload variant is a value of that
-                            // sum. Bind the field-expr to the variant SYMBOL (flag 2048) so the
-                            // lowerer constructs it, exactly like a bare `Blue`. Payload-carrying
-                            // variants via a qualified name are a call and handled elsewhere.
+                            // RFC 0004: qualified variant construction `EnumType.Variant`
+                            // (e.g. `Color.Blue`, `Shape.Circle`). The base resolves to a user
+                            // sum type; a matching variant NAMES a value of that sum. Bind the
+                            // field-expr to the variant SYMBOL (flag 2048) and type it as the
+                            // sum. A no-payload variant is a complete value â€” the lowerer builds
+                            // it in `lower_field_expr`; a payload variant is completed by a call
+                            // `EnumType.Ctor(x)` â€” the lowerer builds it in `lower_call_expr`.
                             if not found and entry.kind == TYPE_KIND_SUM:
                                 let sum_extra = entry.extra
                                 if (sum_extra as i64) < self.types.sumtypes.len:
@@ -7673,7 +7674,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     mut vk := 0 as i64
                                     while vk < vsum_info.variants.len:
                                         let vinfo = vsum_info.variants.data[vk]
-                                        if vinfo.name_id == field_name_id and vinfo.payload_type == TYPE_UNKNOWN:
+                                        if vinfo.name_id == field_name_id:
                                             mut vsi := 0 as i64
                                             while vsi < self.symtable.symbols.len:
                                                 let cand = self.symtable.symbols.data[vsi]
@@ -10626,6 +10627,20 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                     let payload_arg = callee_node.next_sibling
                     return self.lower_variant_construct(vcsym_idx, payload_arg)
 
+    // RFC 0004: qualified payload-variant construction `EnumType.Ctor(x)`. The
+    // callee is a NODE_FIELD_EXPR that typecheck bound to the variant symbol
+    // (flag 2048); build the same tag-in-box value the bare `Ctor(x)` path above
+    // does, with the call's first argument as the payload. Without this the
+    // callee lowered as an OP_GET_FIELD on the type name and crashed.
+    if not is_method_call and callee_node.kind == NODE_FIELD_EXPR and (callee_node.flags & 2048 as u16) != 0 as u16:
+        let fvsym_idx = callee_node.payload
+        if fvsym_idx != 0 as u32 and (fvsym_idx as i64) < self.mb.symbols.symbols.len:
+            let fvsym = self.mb.symbols.symbols.data[fvsym_idx as i64]
+            if fvsym.kind == SYM_VARIANT and fvsym.type_id != 0 as u32 and (fvsym.type_id as i64) < self.mb.typetable.entries.len:
+                if self.mb.typetable.entries.data[fvsym.type_id as i64].kind == TYPE_KIND_SUM:
+                    let fpayload_arg = callee_node.next_sibling
+                    return self.lower_variant_construct(fvsym_idx, fpayload_arg)
+
     mut is_struct_constructor := false
     mut struct_type_id := 0 as u32
 
@@ -10780,10 +10795,16 @@ pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             // RFC 0004: qualified nullary-variant construction `EnumType.Variant`.
             // Typecheck bound this field-expr to the variant symbol (flag 2048); build
             // the same tagged value a bare `Variant` would, instead of an OP_GET_FIELD
-            // on the type name (which read a garbage receiver and crashed).
+            // on the type name (which read a garbage receiver and crashed). Only
+            // no-payload variants complete here; a payload variant `EnumType.Ctor(x)`
+            // is a call and is built in lower_call_expr with its argument.
             if sym.kind == SYM_VARIANT and sym.type_id != 0 as u32 and (sym.type_id as i64) < self.mb.typetable.entries.len:
                 if self.mb.typetable.entries.data[sym.type_id as i64].kind == TYPE_KIND_SUM:
-                    return self.lower_variant_construct(sym_idx, 0 as u32)
+                    mut ntag := -1 as i64
+                    mut npayload := 0 as u32
+                    self.find_variant_info(sym.type_id, sym.name_id, &ntag, &npayload)
+                    if npayload == TYPE_UNKNOWN:
+                        return self.lower_variant_construct(sym_idx, 0 as u32)
             if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
                 return 0 as u32
             let reg = self.locals.local_map_get(sym_idx)

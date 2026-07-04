@@ -2206,12 +2206,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                             found = true
                                             break
                                         j = j + 1
-                            // RFC 0004: qualified nullary-variant construction
-                            // `EnumType.Variant` (e.g. `Color.Blue`). The base resolves to a
-                            // user sum type; a matching no-payload variant is a value of that
-                            // sum. Bind the field-expr to the variant SYMBOL (flag 2048) so the
-                            // lowerer constructs it, exactly like a bare `Blue`. Payload-carrying
-                            // variants via a qualified name are a call and handled elsewhere.
+                            // RFC 0004: qualified variant construction `EnumType.Variant`
+                            // (e.g. `Color.Blue`, `Shape.Circle`). The base resolves to a user
+                            // sum type; a matching variant NAMES a value of that sum. Bind the
+                            // field-expr to the variant SYMBOL (flag 2048) and type it as the
+                            // sum. A no-payload variant is a complete value — the lowerer builds
+                            // it in `lower_field_expr`; a payload variant is completed by a call
+                            // `EnumType.Ctor(x)` — the lowerer builds it in `lower_call_expr`.
                             if not found and entry.kind == TYPE_KIND_SUM:
                                 let sum_extra = entry.extra
                                 if (sum_extra as i64) < self.types.sumtypes.len:
@@ -2219,7 +2220,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     mut vk := 0 as i64
                                     while vk < vsum_info.variants.len:
                                         let vinfo = vsum_info.variants.data[vk]
-                                        if vinfo.name_id == field_name_id and vinfo.payload_type == TYPE_UNKNOWN:
+                                        if vinfo.name_id == field_name_id:
                                             mut vsi := 0 as i64
                                             while vsi < self.symtable.symbols.len:
                                                 let cand = self.symtable.symbols.data[vsi]

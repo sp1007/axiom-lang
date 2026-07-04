@@ -1,0 +1,26 @@
+// Regression: qualified PAYLOAD-variant construction `EnumType.Ctor(x)`
+// (e.g. `Shape.Circle(4)`). The callee is a field-expr, not a bare ident, so
+// the bare variant-constructor path did not fire; the callee lowered to an
+// OP_GET_FIELD on the type name and segfaulted. It must now build the same
+// tag-in-box value as the bare `Circle(4)`, carrying the argument as payload.
+type Shape = Circle(i32) | Square(i32)
+
+fn area(s: Shape) -> i32:
+    match s:
+        Circle(r):
+            return r * r * 3
+        Square(w):
+            return w * w
+
+fn classify(s: Shape) -> string:
+    if area(s) >= 40:
+        return "big"
+    return "small"
+
+fn main() -> i32:
+    let a = Shape.Circle(4)   // qualified, payload — area 48
+    let b = Square(5)         // bare, payload    — area 25
+    println(classify(a))
+    println(classify(b))
+    println(classify(Shape.Square(7)))  // qualified, direct call arg — area 49
+    return 0
