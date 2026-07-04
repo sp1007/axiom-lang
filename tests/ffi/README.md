@@ -58,6 +58,29 @@ objdump -p app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbas
 ./app_static.exe ; echo "exit=$?"             # expect exit=84, runs with no .lib present
 ```
 
+## Import-driven auto-library test (RFC 0011 P4 inc3b)
+
+`import x` auto-resolves a fresh `x.lib` — no `-l` needed. The compiler registers the
+library's public functions from its `__axiom_iface` member (typecheck against the
+interface, no source recompile) and the linker pulls the code from the `.lib`.
+
+```sh
+# 1. Precompile the library (carries F triple 1 i32 -> i32 in __axiom_iface)
+../../bin/axc_native.exe build imp_mymath.ax -o imp_mymath.lib --staticlib --no-stdlib -self-link -O1
+../../bin/axc_native.exe iface imp_mymath.lib      # dumps raw + parsed round-trip
+
+# 2. Build the app WITHOUT -l — `import imp_mymath` finds imp_mymath.lib automatically
+../../bin/axc_native.exe build imp_app.ax -o imp_app.exe -self-link -O1
+cp ../../bin/ax_runtime.dll .
+./imp_app.exe ; echo "exit=$?"     # expect exit=42
+
+# 3. Negative: delete imp_mymath.lib and rebuild the app → falls back to compiling
+#    imp_mymath.ax from source (old behavior), still exit=42.
+```
+
+Note: build from a directory where both `std/*.ax` (for stdlib concat) and the `.lib` are
+found on the CWD-relative path the module name maps to (`import a.b` → `a/b.lib`).
+
 ## Multi-DLL test (RFC 0009 P1, N=2)
 
 ```sh

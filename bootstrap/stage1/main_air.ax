@@ -967,6 +967,21 @@ pub fn main() -> i32:
             while lib_i < extra_libs.len:
                 axiom_linker_add_input(&linker, extra_libs.data[lib_i])
                 lib_i = lib_i + 1
+            // RFC 0011 P4 (increment 3b): import-driven auto-libraries. Each module that
+            // was satisfied from a `<module>.lib` (register_module_from_lib) must have that
+            // archive linked so its code is present. Re-derive the path from the module
+            // name and add it when the file exists — mirrors the load-time decision.
+            if lazy != null as ptr[LazyResolver]:
+                mut ml_i := 0 as i64
+                while ml_i < lazy.modules.len:
+                    let lmod = lazy.modules.data[ml_i]
+                    if lmod != null as ptr[ModuleInfo]:
+                        let lmod_name = parser.pool.get(lmod.name_id)
+                        let lmod_rel = std.string.replace(lmod_name, ".", "/")
+                        let lmod_lib = std.string.concat(lmod_rel, ".lib")
+                        if file_exists(lmod_lib):
+                            axiom_linker_add_input(&linker, lmod_lib)
+                        ml_i = ml_i + 1
             linker.output_path = output_file
             // RFC 0009: resolve extern-from-DLL bindings (name_id pairs) into string
             // pairs for the linker's per-symbol DLL attribution.
@@ -1064,6 +1079,45 @@ pub fn main() -> i32:
 
     return 0
 
+// RFC 0011 P4 (increment 3b): register a module's public symbols from a precompiled
+// `.lib`'s `__axiom_iface` — WITHOUT parsing/typechecking/codegen'ing the library source.
+// Each public function becomes a body-less SYM_FUNC (decl_node 0, ast_tree stays null ⇒
+// build_module never emits it — its body comes from the `.lib` at link time). The symbol
+// carries only SYM_FLAG_PUB, so cgen mangles the call target as plain `ax_<name>`, which
+// matches the library's exported symbol. Qualified `mod.fn` resolves via the global-scope
+// full-name binding and the module export list, exactly like the source-loaded path.
+fn register_module_from_lib(mod: ptr[ModuleInfo], st: ptr[SymbolTable], tt: ptr[TypeTable], intern: ptr[InternPool], lib_path: str, mod_name: str) -> i32:
+    let funcs = parse_lib_iface(lib_path)
+    mut fi := 0 as i64
+    while fi < funcs.len:
+        let f = &funcs.data[fi]
+        let func_type = tt.register_function(f.params, f.ret)
+        let local_name_id = intern.intern_string(f.name)
+        let sym_idx = st.symbols.len as u32
+        (&st.symbols).push(Symbol(
+            name_id: local_name_id,
+            kind: SYM_FUNC,
+            padding: 0 as u8,
+            flags: SYM_FLAG_PUB,
+            type_id: func_type,
+            decl_node: 0 as u32,
+            scope_id: 0 as u32,
+            next_overload: 0 as u32,
+        ))
+        (&st.symbol_trees).push(null as ptr[AstTree])
+        let dot_name = std.string.concat(".", f.name)
+        let full_name = std.string.concat(mod_name, dot_name)
+        let full_name_id = intern.intern_string(full_name)
+        @free(get_str_ptr(dot_name))
+        @free(get_str_ptr(full_name))
+        let gscope = &st.scopes.data[0]
+        gscope.scope_put(full_name_id, sym_idx)
+        (&mod.exports).push(ModuleExport(name_id: local_name_id, symbol_idx: sym_idx))
+        fi = fi + 1
+    mod.status = MODULE_LOADED
+    mod.ast_tree = null as ptr[AstTree]
+    return 0 as i32
+
 pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[void]) -> i32:
     let mod = mod_void as ptr[ModuleInfo]
     let lazy = st.lazy_resolver as ptr[LazyResolver]
@@ -1072,6 +1126,18 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
 
     let rel_path = std.string.replace(mod_name, ".", "/")
     mut file_path := std.string.concat(rel_path, ".ax")
+
+    // RFC 0011 P4 (increment 3b): prefer a precompiled `<module>.lib` when present.
+    // Import-driven separate compilation — the library's code is pulled in by the linker
+    // (its path is threaded from lazy.modules), so its source is never recompiled.
+    let lib_path = std.string.concat(rel_path, ".lib")
+    if file_exists(lib_path):
+        @free(get_str_ptr(rel_path))
+        @free(get_str_ptr(file_path))
+        let rc = register_module_from_lib(mod, st, tt as ptr[TypeTable], intern, lib_path, mod_name)
+        @free(get_str_ptr(lib_path))
+        return rc
+    @free(get_str_ptr(lib_path))
     @free(get_str_ptr(rel_path))
 
     mut opened := false

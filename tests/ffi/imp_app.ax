@@ -1,0 +1,10 @@
+// HARNESS: SKIP — needs imp_mymath.lib built alongside it (see README).
+// tests/ffi/imp_app.ax — RFC 0011 P4 inc3b: `import imp_mymath` auto-resolves to a fresh
+// imp_mymath.lib (no -l). The compiler registers `triple` from the library's __axiom_iface,
+// skips recompiling its body, and the linker pulls the code from the .lib.
+// Build:  axc build imp_app.ax -o imp_app.exe -self-link -O1
+// Run:    ./imp_app.exe ; echo $?     # expect 42  (14*3, from the precompiled lib)
+import imp_mymath
+
+fn main() -> i32:
+    return imp_mymath.triple(14)
