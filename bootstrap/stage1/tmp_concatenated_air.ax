@@ -16840,16 +16840,21 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         // RFC 0006: f64 constant. AIR carries the full IEEE-754 bit pattern
         // split across src1(low32)/src2(high32). Materialize the 64-bit pattern
         // in a GPR scratch (mov imm64) then move it into the XMM dest via movq
-        // (MACH_MOVDQ = movq xmm, r64). The scratch vreg is never an AIR dest so
+        // (MACH_MOVDQ = movq xmm, r64). PERF: the scratch uses next_vreg(sel) â€”
+        // a fresh dense vreg (max_vreg+1) that is likewise never an AIR dest, so
         // is_float_vreg() is false for it â†’ allocated a GPR; inst.dest is f-typed
-        // â†’ allocated an XMM.
+        // â†’ allocated an XMM. (Formerly `inst.dest + 60000`, a uniqueness hack
+        // that inflated max_vreg to ~60000 â†’ graph_size ~60000 â†’ every O(graph_size)
+        // regalloc array/loop ran 60000Ã— per function; that alone was ~90% of
+        // codegen time. next_vreg keeps the vreg space dense with identical
+        // classification.)
         // f32 (type 9): the 32-bit pattern is in src1; move via movd (padding 4).
         // f64: full 64-bit pattern across src1/src2, via movq (padding 8).
         mut cw := 8 as u8
         if inst.type_id == 9 as u32:
             cw = 4 as u8
         let bits = ((inst.src1 as i64) & (0xFFFFFFFF as i64)) | ((inst.src2 as i64) << (32 as i64))
-        let gpr_tmp = inst.dest + 60000 as u32
+        let gpr_tmp = next_vreg(sel)
         out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: bits), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOVDQ, cc: 0 as u8, padding: cw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_tmp, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
@@ -17106,7 +17111,11 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     elif op == OP_NEG:
         let t = get_register_type(sel, inst.src1)
         if t == 9 as u32 or t == 10 as u32:
-            let tmp_sign = inst.dest + 60000 as u32
+            // Float negation: XOR the sign bit. tmp_sign holds the mask in a GPR
+            // scratch. next_vreg(sel) gives a fresh dense vreg (never an AIR dest
+            // â†’ GPR); formerly `inst.dest + 60000` which inflated graph_size. See
+            // the OP_FCONST comment above for the perf rationale.
+            let tmp_sign = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0x8000000000000000 as u64 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_XOR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
