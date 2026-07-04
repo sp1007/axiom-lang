@@ -1376,3 +1376,19 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 **⚠️ Landmine class còn lại:** MỌI `let s = arr[i]` (aggregate) giữ qua bất kỳ grow nào của vec đó = bom nổ chậm. Backend divergence: cgen COPY (C `r = arr[i]`) vs native ALIAS — hai ngữ nghĩa khác nhau cho cùng AIR! Cần fix hệ thống: **RFC 0010 — value semantics cho aggregate index-load** (emit block-copy vào stack slot). Cân nhắc: code hiện tại có thể VÔ TÌNH dựa alias (mut local ghi xuyên về array) — RFC phải audit trước khi đổi.
 
 **Hệ quả chiến lược:** mở khóa **daily-driver native** (self-build 790 hàm = 8s vs 2h50m stage0-built = 1200x) — perf root-cause thật của "compile chậm" là binary stage0-built chậm, không phải thuật toán compiler.
+
+---
+
+## PERF #1 — scratch vreg `inst.dest + 60000` thổi phồng `graph_size` → regalloc chiếm ~90% codegen ✅ ĐÃ FIX (ee139a2)
+
+**Triệu chứng:** codegen chậm bất thường. `--time` cho thấy t_mathx -O1: codegen 2074ms/2.5s tổng (~80%). Probe sâu: `allocate_registers_orchestrator` = ~2008ms; trong đó `graph_coloring_alloc` build interference + mọi vòng O(graph_size). `--time` là bạn — luôn đo trước khi đoán.
+
+**Root cause:** `x86_selector.ax` lower **OP_FCONST** (float const) và **OP_NEG** (float negate) cấp GPR-scratch = `inst.dest + 60000` — hack để đảm bảo vreg "không bao giờ là AIR dest" (⇒ `is_float_vreg()`=false ⇒ cấp GPR; còn `inst.dest` f-typed ⇒ XMM). Hệ quả: **mọi hàm đụng hằng float** (≈ mọi hàm toán) có 1 vreg ≈ 60000 ⇒ trong `graph_coloring_alloc`, `max_vreg` scan từ insts thấy 60000 ⇒ `graph_size = max_vreg+1 ≈ 60000` DÙ chỉ vài chục giá trị sống. Mọi `@alloc(graph_size*…)` + init-loop + free-loop + `new_u32_vec()×graph_size` chạy 60000 vòng/hàm. Đo: GS=60244 cho hàm chỉ V=250; GS=60056 cho hàm V=33.
+
+**Fix:** thay `inst.dest + 60000` → `next_vreg(sel)` (2 site). Cho vreg **dense** (max_vreg+1) cũng không phải AIR dest ⇒ phân loại GPR/XMM/16-byte **y hệt** (byte-for-byte), nhưng graph_size xẹp về số vreg thật.
+
+**Kết quả (t_mathx -O1, binary native đã promote):** codegen **2074ms → 126ms (~16×)**; tổng build **~2.5s → ~0.34s (~7×)**; graph_size **~60000 → 13-95**/hàm.
+
+**Verify (backend ⇒ fixpoint BẮT BUỘC):** self-build ×2 SHA giống hệt (72c9aefc…) = fixpoint; full regression **93/93** bằng binary mới; t_mathx output không đổi (exit=28).
+
+**Bài học tái dùng:** (1) hack "unique-vreg-bằng-offset-lớn" là **anti-pattern** — mọi array/loop keyed theo max_vreg trả giá; luôn dùng `next_vreg`/counter dense. (2) ssa_opt cũng dùng `max_reg+1` arrays — nếu tương lai lại có vreg thưa-cao thì cùng dính. (3) quy trình probe: `--time` (pha) → clock() bọc từng sub-phase trong vòng codegen → in min/max/graph_size để phát hiện thưa → truy ngược tới nơi sinh vreg lạc (quét result MachInsts theo op).
