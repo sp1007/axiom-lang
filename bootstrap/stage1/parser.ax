@@ -1211,6 +1211,26 @@ pub fn parse_program(mut self: ptr[Parser]):
             decl = self.parse_extern_decl(false)
         elif tok.kind == TK_LET or tok.kind == TK_MUT:
             decl = self.parse_var_decl()
+        elif tok.kind == TK_IDENT:
+            // RFC 0011 P4: contextual `library <dotted.name>` marker at top level. It
+            // declares the file a separately-compilable library (→ import-driven `.lib`).
+            // No AST node — its only consumers are the driver's source head-scan
+            // (source_is_library) and documentation; the parser just accepts + skips it.
+            let ident_text = self.token_text(tok)
+            mut handled := false
+            if ident_text == "library":
+                self.consume() // 'library'
+                if self.peek().kind == TK_IDENT:
+                    self.consume()
+                    while self.peek().kind == TK_DOT:
+                        self.consume()
+                        if self.peek().kind == TK_IDENT:
+                            self.consume()
+                handled = true
+            @free(ident_text as ptr[u8])
+            if not handled:
+                self.errorf(tok, "expected top level declaration")
+                self.consume()
         else:
             self.errorf(tok, "expected top level declaration")
             self.consume()
