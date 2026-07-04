@@ -1,0 +1,12 @@
+// HARNESS: SKIP — must be static-linked against axmath_ns.lib (see README.md)
+// tests/ffi/app_static.ax — RFC 0011 P2: statically link a .lib.
+// Build the lib stdlib-free, then link it in:
+//   axc build axmath.ax -o axmath_ns.lib --staticlib --no-stdlib -self-link -O1
+//   axc build app_static.ax -o app_static.exe -l axmath_ns.lib -self-link -O1
+// The ax_ax_* bodies are copied into the EXE (no runtime dependency). Exit code 84.
+extern "C" fn ax_ax_add(a: i32, b: i32) -> i32
+extern "C" fn ax_ax_mul(a: i32, b: i32) -> i32
+
+fn main() -> i32:
+    let s = ax_ax_add(40, 2)
+    return ax_ax_mul(s, 2)

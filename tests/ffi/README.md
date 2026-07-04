@@ -40,3 +40,20 @@ gcc -o host.exe host.c
 
 objdump -p axmath.dll | grep -A12 "Export Tables"   # ax_add / ax_mul, base 1
 ```
+
+## Static library test (RFC 0011 P1+P2)
+
+`--staticlib` emits a COFF `!<arch>` archive; `-l x.lib` statically links it (code
+copied into the EXE, no runtime dependency).
+
+```sh
+# Produce a stdlib-free static lib (pure fns → symbols ax_ax_add / ax_ax_mul)
+../../bin/axc_native.exe build axmath.ax -o axmath_ns.lib --staticlib --no-stdlib -self-link -O1
+ar t axmath_ns.lib          # lists member axiom.o
+nm axmath_ns.lib | grep ax_ax_   # symbol index has ax_ax_add / ax_ax_mul
+
+# Statically link it into an app that only declares those symbols
+../../bin/axc_native.exe build app_static.ax -o app_static.exe -l axmath_ns.lib -self-link -O1
+objdump -p app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbase — NO axmath
+./app_static.exe ; echo "exit=$?"             # expect exit=84, runs with no .lib present
+```

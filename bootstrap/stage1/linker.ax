@@ -1010,6 +1010,168 @@ pub fn build_export_edata(export_names: ptr[LinkerStrVec], func_names: ptr[Linke
     @free(name_rvas as ptr[u8])
     @free(eat_rvas as ptr[u8])
 
+// RFC 0011 P1: static-library (`.lib`) writer — standard COFF `!<arch>` format.
+pub fn push_u32_be(out: ptr[ByteVec], val: u32):
+    push_byte(out, ((val >> 24 as u32) & 0xFF as u32) as u8)
+    push_byte(out, ((val >> 16 as u32) & 0xFF as u32) as u8)
+    push_byte(out, ((val >> 8 as u32) & 0xFF as u32) as u8)
+    push_byte(out, (val & 0xFF as u32) as u8)
+
+// Left-justified, space-padded ASCII field of exactly `width` bytes.
+fn ar_field_str(out: ptr[ByteVec], s: str, width: i64):
+    let p = get_str_ptr(s)
+    let n = std.string.len(s)
+    mut i := 0 as i64
+    while i < width:
+        if i < n:
+            push_byte(out, p[i])
+        else:
+            push_byte(out, ' ' as u8)
+        i = i + 1
+
+// Decimal ASCII, left-justified, space-padded to `width` bytes.
+fn ar_field_decimal(out: ptr[ByteVec], val: i64, width: i64):
+    let buf = @alloc(24) as ptr[u8]
+    mut m := val
+    mut k := 0 as i64
+    if m == 0:
+        buf[0] = '0' as u8
+        k = 1
+    else:
+        while m > 0:
+            buf[k] = ('0' as u8) + (m % 10 as i64) as u8
+            k = k + 1
+            m = m / 10 as i64
+    mut i := 0 as i64
+    while i < width:
+        if i < k:
+            push_byte(out, buf[k - 1 - i])
+        else:
+            push_byte(out, ' ' as u8)
+        i = i + 1
+    @free(buf)
+
+// A 60-byte `ar` member header.
+fn ar_write_header(out: ptr[ByteVec], name: str, size: i64):
+    ar_field_str(out, name, 16)     // Name (slash-terminated for COFF)
+    ar_field_str(out, "0", 12)      // Date
+    ar_field_str(out, "", 6)        // UID
+    ar_field_str(out, "", 6)        // GID
+    ar_field_str(out, "0", 8)       // Mode
+    ar_field_decimal(out, size, 10) // Size
+    push_byte(out, 0x60 as u8)      // end marker "`\n"
+    push_byte(out, 0x0A as u8)
+
+// Wrap a compiled `.obj` into a single-member COFF archive with a first-linker-member
+// symbol index (all defined symbols → the one object member). Also writes a binary
+// staleness manifest `<out>.manifest` (RFC 0011 §3.4).
+pub fn axiom_write_static_lib(obj_path: str, out_path: str) -> bool:
+    let path_nt = x86_str_to_null_terminated(obj_path)
+    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
+    @free(path_nt)
+    if f == null as ptr[void]:
+        ax_puts_local("Error: staticlib could not open object file")
+        return false
+    fseek(f, 0, 2)
+    let osize = ftell(f)
+    rewind(f)
+    let obuf = @alloc(osize) as ptr[u8]
+    fread(obuf as ptr[void], 1, osize, f)
+    fclose(f)
+
+    // Collect defined symbol names (the archive's exports).
+    let obj = linker_parse_coff(obuf, osize)
+    mut symnames := new_linker_str_vec()
+    mut si := 0 as i64
+    while si < obj.symbols.len:
+        let sym = &obj.symbols.data[si]
+        if sym.defined and is_valid_symbol_name(sym.name):
+            add_unique_import(&symnames, sym.name)
+        si = si + 1
+
+    // Layout: [8 magic][60 idx-hdr][idx-data(+pad)][60 obj-hdr][obj-data(+pad)]
+    mut idx_data := 4 as i64 + symnames.len * 4
+    mut sn := 0 as i64
+    while sn < symnames.len:
+        idx_data = idx_data + std.string.len(symnames.data[sn]) + 1
+        sn = sn + 1
+    mut idx_pad := 0 as i64
+    if idx_data % 2 != 0:
+        idx_pad = 1
+    let obj_member_off = 8 as i64 + 60 + idx_data + idx_pad
+
+    mut ar := new_byte_vec()
+    let magic = "!<arch>\n"
+    let mp = get_str_ptr(magic)
+    mut mi := 0 as i64
+    while mi < 8:
+        push_byte(&ar, mp[mi])
+        mi = mi + 1
+    // First linker member: symbol index (name "/").
+    ar_write_header(&ar, "/", idx_data)
+    push_u32_be(&ar, symnames.len as u32)
+    sn = 0
+    while sn < symnames.len:
+        push_u32_be(&ar, obj_member_off as u32)
+        sn = sn + 1
+    sn = 0
+    while sn < symnames.len:
+        let nm = symnames.data[sn]
+        let np = get_str_ptr(nm)
+        let nl = std.string.len(nm)
+        mut c := 0 as i64
+        while c < nl:
+            push_byte(&ar, np[c])
+            c = c + 1
+        push_byte(&ar, 0 as u8)
+        sn = sn + 1
+    if idx_pad == 1:
+        push_byte(&ar, 0x0A as u8)
+    // Object member.
+    ar_write_header(&ar, "axiom.o/", osize)
+    push_bytes(&ar, obuf, osize)
+    if osize % 2 != 0:
+        push_byte(&ar, 0x0A as u8)
+
+    let out_nt = x86_str_to_null_terminated(out_path)
+    let of = fopen(out_nt as ptr[void], get_str_ptr("wb"))
+    @free(out_nt)
+    if of == null as ptr[void]:
+        ax_puts_local("Error: staticlib could not write output file")
+        return false
+    fwrite(ar.data as ptr[void], 1, ar.len, of)
+    fclose(of)
+
+    // Staleness manifest: djb2 hash of the compiled object bytes.
+    mut h := 5381 as u64
+    mut hi := 0 as i64
+    while hi < osize:
+        h = ((h << 5 as u64) + h) + obuf[hi] as u64
+        hi = hi + 1
+    let man_path = std.string.concat(out_path, ".manifest")
+    let man_nt = x86_str_to_null_terminated(man_path)
+    let mf = fopen(man_nt as ptr[void], get_str_ptr("wb"))
+    @free(man_nt)
+    if mf != null as ptr[void]:
+        mut man := new_byte_vec()
+        let hdr = "AXLIB1\n"
+        let hp = get_str_ptr(hdr)
+        mut hj := 0 as i64
+        while hj < std.string.len(hdr):
+            push_byte(&man, hp[hj])
+            hj = hj + 1
+        push_u32_le(&man, (h & 0xFFFFFFFF as u64) as u32)
+        push_u32_le(&man, ((h >> 32 as u64) & 0xFFFFFFFF as u64) as u32)
+        fwrite(man.data as ptr[void], 1, man.len, mf)
+        fclose(mf)
+        if man.data != null as ptr[u8]:
+            @free(man.data)
+
+    @free(obuf)
+    if ar.data != null as ptr[u8]:
+        @free(ar.data)
+    return true
+
 pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut objects := new_parsed_object_ptr_vec()
     mut format := "coff"
@@ -1044,7 +1206,28 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         fclose(file)
         
         mut obj := null as ptr[ParsedObject]
-        if buffer[0] == 0x7F as u8 and buffer[1] == 'E' as u8 and buffer[2] == 'L' as u8 and buffer[3] == 'F' as u8:
+        if buffer[0] == '!' as u8 and buffer[1] == '<' as u8:
+            // RFC 0011 P2: COFF !<arch> static library — pull all member objects.
+            // (Single-member archives today; whole-archive inclusion, dead-strip later.)
+            format = "coff"
+            mut apos := 8 as i64
+            while apos + 60 <= size:
+                mut msize := 0 as i64
+                mut dd := 0 as i64
+                while dd < 10:
+                    let ch = buffer[apos + 48 as i64 + dd]
+                    if ch >= '0' as u8 and ch <= '9' as u8:
+                        msize = msize * 10 as i64 + (ch as i64 - '0' as i64)
+                    dd = dd + 1
+                let data_off = apos + 60 as i64
+                // Skip special members: "/" (symbol index) and "//" (long names).
+                if buffer[apos] != '/' as u8:
+                    let mobj = linker_parse_coff((buffer as i64 + data_off) as ptr[u8], msize)
+                    push_parsed_object_ptr(&objects, mobj)
+                apos = data_off + msize
+                if msize % 2 as i64 != 0:
+                    apos = apos + 1
+        elif buffer[0] == 0x7F as u8 and buffer[1] == 'E' as u8 and buffer[2] == 'L' as u8 and buffer[3] == 'F' as u8:
             obj = linker_parse_elf(buffer, size)
             format = "elf64"
         elif read_u16_le(buffer, 0) == 0x8664 as u16:
@@ -1055,9 +1238,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             ax_puts_local(path)
             @free(buffer)
             return false
-            
+
         @free(buffer)
-        push_parsed_object_ptr(&objects, obj)
+        if obj != null as ptr[ParsedObject]:
+            push_parsed_object_ptr(&objects, obj)
         i = i + 1
         
     // 2. Pre-scan defined functions and dynamic imports (to determine base address & stubs early)

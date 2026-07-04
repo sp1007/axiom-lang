@@ -565,6 +565,8 @@ pub fn main() -> i32:
     mut no_stdlib := false
     mut show_time := false  // --time: print per-phase wall-clock timing
     mut is_shared := false  // RFC 0009 P2: --shared — emit a DLL with export table
+    mut is_staticlib := false // RFC 0011 P1: --staticlib — emit a COFF .lib archive
+    mut extra_libs := new_linker_str_vec() // RFC 0011 P2: -l <path> extra link inputs
 
     // Parse commands
     let cmd = args[1]
@@ -627,6 +629,15 @@ pub fn main() -> i32:
             no_stdlib = true
         elif opt == "--shared":
             is_shared = true
+        elif opt == "--staticlib":
+            is_staticlib = true
+        elif opt == "-l" or opt == "--link":
+            if opt_idx + 1 < argc:
+                push_linker_str(&extra_libs, args[opt_idx as i64 + 1 as i64])
+                opt_idx = opt_idx + 1
+            else:
+                ax_puts_local("Error: missing value for -l option")
+                return 1
         elif opt == "--time":
             show_time = true
         opt_idx = opt_idx + 1
@@ -861,9 +872,31 @@ pub fn main() -> i32:
             t_mark = time_phase(show_time, "codegen", t_mark)
             ax_puts_local("[Debug] Stage 4: Finished native code generation.")
 
+            // RFC 0011 P1: --staticlib wraps the compiled object into a .lib archive
+            // instead of linking an executable.
+            if is_staticlib:
+                let lib_ok = axiom_write_static_lib(temp_obj, output_file)
+                let temp_obj_nt2 = str_to_null_terminated(temp_obj)
+                @free(temp_obj_nt2)
+                if not lib_ok:
+                    ax_puts_local("Error: static library generation failed")
+                    return 1
+                ax_puts_local("[Debug] Static library written.")
+                free_air_module_builder(air_builder)
+                free_type_checker(checker)
+                free_typetable(typetable)
+                free_symtable(resolver.symtable)
+                free_pool(parser.pool)
+                return 0
+
             ax_puts_local("[Debug] Stage 5: Starting self-linking...")
             mut linker := new_axiom_linker()
             axiom_linker_add_input(&linker, temp_obj)
+            // RFC 0011 P2: additional static-lib / object inputs from -l.
+            mut lib_i := 0 as i64
+            while lib_i < extra_libs.len:
+                axiom_linker_add_input(&linker, extra_libs.data[lib_i])
+                lib_i = lib_i + 1
             linker.output_path = output_file
             // RFC 0009: resolve extern-from-DLL bindings (name_id pairs) into string
             // pairs for the linker's per-symbol DLL attribution.
