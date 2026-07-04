@@ -1,9 +1,16 @@
 # RFC 0011 — Static libraries (`.lib`) + precompiled-stdlib cache
 
-- **Status:** Accepted (2026-07-04) — **P1+P2+P3 SHIPPED**. P1 producer
-  (`--staticlib` → COFF `!<arch>`), P2 consumer (`-l` static link), P3 source-hash
-  staleness (`--staticlib` skips the build when the source is unchanged). P4
-  (precompiled-stdlib cache via separate compilation) + P5 (generics) remain.
+- **Status:** Accepted (2026-07-04) — **P1+P2+P3 SHIPPED**, **P4 import-driven
+  auto-libraries SHIPPED (inc1–inc3b)**. P1 producer (`--staticlib` → COFF `!<arch>`),
+  P2 consumer (`-l` static link), P3 source-hash staleness. P4: `.lib` now carries a
+  self-describing `__axiom_iface` member (inc1 plumbing + `axc iface` verb; inc2 real
+  function signatures `F <name> <n> <p..> -> <ret>`; inc3a the interface reader), and
+  `import x` auto-resolves a fresh `x.lib` — registering x's public functions from the
+  interface with no source recompile, codegen skipping their bodies, and the linker
+  pulling the code (inc3b, commit 57c733c; `import` alone, no `-l`). Remaining under P4:
+  staleness/auto-rebuild of `x.lib` on the consumer side, and structs/consts in the
+  interface (inc4). P5 (generics through the interface) and the stdlib-as-`std.lib`
+  endgame (retiring whole-program `concatenate_stdlib`) remain.
 - **Author:** self-host team
 - **Tracking:** follows [[0009-ffi-dynamic-linking]] (P1 import / P2 export shipped);
   addresses the "compile chậm" (slow build) thread from the perf session.
