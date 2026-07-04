@@ -1173,6 +1173,57 @@ pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], t
         si = si + 1
     return alloc_str_from_raw(bv.data, bv.len)
 
+// RFC 0011 P4 (increment 3f): generate an FFI wrapper module for a produced DLL. For each
+// `#[export]`ed function it emits `pub extern "C" from "<dll>" fn <name>(p0: T0, …) -> T`,
+// so a consumer `import`s ONE wrapper instead of hand-writing an extern per function. Types
+// use the interface tokens (primitive sigs today). `dll_filename` is the bare DLL name used
+// in the `from` clause (resolved by the OS loader at runtime).
+pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable], dll_filename: str) -> str:
+    mut bv := new_byte_vec()
+    iface_push_str(&bv, "// Auto-generated FFI bindings for ")
+    iface_push_str(&bv, dll_filename)
+    iface_push_str(&bv, " (RFC 0011 P4). `import` this module to call the DLL by name.\n")
+    mut si := 0 as i64
+    while si < symtable.symbols.len:
+        let sym_kind = symtable.symbols.data[si].kind
+        let sym_flags = symtable.symbols.data[si].flags
+        let sym_tid = symtable.symbols.data[si].type_id
+        let sym_nid = symtable.symbols.data[si].name_id
+        if sym_kind == SYM_FUNC and (sym_flags & SYM_FLAG_PUB) != 0 as u16 and sym_tid != 0 as u32:
+            mut is_exp := false
+            mut ek := 0 as i64
+            while ek < symtable.export_syms.len:
+                if symtable.export_syms.data[ek] == sym_nid:
+                    is_exp = true
+                ek = ek + 1
+            if is_exp and (sym_tid as i64) < types.entries.len and types.entries.data[sym_tid].kind == TYPE_KIND_FUNC:
+                let f_idx = types.entries.data[sym_tid].extra
+                if (f_idx as i64) < types.funcs.len:
+                    let fi = &types.funcs.data[f_idx]
+                    let name = pool.get(sym_nid)
+                    if std.string.len(name) > 0:
+                        iface_push_str(&bv, "pub extern \"C\" from \"")
+                        iface_push_str(&bv, dll_filename)
+                        iface_push_str(&bv, "\" fn ")
+                        iface_push_str(&bv, name)
+                        push_byte(&bv, '(' as u8)
+                        mut pi := 0 as i64
+                        while pi < fi.params.len:
+                            if pi > 0:
+                                iface_push_str(&bv, ", ")
+                            iface_push_str(&bv, "p")
+                            iface_push_int(&bv, pi)
+                            iface_push_str(&bv, ": ")
+                            iface_push_str(&bv, iface_type_token(types, fi.params.data[pi]))
+                            pi = pi + 1
+                        push_byte(&bv, ')' as u8)
+                        if fi.ret != TYPE_VOID:
+                            iface_push_str(&bv, " -> ")
+                            iface_push_str(&bv, iface_type_token(types, fi.ret))
+                        push_byte(&bv, 0x0A as u8)
+        si = si + 1
+    return alloc_str_from_raw(bv.data, bv.len)
+
 // Wrap a compiled `.obj` into a single-member COFF archive with a first-linker-member
 // symbol index (all defined symbols → the one object member). Also writes a binary
 // staleness manifest `<out>.manifest` (RFC 0011 §3.4). `iface_text`, when non-empty,

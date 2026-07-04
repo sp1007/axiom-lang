@@ -1149,6 +1149,20 @@ pub fn main() -> i32:
             if not link_success:
                 ax_puts_local("Error: Self-linking failed")
                 return 1
+            // RFC 0011 P4 (inc3f): for a DLL, emit an FFI wrapper module `<base>_ffi.ax`
+            // (pub extern bindings for every #[export]ed fn) so a consumer imports one file
+            // instead of hand-writing an `extern "C" from` per function.
+            if is_shared:
+                let dll_base = strip_lib_dll_ext(output_file)
+                let wrap_path = std.string.concat(dll_base, "_ffi.ax")
+                @free(get_str_ptr(dll_base))
+                let dll_bn = linker_basename(output_file)
+                let wrap_text = build_dll_wrapper_text(resolver.symtable, parser.pool, typetable, dll_bn)
+                if write_file_content(wrap_path, wrap_text):
+                    ax_puts_local("[Debug] FFI wrapper written:")
+                    ax_puts_local(wrap_path)
+                @free(get_str_ptr(wrap_text))
+                @free(get_str_ptr(wrap_path))
         else:
             // Generate C code first
             ax_puts_local("[Debug] Stage 2.3: Starting C code generation...")

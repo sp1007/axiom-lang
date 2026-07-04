@@ -99,6 +99,22 @@ Consumers then choose: static-link the `.lib` (`-l`, code embedded) or bind the 
 dynamically (`extern "C" from "axmath.dll"`). The DLL exports follow `#[export]`; the
 `.lib` exposes every defined symbol.
 
+## Auto-generated FFI wrapper for a DLL (RFC 0011 P4 inc3f)
+
+Building a DLL also emits `<base>_ffi.ax` — `pub extern "C" from "<dll>"` bindings for every
+`#[export]`ed function — so a consumer `import`s ONE file instead of hand-writing an extern
+per function.
+
+```sh
+../../bin/axc_native.exe build axmath.ax -o axmath.dll --shared --no-stdlib -self-link -O1
+cat axmath_ffi.ax
+#   pub extern "C" from "axmath.dll" fn ax_add(p0: i32, p1: i32) -> i32
+#   pub extern "C" from "axmath.dll" fn ax_mul(p0: i32, p1: i32) -> i32
+
+# consumer: `import axmath_ffi` then call axmath_ffi.ax_add(...) — the linker adds
+# axmath.dll to the import table automatically. (Needs axmath.dll + ax_runtime.dll present.)
+```
+
 ## Multi-DLL test (RFC 0009 P1, N=2)
 
 ```sh
