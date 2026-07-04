@@ -1447,6 +1447,7 @@ pub const FLAG_IS_MOVED: u16 = 1024
 pub const FLAG_IS_SUBSTITUTED: u16 = 2048
 pub const FLAG_IS_RESOLVED: u16 = 4096
 pub const FLAG_FROM_DLL: u16 = 8192 // RFC 0009: extern "C" from "x.dll" â€” dll_name_id stored in AstNode.extra_idx
+pub const FLAG_EXPORT: u16 = 16384 // RFC 0009 P2: #[export] â€” emit into PE export table (--shared)
 
 pub const NULL_IDX: u32 = 0
 
@@ -3010,7 +3011,27 @@ pub fn parse_program(mut self: ptr[Parser]):
         let prev_pos = self.pos
         let tok = self.peek()
         mut decl := 0 as u32
-        if tok.kind == TK_IMPORT:
+        if tok.kind == TK_HASH:
+            // RFC 0009 P2: #[export] attribute on the following top-level fn.
+            self.consume() // '#'
+            self.expect(TK_L_BRACKET)
+            let attr_tok = self.expect(TK_IDENT)
+            let attr_text = self.token_text(attr_tok)
+            mut is_export := false
+            if attr_text == "export":
+                is_export = true
+            @free(attr_text as ptr[u8])
+            self.expect(TK_R_BRACKET)
+            let ntok = self.peek()
+            if ntok.kind == TK_PUB:
+                self.consume()
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+            elif ntok.kind == TK_FN:
+                decl = self.parse_func_decl(false)
+            if decl != 0 as u32 and is_export:
+                self.set_flags(decl, FLAG_EXPORT)
+        elif tok.kind == TK_IMPORT:
             decl = self.parse_import_decl()
         elif tok.kind == TK_PUB:
             self.consume()
@@ -3733,6 +3754,8 @@ pub struct SymbolTable:
     // RFC 0009: FFI dynamic-linking. Parallel arrays: extern fn name_id -> dll name_id.
     pub dll_bind_syms: U32Vec
     pub dll_bind_dlls: U32Vec
+    // RFC 0009 P2: name_ids of #[export] functions (for PE export table).
+    pub export_syms: U32Vec
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -3745,6 +3768,7 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.intern = intern as ptr[void]
     st.dll_bind_syms = new_u32_vec()
     st.dll_bind_dlls = new_u32_vec()
+    st.export_syms = new_u32_vec()
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
@@ -4023,6 +4047,9 @@ pub fn pre_define_top_levels(mut self: ptr[NameResolver]):
             if (flags & FLAG_FROM_DLL) != 0 as u16:
                 self.symtable.dll_bind_syms.push(name_id)
                 self.symtable.dll_bind_dlls.push(child_node.extra_idx)
+            // RFC 0009 P2: record #[export] functions for the PE export table
+            if (flags & FLAG_EXPORT) != 0 as u16:
+                self.symtable.export_syms.push(name_id)
         elif kind == NODE_STRUCT_DECL:
             let name_id = child_node.payload
             mut sym_flags := 0 as u16
@@ -23324,9 +23351,12 @@ pub struct AxiomLinker:
     // RFC 0009: parallel arrays mapping a user extern symbol name -> its DLL name.
     pub user_dll_syms: LinkerStrVec
     pub user_dll_names: LinkerStrVec
+    // RFC 0009 P2: clean names of #[export] functions + DLL (--shared) mode.
+    pub export_names: LinkerStrVec
+    pub is_shared: bool
 
 pub fn new_axiom_linker() -> AxiomLinker:
-    return AxiomLinker(input_files: new_linker_str_vec(), output_path: "", user_dll_syms: new_linker_str_vec(), user_dll_names: new_linker_str_vec())
+    return AxiomLinker(input_files: new_linker_str_vec(), output_path: "", user_dll_syms: new_linker_str_vec(), user_dll_names: new_linker_str_vec(), export_names: new_linker_str_vec(), is_shared: false)
 
 
 pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
@@ -23447,8 +23477,21 @@ pub fn linker_build_pe_headers(
     idata_rva: u32,
     idata_size: u32,
     iat_rva: u32,
-    iat_size: u32
+    iat_size: u32,
+    export_rva: u32,      // RFC 0009 P2: .edata RVA (0 = no export section)
+    export_size: u32,     // export directory virtual size (data dir 0)
+    edata_raw_size: u32,  // file-aligned .edata size (0 = EXE, byte-identical path)
+    edata_file_off: u32,  // .edata PointerToRawData
+    is_dll: bool          // set IMAGE_FILE_DLL characteristic
 ):
+    // RFC 0009 P2: when edata_raw_size == 0 this function is byte-identical to the
+    // original 2-section EXE emitter; export params only take effect for --shared.
+    mut num_sections := 2 as u16
+    if edata_raw_size > 0 as u32:
+        num_sections = 3 as u16
+    mut coff_chars := 0x0026 as u16
+    if is_dll:
+        coff_chars = 0x2026 as u16 // + IMAGE_FILE_DLL (0x2000)
     // 1. DOS Header
     push_byte(out, 0x4D as u8) // 'M'
     push_byte(out, 0x5A as u8) // 'Z'
@@ -23470,12 +23513,12 @@ pub fn linker_build_pe_headers(
     
     // 3. COFF File Header
     push_u16_le(out, 0x8664 as u16) // Machine (AMD64)
-    push_u16_le(out, 2 as u16) // NumberOfSections
+    push_u16_le(out, num_sections) // NumberOfSections (2 EXE / 3 DLL)
     push_u32_le(out, 0 as u32) // TimeDateStamp
     push_u32_le(out, 0 as u32) // PointerToSymbolTable
     push_u32_le(out, 0 as u32) // NumberOfSymbols
     push_u16_le(out, 240 as u16) // SizeOfOptionalHeader
-    push_u16_le(out, 0x0026 as u16) // Characteristics
+    push_u16_le(out, coff_chars) // Characteristics (+IMAGE_FILE_DLL for --shared)
     
     // 4. Optional Header (PE32+)
     push_u16_le(out, 0x020B as u16) // Magic
@@ -23497,7 +23540,10 @@ pub fn linker_build_pe_headers(
     push_u16_le(out, 0 as u16) // MinorSubsystemVersion
     push_u32_le(out, 0 as u32) // Win32VersionValue
     
-    let size_of_image = (idata_rva + idata_raw_size + 0xFFF as u32) & (0xFFFFF000 as u32)
+    mut last_sec_end := idata_rva + idata_raw_size
+    if edata_raw_size > 0 as u32:
+        last_sec_end = export_rva + edata_raw_size
+    let size_of_image = (last_sec_end + 0xFFF as u32) & (0xFFFFF000 as u32)
     push_u32_le(out, size_of_image) // SizeOfImage
     push_u32_le(out, 0x400 as u32) // SizeOfHeaders
     push_u32_le(out, 0 as u32) // CheckSum
@@ -23514,9 +23560,9 @@ pub fn linker_build_pe_headers(
     push_u32_le(out, 16 as u32) // NumberOfRvaAndSizes
     
     // Data Directories
-    // Dir 0: Export
-    push_u32_le(out, 0 as u32)
-    push_u32_le(out, 0 as u32)
+    // Dir 0: Export (RFC 0009 P2 â€” only for --shared; 0/0 for EXE)
+    push_u32_le(out, export_rva)
+    push_u32_le(out, export_size)
     // Dir 1: Import
     push_u32_le(out, idata_rva)
     push_u32_le(out, idata_size)
@@ -23574,7 +23620,27 @@ pub fn linker_build_pe_headers(
     push_u16_le(out, 0 as u16)
     push_u16_le(out, 0 as u16)
     push_u32_le(out, 0xC0000040 as u32) // Characteristics
-    
+
+    // Section 3: .edata (RFC 0009 P2 â€” only when exporting)
+    if edata_raw_size > 0 as u32:
+        push_byte(out, '.' as u8)
+        push_byte(out, 'e' as u8)
+        push_byte(out, 'd' as u8)
+        push_byte(out, 'a' as u8)
+        push_byte(out, 't' as u8)
+        push_byte(out, 'a' as u8)
+        push_byte(out, 0 as u8)
+        push_byte(out, 0 as u8)
+        push_u32_le(out, export_size) // VirtualSize
+        push_u32_le(out, export_rva) // VirtualAddress
+        push_u32_le(out, edata_raw_size) // SizeOfRawData
+        push_u32_le(out, edata_file_off) // PointerToRawData
+        push_u32_le(out, 0 as u32)
+        push_u32_le(out, 0 as u32)
+        push_u16_le(out, 0 as u16)
+        push_u16_le(out, 0 as u16)
+        push_u32_le(out, 0x40000040 as u32) // Characteristics: init data, read-only
+
     align_byte_vec(out, 0x400 as i64)
 
 pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va: u64, dynamic_offset: u32, dynamic_size: u32):
@@ -23680,6 +23746,130 @@ pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va:
 
 pub fn axiom_linker_add_input(mut self: ptr[AxiomLinker], file: str):
     push_linker_str(&self.input_files, file)
+
+// RFC 0009 P2: byte-wise lexicographic string ordering (PE export name table
+// must be sorted so the loader's binary search resolves imports).
+pub fn linker_str_less(a: str, b: str) -> bool:
+    let la = std.string.len(a)
+    let lb = std.string.len(b)
+    let pa = get_str_ptr(a)
+    let pb = get_str_ptr(b)
+    mut n := la
+    if lb < la:
+        n = lb
+    mut i := 0 as i64
+    while i < n:
+        if pa[i] != pb[i]:
+            return pa[i] < pb[i]
+        i = i + 1
+    return la < lb
+
+// Return the filename portion of a path (after the last '/' or '\\').
+pub fn linker_basename(path: str) -> str:
+    let len = std.string.len(path)
+    let p = get_str_ptr(path)
+    mut start := 0 as i64
+    mut i := 0 as i64
+    while i < len:
+        if p[i] == '/' as u8 or p[i] == 92 as u8: // '\\'
+            start = i + 1
+        i = i + 1
+    return alloc_str_from_raw((p as i64 + start) as ptr[u8], len - start)
+
+// RFC 0009 P2: build a PE .edata (IMAGE_EXPORT_DIRECTORY + EAT + name-pointer +
+// ordinal tables + strings). export_names are sorted in place. Each export "foo"
+// resolves to the defined symbol "ax_foo" (AXIOM's uniform mangling prefix).
+pub fn build_export_edata(export_names: ptr[LinkerStrVec], func_names: ptr[LinkerStrVec], func_offsets: ptr[ParsedRelocVec], edata_rva: u32, dll_name: str, out: ptr[ByteVec]):
+    let n = export_names.len
+    // 1. Insertion-sort names lexicographically (in place)
+    mut a := 1 as i64
+    while a < n:
+        let key = export_names.data[a]
+        mut b := a - 1
+        while b >= 0 and linker_str_less(key, export_names.data[b]):
+            export_names.data[b + 1] = export_names.data[b]
+            b = b - 1
+        export_names.data[b + 1] = key
+        a = a + 1
+
+    // 2. Layout offsets within .edata
+    let eat_off = 40 as i64
+    let enpt_off = eat_off + n * 4
+    let ord_off = enpt_off + n * 4
+    let str_off = ord_off + n * 2
+
+    // 3. Build string blob: DLL name first, then each export name
+    mut strbuf := new_byte_vec()
+    let dll_name_rva = (edata_rva as i64 + str_off) as u32
+    let dnp = get_str_ptr(dll_name)
+    let dnl = std.string.len(dll_name)
+    mut ci := 0 as i64
+    while ci < dnl:
+        push_byte(&strbuf, dnp[ci])
+        ci = ci + 1
+    push_byte(&strbuf, 0 as u8)
+
+    let name_rvas = @alloc(n * 4) as ptr[u32]
+    mut k := 0 as i64
+    while k < n:
+        name_rvas[k] = (edata_rva as i64 + str_off + strbuf.len) as u32
+        let nm = export_names.data[k]
+        let np = get_str_ptr(nm)
+        let nl = std.string.len(nm)
+        mut c2 := 0 as i64
+        while c2 < nl:
+            push_byte(&strbuf, np[c2])
+            c2 = c2 + 1
+        push_byte(&strbuf, 0 as u8)
+        k = k + 1
+
+    // 4. Resolve each export to its defined-symbol RVA (mangled "ax_" + name)
+    let eat_rvas = @alloc(n * 4) as ptr[u32]
+    k = 0
+    while k < n:
+        let mangled = std.string.concat("ax_", export_names.data[k])
+        mut rva := 0 as u32
+        mut fi := 0 as i64
+        while fi < func_names.len:
+            if func_names.data[fi] == mangled:
+                rva = (0x1000 as i64 + func_offsets.data[fi].offset) as u32
+                break
+            fi = fi + 1
+        @free(get_str_ptr(mangled))
+        eat_rvas[k] = rva
+        k = k + 1
+
+    // 5. Emit export directory table
+    push_u32_le(out, 0 as u32) // ExportFlags
+    push_u32_le(out, 0 as u32) // TimeDateStamp
+    push_u16_le(out, 0 as u16) // MajorVersion
+    push_u16_le(out, 0 as u16) // MinorVersion
+    push_u32_le(out, dll_name_rva) // Name RVA
+    push_u32_le(out, 1 as u32) // OrdinalBase
+    push_u32_le(out, n as u32) // NumberOfFunctions
+    push_u32_le(out, n as u32) // NumberOfNames
+    push_u32_le(out, (edata_rva as i64 + eat_off) as u32) // EAT RVA
+    push_u32_le(out, (edata_rva as i64 + enpt_off) as u32) // Name-pointer table RVA
+    push_u32_le(out, (edata_rva as i64 + ord_off) as u32) // Ordinal table RVA
+
+    k = 0
+    while k < n:
+        push_u32_le(out, eat_rvas[k]) // Export Address Table
+        k = k + 1
+    k = 0
+    while k < n:
+        push_u32_le(out, name_rvas[k]) // Name Pointer Table
+        k = k + 1
+    k = 0
+    while k < n:
+        push_u16_le(out, k as u16) // Ordinal Table (0-based into EAT)
+        k = k + 1
+    push_bytes(out, strbuf.data, strbuf.len)
+
+    if strbuf.data != null as ptr[u8]:
+        @free(strbuf.data)
+    @free(name_rvas as ptr[u8])
+    @free(eat_rvas as ptr[u8])
 
 pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut objects := new_parsed_object_ptr_vec()
@@ -24672,6 +24862,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             entry_rva = (0x1000 as i64 + offset_val) as u32
             break
         entry_search = entry_search + 1
+
+    // RFC 0009 P2: a --shared DLL has no DllMain â†’ AddressOfEntryPoint = 0.
+    if self.is_shared:
+        entry_rva = 0 as u32
         
     // 4. Emit Executable
     let output_path_nt = x86_str_to_null_terminated(self.output_path)
@@ -24702,15 +24896,37 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             K_count = K_count + 1 as u32
         let idt_size = (K_count + 1 as u32) * 20 as u32
 
+        // RFC 0009 P2: build the export table (.edata) after .idata, when exporting.
+        mut edata_buf := new_byte_vec()
+        mut export_rva := 0 as u32
+        mut export_virt_size := 0 as u32
+        mut edata_raw_size := 0 as u32
+        mut edata_file_off := 0 as u32
+        mut is_dll := self.is_shared
+        if self.export_names.len > 0:
+            export_rva = ((idata_rva as i64 + idata_raw_size as i64 + 0xFFF) & ~0xFFF) as u32
+            let dll_base = linker_basename(self.output_path)
+            build_export_edata(&self.export_names, &func_names, &func_offsets, export_rva, dll_base, &edata_buf)
+            @free(get_str_ptr(dll_base))
+            export_virt_size = edata_buf.len as u32
+            edata_file_off = 0x400 as u32 + code_raw_size + idata_raw_size
+            align_byte_vec(&edata_buf, 0x200 as i64)
+            edata_raw_size = edata_buf.len as u32
+            is_dll = true
+
         mut pe_headers := new_byte_vec()
-        linker_build_pe_headers(&pe_headers, code_raw_size, idata_raw_size, entry_rva, idata_rva as u32, idata_raw_size, iat_rva, iat_size)
-        
+        linker_build_pe_headers(&pe_headers, code_raw_size, idata_raw_size, entry_rva, idata_rva as u32, idata_raw_size, iat_rva, iat_size, export_rva, export_virt_size, edata_raw_size, edata_file_off, is_dll)
+
         fwrite(pe_headers.data as ptr[void], 1, pe_headers.len, file)
         fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
         if idata_buf.len > 0:
             fwrite(idata_buf.data as ptr[void], 1, idata_buf.len, file)
-            
+        if edata_buf.len > 0:
+            fwrite(edata_buf.data as ptr[void], 1, edata_buf.len, file)
+
         @free(pe_headers.data)
+        if edata_buf.data != null as ptr[u8]:
+            @free(edata_buf.data)
     else:
         // elf64
         let entry_va = base_addr + (entry_rva - 0x1000 as u32) as u64
@@ -25894,6 +26110,7 @@ pub fn main() -> i32:
     mut opt_level := 1 as u8
     mut no_stdlib := false
     mut show_time := false  // --time: print per-phase wall-clock timing
+    mut is_shared := false  // RFC 0009 P2: --shared â€” emit a DLL with export table
 
     // Parse commands
     let cmd = args[1]
@@ -25954,6 +26171,8 @@ pub fn main() -> i32:
             opt_level = 3 as u8
         elif opt == "--no-stdlib":
             no_stdlib = true
+        elif opt == "--shared":
+            is_shared = true
         elif opt == "--time":
             show_time = true
         opt_idx = opt_idx + 1
@@ -26201,6 +26420,12 @@ pub fn main() -> i32:
                 push_linker_str(&linker.user_dll_syms, parser.pool.get(sym_id))
                 push_linker_str(&linker.user_dll_names, parser.pool.get(dll_id))
                 bind_i = bind_i + 1
+            // RFC 0009 P2: thread #[export] names + --shared mode into the linker.
+            linker.is_shared = is_shared
+            mut exp_i := 0 as i64
+            while exp_i < resolver.symtable.export_syms.len:
+                push_linker_str(&linker.export_names, parser.pool.get(resolver.symtable.export_syms.data[exp_i]))
+                exp_i = exp_i + 1
             let link_success = axiom_linker_link(&linker)
             t_mark = time_phase(show_time, "self-link", t_mark)
             ax_puts_local("[Debug] Stage 6: Finished self-linking.")

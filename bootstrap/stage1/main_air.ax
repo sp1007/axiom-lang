@@ -564,6 +564,7 @@ pub fn main() -> i32:
     mut opt_level := 1 as u8
     mut no_stdlib := false
     mut show_time := false  // --time: print per-phase wall-clock timing
+    mut is_shared := false  // RFC 0009 P2: --shared — emit a DLL with export table
 
     // Parse commands
     let cmd = args[1]
@@ -624,6 +625,8 @@ pub fn main() -> i32:
             opt_level = 3 as u8
         elif opt == "--no-stdlib":
             no_stdlib = true
+        elif opt == "--shared":
+            is_shared = true
         elif opt == "--time":
             show_time = true
         opt_idx = opt_idx + 1
@@ -871,6 +874,12 @@ pub fn main() -> i32:
                 push_linker_str(&linker.user_dll_syms, parser.pool.get(sym_id))
                 push_linker_str(&linker.user_dll_names, parser.pool.get(dll_id))
                 bind_i = bind_i + 1
+            // RFC 0009 P2: thread #[export] names + --shared mode into the linker.
+            linker.is_shared = is_shared
+            mut exp_i := 0 as i64
+            while exp_i < resolver.symtable.export_syms.len:
+                push_linker_str(&linker.export_names, parser.pool.get(resolver.symtable.export_syms.data[exp_i]))
+                exp_i = exp_i + 1
             let link_success = axiom_linker_link(&linker)
             t_mark = time_phase(show_time, "self-link", t_mark)
             ax_puts_local("[Debug] Stage 6: Finished self-linking.")

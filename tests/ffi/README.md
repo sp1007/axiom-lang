@@ -20,3 +20,23 @@ Checks:
   hint-name entries `ffi_add` / `ffi_mul`.
 - Negative: rename `axffi_lib.dll` away → the process fails to load with
   `0xC0000135` (STATUS_DLL_NOT_FOUND), proving genuine dynamic binding.
+
+## Export test (RFC 0009 P2)
+
+`axmath.ax` exports `ax_add`/`ax_mul` into a DLL; consumed two ways:
+
+```sh
+# Build the AXIOM DLL (IMAGE_EXPORT_DIRECTORY)
+../../bin/axc_native.exe build axmath.ax -o axmath.dll --shared -self-link -O1
+cp ../../bin/ax_runtime.dll .
+
+# (a) Call from C via LoadLibrary/GetProcAddress
+gcc -o host.exe host.c
+./host.exe ; echo "exit=$?"        # prints 42/42, expect exit=0
+
+# (b) Call from another AXIOM binary via `extern "C" from` (P1+P2 interop)
+../../bin/axc_native.exe build t_useaxmath.ax -o t_useaxmath.exe -self-link -O1
+./t_useaxmath.exe ; echo "exit=$?" # expect exit=84
+
+objdump -p axmath.dll | grep -A12 "Export Tables"   # ax_add / ax_mul, base 1
+```

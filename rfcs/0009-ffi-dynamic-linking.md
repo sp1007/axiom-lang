@@ -1,9 +1,11 @@
 # RFC 0009 — FFI dynamic linking (tiêu thụ & sản xuất DLL/.so/.dylib)
 
-- **Status:** Accepted (2026-07-03) — **P1 SHIPPED 2026-07-04** (import PE: parse
-  `extern "C" from "x.dll"` → per-symbol DLL attribution → N-DLL `.idata`; verified
-  end-to-end with a gcc-built DLL, fixpoint + zero-regression). P2 (export/`--shared`)
-  and P3 (ELF/Mach-O) remain.
+- **Status:** Accepted (2026-07-03) — **P1+P2 SHIPPED 2026-07-04**. P1 (import PE:
+  `extern "C" from "x.dll"` → per-symbol DLL attribution → N-DLL `.idata`). P2
+  (export PE: `#[export]` + `--shared` → `IMAGE_EXPORT_DIRECTORY`/`.edata` + DLL
+  header). Verified end-to-end: AXIOM DLL called from C (`GetProcAddress`) AND from
+  another AXIOM binary (`extern "C" from`), fixpoint + zero-regression. P3 (ELF/Mach-O)
+  and `.lib` import-library generation remain.
 - **Author:** self-host team
 - **Tracking:** #FFI — follows BUG#49 (bare function pointers), p12-t04 (dynamic-linking task)
 - **Liên quan:** parser (`parse_extern_decl`), AST/symbol metadata, resolver
@@ -260,3 +262,33 @@ DLL) → `0xC0000135 STATUS_DLL_NOT_FOUND` ⇒ dynamic-link thật. Regression r
 
 **Giới hạn P1:** chỉ COFF/PE. ELF path giữ nguyên built-in (user bucket không emit qua
 `.dynamic` — out-of-scope, khớp §10). DLL phải tìm được lúc load (thư mục exe/PATH).
+
+## 13. P2 SHIPPED — export DLL (2026-07-04)
+
+`#[export] pub fn foo(...)` + `axc build --shared x.ax -o x.dll` → PE có
+`IMAGE_EXPORT_DIRECTORY`. AXIOM giờ **vừa sản xuất vừa tiêu thụ** DLL.
+
+**Frontend:** `FLAG_EXPORT=16384`; parser nhận `#[export]` top-level (`#` `[` ident `]`
+trước `pub? fn`); resolver `SymbolTable.export_syms` (name_id); main_air cờ `--shared`
++ thread tên export qua `pool.get` vào `AxiomLinker.export_names` + `is_shared`.
+
+**Mangling (mấu chốt, KHÔNG đụng codegen):** `pub fn ax_add` → symbol `ax_ax_add`
+(prefix `ax_` đồng nhất). Bảng export ghi tên SẠCH `ax_add` (string độc lập), EAT trỏ
+RVA của symbol `ax_`+tên. ⟹ tên export khớp trực tiếp `extern "C" from` (raw) của bên
+nhập → AXIOM↔AXIOM interop. Method (`ax_Type_ax_m`) out-of-scope P2.
+
+**Linker (additive, guarded):** `build_export_edata` sort tên lexicographic (loader
+binary-search yêu cầu), layout `[dir 40B][EAT n×4][ENPT n×4][ord n×2][strings]`, đặt
+section `.edata` sau `.idata` (RVA page-aligned). `linker_build_pe_headers` thêm tham
+số export + `is_dll`: **khi `edata_raw_size==0` ⇒ BYTE-IDENTICAL path EXE cũ** (số
+section 2, dir0=0/0, characteristics 0x0026). Khi export: 3 section, dir0 set,
+characteristics `|0x2000` (IMAGE_FILE_DLL), `AddressOfEntryPoint=0` (không DllMain).
+
+**Verify:** fixpoint s2==s3=265606A1… (compiler tự-build không export ⇒ EXE byte-identical);
+`scratch/ffi/axmath.ax` (#[export] ax_add/ax_mul → axmath.dll 71KB) gọi được từ
+`host.c` (LoadLibrary+GetProcAddress → 42/42) VÀ từ `t_useaxmath.ax`
+(`extern "C" from "axmath.dll"` → exit 84); regression y hệt baseline (0 hồi quy).
+
+**Còn lại:** DLL init cho export dùng heap/runtime (DllMain gọi `__ax_runtime_init`);
+`.lib` import-library (hiện bên nhập dùng thẳng tên DLL, chưa cần .lib); P3 ELF/Mach-O;
+**static `.lib` archive + precompiled-stdlib cache (user-raised 2026-07-04, RFC riêng).**

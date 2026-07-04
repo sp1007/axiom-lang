@@ -1153,7 +1153,27 @@ pub fn parse_program(mut self: ptr[Parser]):
         let prev_pos = self.pos
         let tok = self.peek()
         mut decl := 0 as u32
-        if tok.kind == TK_IMPORT:
+        if tok.kind == TK_HASH:
+            // RFC 0009 P2: #[export] attribute on the following top-level fn.
+            self.consume() // '#'
+            self.expect(TK_L_BRACKET)
+            let attr_tok = self.expect(TK_IDENT)
+            let attr_text = self.token_text(attr_tok)
+            mut is_export := false
+            if attr_text == "export":
+                is_export = true
+            @free(attr_text as ptr[u8])
+            self.expect(TK_R_BRACKET)
+            let ntok = self.peek()
+            if ntok.kind == TK_PUB:
+                self.consume()
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+            elif ntok.kind == TK_FN:
+                decl = self.parse_func_decl(false)
+            if decl != 0 as u32 and is_export:
+                self.set_flags(decl, FLAG_EXPORT)
+        elif tok.kind == TK_IMPORT:
             decl = self.parse_import_decl()
         elif tok.kind == TK_PUB:
             self.consume()

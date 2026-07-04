@@ -391,6 +391,8 @@ pub struct SymbolTable:
     // RFC 0009: FFI dynamic-linking. Parallel arrays: extern fn name_id -> dll name_id.
     pub dll_bind_syms: U32Vec
     pub dll_bind_dlls: U32Vec
+    // RFC 0009 P2: name_ids of #[export] functions (for PE export table).
+    pub export_syms: U32Vec
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -403,6 +405,7 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.intern = intern as ptr[void]
     st.dll_bind_syms = new_u32_vec()
     st.dll_bind_dlls = new_u32_vec()
+    st.export_syms = new_u32_vec()
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
@@ -681,6 +684,9 @@ pub fn pre_define_top_levels(mut self: ptr[NameResolver]):
             if (flags & FLAG_FROM_DLL) != 0 as u16:
                 self.symtable.dll_bind_syms.push(name_id)
                 self.symtable.dll_bind_dlls.push(child_node.extra_idx)
+            // RFC 0009 P2: record #[export] functions for the PE export table
+            if (flags & FLAG_EXPORT) != 0 as u16:
+                self.symtable.export_syms.push(name_id)
         elif kind == NODE_STRUCT_DECL:
             let name_id = child_node.payload
             mut sym_flags := 0 as u16
