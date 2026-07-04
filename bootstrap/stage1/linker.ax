@@ -1374,6 +1374,205 @@ pub fn axiom_read_lib_iface(lib_path: str) -> bool:
         ax_puts_local("Error: no __axiom_iface member in library")
     return found
 
+// ── RFC 0011 P4 (increment 3a): the interface READER ─────────────────────────────
+// Inverse of build_lib_iface_text — parses the `__axiom_iface` payload back into an
+// in-memory signature list. This is what the import-driven resolver (inc3b) will consume
+// to typecheck an app against a precompiled `.lib` without touching the library source.
+
+// One parsed public function signature. `params`/`ret` are reconstructed TypeIDs.
+pub struct IfaceFunc:
+    name: str
+    params: U32Vec
+    ret: u32
+
+pub struct IfaceFuncVec:
+    data: ptr[IfaceFunc]
+    len: i64
+    cap: i64
+
+pub fn new_iface_func_vec() -> IfaceFuncVec:
+    return IfaceFuncVec(data: null as ptr[IfaceFunc], len: 0, cap: 0)
+
+pub fn push_iface_func(mut self: ptr[IfaceFuncVec], f: IfaceFunc):
+    if self.len == self.cap:
+        mut new_cap := 8 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let item_size = @compiler_intrinsic("size_of")[IfaceFunc]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[IfaceFunc]
+        if self.data != null as ptr[IfaceFunc]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = f
+    self.len = self.len + 1
+
+// Inverse of iface_type_token: map an interface token back to a stable primitive TypeID.
+// Non-primitive tokens ("ptr"/"slice"/"?") reconstruct to TYPE_UNKNOWN for now — inc4
+// will carry the pointee/struct so they round-trip exactly.
+pub fn iface_token_to_type(tok: str) -> u32:
+    if tok == "i8":
+        return TYPE_I8
+    if tok == "i16":
+        return TYPE_I16
+    if tok == "i32":
+        return TYPE_I32
+    if tok == "i64":
+        return TYPE_I64
+    if tok == "u8":
+        return TYPE_U8
+    if tok == "u16":
+        return TYPE_U16
+    if tok == "u32":
+        return TYPE_U32
+    if tok == "u64":
+        return TYPE_U64
+    if tok == "f32":
+        return TYPE_F32
+    if tok == "f64":
+        return TYPE_F64
+    if tok == "bool":
+        return TYPE_BOOL
+    if tok == "string":
+        return TYPE_STRING
+    if tok == "char8":
+        return TYPE_CHAR8
+    if tok == "void":
+        return TYPE_VOID
+    if tok == "isize":
+        return TYPE_ISIZE
+    if tok == "usize":
+        return TYPE_USIZE
+    return TYPE_UNKNOWN
+
+// Parse a base-10 token to i64 (defensive: stops at first non-digit).
+fn iface_atoi(s: str) -> i64:
+    let p = get_str_ptr(s)
+    let n = std.string.len(s)
+    mut v := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        if p[i] >= '0' as u8 and p[i] <= '9' as u8:
+            v = v * 10 as i64 + (p[i] as i64 - '0' as i64)
+        i = i + 1
+    return v
+
+// Split a byte range [start,end) into whitespace-delimited token strings.
+fn iface_line_tokens(p: ptr[u8], start: i64, end: i64) -> LinkerStrVec:
+    mut toks := new_linker_str_vec()
+    mut k := start
+    while k < end:
+        while k < end and p[k] == ' ' as u8:
+            k = k + 1
+        if k >= end:
+            break
+        let ts = k
+        while k < end and p[k] != ' ' as u8:
+            k = k + 1
+        push_linker_str(&toks, alloc_str_from_raw((p as i64 + ts) as ptr[u8], k - ts))
+    return toks
+
+// Read the raw `__axiom_iface` payload of a .lib as a heap string ("" if absent).
+pub fn read_lib_iface_bytes(lib_path: str) -> str:
+    let path_nt = x86_str_to_null_terminated(lib_path)
+    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
+    @free(path_nt)
+    if f == null as ptr[void]:
+        return ""
+    fseek(f, 0, 2)
+    let size = ftell(f)
+    rewind(f)
+    let buf = @alloc(size) as ptr[u8]
+    fread(buf as ptr[void], 1, size, f)
+    fclose(f)
+    if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
+        @free(buf)
+        return ""
+    mut apos := 8 as i64
+    mut out := ""
+    while apos + 60 <= size:
+        mut msize := 0 as i64
+        mut dd := 0 as i64
+        while dd < 10:
+            let ch = buf[apos + 48 as i64 + dd]
+            if ch >= '0' as u8 and ch <= '9' as u8:
+                msize = msize * 10 as i64 + (ch as i64 - '0' as i64)
+            dd = dd + 1
+        let data_off = apos + 60 as i64
+        if buf[apos] == '_' as u8 and buf[apos + 1 as i64] == '_' as u8:
+            out = alloc_str_from_raw((buf as i64 + data_off) as ptr[u8], msize)
+        apos = data_off + msize
+        if msize % 2 as i64 != 0:
+            apos = apos + 1
+    @free(buf)
+    return out
+
+// Parse a `.lib`'s interface member into a signature list. Recognizes "F <name> <n>
+// <p0>..<pn-1> -> <ret>" lines; ignores the AXIFACE1 header and the inc1 "S" fallback.
+pub fn parse_lib_iface(lib_path: str) -> IfaceFuncVec:
+    mut result := new_iface_func_vec()
+    let text = read_lib_iface_bytes(lib_path)
+    let n = std.string.len(text)
+    if n == 0:
+        return result
+    let p = get_str_ptr(text)
+    mut i := 0 as i64
+    while i < n:
+        mut j := i
+        while j < n and p[j] != 0x0A as u8:
+            j = j + 1
+        let toks = iface_line_tokens(p, i, j)
+        if toks.len >= 4 and toks.data[0] == "F":
+            let name = toks.data[1]
+            let nparams = iface_atoi(toks.data[2])
+            mut fn_params := new_u32_vec()
+            mut t := 3 as i64
+            mut pc := 0 as i64
+            while pc < nparams and t < toks.len:
+                fn_params.push(iface_token_to_type(toks.data[t]))
+                t = t + 1
+                pc = pc + 1
+            mut ret := TYPE_VOID
+            if t < toks.len and toks.data[t] == "->":
+                t = t + 1
+            if t < toks.len:
+                ret = iface_token_to_type(toks.data[t])
+            push_iface_func(&result, IfaceFunc(name: name, params: fn_params, ret: ret))
+        i = j + 1
+    return result
+
+// Round-trip self-check for the `iface` verb: dump the raw payload, then re-emit the
+// signatures FROM the parsed in-memory form (via iface_type_token) so a match proves the
+// reader reconstructs what the writer produced.
+pub fn axiom_check_lib_iface(lib_path: str, types: ptr[TypeTable]) -> bool:
+    let ok = axiom_read_lib_iface(lib_path)
+    if not ok:
+        return false
+    ax_puts_local("=== parsed (reader round-trip) ===")
+    let funcs = parse_lib_iface(lib_path)
+    mut i := 0 as i64
+    while i < funcs.len:
+        let f = &funcs.data[i]
+        mut line := new_byte_vec()
+        iface_push_str(&line, "F ")
+        iface_push_str(&line, f.name)
+        push_byte(&line, ' ' as u8)
+        iface_push_int(&line, f.params.len)
+        mut pi := 0 as i64
+        while pi < f.params.len:
+            push_byte(&line, ' ' as u8)
+            iface_push_str(&line, iface_type_token(types, f.params.data[pi]))
+            pi = pi + 1
+        iface_push_str(&line, " -> ")
+        iface_push_str(&line, iface_type_token(types, f.ret))
+        push_byte(&line, 0x0A as u8)
+        print_raw_ptr(line.data, line.len)
+        if line.data != null as ptr[u8]:
+            @free(line.data)
+        i = i + 1
+    return true
+
 pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut objects := new_parsed_object_ptr_vec()
     mut format := "coff"
