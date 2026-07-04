@@ -579,6 +579,20 @@ fn file_exists(path: str) -> bool:
     fclose(f)
     return true
 
+// RFC 0011 P4 (increment 3e): strip a trailing `.lib`/`.dll` from an output name, so one
+// `--staticlib --shared` build can emit `<base>.lib` + `<base>.dll` for the same library.
+// Always returns a fresh heap string (a copy when there is no such extension).
+fn strip_lib_dll_ext(path: str) -> str:
+    let n = std.string.len(path)
+    if n >= 4:
+        let p = get_str_ptr(path)
+        if p[n - 4] == '.' as u8:
+            let is_lib = p[n - 3] == 'l' as u8 and p[n - 2] == 'i' as u8 and p[n - 1] == 'b' as u8
+            let is_dll = p[n - 3] == 'd' as u8 and p[n - 2] == 'l' as u8 and p[n - 1] == 'l' as u8
+            if is_lib or is_dll:
+                return std.string.slice(path, 0, n - 4)
+    return std.string.slice(path, 0, n)
+
 // RFC 0011 P4 (increment 3d): does this source file declare itself a `library`? Scans the
 // first meaningful (non-blank, non-`//`) line for a `library <name>` marker. A module that
 // opts in this way is treated as a separately-compilable library (import-driven `.lib`)
@@ -1053,19 +1067,33 @@ pub fn main() -> i32:
             if is_staticlib:
                 // RFC 0011 P4: serialize the TU's public interface into the .lib.
                 let iface_text = build_lib_iface_text(resolver.symtable, parser.pool, typetable)
-                let lib_ok = axiom_write_static_lib(temp_obj, output_file, lib_src_hash, iface_text)
+                // RFC 0011 P4 (inc3e): `--staticlib --shared` emits BOTH `<base>.lib` and
+                // `<base>.dll` for one library. Name the archive `<base>.lib`; the DLL is
+                // produced by falling through to the linker with output = `<base>.dll`.
+                mut lib_out := output_file
+                if is_shared:
+                    let base = strip_lib_dll_ext(output_file)
+                    lib_out = std.string.concat(base, ".lib")
+                    output_file = std.string.concat(base, ".dll")
+                    @free(get_str_ptr(base))
+                let lib_ok = axiom_write_static_lib(temp_obj, lib_out, lib_src_hash, iface_text)
+                if is_shared:
+                    @free(get_str_ptr(lib_out))
                 let temp_obj_nt2 = str_to_null_terminated(temp_obj)
                 @free(temp_obj_nt2)
                 if not lib_ok:
                     ax_puts_local("Error: static library generation failed")
                     return 1
                 ax_puts_local("[Debug] Static library written.")
-                free_air_module_builder(air_builder)
-                free_type_checker(checker)
-                free_typetable(typetable)
-                free_symtable(resolver.symtable)
-                free_pool(parser.pool)
-                return 0
+                if not is_shared:
+                    free_air_module_builder(air_builder)
+                    free_type_checker(checker)
+                    free_typetable(typetable)
+                    free_symtable(resolver.symtable)
+                    free_pool(parser.pool)
+                    return 0
+                // is_shared too: continue to the linker to also emit the DLL.
+                ax_puts_local("[Debug] Also emitting shared library (.dll)...")
 
             ax_puts_local("[Debug] Stage 5: Starting self-linking...")
             mut linker := new_axiom_linker()

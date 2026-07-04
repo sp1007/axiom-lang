@@ -83,6 +83,22 @@ libraries await the separate-compilation stdlib cache (RFC 0011 §6). Build from
 where both `std/*.ax` (stdlib concat) and the `.lib` resolve on the CWD-relative path the
 module name maps to (`import a.b` → `a/b.lib`).
 
+## Both `.lib` and `.dll` from one library (RFC 0011 P4 inc3e)
+
+`--staticlib --shared` together emit BOTH artifacts for the same source, base-named:
+
+```sh
+../../bin/axc_native.exe build axmath.ax -o axmath.lib --staticlib --shared --no-stdlib -self-link -O1
+# → axmath.lib (static archive, __axiom_iface: F ax_add / F ax_mul)
+# → axmath.dll (PE export table: ax_add / ax_mul)
+../../bin/axc_native.exe iface axmath.lib          # interface of the static lib
+objdump -p axmath.dll | grep -A3 "Ordinal/Name"    # exported DLL names
+```
+
+Consumers then choose: static-link the `.lib` (`-l`, code embedded) or bind the DLL
+dynamically (`extern "C" from "axmath.dll"`). The DLL exports follow `#[export]`; the
+`.lib` exposes every defined symbol.
+
 ## Multi-DLL test (RFC 0009 P1, N=2)
 
 ```sh
