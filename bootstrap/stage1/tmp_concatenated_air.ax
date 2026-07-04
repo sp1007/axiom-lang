@@ -16500,7 +16500,21 @@ pub fn get_register_type(sel: ptr[InstructionSelector], reg: u32) -> u32:
         i = i + 1
     return 0 as u32
 
+// Thin wrapper preserving the original signature (16 call sites, mostly in the
+// selector where the call count is O(insts) total â€” not hot). Passes a null cache
+// so the scan below runs its plain linear form.
 pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> bool:
+    return regalloc_is_16byte_cached(vreg, fn_ptr, table, symbols, null as ptr[i32], 0 as i64)
+
+// PERF: same body as the linear form, but when `def_idx` is supplied the scan
+// STARTS at def_idx[vreg] (the first inst with dest==vreg) instead of 0. Every
+// index in [0, def_idx[vreg]) has dest != vreg, so skipping them is provably
+// identical â€” only the wasted no-op iterations are removed, the loop body (incl.
+// its control-flow-op skip) is untouched. def_idx[vreg] == -1 means no def â†’ the
+// linear form would scan to the end and return false, so we return false directly.
+// Called with a real cache in the spill-all fallback (per-interval) and
+// insert_spill_code (per-spilled-operand), turning O(vregs Ã— insts) into O(insts).
+pub fn regalloc_is_16byte_cached(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable], def_idx: ptr[i32], def_size: i64) -> bool:
     if vreg == 0:
         return false
     if vreg >= 1 as u32 and vreg <= fn_ptr.params.len as u32:
@@ -16513,6 +16527,11 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                 return true
         return false
     mut i := 0 as i64
+    if def_idx != null as ptr[i32] and (vreg as i64) < def_size:
+        let d0 = def_idx[vreg as i64]
+        if d0 < 0 as i32:
+            return false
+        i = d0 as i64
     while i < fn_ptr.insts.len:
         let inst = &fn_ptr.insts.data[i]
         if inst.dest == vreg:
@@ -16569,7 +16588,7 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                             return true
                     // COPY/MOVE preserve the type, so the source size is
                     // authoritative when the dest type_id is unset/generic.
-                    return regalloc_is_16byte(inst.src1, fn_ptr, table, symbols)
+                    return regalloc_is_16byte_cached(inst.src1, fn_ptr, table, symbols, def_idx, def_size)
                 elif op == OP_CAST:
                     // A cast CHANGES the type: size strictly by the destination
                     // type, never the source. e.g. str(16)->ptr(8) must report
@@ -16601,6 +16620,14 @@ pub fn regalloc_is_16byte(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[TypeTable]
                         src_ty = fn_ptr.params.data[inst.src1 as i64 - 1 as i64] as u32
                     else:
                         mut k := 0 as i64
+                        // PERF: jump-start at src1's def (same skip-no-op-prefix
+                        // reasoning as the outer scan). def_idx[src1] == -1 â†’ no def.
+                        if def_idx != null as ptr[i32] and (inst.src1 as i64) < def_size:
+                            let ds = def_idx[inst.src1 as i64]
+                            if ds >= 0 as i32:
+                                k = ds as i64
+                            else:
+                                k = fn_ptr.insts.len
                         while k < fn_ptr.insts.len:
                             let din = &fn_ptr.insts.data[k]
                             if din.dest == inst.src1:
@@ -18292,6 +18319,11 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
 
     let graph_size = (max_vreg + 1 as u32) as i64
 
+    // PERF: one def-index for the whole allocation; feeds regalloc_is_16byte_cached
+    // in both the spill-all fallback (per interval) and the coloring phase, turning
+    // their O(vregs Ã— insts) 16-byte checks into O(vregs). Freed on every return.
+    let r16_def_idx = build_vreg_def_idx(fn_ptr, graph_size)
+
     let param_idx_of_vreg = @alloc(graph_size * 4) as ptr[i32]
     mut param_vi := 0 as i64
     while param_vi < graph_size:
@@ -18477,7 +18509,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                 // slots. The graph-coloring path reserves 2; this spill-all
                 // fallback (used for large functions) MUST do the same, else
                 // each spilled 16-byte value clobbers the next vreg's slot.
-                if regalloc_is_16byte(sv, fn_ptr, table, symbols):
+                if regalloc_is_16byte_cached(sv, fn_ptr, table, symbols, r16_def_idx, graph_size):
                     spill_count_s = spill_count_s + 2
                 else:
                     spill_count_s = spill_count_s + 1
@@ -18489,6 +18521,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         @free(forbid_rcx as ptr[u8])
         @free(is_arg_vreg as ptr[u8])
         @free(address_taken as ptr[u8])
+        @free(r16_def_idx as ptr[u8])
         return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s, pad0: 0 as i64)
 
     let adj = @alloc(graph_size * 24) as ptr[U32Vec]
@@ -18652,7 +18685,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
 
         @free(forbidden as ptr[u8])
 
-        if regalloc_is_16byte(vreg, fn_ptr, table, symbols):
+        if regalloc_is_16byte_cached(vreg, fn_ptr, table, symbols, r16_def_idx, graph_size):
             allocs[vreg] = RegAllocation(vreg: vreg, phys: REG_NONE, spilled: true, spill_idx: spill_count)
             spill_count = spill_count + 2
             assigned_colors[vreg] = REG_NONE
@@ -18676,6 +18709,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(is_arg_vreg as ptr[u8])
     @free(param_idx_of_vreg as ptr[u8])
     @free(address_taken as ptr[u8])
+    @free(r16_def_idx as ptr[u8])
     @free(in_worklist as ptr[u8])
     if simplify_worklist.data != null as ptr[u32]:
         @free(simplify_worklist.data as ptr[u8])
@@ -18825,6 +18859,24 @@ pub fn get_dst_behavior(op: u16) -> u8:
 pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAllocation], frame: ptr[StackFrame], fn_ptr: ptr[AirFunc], table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> MachInstVec:
     mut result := new_mach_inst_vec()
 
+    // PERF: the per-spilled-operand 16-byte/float checks below linear-scan
+    // fn_ptr.insts; on mega-functions (select_inst: ~13k spilled uses) that is
+    // O(uses Ã— insts). Build one def-index (sized to the max vreg actually
+    // referenced by the mach insts) and query the cached forms. Freed before return.
+    mut sp_maxv := 0 as u32
+    mut sp_si := 0 as i64
+    while sp_si < insts_len:
+        let mi = &insts[sp_si]
+        if mi.dst.kind == OPND_VREG and mi.dst.vreg > sp_maxv:
+            sp_maxv = mi.dst.vreg
+        if mi.src1.kind == OPND_VREG and mi.src1.vreg > sp_maxv:
+            sp_maxv = mi.src1.vreg
+        if mi.src2.kind == OPND_VREG and mi.src2.vreg > sp_maxv:
+            sp_maxv = mi.src2.vreg
+        sp_si = sp_si + 1
+    let sp_def_size = (sp_maxv as i64) + 1 as i64
+    let sp_def_idx = build_vreg_def_idx(fn_ptr, sp_def_size)
+
     // if insts_len > 300 as i64:
     //     ax_printf_local("[Debug] insert_spill_code for function sym_id=%d, len=%d:\n", fn_ptr.sym_id as i64, insts_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     //     mut max_v := 0 as u32
@@ -18856,7 +18908,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             let v = inst.src1.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let is_16 = regalloc_is_16byte(v, fn_ptr, table, symbols)
+                let is_16 = regalloc_is_16byte_cached(v, fn_ptr, table, symbols, sp_def_idx, sp_def_size)
                 mut add_mult := 1 as i64
                 if is_16:
                     add_mult = 2 as i64
@@ -18881,7 +18933,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 elif is_16:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src1 = MachOperand(kind: OPND_PHYS, phys: REG_R10, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                elif is_float_vreg(fn_ptr, v, table, symbols):
+                elif is_float_vreg_cached(fn_ptr, v, table, symbols, sp_def_idx, sp_def_size):
                     // RFC 0006: a spilled FLOAT operand must be reloaded into an
                     // XMM scratch via movsd (MACH_LOAD with xmm dst). Reloading
                     // into a GP scratch (R10) would leave the value in the wrong
@@ -18899,7 +18951,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             let v = inst.src2.vreg
             let alloc = allocs[v]
             if alloc.spilled:
-                let is_16_s2 = regalloc_is_16byte(v, fn_ptr, table, symbols)
+                let is_16_s2 = regalloc_is_16byte_cached(v, fn_ptr, table, symbols, sp_def_idx, sp_def_size)
                 mut add_mult := 1 as i64
                 if is_16_s2:
                     add_mult = 2 as i64
@@ -18907,7 +18959,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 if is_16_s2:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
-                elif is_float_vreg(fn_ptr, v, table, symbols):
+                elif is_float_vreg_cached(fn_ptr, v, table, symbols, sp_def_idx, sp_def_size):
                     // RFC 0006: spilled FLOAT src2 â†’ XMM1 scratch via movsd (see src1).
                     result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                     inst.src2 = MachOperand(kind: OPND_PHYS, phys: REG_XMM1, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
@@ -18926,7 +18978,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
 
         if dst_spilled:
             let behavior = get_dst_behavior(inst.op)
-            let is_16_dst = regalloc_is_16byte(dst_alloc.vreg, fn_ptr, table, symbols)
+            let is_16_dst = regalloc_is_16byte_cached(dst_alloc.vreg, fn_ptr, table, symbols, sp_def_idx, sp_def_size)
             mut add_mult := 1 as i64
             if is_16_dst:
                 add_mult = 2 as i64
@@ -18957,6 +19009,7 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
             result.push(inst)
 
         i = i + 1
+    @free(sp_def_idx as ptr[u8])
     return result
 
 pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32, table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> bool:
