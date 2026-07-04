@@ -199,3 +199,38 @@ vào hàm linker — tránh cấp pool cho linker.
 
 **Ước lượng:** ~250 dòng mới, cần 3-4 vòng verify (8s build + fixpoint + t_ffi với
 DLL gcc-built). Là công việc tập trung riêng, không ghép cùng task khác.
+
+## 11. Frontend mechanism — VALIDATED (2026-07-04)
+
+Cả 4 lớp frontend đã được implement + `bin/axc_native.exe` tự-build sạch (2 vòng)
+với chúng, rồi **revert giữ cây sạch** (feature atomic — vô giá trị + footgun cho tới
+khi linker N-DLL xong; theo tiền lệ RFC 0010). Cơ chế đã kiểm chứng, dùng lại nguyên:
+
+**(1) Lexer:** `from` KHÔNG cần token mới — lex thành `TK_IDENT`, parser nhận diện
+theo ngữ cảnh. TK_STRING_LIT gồm CẢ 2 dấu `"` (lexer.ax:287-292) → strip byte
+đầu+cuối để lấy tên DLL.
+
+**(2) ast.ax:** `FLAG_FROM_DLL: u16 = 8192` (bit trống kế FLAG_IS_RESOLVED=4096).
+Lưu dll-name-id vào `AstNode.extra_idx` (field phụ 24-byte node, =0 mặc định, chỉ
+copy qua mono — trống cho NODE_FUNC_DECL).
+
+**(3) parser.ax `parse_extern_decl`:** sau `self.expect(TK_STRING_LIT)` (ABI),
+trước `TK_FN`: `peek()`; nếu `TK_IDENT` và `token_text=="from"` → consume + expect
+string-lit + strip quotes + `pool.intern` → dll_name_id. Sau `add_node`: nếu
+dll_name_id≠0 thì `nodes.data[node].extra_idx = dll_name_id` + `set_flags(FLAG_FROM_DLL)`.
+
+**(4) resolver.ax:** thêm 2 parallel `U32Vec` vào `SymbolTable`: `dll_bind_syms`
+(name_id) + `dll_bind_dlls` (dll_name_id), init trong `new_symbol_table`. Trong
+`pre_define_top_levels` (661, chạy 1 lần/top-level qua `resolve()`→718), tại nhánh
+NODE_FUNC_DECL sau `define`: nếu `flags & FLAG_FROM_DLL` → push `name_id` +
+`child_node.extra_idx`. (KHÔNG ghi ở `resolve_node` 845 để tránh trùng.)
+
+**KHẲNG ĐỊNH LUỒNG LINKER (quan trọng — sửa/bổ sung §10):** `-self-link` KHÔNG tự
+link trong x86_coff; `compile_native_binary` chỉ **ghi object** (`axiom_temp.obj`).
+`main_air.ax:851-865` rồi gọi `new_axiom_linker()` → `axiom_linker_add_input(obj)` →
+**`axiom_linker_link` (linker.ax:793, hàm ~870 dòng)** = nơi build `.idata`. Vậy
+plan §10 nhắm ĐÚNG file. `AxiomLinker` struct (linker.ax:443) chỉ có
+`input_files`+`output_path` → thêm field cặp-chuỗi user-dll ở đây; populate tại
+main_air (resolve `symtable.dll_bind_syms/dlls` qua `pool.get` thành `[sym,dll]`)
+TRƯỚC `axiom_linker_link`. **Còn lại đúng 1 việc: N-DLL `.idata` trong hàm 870 dòng
+đó** (§10 7-điểm-chèn) — focused effort riêng, cần byte-perfect PE + fixpoint.
