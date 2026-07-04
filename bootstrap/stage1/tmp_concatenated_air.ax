@@ -24968,6 +24968,18 @@ extern "C" fn system(command: ptr[void]) -> i32
 // extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 extern "C" fn remove(filename: ptr[void]) -> i32
 extern "C" fn fflush(stream: ptr[void]) -> i32
+// --time: CLOCKS_PER_SEC=1000 on Windows, so clock() ~ wall-clock ms since start.
+extern "C" fn clock() -> i64
+
+// --time helper: print "[time] <label>: <ms>" and return the current tick to reset
+// the caller's running marker. `on` gates the whole thing so it is inert without --time.
+fn time_phase(on: bool, label: str, prev: i64) -> i64:
+    if not on:
+        return prev
+    let now = clock()
+    ax_printf_local("[time] %s: %d ms\n", get_str_ptr(label) as i64, (now - prev) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    return now
 extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
 
 
@@ -25477,6 +25489,7 @@ pub fn main() -> i32:
     mut optimize := false
     mut opt_level := 1 as u8
     mut no_stdlib := false
+    mut show_time := false  // --time: print per-phase wall-clock timing
 
     // Parse commands
     let cmd = args[1]
@@ -25537,6 +25550,8 @@ pub fn main() -> i32:
             opt_level = 3 as u8
         elif opt == "--no-stdlib":
             no_stdlib = true
+        elif opt == "--time":
+            show_time = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
@@ -25560,8 +25575,10 @@ pub fn main() -> i32:
         @free(get_str_ptr(formatted))
         return 0
 
+    mut t_mark := clock()  // --time running marker (inert unless show_time)
     if self_link and not no_stdlib:
         src = concatenate_stdlib(src)
+        t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 
     if not is_dump_air:
         ax_puts_local("[Debug] Stage 1: Starting compilation...")
@@ -25569,6 +25586,7 @@ pub fn main() -> i32:
     // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
+    t_mark = time_phase(show_time, "lex", t_mark)
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Lexing.")
         fflush(null as ptr[void])
@@ -25577,6 +25595,7 @@ pub fn main() -> i32:
     mut pool := new_intern_pool()
     mut parser := new_parser(tokens, src, pool)
     parser.parse_program()
+    t_mark = time_phase(show_time, "parse", t_mark)
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Parsing.")
         fflush(null as ptr[void])
@@ -25630,6 +25649,7 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
     parser.pool = resolver.intern
     if not is_dump_air:
+        t_mark = time_phase(show_time, "resolve", t_mark)
         ax_puts_local("[Debug] Finished Resolving.")
         fflush(null as ptr[void])
 
@@ -25637,6 +25657,7 @@ pub fn main() -> i32:
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
     checker.run_type_checker()
     if not is_dump_air:
+        t_mark = time_phase(show_time, "typecheck", t_mark)
         ax_puts_local("[Debug] Finished Typechecking.")
         fflush(null as ptr[void])
 
@@ -25691,6 +25712,7 @@ pub fn main() -> i32:
 
     parser.pool = air_builder.pool
     if not is_dump_air:
+        t_mark = time_phase(show_time, "air-build", t_mark)
         ax_puts_local("[Debug] Stage 2: Finished building AIR module.")
         fflush(null as ptr[void])
 
@@ -25702,6 +25724,7 @@ pub fn main() -> i32:
         optimizer.level = opt_level
         optimizer.run(&(air_builder.module))
         if not is_dump_air:
+            t_mark = time_phase(show_time, "ssa-opt", t_mark)
             ax_puts_local("[Debug] Stage 2.2: Finished SSA optimizer.")
             fflush(null as ptr[void])
 
@@ -25758,6 +25781,7 @@ pub fn main() -> i32:
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1
+            t_mark = time_phase(show_time, "codegen", t_mark)
             ax_puts_local("[Debug] Stage 4: Finished native code generation.")
 
             ax_puts_local("[Debug] Stage 5: Starting self-linking...")
@@ -25765,6 +25789,7 @@ pub fn main() -> i32:
             axiom_linker_add_input(&linker, temp_obj)
             linker.output_path = output_file
             let link_success = axiom_linker_link(&linker)
+            t_mark = time_phase(show_time, "self-link", t_mark)
             ax_puts_local("[Debug] Stage 6: Finished self-linking.")
             
             let temp_obj_nt = str_to_null_terminated(temp_obj)
