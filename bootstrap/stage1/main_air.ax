@@ -864,6 +864,14 @@ pub fn main() -> i32:
     mut pool := new_intern_pool()
     mut parser := new_parser(tokens, src, pool)
     parser.parse_program()
+    // BUG#53 fix (CLAUDE.md §8): parse errors must HALT the pipeline. Previously the
+    // driver ignored parser.diags_count, so a malformed parse (e.g. an inline `if COND:
+    // <stmt>` suite, which parse_block cannot represent) flowed into codegen and emitted
+    // corrupt symbols ("Unresolved external symbol ''") instead of a clean error.
+    if parser.diags_count > 0 as i64:
+        ax_printf_local("error: %d parse error(s); aborting before code generation\n", parser.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        return 1
     t_mark = time_phase(show_time, "parse", t_mark)
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Parsing.")

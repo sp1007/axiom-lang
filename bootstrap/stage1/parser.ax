@@ -102,6 +102,13 @@ pub fn expect(mut self: ptr[Parser], kind: u8) -> Token:
     return self.consume()
 
 pub fn expect_newline(mut self: ptr[Parser]):
+    // A `;` separates multiple statements on one physical line and is equivalent to a
+    // newline terminator (e.g. `putchar(x); fflush(null)`). Consume it so the next
+    // statement parses cleanly — previously this raised a spurious "expected newline"
+    // diagnostic even though codegen recovered (BUG#53 companion; §8: no false errors).
+    if self.pos < self.tokens.len and self.tokens.data[self.pos].kind == TK_SEMICOLON:
+        self.pos = self.pos + 1
+        return
     if self.pos < self.tokens.len and self.tokens.data[self.pos].kind == TK_NEWLINE:
         self.pos = self.pos + 1
         return
