@@ -1423,4 +1423,14 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 
 **Kết quả:** codegen **2396→1442ms**. Fixpoint 966dfb09 + 93/93.
 
-**Tổng kết perf session (2026-07-04) — 4 fix:** codegen compiler-self-build **9560ms → 1442ms (~6.6×)**; float-heavy t_mathx **2074→126ms (~16×)**; tổng self-build wall-clock **~14.8s → ~4.1s (~3.6×)**. Kỹ thuật xuyên suốt: `--time` → probe per-func/per-sub-phase (clock bracket) → phát hiện quadratic (in V/GS/spills/min-max) → memoize bằng def_idx (1 lượt O(N), jump-to-def-index) thay linear-scan-per-vreg. **Nguyên tắc: hàm scan-tìm-def gọi trong vòng O(V) = quadratic ẩn; luôn nghĩ tới def_idx.** Sau PERF#1-4: 2 phase lớn nhất = typecheck 1233ms + codegen 1336ms (residual lành mạnh); typecheck chưa đụng (frontend, hotspot kế tiềm năng).
+## PERF #5+#6 — typecheck method-resolution: string alloc per scan-iter ✅ ĐÃ FIX (2ca4843, e448e06)
+
+**Probe:** `--time` cho typecheck phase-split → phase3 (infer_node recursion) = 883ms, phase2 = 39ms. Đếm: `resolve_method_sym`+`method_ret_type` gọi 4854 lần, mỗi lần scan toàn bộ ~9482 symbols (O(method_access × syms) = 46M iter). Mỗi iter cho SYM_FUNC: `intern.get(name_id)` (alloc str) + `match_method_name` (alloc "."+field) + free.
+
+**PERF#5 (2ca4843):** `match_method_name` bỏ `concat(".",field)` → suffix-check in-place trên bytes (semantics identical, zero-alloc). phase3 **883→669ms (~24%)**.
+
+**PERF#6 (e448e06):** `intern.get` gọi `alloc_str_from_raw` (COPY heap) mỗi call. Thêm `InternPool.name_matches_method(id, field)` = so khớp trực tiếp trên **arena bytes** (ổn định suốt đời pool, borrow an toàn, KHÔNG copy). 2 scan dùng nó làm hot-filter; chỉ materialize str ở debug/matched path hiếm. Bỏ ~14M alloc/free. Fixpoint e737a3a2 + 93/93.
+
+**Nguyên tắc bổ sung:** (1) `intern.get`/`get_str` **ALLOCATE** — đừng gọi trong vòng nóng chỉ để so sánh; dùng compare-on-arena. (2) mọi `concat`/string-build trong vòng O(N) = alloc-storm ẩn.
+
+**Tổng kết perf session (2026-07-04) — 6 fix, đều fixpoint+93/93:** codegen compiler-self-build **9560ms → ~1150ms (~6.6×)**; float-heavy t_mathx **2074→126ms (~16×)**; typecheck phase3 **883→669ms**; tổng self-build wall-clock **~14.8s → ~3.5s (~4×)**. Kỹ thuật xuyên suốt: `--time` → probe per-func/sub-phase (clock bracket) → phát hiện quadratic → memoize (def_idx jump-to-def-index cho codegen; arena-borrow cho typecheck). **2 nguyên tắc vàng: (a) hàm scan-tìm-def gọi trong vòng O(V) = quadratic ẩn → def_idx; (b) alloc/concat/intern.get trong vòng nóng = alloc-storm → borrow/no-copy.** Còn lại (lành mạnh, diminishing): codegen residual ~1.1s, typecheck ~0.7-0.9s, self-link ~0.6s, ssa-opt ~0.4s.
