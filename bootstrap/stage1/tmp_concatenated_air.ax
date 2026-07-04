@@ -6400,16 +6400,14 @@ pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue
     return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
 
 pub fn run_type_checker(mut self: ptr[TypeChecker]):
-    // Phase 0: Register all Type Aliases / Sum Types
+    // Phase 0.0: Pre-register all Struct Type IDs (empty) to allow mutual / forward
+    // references. MUST run before Phase 0.1 (sum-type pre-inference): a sum variant
+    // with a STRUCT payload (`type Shape = Dot(Point) | ...`) infers that payload's
+    // type during pre_infer_type_alias, which needs the struct's type_id to already
+    // exist. When this ran AFTER the sum pass, such a payload resolved to UNKNOWN, so
+    // the match binding was untyped and a `p.field` access could not resolve the
+    // field index (it defaulted to 0 â€” reading the wrong field).
     mut i := 0 as i64
-    while i < self.tree.nodes.len:
-        let node = self.tree.nodes.data[i]
-        if node.kind == NODE_TYPE_ALIAS_DECL:
-            self.pre_infer_type_alias(i as u32)
-        i = i + 1
-
-    // Phase 0.5: Pre-register all Struct Type IDs to allow mutual / forward references
-    i = 0 as i64
     while i < self.tree.nodes.len:
         let node = self.tree.nodes.data[i]
         if node.kind == NODE_STRUCT_DECL:
@@ -6419,6 +6417,15 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
                 if sym.type_id == 0 as u32:
                     let struct_type_id = self.types.register_struct(sym.name_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
                     self.symtable.symbols.data[sym_idx].type_id = struct_type_id
+        i = i + 1
+
+    // Phase 0.1: Register all Type Aliases / Sum Types (struct type_ids now exist,
+    // so struct-typed variant payloads resolve to the right type).
+    i = 0 as i64
+    while i < self.tree.nodes.len:
+        let node = self.tree.nodes.data[i]
+        if node.kind == NODE_TYPE_ALIAS_DECL:
+            self.pre_infer_type_alias(i as u32)
         i = i + 1
 
     // Phase 1: Register all StructDeclarations

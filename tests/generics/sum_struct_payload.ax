@@ -1,0 +1,27 @@
+// Regression (BUG#58): a sum variant carrying a STRUCT payload. Binding the
+// payload in a match arm (`Dot(p)`) and reading a NON-FIRST field (`p.y`) must
+// resolve the correct field index.
+//
+// Root cause was pass ordering in run_type_checker: sum-type pre-inference (which
+// records each variant's payload type) ran BEFORE struct type-ids were registered,
+// so a struct-typed payload resolved to UNKNOWN. The match binding was then
+// untyped, and `p.y` fell back to field index 0 — reading `x` instead of `y`
+// (`p.x + p.y` gave 10+10=20 instead of 30; `p.y` alone gave 10). Passing the
+// binding to a function typed `Point` masked it, so only the direct field access
+// in the arm was wrong.
+struct Point:
+    x: i32
+    y: i32
+
+type Shape = Dot(Point) | Nothing
+
+fn main() -> i32:
+    let s = Dot(Point(x: 10, y: 20))
+    match s:
+        Dot(p):
+            println(p.x)       // 10
+            println(p.y)       // 20  (was 10 before the fix)
+            println(p.x + p.y) // 30  (was 20)
+        Nothing:
+            println(0)
+    return 0
