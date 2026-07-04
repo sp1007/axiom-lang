@@ -134,6 +134,23 @@ cat axmath_ffi.ax
 # axmath.dll to the import table automatically. (Needs axmath.dll + ax_runtime.dll present.)
 ```
 
+## Public integer const through the interface (RFC 0011 P4 inc4a)
+
+A `library`-marked module can export a `pub const` of integer type. Its value is written
+into the `.lib` interface as `C <name> <type> <value>`; the consumer inlines it at each
+use site with no access to the library source (no recompile).
+
+```sh
+# constlib.ax: `library constlib` + `pub const MAX_ITEMS: i32 = 42` + `pub fn base()`
+../../bin/axc_native.exe build constuse.ax -o constuse.exe -self-link -O1   # auto-builds constlib.lib
+../../bin/axc_native.exe iface constlib.lib | grep '^C '     # C MAX_ITEMS i32 42
+cp ../../bin/ax_runtime.dll .
+./constuse.exe ; echo "exit=$?"   # expect exit=34  (MAX_ITEMS - base() = 42 - 8)
+```
+
+Only INT_LIT initializers of a primitive-int type round-trip today (non-negative, <2^32);
+float/bool/struct consts await a later increment.
+
 ## Multi-DLL test (RFC 0009 P1, N=2)
 
 ```sh

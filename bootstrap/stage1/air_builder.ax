@@ -1553,6 +1553,19 @@ pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
         let sym_idx = node.payload
         if self.mb.symbols != null as ptr[SymbolTable] and sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[sym_idx as i64]
+            // RFC 0011 P4 inc4a: a library-provided const has no AST initializer
+            // (decl_node 0); its value was carried in the `.lib` interface and stashed in
+            // next_overload. Inline it directly as an integer constant.
+            if sym.kind == SYM_CONST and sym.decl_node == 0 as u32:
+                let lc_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: sym.type_id,
+                    dest: lc_reg,
+                    src1: sym.next_overload,
+                    src2: 0 as u32,
+                ))
+                return lc_reg
             if sym.kind == SYM_CONST and sym.decl_node != 0 as u32:
                 mut init_expr := 0 as u32
                 

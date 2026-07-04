@@ -1143,7 +1143,7 @@ fn iface_type_token(types: ptr[TypeTable], type_id: u32) -> str:
 // where each type is an `iface_type_token`. The linker symbol is `ax_<name>` (uniform
 // mangling), so the consumer re-derives it — the interface stays source-level. Structs,
 // consts, and generics are future increments; only functions appear today.
-pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable]) -> str:
+pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], types: ptr[TypeTable], tree: ptr[AstTree]) -> str:
     mut bv := new_byte_vec()
     iface_push_str(&bv, "AXIFACE1\n")
     mut si := 0 as i64
@@ -1151,6 +1151,37 @@ pub fn build_lib_iface_text(symtable: ptr[SymbolTable], pool: ptr[InternPool], t
         let sym_kind = symtable.symbols.data[si].kind
         let sym_flags = symtable.symbols.data[si].flags
         let sym_tid = symtable.symbols.data[si].type_id
+        // RFC 0011 P4 inc4a: export a public integer const as `C <name> <type> <value>` so a
+        // consumer can inline it without the library source. Only INT_LIT initializers of a
+        // primitive-int type round-trip today (non-negative, <2^32); anything else is skipped.
+        if sym_kind == SYM_CONST and (sym_flags & SYM_FLAG_PUB) != 0 as u16 and sym_tid != 0 as u32:
+            let c_decl = symtable.symbols.data[si].decl_node
+            let c_tok = iface_type_token(types, sym_tid)
+            if c_decl != 0 as u32 and (c_decl as i64) < tree.nodes.len and c_tok != "?":
+                mut c_init := 0 as u32
+                mut c_child := tree.nodes.data[c_decl as i64].first_child
+                while c_child != 0 as u32 and (c_child as i64) < tree.nodes.len:
+                    let ccn = tree.nodes.data[c_child as i64]
+                    if ccn.kind != NODE_TYPE_EXPR and ccn.kind != NODE_GENERIC_TYPE:
+                        c_init = c_child
+                    c_child = ccn.next_sibling
+                if c_init != 0 as u32 and tree.nodes.data[c_init as i64].kind == NODE_INT_LIT:
+                    let c_tok_idx = tree.nodes.data[c_init as i64].token_idx
+                    let c_ltok = tree.tokens.data[c_tok_idx as i64]
+                    if c_ltok.len != 0 as u16:
+                        let c_sp = ((get_str_ptr(tree.src)) as i64 + c_ltok.offset as i64) as ptr[u8]
+                        let c_txt = alloc_str_from_raw(c_sp, c_ltok.len as i64)
+                        let c_val = parse_int_from_str(c_txt)
+                        @free(get_str_ptr(c_txt))
+                        let c_name = pool.get(symtable.symbols.data[si].name_id)
+                        if std.string.len(c_name) > 0:
+                            iface_push_str(&bv, "C ")
+                            iface_push_str(&bv, c_name)
+                            push_byte(&bv, ' ' as u8)
+                            iface_push_str(&bv, c_tok)
+                            push_byte(&bv, ' ' as u8)
+                            iface_push_int(&bv, c_val)
+                            push_byte(&bv, 0x0A as u8)
         if sym_kind == SYM_FUNC and (sym_flags & SYM_FLAG_PUB) != 0 as u16 and sym_tid != 0 as u32:
             if (sym_tid as i64) < types.entries.len and types.entries.data[sym_tid].kind == TYPE_KIND_FUNC:
                 let f_idx = types.entries.data[sym_tid].extra
@@ -1462,6 +1493,35 @@ pub fn push_iface_func(mut self: ptr[IfaceFuncVec], f: IfaceFunc):
     self.data[self.len] = f
     self.len = self.len + 1
 
+// RFC 0011 P4 inc4a: one parsed public integer constant (`C <name> <type> <value>`).
+pub struct IfaceConst:
+    name: str
+    type_id: u32
+    value: i64
+
+pub struct IfaceConstVec:
+    data: ptr[IfaceConst]
+    len: i64
+    cap: i64
+
+pub fn new_iface_const_vec() -> IfaceConstVec:
+    return IfaceConstVec(data: null as ptr[IfaceConst], len: 0, cap: 0)
+
+pub fn push_iface_const(mut self: ptr[IfaceConstVec], c: IfaceConst):
+    if self.len == self.cap:
+        mut new_cap := 8 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let item_size = @compiler_intrinsic("size_of")[IfaceConst]() as i64
+        let new_data = @alloc(new_cap * item_size) as ptr[IfaceConst]
+        if self.data != null as ptr[IfaceConst]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * item_size)
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    self.data[self.len] = c
+    self.len = self.len + 1
+
 // Inverse of iface_type_token: map an interface token back to a stable primitive TypeID.
 // Non-primitive tokens ("ptr"/"slice"/"?") reconstruct to TYPE_UNKNOWN for now — inc4
 // will carry the pointee/struct so they round-trip exactly.
@@ -1593,6 +1653,29 @@ pub fn parse_lib_iface(lib_path: str) -> IfaceFuncVec:
             if t < toks.len:
                 ret = iface_token_to_type(toks.data[t])
             push_iface_func(&result, IfaceFunc(name: name, params: fn_params, ret: ret))
+        i = j + 1
+    return result
+
+// RFC 0011 P4 inc4a: parse the `C <name> <type> <value>` const lines of a `.lib` interface
+// into a value list, so a consumer can register + inline library constants without source.
+pub fn parse_lib_iface_consts(lib_path: str) -> IfaceConstVec:
+    mut result := new_iface_const_vec()
+    let text = read_lib_iface_bytes(lib_path)
+    let n = std.string.len(text)
+    if n == 0:
+        return result
+    let p = get_str_ptr(text)
+    mut i := 0 as i64
+    while i < n:
+        mut j := i
+        while j < n and p[j] != 0x0A as u8:
+            j = j + 1
+        let toks = iface_line_tokens(p, i, j)
+        if toks.len >= 4 and toks.data[0] == "C":
+            let name = toks.data[1]
+            let type_id = iface_token_to_type(toks.data[2])
+            let value = iface_atoi(toks.data[3])
+            push_iface_const(&result, IfaceConst(name: name, type_id: type_id, value: value))
         i = j + 1
     return result
 

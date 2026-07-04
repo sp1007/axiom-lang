@@ -1074,7 +1074,7 @@ pub fn main() -> i32:
             // instead of linking an executable.
             if is_staticlib:
                 // RFC 0011 P4: serialize the TU's public interface into the .lib.
-                let iface_text = build_lib_iface_text(resolver.symtable, parser.pool, typetable)
+                let iface_text = build_lib_iface_text(resolver.symtable, parser.pool, typetable, parser.tree)
                 // RFC 0011 P4 (inc3e): `--staticlib --shared` emits BOTH `<base>.lib` and
                 // `<base>.dll` for one library. Name the archive `<base>.lib`; the DLL is
                 // produced by falling through to the linker with output = `<base>.dll`.
@@ -1292,6 +1292,36 @@ fn register_module_from_lib(mod: ptr[ModuleInfo], st: ptr[SymbolTable], tt: ptr[
         gscope.scope_put(full_name_id, sym_idx)
         (&mod.exports).push(ModuleExport(name_id: local_name_id, symbol_idx: sym_idx))
         fi = fi + 1
+    // RFC 0011 P4 inc4a: register the library's public integer constants. Each becomes a
+    // body-less SYM_CONST (decl_node 0, no AST initializer); its value is stashed in
+    // next_overload (unused for consts) and inlined by lower_field_expr at each `mod.NAME`
+    // use site — mirroring the function registration above.
+    let consts = parse_lib_iface_consts(lib_path)
+    mut ci := 0 as i64
+    while ci < consts.len:
+        let c = &consts.data[ci]
+        let c_local_name_id = intern.intern_string(c.name)
+        let c_sym_idx = st.symbols.len as u32
+        (&st.symbols).push(Symbol(
+            name_id: c_local_name_id,
+            kind: SYM_CONST,
+            padding: 0 as u8,
+            flags: SYM_FLAG_PUB,
+            type_id: c.type_id,
+            decl_node: 0 as u32,
+            scope_id: 0 as u32,
+            next_overload: c.value as u32,
+        ))
+        (&st.symbol_trees).push(null as ptr[AstTree])
+        let c_dot_name = std.string.concat(".", c.name)
+        let c_full_name = std.string.concat(mod_name, c_dot_name)
+        let c_full_name_id = intern.intern_string(c_full_name)
+        @free(get_str_ptr(c_dot_name))
+        @free(get_str_ptr(c_full_name))
+        let c_gscope = &st.scopes.data[0]
+        c_gscope.scope_put(c_full_name_id, c_sym_idx)
+        (&mod.exports).push(ModuleExport(name_id: c_local_name_id, symbol_idx: c_sym_idx))
+        ci = ci + 1
     mod.status = MODULE_LOADED
     mod.ast_tree = null as ptr[AstTree]
     return 0 as i32
