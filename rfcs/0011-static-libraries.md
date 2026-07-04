@@ -1,6 +1,9 @@
 # RFC 0011 — Static libraries (`.lib`) + precompiled-stdlib cache
 
-- **Status:** Draft (2026-07-04, user-raised) — design; phased implementation pending
+- **Status:** Accepted (2026-07-04) — **P1+P2+P3 SHIPPED**. P1 producer
+  (`--staticlib` → COFF `!<arch>`), P2 consumer (`-l` static link), P3 source-hash
+  staleness (`--staticlib` skips the build when the source is unchanged). P4
+  (precompiled-stdlib cache via separate compilation) + P5 (generics) remain.
 - **Author:** self-host team
 - **Tracking:** follows [[0009-ffi-dynamic-linking]] (P1 import / P2 export shipped);
   addresses the "compile chậm" (slow build) thread from the perf session.
@@ -142,6 +145,13 @@ generic/monomorphized parts stay in-source until generic separate-comp lands.
   code oracle; fixpoint.
 - **P3 — Manifest/staleness driver.** `axc lib build/check`; auto-rebuild on source-hash
   mismatch. Gate: touch a source → rebuild; unchanged → reuse (timing proof).
+  **SHIPPED:** `axc build --staticlib` is now idempotent — it hashes the (post-concat)
+  source with djb2 and, if `<out>.lib.manifest` matches and the `.lib` exists, prints
+  `[lib] up to date — skipping rebuild` and exits before lexing (skips the whole
+  pipeline). Any source edit changes the hash → full rebuild + refreshed manifest.
+  Verified: fresh build → codegen runs; re-run unchanged → skipped; append a fn →
+  rebuilds with the new symbol. A dedicated `axc lib` verb is deferred (folded into
+  `--staticlib` for now); multi-file source hashing (stdlib) is P4's concern.
 - **P4 — Separate compilation (Layer B), non-generic stdlib.** Module-interface digest
   (`.axi`); typecheck user unit against stdlib signatures; link `std.lib`. Gate:
   build a program with `--no-stdlib-source -l std.lib` faster than the concat path,

@@ -534,6 +534,51 @@ fn print_num(val: i64):
     print_raw(buf as str)
     @free(buf)
 
+// RFC 0011 P3: djb2 hash of a source string, for .lib staleness detection.
+fn djb2_hash_str(s: str) -> u64:
+    mut h := 5381 as u64
+    let p = get_str_ptr(s)
+    let n = std.string.len(s)
+    mut i := 0 as i64
+    while i < n:
+        h = ((h << 5 as u64) + h) + p[i] as u64
+        i = i + 1
+    return h
+
+// Read the u64 hash from a lib manifest ("AXLIB1\n" + 8 bytes LE). 0 if absent/invalid.
+fn read_lib_manifest_hash(path: str) -> u64:
+    let nt = str_to_null_terminated(path)
+    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
+    @free(nt)
+    if f == null as ptr[void]:
+        return 0 as u64
+    let bufm = @alloc(16) as ptr[u8]
+    let got = fread(bufm as ptr[void], 1, 15, f)
+    fclose(f)
+    if got < 15 as i64:
+        @free(bufm)
+        return 0 as u64
+    // Verify magic "AXLIB1\n"
+    if bufm[0] != 'A' as u8 or bufm[1] != 'X' as u8 or bufm[2] != 'L' as u8 or bufm[3] != 'I' as u8 or bufm[4] != 'B' as u8 or bufm[5] != '1' as u8:
+        @free(bufm)
+        return 0 as u64
+    mut h := 0 as u64
+    mut i := 0 as i64
+    while i < 8:
+        h = h | ((bufm[7 + i] as u64) << (i * 8 as i64) as u64)
+        i = i + 1
+    @free(bufm)
+    return h
+
+fn file_exists(path: str) -> bool:
+    let nt = str_to_null_terminated(path)
+    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
+    @free(nt)
+    if f == null as ptr[void]:
+        return false
+    fclose(f)
+    return true
+
 pub fn main() -> i32:
     let argc_ptr = @alloc(4) as ptr[i32]
     argc_ptr[0] = 0 as i32
@@ -667,6 +712,19 @@ pub fn main() -> i32:
     if self_link and not no_stdlib:
         src = concatenate_stdlib(src)
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
+
+    // RFC 0011 P3: for --staticlib, skip the whole pipeline when the source is
+    // unchanged (its hash matches the manifest) and the .lib still exists.
+    mut lib_src_hash := 0 as u64
+    if is_staticlib:
+        lib_src_hash = djb2_hash_str(src)
+        if std.string.len(output_file) > 0 and file_exists(output_file):
+            let man_check = std.string.concat(output_file, ".manifest")
+            let prev_hash = read_lib_manifest_hash(man_check)
+            @free(get_str_ptr(man_check))
+            if prev_hash != 0 as u64 and prev_hash == lib_src_hash:
+                ax_puts_local("[lib] up to date — skipping rebuild")
+                return 0
 
     if not is_dump_air:
         ax_puts_local("[Debug] Stage 1: Starting compilation...")
@@ -875,7 +933,7 @@ pub fn main() -> i32:
             // RFC 0011 P1: --staticlib wraps the compiled object into a .lib archive
             // instead of linking an executable.
             if is_staticlib:
-                let lib_ok = axiom_write_static_lib(temp_obj, output_file)
+                let lib_ok = axiom_write_static_lib(temp_obj, output_file, lib_src_hash)
                 let temp_obj_nt2 = str_to_null_terminated(temp_obj)
                 @free(temp_obj_nt2)
                 if not lib_ok:

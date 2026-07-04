@@ -1065,7 +1065,7 @@ fn ar_write_header(out: ptr[ByteVec], name: str, size: i64):
 // Wrap a compiled `.obj` into a single-member COFF archive with a first-linker-member
 // symbol index (all defined symbols → the one object member). Also writes a binary
 // staleness manifest `<out>.manifest` (RFC 0011 §3.4).
-pub fn axiom_write_static_lib(obj_path: str, out_path: str) -> bool:
+pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64) -> bool:
     let path_nt = x86_str_to_null_terminated(obj_path)
     let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
     @free(path_nt)
@@ -1142,12 +1142,15 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str) -> bool:
     fwrite(ar.data as ptr[void], 1, ar.len, of)
     fclose(of)
 
-    // Staleness manifest: djb2 hash of the compiled object bytes.
-    mut h := 5381 as u64
-    mut hi := 0 as i64
-    while hi < osize:
-        h = ((h << 5 as u64) + h) + obuf[hi] as u64
-        hi = hi + 1
+    // Staleness manifest: hash of the SOURCE (passed in) so an unchanged source
+    // reuses the .lib (RFC 0011 §3.4). Falls back to the object hash if 0.
+    mut h := src_hash
+    if h == 0 as u64:
+        h = 5381 as u64
+        mut hi := 0 as i64
+        while hi < osize:
+            h = ((h << 5 as u64) + h) + obuf[hi] as u64
+            hi = hi + 1
     let man_path = std.string.concat(out_path, ".manifest")
     let man_nt = x86_str_to_null_terminated(man_path)
     let mf = fopen(man_nt as ptr[void], get_str_ptr("wb"))
