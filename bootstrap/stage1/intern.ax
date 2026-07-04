@@ -81,6 +81,39 @@ pub fn get_str(self: ptr[InternPool], id: u32) -> str:
 pub fn get(self: ptr[InternPool], id: u32) -> str:
     return self.get_str(id)
 
+// PERF: test whether the interned name `id` matches method `field_name` in the
+// sense of match_method_name (name == field_name, OR name ends with "."+field),
+// reading the arena bytes DIRECTLY — no alloc_str_from_raw copy. get_str() would
+// heap-allocate a str on every call; the method-resolution scans do this per
+// SYM_FUNC per method-access node (tens of millions of alloc/free during a
+// self-build). The arena is stable for the pool's lifetime, so borrowing is safe.
+pub fn name_matches_method(self: ptr[InternPool], id: u32, field_name: str) -> bool:
+    if id == 0 as u32 or id > self.state.count as u32:
+        return false
+    let entry = self.ids[id as i64 - 1]
+    let sp = (self.arena as i64 + entry.start as i64) as ptr[u8]
+    let sl = entry.len as i64
+    let fp = field_name as ptr[u8]
+    let fl = std.string.len(field_name)
+    if sl == fl:
+        mut k := 0 as i64
+        while k < fl:
+            if sp[k] != fp[k]:
+                return false
+            k = k + 1
+        return true
+    if sl <= fl:
+        return false
+    // ends with "." + field_name
+    if sp[sl - fl - 1 as i64] != 46 as u8:
+        return false
+    mut k2 := 0 as i64
+    while k2 < fl:
+        if sp[sl - fl + k2] != fp[k2]:
+            return false
+        k2 = k2 + 1
+    return true
+
 pub fn intern(mut self: ptr[InternPool], s: str) -> u32:
     let length = std.string.len(s)
     if length == 0:

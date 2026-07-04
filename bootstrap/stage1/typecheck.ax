@@ -571,13 +571,14 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
         while idx < self.symtable.symbols.len:
             let sym = self.symtable.symbols.data[idx]
             if sym.kind == SYM_FUNC and (sym.flags & SYM_FLAG_GENERIC) != 0 as u16:
-                let sym_name = self.intern.get(sym.name_id)
-                
-                if field_name == "is_ok" or field_name == "unwrap" or field_name == "unwrap_err" or field_name == "is_err":
-                    if match_method_name(sym_name, field_name):
-                        ax_printf_local("      [TC-DEBUG-RESOLVE-FALLBACK] candidate sym_name=%s matches field!\n", (get_str_ptr(sym_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                
-                if match_method_name(sym_name, field_name):
+                // PERF: zero-alloc hot filter (was intern.get + match_method_name +
+                // free per generic SYM_FUNC per call). sym_name is materialized only
+                // on the rare debug path below.
+                if self.intern.name_matches_method(sym.name_id, field_name):
+                    if field_name == "is_ok" or field_name == "unwrap" or field_name == "unwrap_err" or field_name == "is_err":
+                        let dbg_name = self.intern.get(sym.name_id)
+                        ax_printf_local("      [TC-DEBUG-RESOLVE-FALLBACK] candidate sym_name=%s matches field!\n", (get_str_ptr(dbg_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        safe_free_str(dbg_name)
                     mut t_id := sym.type_id
                     if t_id == TYPE_UNKNOWN and sym.decl_node != 0 as u32:
                         self.pre_infer_func_signature(sym.decl_node)
@@ -621,12 +622,10 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
                                             safe_free_str(rec_struct_name)
                                             safe_free_str(param_struct_name)
                                             safe_free_str(param_base_name)
-                                            safe_free_str(sym_name)
                                             safe_free_str(field_name)
                                             return idx as u32
                                         safe_free_str(param_base_name)
                                         safe_free_str(param_struct_name)
-                safe_free_str(sym_name)
             idx = idx + 1 as i64
         safe_free_str(rec_struct_mangled)
         safe_free_str(rec_struct_name)
@@ -664,8 +663,9 @@ pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32
         // of bounds and crashes the compiler (regression: t_mathx bignum methods).
         // Every index into the type table is bounds-checked for the same reason.
         if sym.kind == SYM_FUNC and sym.type_id != TYPE_UNKNOWN and (sym.type_id as i64) < self.types.entries.len:
-            let sym_name = self.intern.get(sym.name_id)
-            if match_method_name(sym_name, field_name):
+            // PERF: zero-alloc name match (was intern.get + match_method_name + free
+            // per SYM_FUNC per call). sym_name was used only for this test.
+            if self.intern.name_matches_method(sym.name_id, field_name):
                 let f_entry = self.types.entries.data[sym.type_id]
                 if f_entry.kind == TYPE_KIND_FUNC and (f_entry.extra as i64) < self.types.funcs.len:
                     let fi = self.types.funcs.data[f_entry.extra]
@@ -679,9 +679,7 @@ pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32
                                 break
                         if fp == unwrapped_rec:
                             result = fi.ret
-                            safe_free_str(sym_name)
                             break
-            safe_free_str(sym_name)
         idx = idx + 1 as i64
     safe_free_str(field_name)
     return result
