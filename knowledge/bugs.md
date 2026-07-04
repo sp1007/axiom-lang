@@ -1405,4 +1405,14 @@ Ban đầu tưởng: `plain5` (`pub fn main()->i32: return 5`, KHÔNG `extern`) 
 
 **Kết quả (full compiler self-build -O1, native đã promote):** codegen **9560ms → 4452ms (~2.1×)**; select_inst regalloc-phase **2076ms → 689ms**. Fixpoint SHA=c5316008 + regression 93/93.
 
-**CÒN LẠI → PERF #3 (defer, focused effort riêng):** `regalloc_is_16byte` (x86_selector.ax:446-566, ~120 dòng) VẪN linear-scan, gọi per-interval trong spill-all fallback (x86_regalloc.ax:482) + per-spilled-operand trong insert_spill_code (861/904/931) = quadratic còn sót (~689ms select_inst). KHÓ hơn is_float: có **đệ quy** (COPY/MOVE→src1, dòng 515), **inner-scan thứ 2** (OP_DEREF chase src1, 546-552), và **control-flow-skip** (dòng 464 — bỏ qua inst dest==vreg nếu op là branch/store/…). Cách an toàn: wrapper mỏng giữ signature cũ (16 caller nguyên) + `regalloc_is_16byte_cached(...def_idx...)` mang toàn bộ body (đệ quy gọi _cached, def_idx null→linear fallback). def_idx first-ANY dùng chung được VÌ control-flow inst có dest==0 (PERF#2 fixpoint đã ngầm xác nhận). Cần fixpoint + regression riêng — KHÔNG ride-along.
+---
+
+## PERF #3 — `regalloc_is_16byte` linear-scan (spill-all + insert_spill_code) = O(V×N) ✅ ĐÃ FIX (cc9acf9)
+
+**Root cause:** giống PERF#2 nhưng cho `regalloc_is_16byte` (x86_selector.ax, ~120 dòng) — linear-scan `fn_ptr.insts` tìm def, gọi per-interval trong spill-all fallback (x86_regalloc.ax:482) + per-spilled-operand trong insert_spill_code (886/929/956). ~689ms residual của select_inst.
+
+**Fix (KEY INSIGHT — an toàn hơn PERF#2):** KHÔNG nhân đôi 120 dòng (có đệ quy COPY/MOVE→src1, inner-scan-2 OP_DEREF, control-flow-skip). Thay bằng **wrapper mỏng giữ signature cũ** (16 caller nguyên, truyền null→linear) + `regalloc_is_16byte_cached(...def_idx, def_size)` = **cùng body**, chỉ đổi 1 thứ: **vòng scan START ở `def_idx[vreg]`** thay vì 0. Mọi index [0, def_idx[vreg]) có dest≠vreg ⇒ bỏ chúng là **chứng minh được identical** — thân vòng (kể cả cf-skip) KHÔNG đụng, chỉ bỏ no-op prefix. `def_idx[vreg]==-1` ⇒ return false luôn. Đệ quy + inner-scan-2 cũng jump-start cùng def_idx. **Đây là pattern chuẩn để cache hàm scan-tìm-def phức tạp mà không rủi ro phân kỳ: đừng replicate logic — chỉ nhảy tới index bắt đầu.**
+
+**Kết quả:** codegen **4452ms → 2396ms** (riêng change này); **9560ms → 2396ms (~4×)** cộng dồn PERF#2. Fixpoint SHA=13ac5d05 + regression 93/93.
+
+**Tổng kết perf session (2026-07-04):** codegen native cho compiler tự-build **9560ms → 2396ms (~4×)**; cho chương trình float-heavy (t_mathx) **2074ms → 126ms (~16×)**. Bottleneck codegen từ ~80% xuống mức lành mạnh. Kỹ thuật xuyên suốt: `--time` → probe per-func/per-sub-phase (clock bracket) → phát hiện quadratic (in V/GS/spills/min-max) → memoize bằng def_idx (1 lượt O(N)) thay linear-scan-per-vreg. **Nguyên tắc: hàm scan-tìm-def gọi trong vòng O(V) = quadratic ẩn; luôn nghĩ tới def_idx.**
