@@ -49,7 +49,9 @@ rows=(
   "t_opmix|exit|13"
   "t_mul128|exit|7"
   "t_fcmp|exit|15"
-  "t_farg|exit|300"
+  # t_farg returns 300, but bash $? is 8-bit: 300 & 0xFF = 44. 65a17b8 set 300
+  # (verified under PowerShell, full 32-bit exit) which can never pass HERE.
+  "t_farg|exit|44"
   "t_fret|exit|75"
   "t_math|exit|127"
   "t_bignum|exit|63"

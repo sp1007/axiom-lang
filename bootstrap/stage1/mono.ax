@@ -298,7 +298,7 @@ pub fn mangle_name(self: ptr[Monomorphizer], orig_name: str, args: U32Vec) -> st
         mangled = std.string.concat("", orig_name)
     else:
         mangled = std.string.concat("_AX_std_", orig_name)
-        
+
     mut idx := 0 as i64
     while idx < args.len:
         let arg_type = args.data[idx]
@@ -307,6 +307,73 @@ pub fn mangle_name(self: ptr[Monomorphizer], orig_name: str, args: U32Vec) -> st
         mangled = std.string.concat(mangled, name_str)
         idx = idx + 1 as i64
     return mangled
+
+// BUG#61b: distinct generic FUNC templates sharing one name (overloads, e.g.
+// get[T](Vec[T], i64) -> Option[T] vs get[T](MutexGuard[T]) -> T) mangled to the
+// SAME instance name for equal type args (_AX_std_get__i32), so the second
+// overload's call site silently REUSED the first overload's instantiation —
+// wrong signature, wrong return type — and native method dispatch on that result
+// segfaulted (Vec[T].get(i).unwrap()). Discriminate the instance name with a
+// stable, source-derived tag: the base identifier of the template's FIRST param
+// type (the receiver for methods) — or of the return type for zero-param
+// templates — plus the declared param count. The tag is APPENDED so
+// air_builder's `_AX_std_<method>__` prefix matching still sees the method name.
+// Structs cannot be overloaded: non-FUNC templates get an empty tag (struct
+// instance names like Vec__i32 are matched by base name across the compiler).
+pub fn overload_tag(self: ptr[Monomorphizer], template_sym_id: u32) -> str:
+    if template_sym_id == 0 as u32 or (template_sym_id as i64) >= self.symtable.symbols.len:
+        return ""
+    let tsym = self.symtable.symbols.data[template_sym_id]
+    let decl = tsym.decl_node
+    if decl == 0 as u32 or decl == 0xffffffff as u32:
+        return ""
+    mut src_tree := self.tree
+    if (template_sym_id as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[template_sym_id]
+        if t != null as ptr[AstTree]:
+            src_tree = t
+    if (decl as i64) >= src_tree.nodes.len:
+        return ""
+    if src_tree.nodes.data[decl].kind != NODE_FUNC_DECL:
+        return ""
+    mut first_param_type := 0 as u32
+    mut ret_type_node := 0 as u32
+    mut param_count := 0 as u32
+    mut c := src_tree.nodes.data[decl].first_child
+    while c != 0 as u32:
+        let cn = src_tree.nodes.data[c]
+        if cn.kind == NODE_PARAM_DECL:
+            if first_param_type == 0 as u32:
+                first_param_type = cn.first_child
+            param_count = param_count + 1 as u32
+        elif cn.kind == NODE_TYPE_EXPR or cn.kind == NODE_GENERIC_TYPE:
+            if ret_type_node == 0 as u32:
+                ret_type_node = c
+        c = cn.next_sibling
+    mut base_node := first_param_type
+    if base_node == 0 as u32:
+        base_node = ret_type_node
+    // NOTE: intermediates below are not freed — u32_to_str(0) and node_text can
+    // return string LITERALS, and freeing a literal is fatal. mangle_name leaks
+    // its concat intermediates the same way.
+    let count_str = u32_to_str(param_count)
+    mut tag := std.string.concat("__o", count_str)
+    if base_node != 0 as u32:
+        // node_text of a type node yields its base identifier token (for
+        // NODE_GENERIC_TYPE like Vec[T] the token is the base ident `Vec`).
+        let base = self.node_text(src_tree, base_node)
+        tag = std.string.concat(tag, base)
+    return tag
+
+// mangle_name + overload_tag. Every site that computes an instance name for a
+// generic template (lookup or instantiation) must use THIS so lookups and
+// registrations agree on one name per template.
+pub fn mangle_name_ov(self: ptr[Monomorphizer], template_sym_id: u32, orig_name: str, args: U32Vec) -> str:
+    let base = self.mangle_name(orig_name, args)
+    let tag = self.overload_tag(template_sym_id)
+    if std.string.len(tag) == 0:
+        return base
+    return std.string.concat(base, tag)
 
 pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, args: U32Vec) -> u32:
     if (template_sym_id as i64) >= self.symtable.symbols.len:
@@ -349,7 +416,7 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
         cloned_child = cn.next_sibling
 
     let orig_name = self.pool.get(orig_sym.name_id)
-    let mangled = self.mangle_name(orig_name, args)
+    let mangled = self.mangle_name_ov(template_sym_id, orig_name, args)
     let mangled_id = self.pool.intern(mangled)
 
     mut struct_type_id := 0 as u32

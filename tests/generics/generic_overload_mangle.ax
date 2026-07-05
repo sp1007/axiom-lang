@@ -1,0 +1,43 @@
+// Regression (BUG#61b root cause, frontend): two GENERIC templates sharing one
+// name (overloads distinguished by receiver) used to monomorphise to the SAME
+// mangled instance name for equal type args (_AX_std_get__i32). The overload
+// instantiated FIRST won; every later same-name/same-args call site silently
+// REUSED it — wrong signature, wrong return type — and native method dispatch on
+// that result crashed (this is one layer of Vec[T].get(i).unwrap()).
+// Fix: mono.ax overload_tag — instance names carry a source-derived discriminator
+// (first-param base type + param count, or return base for 0-param templates),
+// e.g. _AX_std_get__i32__o1Boxy vs _AX_std_get__i32__o2Holder.
+struct Boxy[T]:
+    val: T
+
+struct Holder[T]:
+    val: T
+
+// overload 1: returns T (scalar) — instantiated FIRST
+pub fn get[T](self: Boxy[T]) -> T:
+    return self.val
+
+// overload 2: same name, returns Option[T]
+pub fn get[T](self: Holder[T], flag: i64) -> Option[T]:
+    if flag < 0:
+        return None
+    return Some(self.val)
+
+fn main() -> i32:
+    let b = Boxy[i32](val: 42)
+    let x = b.get()
+    if x == 42:
+        println("scalar-ok")
+    else:
+        println("scalar-wrong")
+    let h = Holder[i32](val: 7)
+    let o = h.get(0)
+    if o.is_some():
+        println("option-ok")
+    else:
+        println("option-wrong")
+    if o.unwrap() == 7:
+        println("unwrap-ok")
+    else:
+        println("unwrap-wrong")
+    return 0

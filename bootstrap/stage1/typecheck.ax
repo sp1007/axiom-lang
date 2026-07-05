@@ -1617,7 +1617,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         @free(inferred.data as ptr[u8])
                 else:
                     mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
-                    let mangled_name = mono.mangle_name(self.intern.get(self.symtable.symbols.data[template_sym_idx].name_id), inferred)
+                    let mangled_name = mono.mangle_name_ov(template_sym_idx, self.intern.get(self.symtable.symbols.data[template_sym_idx].name_id), inferred)
                     let mangled_id = self.intern.intern(mangled_name)
                     mut existing_sym_idx := self.symtable.resolve(mangled_id)
                     if existing_sym_idx == 0 as u32:
@@ -1993,7 +1993,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         else:
                             // Check if already instantiated
                             mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
-                            let mangled_name = mono.mangle_name(self.intern.get(sym.name_id), args)
+                            let mangled_name = mono.mangle_name_ov(sym_idx, self.intern.get(sym.name_id), args)
                             let mangled_id = self.intern.intern(mangled_name)
                             mut existing_sym_idx := self.symtable.resolve(mangled_id)
                             if existing_sym_idx == 0 as u32:
@@ -2328,7 +2328,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     result_type = self.types.register_generic_inst(sym.name_id, args)
                 else:
                     mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
-                    let mangled_name = mono.mangle_name(self.intern.get(sym.name_id), args)
+                    let mangled_name = mono.mangle_name_ov(sym_idx, self.intern.get(sym.name_id), args)
                     let mangled_id = self.intern.intern(mangled_name)
                     mut existing_type_id := 0 as u32
                     mut j_tt := 0 as i64

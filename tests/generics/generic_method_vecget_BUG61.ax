@@ -1,14 +1,19 @@
-// HARNESS: SKIP — KNOWN FAIL (BUG#61b, native backend). Tracks a crash.
+// HARNESS: SKIP — KNOWN FAIL (BUG#61b, native build path). Tracks a crash.
 //
-// Follow-up to BUG#61 (generic_option_method_BUG61.ax, fixed): a generic METHOD on a
-// generic TYPE that returns Option[T] still segfaults. `Vec[T].get(i)` returns
-// Option[T]; on native the call's result type resolves to `void` (dump-air shows the
-// copy typed t14 = void, not Option[i32]), so `.unwrap()` / `.is_some()` / `match`
-// on it dispatch on the wrong type and crash. This is why `v.get(i).unwrap()` and
-// `match v.get(i)` crash. Distinct from the generic-FUNCTION case (fixed): here the
-// generic method's Option[T] return is mis-monomorphised to void, needing a fix in
-// the generic-method instantiation / return-type substitution. The C backend is
-// correct. Remove SKIP when fixed.
+// RE-DIAGNOSED after the generic-overload mangling collision was fixed (overload_tag
+// in mono.ax): the remaining failure is NOT a mono/return-type bug. The native
+// `build` path bundles a HARDCODED stdlib list (concatenate_stdlib in main_air.ax:
+// result/alloc/scheduler/runtime/os/string/io) and STRIPS all imports, so
+// `import std.collections` is silently dropped — struct Vec and the get/push
+// templates DO NOT EXIST in the compiled unit. `Vec[i32].new()` still "works"
+// because `.new` on the names Vec/HashMap/HashSet/Option/Result is a typecheck
+// builtin (zero-init constructor), so `v` gets an EMPTY struct type; v.push/v.get
+// then resolve to nothing, air_builder falls back to field-access-as-call through
+// garbage, and the binary segfaults at the FIRST v.push — with no diagnostic at
+// compile time (accept-then-miscompile, the §8/BUG#53 class). Fix = bundle
+// std/collections.ax into concatenate_stdlib (or real import handling), plus a
+// diagnostic for unresolvable methods. The C backend path is correct. Remove SKIP
+// when the native build can actually compile std.collections programs.
 import std.collections
 
 fn main() -> i32:
