@@ -1,0 +1,28 @@
+// Regression (BUG#57, native backend): `match` on a builtin Result scrutinee.
+// Result is pointer-tagged: Ok = box with bit0 clear, Err = box|1, payload at
+// [box & ~1]. The match is classified by its arm names (Ok/Err) into a low-bit
+// dispatch, extracting the payload from the (masked) box pointer. See the
+// companion match_option_BUG57.ax and RFC 0012 for the full design.
+fn div(a: i32, b: i32) -> Result[i32, i32]:
+    if b == 0:
+        return Err(1)
+    return Ok(a / b)
+
+fn main() -> i32:
+    match div(20, 4):
+        Ok(v):
+            if v == 5:
+                println("ok-5")
+            else:
+                println("ok-wrong")
+        Err(e):
+            println("err-wrong")
+    match div(20, 0):
+        Ok(v):
+            println("ok-wrong2")
+        Err(e):
+            if e == 1:
+                println("err-1")
+            else:
+                println("err-wrong2")
+    return 0

@@ -302,6 +302,48 @@ pub fn register_sum_type(self: ptr[TypeTable], name_id: u32, variants: VariantIn
         extra: s_idx,
     ))
 
+// RFC 0012: Option[T] / Result[T,E] as a real type entry. Like a user sum
+// (kind 6) the VALUE is an 8-byte by-address tagged box pointer, and the 16 is
+// the box allocation size (holds up to a 16-byte str payload). Being kind 11/12
+// (aggregate) it is passed/returned as an 8-byte pointer exactly like a sum, so
+// the stdlib ABI (self: Option[..] read via `(&self)[0]`) is unchanged; the only
+// gain is that the register type is NO LONGER `str` (12), so EQ/COPY/MAKE_REF on
+// the box stop taking the string-by-address deref path and `match` can dispatch.
+// Option dedups on (kind, extra=inner). Result dedups on (kind, extra=ok, name_id=err).
+pub fn register_option(self: ptr[TypeTable], inner_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.entries.len:
+        let entry = self.entries.data[i]
+        if entry.kind == TYPE_KIND_OPTION and entry.extra == inner_id:
+            return i as u32
+        i = i + 1
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_OPTION,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: 0 as u32,
+        size: 16 as u32,
+        align: 8 as u32,
+        extra: inner_id,
+    ))
+
+pub fn register_result(self: ptr[TypeTable], ok_id: u32, err_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.entries.len:
+        let entry = self.entries.data[i]
+        if entry.kind == TYPE_KIND_RESULT and entry.extra == ok_id and entry.name_id == err_id:
+            return i as u32
+        i = i + 1
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_RESULT,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: err_id,
+        size: 16 as u32,
+        align: 8 as u32,
+        extra: ok_id,
+    ))
+
 pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
     (&self.structs).push(StructInfo(fields: fields))

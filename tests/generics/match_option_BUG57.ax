@@ -1,28 +1,39 @@
-// HARNESS: SKIP — KNOWN FAIL (BUG#57, native backend). Tracks a silent miscompile.
+// Regression (BUG#57, native backend): `match` on a builtin Option scrutinee.
+// Option is pointer-tagged (None = null, Some = box pointer, payload at [box+0]),
+// NOT the user-sum "tag@field0, payload@field1" box, so it needs a dedicated
+// null-test dispatch. Before the RFC 0012 fix, lower_match returned early for
+// Option/Result scrutinees and the match emitted no code — `match Some(42)`
+// silently returned whatever was left in the register (usually 0).
 //
-// `match` on a builtin Option/Result scrutinee (a bare `Some(x)`/`None`/`Ok`/`Err`,
-// TYPE_KIND_OPTION=11 / TYPE_KIND_RESULT=12) generates NO code on the native
-// backend: `lower_match` (air_builder.ax) only handles TYPE_KIND_SUM (user ADTs,
-// kind 6) and integer scrutinees, and returns early for kinds 11/12. The match
-// becomes a no-op, so the arm result is whatever value is left in the return
-// register — here `match Some(42)` returns 0 instead of 42.
-//
-// This is NOT the user-sum path (that works — cf. nested_sum_payload.ax). Option/
-// Result use a POINTER-tagged layout — None = null, Some = box pointer (payload at
-// [box+0]); Ok = even box, Err = box|1 — so they need their own null/low-bit tag
-// dispatch, not the user-sum "tag at field 0" logic. The C backend (bin/axc.exe)
-// compiles this correctly (returns 42). Pre-existing; found 2026-07-04 while
-// fixing BUG#54/55/56. Remove the SKIP when native gains Option/Result match.
-//
-// NOTE: `let x = Option.Some(7)` (qualified) happens to return 7, but only because
-// the constructed value is coincidentally left in the return register — the match
-// still emits no dispatch. Do not mistake that for working.
-fn make() -> Option[i32]:
-    return Some(42)
+// The fix lives entirely in the backend (air_builder): the Some/None constructor
+// boxes are typed with a real Option type (kind 11) instead of `str`, and the
+// match is classified by its arm names (Some/None) into a pointer-tagged dispatch.
+// No type-checker/ABI change, so the stdlib's generic Option methods are untouched.
+fn make(b: bool) -> Option[i32]:
+    if b:
+        return Some(7)
+    return None
 
 fn main() -> i32:
-    match make():
+    // bare constructor scrutinee
+    match Some(42):
         Some(v):
-            return v
+            println("some-42")
         None:
-            return 0
+            println("none-bare")
+    // function-returned Some
+    match make(true):
+        Some(v):
+            if v == 7:
+                println("some-7")
+            else:
+                println("some-wrong")
+        None:
+            println("none-wrong")
+    // function-returned None
+    match make(false):
+        Some(v):
+            println("some-wrong2")
+        None:
+            println("none-ok")
+    return 0
