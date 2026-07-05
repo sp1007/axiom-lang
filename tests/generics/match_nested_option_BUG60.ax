@@ -1,15 +1,17 @@
-// HARNESS: SKIP — KNOWN FAIL (BUG#60, native backend). Tracks a miscompile.
+// Regression (BUG#60 FIXED, native backend). `match` on a nested
+// Option[Option[i32]]. `Some(Some(42))` boxes the inner Option (an 8-byte box
+// pointer) as the outer payload; the outer arm `Some(inner)` binds it via OP_DEREF
+// typed Option (entry.size 16) and the inner arm `Some(x)` should yield 42.
 //
-// `match` on a nested Option[Option[i32]] returns garbage on the native backend.
-// `Some(Some(42))` boxes the inner Option (an 8-byte box pointer) as the outer
-// payload; the outer arm `Some(inner)` extracts it and the inner arm `Some(x)`
-// should then yield 42. The generated AIR looks correct — `%5 = deref outer` gives
-// the inner box pointer, `%8 = deref inner` gives 42 — so the fault is in the x86
-// codegen/regalloc of the double OP_DEREF (or the 48-bit pointer mask), not the
-// lowering. Single-level Option/Result match works (match_option_BUG57.ax); only a
-// nested Option payload that is itself matched misbehaves. PRE-EXISTING (surfaced
-// once BUG#57 enabled Option match at all). Needs a dump-air + objdump pass on the
-// nested-deref codegen, not a guess. Remove SKIP when fixed.
+// Root cause (x86_selector.ax regalloc_is_16byte, OP_DEREF case): a deref whose
+// result type is a size-16 tagged aggregate (Option/Result/sum) was reported
+// 16-byte-INLINE, missing the BUG#56 `not type_is_aggregate` exclusion the COPY /
+// CALL / else cases already had. So `inner` (an 8-byte box pointer) got a 16-byte
+// inline home; every use — the inner match's discriminant test and its payload
+// OP_DEREF — spill-reloaded with LEA(&slot) instead of MOV(slot→reg), reading the
+// slot ADDRESS as the box, so the double-deref returned garbage (exit 8 not 42).
+// Single-level Option/Result match always worked (match_option_BUG57.ax); only a
+// nested Option payload matched again tripped the missing guard.
 fn wrap(b: bool) -> Option[Option[i32]]:
     if b:
         return Some(Some(42))
@@ -20,9 +22,12 @@ fn main() -> i32:
         Some(inner):
             match inner:
                 Some(x):
-                    return x
+                    if x == 42:
+                        println("nested-42")
+                    else:
+                        println("nested-wrong")
                 None:
-                    return 1
+                    println("inner-none-wrong")
         None:
-            return 2
-    return 99
+            println("outer-none-wrong")
+    return 0

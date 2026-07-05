@@ -17237,8 +17237,20 @@ pub fn regalloc_is_16byte_cached(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[Typ
                     // which may be unset in some type tables.
                     if type_id == 12 as u32:
                         return true
+                    // BUG#60: a deref that yields a tagged pointer-repr aggregate
+                    // (sum/option/result, and struct/array/tuple) has entry.size 16
+                    // but the vreg holds the 8-byte BOX POINTER, not 16 inline bytes.
+                    // This is exactly a nested `Some(inner)` where inner is itself an
+                    // Option: the outer match binds `inner` via OP_DEREF typed Option
+                    // (size 16). Without the aggregate exclusion (mirroring the COPY /
+                    // CALL / else cases) it reported 16-byte-inline, so every later use
+                    // of `inner` â€” the inner match's discriminant test and its payload
+                    // OP_DEREF â€” spill-reloaded with LEA(&slot) instead of MOV(slotâ†’reg)
+                    // and read the slot ADDRESS as the box (double-deref returned garbage,
+                    // exit 8 not 42). Only genuine str (handled above / ptr[str] below)
+                    // is truly inline-16.
                     if type_id < table.entries.len as u32:
-                        if table.entries.data[type_id].size == 16 as u32:
+                        if table.entries.data[type_id].size == 16 as u32 and not type_is_aggregate(table, type_id):
                             return true
                     mut src_ty := 0 as u32
                     if inst.src1 >= 1 as u32 and inst.src1 <= fn_ptr.params.len as u32:
