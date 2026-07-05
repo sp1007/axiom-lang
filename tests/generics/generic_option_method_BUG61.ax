@@ -1,0 +1,31 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#61, native backend). Tracks a crash.
+//
+// Calling a stdlib method (is_some/unwrap/...) on an Option returned by a GENERIC
+// function segfaults on the native backend. A NON-generic function's Option works
+// (see below), and `match` on the SAME generic-returned Option works, so the bug
+// is specific to the stdlib method-dispatch/self-passing path when the Option came
+// from a monomorphised generic. This is why `Vec[T].get(i).unwrap()` (get[T] is
+// generic, returns Option[T]) crashes. PRE-EXISTING (the pre-BUG#57 compiler also
+// crashes — not caused by the Option/Result match work). The C backend is correct.
+//
+// Minimal isolation (all native):
+//   fn getopt(x: i32) -> Option[i32]: return Some(x)   // NON-generic
+//   let o = getopt(7); o.unwrap()                      // => 7  (works)
+//   fn myget[T](x: T) -> Option[T]: return Some(x)     // GENERIC
+//   let o = myget(7); o.unwrap()                       // => CRASH
+//   let o = myget(7); o.is_some()                      // => CRASH
+//   match myget(7) { Some(v): .. }                     // => 7  (works; my match dispatch)
+//   let o = myget(7); <use o without a method>         // => works
+//
+// So: the generic getter's box is fine (match reads it); only the stdlib method
+// path breaks on it. AIR for the caller is byte-identical to the non-generic case;
+// the divergence is the box's Option type-id (generic-inner vs concrete i32-inner),
+// suggesting the payload type isn't fully monomorphised on the Option the method
+// receives. Needs a dedicated generic-monomorphisation + method-dispatch pass
+// (dump-air + objdump), NOT a guess. Remove SKIP when fixed.
+fn myget[T](x: T) -> Option[T]:
+    return Some(x)
+
+fn main() -> i32:
+    let o = myget(7)
+    return o.unwrap()

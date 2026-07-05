@@ -1,0 +1,28 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#60, native backend). Tracks a miscompile.
+//
+// `match` on a nested Option[Option[i32]] returns garbage on the native backend.
+// `Some(Some(42))` boxes the inner Option (an 8-byte box pointer) as the outer
+// payload; the outer arm `Some(inner)` extracts it and the inner arm `Some(x)`
+// should then yield 42. The generated AIR looks correct — `%5 = deref outer` gives
+// the inner box pointer, `%8 = deref inner` gives 42 — so the fault is in the x86
+// codegen/regalloc of the double OP_DEREF (or the 48-bit pointer mask), not the
+// lowering. Single-level Option/Result match works (match_option_BUG57.ax); only a
+// nested Option payload that is itself matched misbehaves. PRE-EXISTING (surfaced
+// once BUG#57 enabled Option match at all). Needs a dump-air + objdump pass on the
+// nested-deref codegen, not a guess. Remove SKIP when fixed.
+fn wrap(b: bool) -> Option[Option[i32]]:
+    if b:
+        return Some(Some(42))
+    return None
+
+fn main() -> i32:
+    match wrap(true):
+        Some(inner):
+            match inner:
+                Some(x):
+                    return x
+                None:
+                    return 1
+        None:
+            return 2
+    return 99
