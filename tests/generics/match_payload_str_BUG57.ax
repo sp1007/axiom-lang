@@ -1,0 +1,44 @@
+// Regression (BUG#57 follow-up): Option/Result match with a STR payload. A str is
+// a 16-byte {ptr,len} by-address value stored inline in the box, so the match arm
+// must extract it at full width (via OP_DEREF, payload type recovered from the
+// scrutinee sum's variant info) — an 8-byte load truncates it to an empty string.
+// Also covers a struct payload (8-byte heap pointer) to keep both widths tested.
+struct Point:
+    x: i32
+    y: i32
+
+fn pick(b: bool) -> Option[str]:
+    if b:
+        return Some("hello")
+    return None
+
+fn parse(b: bool) -> Result[i32, str]:
+    if b:
+        return Ok(42)
+    return Err("bad input")
+
+fn mk(b: bool) -> Option[Point]:
+    if b:
+        return Some(Point(x: 3, y: 4))
+    return None
+
+fn main() -> i32:
+    match pick(true):
+        Some(s):
+            println(s)
+        None:
+            println("none")
+    match parse(false):
+        Ok(v):
+            println("ok")
+        Err(e):
+            println(e)
+    match mk(true):
+        Some(p):
+            if p.x + p.y == 7:
+                println("point-ok")
+            else:
+                println("point-wrong")
+        None:
+            println("point-none")
+    return 0

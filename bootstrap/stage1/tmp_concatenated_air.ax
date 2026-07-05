@@ -11438,6 +11438,13 @@ pub fn match_arms_tagged_kind(mut self: ptr[FuncLowering], scrutinee_idx: u32) -
 // variants are not registered in the sum table and cross-module name_ids are
 // unreliable here (see the constructor comment). is_res selects Result vs Option.
 pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut_reg: u32, is_res: bool):
+    // The scrutinee's static type is the monomorphised std Option/Result sum
+    // (`type Option[T] = Some(T)|None`), so find_variant_info can recover each
+    // arm's payload TYPE â€” needed to load the payload at the right width (a str
+    // payload is a 16-byte by-address value, everything else an 8-byte slot).
+    mut scrut_type := 0 as u32
+    if self.mb.node_types != null as ptr[u32]:
+        scrut_type = self.mb.node_types[scrutinee_idx as i64]
     let merge_block = self.fb.new_block()
     mut arm := self.mb.tree.nodes.data[scrutinee_idx as i64].next_sibling
     mut done := false
@@ -11459,6 +11466,7 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
         mut is_default := false
         mut bind_sym := 0 as u32          // catch-all binding of the whole scrutinee
         mut payload_bind_sym := 0 as u32  // variant payload binding
+        let pat_variant_sym = pat_node.payload  // variant symbol (for payload type lookup)
         if pat_node.kind == NODE_WILDCARD_PAT:
             is_default = true
         else:
@@ -11535,16 +11543,26 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
                     let cleared = self.fb.fresh_reg()
                     self.fb.emit(AirInst(opcode: OP_AND, type_id: 4 as u32, dest: cleared, src1: scrut_reg, src2: mask_reg))
                     box_reg = cleared
-                // Payload load width comes from the binding symbol's type (set by
-                // typecheck's monomorphisation of the arm). Fall back to i64 (an
-                // 8-byte load) for scalars/pointers when it is not available.
-                mut pl_type := 4 as u32
-                if (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
+                // Recover the payload TYPE: prefer the scrutinee sum's variant info
+                // (gives str/struct/scalar exactly), then the binding symbol's type,
+                // then i64. Extract via OP_DEREF (not a raw 8-byte load) so a str
+                // payload gets its full 16-byte by-address value and a struct/scalar
+                // gets its correct width â€” mirroring how `.*`/GET_FIELD read a payload.
+                mut pl_type := 0 as u32
+                if pat_variant_sym != 0 as u32 and (pat_variant_sym as i64) < self.mb.symbols.symbols.len:
+                    let vname = self.mb.symbols.symbols.data[pat_variant_sym as i64].name_id
+                    mut vt := -1 as i64
+                    mut vpl := 0 as u32
+                    if self.find_variant_info(scrut_type, vname, &vt, &vpl):
+                        pl_type = vpl
+                if pl_type == 0 as u32 and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
                     let bt = self.mb.symbols.symbols.data[payload_bind_sym as i64].type_id
                     if bt != 0 as u32:
                         pl_type = bt
+                if pl_type == 0 as u32:
+                    pl_type = 4 as u32
                 let pl_reg = self.fb.fresh_reg()
-                self.fb.emit(AirInst(opcode: OP_LOAD, type_id: pl_type, dest: pl_reg, src1: box_reg, src2: 0 as u32))
+                self.fb.emit(AirInst(opcode: OP_DEREF, type_id: pl_type, dest: pl_reg, src1: box_reg, src2: 0 as u32))
                 self.locals.local_map_put(payload_bind_sym, pl_reg)
             if body != 0 as u32:
                 let bn = self.mb.tree.nodes.data[body as i64]
