@@ -1,19 +1,19 @@
-// HARNESS: SKIP — KNOWN FAIL (BUG#61b, native build path). Tracks a crash.
+// Regression (BUG#61b, native build path): `Vec[T].get(i)` — a generic METHOD on a
+// generic TYPE returning Option[T] — segfaulted natively. TWO stacked root causes:
 //
-// RE-DIAGNOSED after the generic-overload mangling collision was fixed (overload_tag
-// in mono.ax): the remaining failure is NOT a mono/return-type bug. The native
-// `build` path bundles a HARDCODED stdlib list (concatenate_stdlib in main_air.ax:
-// result/alloc/scheduler/runtime/os/string/io) and STRIPS all imports, so
-// `import std.collections` is silently dropped — struct Vec and the get/push
-// templates DO NOT EXIST in the compiled unit. `Vec[i32].new()` still "works"
-// because `.new` on the names Vec/HashMap/HashSet/Option/Result is a typecheck
-// builtin (zero-init constructor), so `v` gets an EMPTY struct type; v.push/v.get
-// then resolve to nothing, air_builder falls back to field-access-as-call through
-// garbage, and the binary segfaults at the FIRST v.push — with no diagnostic at
-// compile time (accept-then-miscompile, the §8/BUG#53 class). Fix = bundle
-// std/collections.ax into concatenate_stdlib (or real import handling), plus a
-// diagnostic for unresolvable methods. The C backend path is correct. Remove SKIP
-// when the native build can actually compile std.collections programs.
+// 1. Generic-overload mangling collision (fixed 1cc867b): all same-name generic
+//    templates mangled to one instance name for equal type args, so a call site
+//    could silently reuse a DIFFERENT overload's instantiation (wrong signature/
+//    return type). See generic_overload_mangle.ax.
+// 2. std/collections.ax was NOT in the native build's hardcoded stdlib bundle
+//    (concatenate_stdlib in main_air.ax) — `import std.collections` was silently
+//    stripped, struct Vec and the get/push templates didn't exist in the unit, and
+//    `v.push` dispatched through garbage with no compile-time diagnostic.
+//    Fixed by bundling collections.ax like the other std files.
+//
+// Still open (BUG#62): HashMap natively hits the explicit-generic-instantiation
+// call form `hash_key[K](key)` which resolves to nothing and links against a
+// phantom `ax_hash_key` — same class as `new[i32]()`. Vec is unaffected.
 import std.collections
 
 fn main() -> i32:
@@ -22,5 +22,21 @@ fn main() -> i32:
     v.push(9)
     let o = v.get(0)
     if o.is_some():
-        return o.unwrap()
-    return 100
+        println("is-some-ok")
+    else:
+        println("is-some-wrong")
+    if o.unwrap() == 3:
+        println("unwrap-ok")
+    else:
+        println("unwrap-wrong")
+    let o2 = v.get(1)
+    if o2.unwrap() == 9:
+        println("unwrap2-ok")
+    else:
+        println("unwrap2-wrong")
+    let o3 = v.get(5)
+    if o3.is_some():
+        println("oob-wrong")
+    else:
+        println("oob-ok")
+    return 0

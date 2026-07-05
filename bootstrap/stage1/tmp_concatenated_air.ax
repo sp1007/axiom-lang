@@ -27199,7 +27199,14 @@ fn concatenate_stdlib(src: str) -> str:
     ax_puts_local("[Debug] Reading io.ax...")
     fflush(null as ptr[void])
     let raw_io = read_file_content("std/io.ax")
-    
+    // BUG#61b: std/collections.ax (Vec/HashMap/HashSet) was NOT in this bundle, so
+    // `import std.collections` was silently dropped on the native build path and
+    // Vec methods dispatched into garbage at runtime. It only needs std.result
+    // (bundled above) + builtins, so bundle it like the rest.
+    ax_puts_local("[Debug] Reading collections.ax...")
+    fflush(null as ptr[void])
+    let raw_coll = read_file_content("std/collections.ax")
+
     ax_puts_local("[Debug] Stripping imports from result.ax...")
     let res_src_raw = strip_imports(raw_res)
     let res_src = strip_package_prefixes(res_src_raw)
@@ -27234,6 +27241,11 @@ fn concatenate_stdlib(src: str) -> str:
     let io_src_raw = strip_imports(raw_io)
     let io_src = strip_package_prefixes(io_src_raw)
 
+    ax_puts_local("[Debug] Stripping imports from collections.ax...")
+    fflush(null as ptr[void])
+    let coll_src_raw = strip_imports(raw_coll)
+    let coll_src = strip_package_prefixes(coll_src_raw)
+
     ax_puts_local("[Debug] Stripping imports from src...")
     fflush(null as ptr[void])
     let clean_src_raw = strip_imports(src)
@@ -27249,8 +27261,9 @@ fn concatenate_stdlib(src: str) -> str:
     let len_os = std.string.len(os_src)
     let len_str = std.string.len(str_src)
     let len_io = std.string.len(io_src)
-    
-    let total_len = len_res + 1 as i64 + len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_str + 1 as i64 + len_io + 1 as i64 + len_src
+    let len_coll = std.string.len(coll_src)
+
+    let total_len = len_res + 1 as i64 + len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_str + 1 as i64 + len_io + 1 as i64 + len_coll + 1 as i64 + len_src
     ax_printf_local("[Debug] len_res=%d, len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_str=%d, len_io=%d, len_src=%d, ", len_res, len_alloc, len_sched, len_rt, len_os, len_str, len_io, len_src)
     ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
@@ -27283,7 +27296,11 @@ fn concatenate_stdlib(src: str) -> str:
     @memcpy(((new_buf as i64) + off_io) as ptr[u8], io_src as ptr[u8], len_io)
     new_buf[off_io + len_io] = 10 as u8
 
-    let off_src = off_io + len_io + 1 as i64
+    let off_coll = off_io + len_io + 1 as i64
+    @memcpy(((new_buf as i64) + off_coll) as ptr[u8], coll_src as ptr[u8], len_coll)
+    new_buf[off_coll + len_coll] = 10 as u8
+
+    let off_src = off_coll + len_coll + 1 as i64
     @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
     new_buf[total_len] = 0 as u8
 
