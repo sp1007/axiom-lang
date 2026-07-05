@@ -1,0 +1,28 @@
+// Regression (BUG#66): HashMap[K, i64] insert/get silently returned 0.
+// Root cause: infer_generic_type_args (typecheck.ax) let a later param
+// position (`value: V` bound from an untyped int-literal arg, default i32)
+// clobber an earlier, structurally-correct binding (`self: M[K,V]` bound
+// from the receiver's real GENERIC_INST type args) for the SAME generic
+// param. Fix: first-successful-binding wins (matches self/receiver first).
+import std.collections
+
+fn main() -> i32:
+    mut m = HashMap[i64, i64].new()
+    m.insert(1, 100)
+    let a = m.get(1)
+    if not a.is_some() or a.unwrap() != 100 as i64:
+        return 1
+
+    mut m2 = HashMap[str, i64].new()
+    m2.insert("alpha", 200)
+    let b = m2.get("alpha")
+    if not b.is_some() or b.unwrap() != 200 as i64:
+        return 2
+
+    mut m3 = HashMap[i64, f64].new()
+    m3.insert(1, 3.5)
+    let c = m3.get(1)
+    if not c.is_some() or c.unwrap() != 3.5:
+        return 3
+
+    return 42
