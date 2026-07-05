@@ -1,0 +1,37 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#64, native backend). Tracks a miscompile.
+//
+// A Vec (or any collection) element that is an aggregate LARGER than 8 bytes is
+// returned corrupt from `.get()` → `Some(elem)` → `.unwrap()`. The scalar/8-byte
+// cases work, so this surfaced only with wider elements:
+//   - Vec[P8]  (an 8-byte struct)  -> correct
+//   - Vec[Big] (16-byte struct)    -> garbage value (no crash)
+//   - Vec[Vec[i32]] (24-byte Vec)  -> SEGFAULT on the first field/method of the
+//                                     unwrapped inner value
+//
+// Diagnosis (not fully fixed): Vec stores aggregate elements INLINE (OP_STORE /
+// OP_SET_INDEX block-copies `size` bytes at stride `size`; OP_INDEX returns the
+// element ADDRESS base+i*size). That part is self-consistent. The corruption is in
+// the `Some(self.data[index])` round-trip: boxing an >8-byte aggregate payload into
+// an Option and extracting it again with `.unwrap()` does not preserve the value for
+// size > 8 (the 8-byte cases alias correctly by luck). Option[T] built directly from
+// a local aggregate (`Some(a)` then `match`) DOES work (so the Option payload path is
+// fine in isolation) — the fault appears only when the payload is the ADDRESS of an
+// inline Vec element. Needs a design pass on the aggregate-through-Option convention
+// for values wider than 8 bytes (block-copy vs by-reference), plus a fixpoint gate.
+// Remove SKIP when fixed.
+import std.collections
+
+struct Big:
+    a: i32
+    b: i32
+    c: i32
+    d: i32
+
+fn main() -> i32:
+    mut v = Vec[Big].new()
+    v.push(Big(a: 10, b: 12, c: 20, d: 0))
+    let r = v.get(0)
+    if r.is_some():
+        let p = r.unwrap()
+        return p.a + p.b + p.c + p.d   // want 42
+    return 1
