@@ -1,0 +1,25 @@
+// Regression (BUG#62, native): explicit generic instantiation `f[T](args)` must
+// resolve to the monomorphised instance, not emit a phantom `ax_<template>` extern
+// (link failure) or an indirect call through garbage. The callee is a NODE_INDEX_EXPR
+// / NODE_GENERIC_TYPE whose payload typecheck stamps with the instance FUNC symbol;
+// air_builder now lowers that as a direct call (see lower_call_expr). This is the
+// form HashMap's `hash_key[K](key)` / `new[T]()` internals use.
+
+fn identity[T](x: T) -> T:
+    return x
+
+fn add_one[T](x: T) -> T:
+    return x + 1
+
+fn main() -> i32:
+    let a = identity[i32](42)
+    let b = add_one[i32](9)
+    if a == 42:
+        println("identity-ok")
+    else:
+        println("identity-wrong")
+    if b == 10:
+        println("addone-ok")
+    else:
+        println("addone-wrong")
+    return 0

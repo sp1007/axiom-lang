@@ -1,0 +1,30 @@
+// Regression (BUG#62 + BUG#63, native): HashMap end-to-end. Exercises
+//   - explicit generic instantiation `HashMap[str,i32].new()` / internal `hash_key[K]`
+//     (BUG#62: explicit `f[T](args)` must resolve to the real instance, not a phantom
+//      extern), and
+//   - generic methods invoked on generic-typed values inside HashMap's own generic
+//     bodies (BUG#63).
+// Before these fixes HashMap linked against `ax_new_hashmap`/`ax_hash_key` or
+// segfaulted at runtime. `import std.collections` is bundled into the native stdlib.
+import std.collections
+
+fn main() -> i32:
+    mut m = HashMap[str, i32].new()
+    m.insert("alpha", 10)
+    m.insert("beta", 32)
+    let a = m.get("alpha")
+    if a.is_some() and a.unwrap() == 10:
+        println("alpha-ok")
+    else:
+        println("alpha-wrong")
+    let b = m.get("beta")
+    if b.is_some() and b.unwrap() == 32:
+        println("beta-ok")
+    else:
+        println("beta-wrong")
+    let miss = m.get("gamma")
+    if miss.is_some():
+        println("miss-wrong")
+    else:
+        println("miss-ok")
+    return 0

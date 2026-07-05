@@ -1,0 +1,43 @@
+// Regression (BUG#63, native build path): a GENERIC method invoked on a
+// generic-typed value INSIDE a GENERIC function body used to segfault.
+//
+// Root cause (mono.ax substitute_type_params): when typecheck dispatches a method
+// `recv.m()` it records the resolved method SYMBOL in the field-expr payload and
+// sets flag 2048. Monomorphisation clears flag 2048 on every cloned node but used
+// to copy that stale symbol payload verbatim — so the clone's field-expr held
+// (payload = method symbol, flag 2048 CLEARED). The clone's typecheck then misread
+// that symbol id as a field NAME id, resolve_method_sym failed, and the method call
+// silently degraded to a plain `getfld` + indirect call through garbage.
+// Fix: reset a resolved method/variant field-expr to its field NAME id when cloning,
+// so the clone re-resolves (and re-instantiates) the method against the CONCRETE
+// receiver type. This unblocked HashMap/HashSet natively (their internals call
+// generic methods on generic-typed values inside generic bodies).
+struct Inner[K, V]:
+    a: K
+    b: V
+
+pub fn geta[K, V](self: Inner[K, V]) -> K:
+    return self.a
+
+pub fn getb[K, V](self: Inner[K, V]) -> V:
+    return self.b
+
+// generic body: method calls on a value whose type derives from the type param
+fn first[T](x: Inner[T, i64]) -> T:
+    return x.geta()
+
+fn second[T](x: Inner[i64, T]) -> T:
+    return x.getb()
+
+fn main() -> i32:
+    let p = Inner[i32, i64](a: 42, b: 100)
+    if first[i32](p) == 42:
+        println("first-ok")
+    else:
+        println("first-wrong")
+    let q = Inner[i64, i32](a: 7, b: 99)
+    if second[i32](q) == 99:
+        println("second-ok")
+    else:
+        println("second-wrong")
+    return 0

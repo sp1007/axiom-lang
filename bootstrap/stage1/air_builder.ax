@@ -1546,6 +1546,18 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         elif callee_node.kind == NODE_FIELD_EXPR and (callee_node.flags & 2048 as u16) != 0 as u16:
             callee_reg = 0 as u32
             type_id = callee_node.payload as u32
+        elif (callee_node.kind == NODE_INDEX_EXPR or callee_node.kind == NODE_GENERIC_TYPE) and callee_node.payload != 0 as u32 and (callee_node.payload as i64) < self.mb.symbols.symbols.len and self.mb.symbols.symbols.data[callee_node.payload as i64].kind == SYM_FUNC:
+            // BUG#62: explicit generic instantiation `f[T](args)` (e.g. hash_key[K](key)
+            // in a mono'd HashMap method, or new[i32]()). Typecheck's NODE_INDEX_EXPR
+            // path instantiates the template and stamps the node payload with the
+            // instance FUNC symbol; without this branch the callee fell into
+            // lower_expr(INDEX_EXPR) — an ARRAY INDEX of the template symbol — and
+            // the backends emitted a phantom `ax_<template>` extern (link failure)
+            // or an indirect call through garbage. Guarded on SYM_FUNC so struct
+            // instantiations (SYM_STRUCT/SYM_TYPE_ALIAS payloads) and plain indexing
+            // (payload 0) are untouched. Direct call, same convention as above.
+            callee_reg = 0 as u32
+            type_id = callee_node.payload as u32
         else:
             callee_reg = self.lower_expr(child)
             if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:

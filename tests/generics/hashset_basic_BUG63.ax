@@ -1,0 +1,24 @@
+// Regression (BUG#62 + BUG#63, native): HashSet end-to-end. HashSet was the last
+// collection still crashing natively — its insert/contains dispatch generic methods
+// on generic-typed values inside generic bodies (BUG#63) on top of the explicit
+// `hash_key[K]` instantiation (BUG#62). `import std.collections` is bundled.
+import std.collections
+
+fn main() -> i32:
+    mut s = HashSet[i32].new()
+    s.insert(7)
+    s.insert(35)
+    s.insert(7)
+    if s.contains(7):
+        println("has-7")
+    else:
+        println("missing-7")
+    if s.contains(35):
+        println("has-35")
+    else:
+        println("missing-35")
+    if s.contains(99):
+        println("has-99-wrong")
+    else:
+        println("no-99-ok")
+    return 0

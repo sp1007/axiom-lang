@@ -167,7 +167,24 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
             else:
                 node.payload = name_id
     elif kind == NODE_FIELD_EXPR:
-        node.payload = orig_node.payload
+        // BUG#63: a resolved method/variant field-expr in the template carries the
+        // resolved SYMBOL in payload with flag 2048 set (typecheck sets both when it
+        // dispatches `recv.method`). substitute_type_params clears flag 2048 (line 75)
+        // but used to copy the stale symbol payload verbatim — leaving the clone with
+        // (payload = template method symbol, flag 2048 CLEARED). The clone's typecheck
+        // then MISREADS that symbol id as a field NAME id, resolve_method_sym fails, and
+        // the method call silently degrades to a plain `getfld` + indirect call → segfault
+        // (a generic method invoked on a generic-typed value inside a generic body, e.g.
+        // Vec/HashMap internals). The clone's receiver type is CONCRETE (vs the template's
+        // generic type), so it must RE-RESOLVE the method fresh: reset the payload to the
+        // field NAME id. Modules (SYM_MODULE) keep their payload — the name resolver
+        // re-fixes module field-exprs on the clone; only method/variant dispatch is reset.
+        mut fe_payload := orig_node.payload
+        if (orig_node.flags & 2048 as u16) != 0 as u16 and orig_node.payload != 0 as u32 and (orig_node.payload as i64) < self.symtable.symbols.len:
+            let rsym = self.symtable.symbols.data[orig_node.payload as i64]
+            if rsym.kind == 1 as u8 or rsym.kind == 5 as u8:  // SYM_FUNC / SYM_VARIANT
+                fe_payload = rsym.name_id
+        node.payload = fe_payload
     elif (kind == NODE_INT_LIT or kind == NODE_FLOAT_LIT or kind == NODE_STRING_LIT or
           kind == NODE_CHAR_LIT or kind == NODE_BOOL_LIT or kind == NODE_NIL_LIT):
         node.payload = orig_node.payload
@@ -386,34 +403,13 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
 
     // Find the correct source AstTree for the generic template
     mut src_tree := self.tree
-    mut t_is_null := true
     if (template_sym_id as i64) < self.symtable.symbol_trees.len:
         let t = self.symtable.symbol_trees.data[template_sym_id]
         if t != null as ptr[AstTree]:
             src_tree = t
-            t_is_null = false
-
-    let orig_name_dbg = self.pool.get(orig_sym.name_id)
-    ax_printf_local("[MONO-DEBUG] Instantiating template: %s template_sym_id=%d t_is_null=%d\n", get_str_ptr(orig_name_dbg) as i64, template_sym_id as i64, t_is_null as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    
-    // Print children of orig_sym's decl_node in src_tree
-    mut orig_child := src_tree.nodes.data[node_idx].first_child
-    mut child_count := 0 as i64
-    while orig_child != 0 as u32:
-        let cn = src_tree.nodes.data[orig_child as i64]
-        ax_printf_local("  [MONO-DEBUG-CHILD] orig child idx=%d kind=%d\n", orig_child as i64, cn.kind as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        orig_child = cn.next_sibling
-        child_count = child_count + 1 as i64
 
     // 1. Clone generic AST subtree from the correct source tree
     let cloned_root = self.tree.clone_subtree_from(src_tree, node_idx)
-
-    // Print children of cloned_root
-    mut cloned_child := self.tree.nodes.data[cloned_root].first_child
-    while cloned_child != 0 as u32:
-        let cn = self.tree.nodes.data[cloned_child as i64]
-        ax_printf_local("  [MONO-DEBUG-CLONED-CHILD] cloned child idx=%d kind=%d\n", cloned_child as i64, cn.kind as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        cloned_child = cn.next_sibling
 
     let orig_name = self.pool.get(orig_sym.name_id)
     let mangled = self.mangle_name_ov(template_sym_id, orig_name, args)
