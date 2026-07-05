@@ -5638,6 +5638,7 @@ pub struct TypeChecker:
     node_types_cap: i64
     current_return: u32
     current_match_scrutinee: u32
+    pub diags_count: i64
 
 pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: ptr[SymbolTable], types: ptr[TypeTable]) -> ptr[TypeChecker]:
     let node_count = tree.nodes.len
@@ -5658,6 +5659,7 @@ pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: p
     tc.node_types_cap = initial_cap
     tc.current_return = 0 as u32
     tc.current_match_scrutinee = 0 as u32
+    tc.diags_count = 0 as i64
     return tc
 
 pub fn is_generic(self: ptr[TypeChecker], type_id: u32) -> bool:
@@ -7242,6 +7244,25 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     result_type = callee_type
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
+                elif self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR:
+                    // Diagnostic (was silent accept-then-miscompile, same class as
+                    // BUG#53): `recv.name(...)` where `name` resolved to a genuine
+                    // DATA FIELD (a concrete, non-callable type â€” not FUNC, and not a
+                    // STRUCT/SUM/GENERIC_INST/OPTION/RESULT constructor-call), because
+                    // no method named `name` exists on recv's type. e.g. `v.len()` on
+                    // a Vec, which has a `len: i64` FIELD but no `len()` method (the
+                    // correct call is the field `v.len`, no parens). Previously this
+                    // left result_type UNKNOWN and air_builder's lower_call_expr fell
+                    // back to `getfld` + INDIRECT CALL through the field's scalar
+                    // value â€” segfault or a jump to a garbage address, with no
+                    // compile-time signal. Scoped to NODE_FIELD_EXPR callees only, so
+                    // qualified constructor calls (`Mod.Struct(...)`, `Enum.Variant(x)`
+                    // â€” also FIELD_EXPR callees, but those resolve to STRUCT/SUM above
+                    // and never reach this branch) are unaffected.
+                    let fname = self.intern.get(self.tree.nodes.data[callee].payload)
+                    ax_printf_local("error: '%s' is a field, not a function; it cannot be called\n", get_str_ptr(fname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    safe_free_str(fname)
+                    self.diags_count = self.diags_count + 1 as i64
             else:
                 // BUG#51: `callee_node` is an ADDRESS into the nodes buffer under the
                 // native backend (aggregates are held by-address). Generic
@@ -27880,6 +27901,16 @@ pub fn main() -> i32:
     // 4. Typecheck
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
     checker.run_type_checker()
+    // BUG#64-diag fix (CLAUDE.md Â§8, same class as BUG#53's parser-diag halt):
+    // typecheck errors (currently: calling a non-function struct FIELD, e.g.
+    // `v.len()` on a Vec whose `len` is a data field not a method) must HALT the
+    // pipeline instead of flowing into codegen, where the untyped call fell back
+    // to `getfld` + an INDIRECT CALL through the field's scalar value â€” a segfault
+    // or jump to a garbage address with no compile-time signal.
+    if checker.diags_count > 0 as i64:
+        ax_printf_local("error: %d type error(s); aborting before code generation\n", checker.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        return 1
     if not is_dump_air:
         t_mark = time_phase(show_time, "typecheck", t_mark)
         ax_puts_local("[Debug] Finished Typechecking.")

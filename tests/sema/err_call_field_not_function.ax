@@ -1,0 +1,12 @@
+// Regression (BUG#64-diag): calling a struct FIELD that is not a function must be
+// a compile error, not a silent accept-then-miscompile. `len` here is a plain i64
+// data field (no `len()` method on S) — `s.len()` used to typecheck as an untyped
+// call and air_builder fell back to `getfld` + an INDIRECT CALL through the
+// field's scalar value (segfault / jump to a garbage address), same class as
+// err_call_non_func.ax but for a FIELD_EXPR callee instead of a plain identifier.
+struct S:
+    len: i64
+
+fn main() -> i32:
+    let s = S(len: 5)
+    return s.len() as i32

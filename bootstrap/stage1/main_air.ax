@@ -959,6 +959,16 @@ pub fn main() -> i32:
     // 4. Typecheck
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
     checker.run_type_checker()
+    // BUG#64-diag fix (CLAUDE.md §8, same class as BUG#53's parser-diag halt):
+    // typecheck errors (currently: calling a non-function struct FIELD, e.g.
+    // `v.len()` on a Vec whose `len` is a data field not a method) must HALT the
+    // pipeline instead of flowing into codegen, where the untyped call fell back
+    // to `getfld` + an INDIRECT CALL through the field's scalar value — a segfault
+    // or jump to a garbage address with no compile-time signal.
+    if checker.diags_count > 0 as i64:
+        ax_printf_local("error: %d type error(s); aborting before code generation\n", checker.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        return 1
     if not is_dump_air:
         t_mark = time_phase(show_time, "typecheck", t_mark)
         ax_puts_local("[Debug] Finished Typechecking.")
