@@ -16882,6 +16882,47 @@ pub fn field_is_aggregate(table: ptr[TypeTable], struct_type_id: u32, field_idx:
         return true
     return false
 
+// BUG#59: is field `field_idx` of `struct_type_id` a POINTER-SUM (sum kind 6,
+// option 11, result 12)? Such a value is an 8-byte box pointer (its entry.size is
+// 16 â€” the box allocation â€” but the VALUE stored in the field is the pointer). It
+// must be loaded/stored as an 8-byte pointer, NOT a 16-byte inline block copy: the
+// dest/source register is homed as an 8-byte pointer (regalloc_is_16byte excludes
+// kinds 6/11/12), so a 16-byte block copy overruns the 8-byte slot and corrupts the
+// stack. Same by-address-vs-pointer-repr tension as BUG#51/56.
+pub fn field_is_pointer_sum(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> bool:
+    if struct_type_id == 0 as u32:
+        return false
+    mut real_type_id := struct_type_id
+    mut entry = table.entries.data[real_type_id]
+    if entry.kind == 9 as u8: // TYPE_KIND_POINTER
+        real_type_id = entry.extra
+        entry = table.entries.data[real_type_id]
+    if entry.kind != 1 as u8 and entry.kind != 8 as u8: // STRUCT, GENERIC_INST
+        return false
+    mut struct_idx := 0xffffffff as u32
+    if entry.kind == 1 as u8:
+        struct_idx = entry.extra
+    else:
+        mut idx := 0 as i64
+        while idx < table.entries.len:
+            let e = table.entries.data[idx]
+            if e.kind == 1 as u8 and e.name_id == entry.name_id:
+                struct_idx = e.extra
+                break
+            idx = idx + 1
+    if struct_idx == 0xffffffff as u32:
+        return false
+    let info = table.structs.data[struct_idx]
+    if field_idx as i64 >= info.fields.len:
+        return false
+    let f = info.fields.data[field_idx]
+    if f.type_id as i64 >= table.entries.len:
+        return false
+    let fk = table.entries.data[f.type_id].kind
+    if fk == 6 as u8 or fk == 11 as u8 or fk == 12 as u8:
+        return true
+    return false
+
 pub fn abi_int_arg_reg(abi: str, idx: i64) -> u8:
     if abi == "win64":
         return get_win64_arg_reg(idx)
@@ -18169,7 +18210,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         let struct_type = get_register_type(sel, inst.src1)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
-        if size > 16 as u32:
+        if field_is_pointer_sum(sel.table, struct_type, inst.src2):
+            // BUG#59: a sum/option/result field holds an 8-byte box pointer (not a
+            // 16-byte inline value). Load the pointer; the size==16 path below would
+            // write 16 bytes into the dest's 8-byte pointer home and corrupt the stack.
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+        elif size > 16 as u32:
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         elif size == 16 as u32:
             let tmp_dest_addr = next_vreg(sel)
@@ -18198,7 +18244,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         let struct_type = get_register_type(sel, inst.src1)
         let disp = field_offset(sel.table, struct_type, inst.src2)
         let size = field_size(sel.table, struct_type, inst.src2)
-        if size > 8 as u32 or field_is_aggregate(sel.table, struct_type, inst.src2):
+        if field_is_pointer_sum(sel.table, struct_type, inst.src2):
+            // BUG#59: a sum/option/result field stores an 8-byte box pointer (the
+            // value register IS that pointer), NOT a 16-byte inline block copy from
+            // the box contents. Store the pointer; GET_FIELD loads it back the same way.
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
+        elif size > 8 as u32 or field_is_aggregate(sel.table, struct_type, inst.src2):
             // Aggregate field (incl. nested struct <=8B): the source vreg holds the
             // aggregate's ADDRESS, so copy its CONTENTS inline (size bytes), NOT the
             // 8-byte address. Storing the address would make the field hold a pointer

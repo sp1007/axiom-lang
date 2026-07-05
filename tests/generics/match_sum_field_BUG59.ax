@@ -1,31 +1,43 @@
-// HARNESS: SKIP — KNOWN FAIL (BUG#59, native backend). Tracks a crash.
+// Regression (BUG#59, native backend): `match` on a SUM-typed FIELD of a struct
+// (`match bx.c` where `c: Color`). Segfaulted before the fix: a sum value is an
+// 8-byte box pointer, but GET_FIELD/SET_FIELD treated a sum field by its entry
+// size (16) — the 16-byte-inline path wrote 16 bytes into the sum-typed dest's
+// 8-byte pointer home (regalloc homes kinds 6/11/12 as 8-byte pointers), corrupting
+// the stack. Same by-address-vs-pointer-repr tension as BUG#51/56.
 //
-// Matching on a SUM-typed FIELD of a struct (`match bx.c:` where `c: Color`)
-// segfaults on the native backend, whether matched directly or via a local
-// (`let col = bx.c; match col:`). A standalone sum value matches fine
-// (sum_type_color.ax) — only a sum read out of a struct field crashes.
-//
-// Cause (uninvestigated in full): the sum-as-struct-field representation. A sum
-// field is stored/read inconsistently — `field_is_aggregate` reports a sum/option/
-// result field as by-address so GET_FIELD returns the field ADDRESS (LEA), while a
-// sum VALUE elsewhere is an 8-byte box pointer; the match then dereferences the
-// wrong level. Same BUG#51/56 family (native by-address vs pointer-repr for tagged
-// types). Needs a careful, dedicated fix (dump-air + objdump), not a quick patch —
-// a wrong guess here is a silent miscompile the self-host fixpoint may not catch.
-//
-// Found 2026-07-04 while fixing BUG#54/55/56/58. Remove SKIP when fixed.
+// Fix (x86_selector field_is_pointer_sum): a sum/option/result field is loaded and
+// stored as an 8-byte box pointer, consistent with how sum VALUES are represented
+// everywhere else. A standalone sum matches fine (sum_type_color.ax); this covers
+// the sum-read-from-a-struct-field path specifically.
 type Color = Red | Green | Blue
 
 struct Box:
     tag: i32
     c: Color
 
+fn label(col: Color) -> str:
+    match col:
+        Red:
+            return "red"
+        Green:
+            return "green"
+        Blue:
+            return "blue"
+
 fn main() -> i32:
     let bx = Box(tag: 5, c: Blue)
+    // direct field match
     match bx.c:
         Red:
-            return 1
+            println("direct-red")
         Green:
-            return 2
+            println("direct-green")
         Blue:
-            return bx.tag + 3
+            println("direct-blue")
+    // via a local, and pass the field to a function
+    let col = bx.c
+    println(label(col))
+    // an earlier field still reads correctly after the sum field
+    if bx.tag == 5:
+        println("tag-ok")
+    return 0
