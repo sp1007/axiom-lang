@@ -1,0 +1,21 @@
+// HARNESS: SKIP — KNOWN FAIL (BUG#61b, native backend). Tracks a crash.
+//
+// Follow-up to BUG#61 (generic_option_method_BUG61.ax, fixed): a generic METHOD on a
+// generic TYPE that returns Option[T] still segfaults. `Vec[T].get(i)` returns
+// Option[T]; on native the call's result type resolves to `void` (dump-air shows the
+// copy typed t14 = void, not Option[i32]), so `.unwrap()` / `.is_some()` / `match`
+// on it dispatch on the wrong type and crash. This is why `v.get(i).unwrap()` and
+// `match v.get(i)` crash. Distinct from the generic-FUNCTION case (fixed): here the
+// generic method's Option[T] return is mis-monomorphised to void, needing a fix in
+// the generic-method instantiation / return-type substitution. The C backend is
+// correct. Remove SKIP when fixed.
+import std.collections
+
+fn main() -> i32:
+    mut v = Vec[i32].new()
+    v.push(3)
+    v.push(9)
+    let o = v.get(0)
+    if o.is_some():
+        return o.unwrap()
+    return 100

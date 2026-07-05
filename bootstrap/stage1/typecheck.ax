@@ -1726,6 +1726,37 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT:
                             result_type = mret
 
+            // BUG#61: a GENERIC function call whose instantiated callee symbol's FUNC
+            // signature was not yet inferred when infer_node(callee) ran leaves the
+            // call UNTYPED. A later `result.method()` then has an UNKNOWN receiver
+            // type, cannot resolve the method, and air_builder falls back to field-
+            // access-as-call → segfault (e.g. Vec[T].get(i).unwrap()). Recover the
+            // return type from the callee symbol's (freshly inferred) signature.
+            // Restricted to STRUCTURED returns — the only case that is broken; scalar/
+            // void calls already work untyped — to keep the blast radius minimal
+            // (mirrors the BUG#45 method recovery above).
+            // Covers both a generic FUNCTION (NODE_IDENT callee) and a generic METHOD
+            // (NODE_FIELD_EXPR callee) — instantiation stamps callee.payload with the
+            // monomorphised function/method symbol in both cases, so e.g.
+            // Vec[T].get(i) (a generic method returning Option[T]) is recovered too.
+            if result_type == TYPE_UNKNOWN and (self.tree.nodes.data[callee].kind == NODE_IDENT or self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR):
+                let csym = self.tree.nodes.data[callee].payload
+                if csym != 0 as u32 and (csym as i64) < self.symtable.symbols.len:
+                    mut cft = self.symtable.symbols.data[csym].type_id
+                    if cft == TYPE_UNKNOWN:
+                        let cdecl = self.symtable.symbols.data[csym].decl_node
+                        if cdecl != 0 as u32 and cdecl != 0xffffffff as u32:
+                            self.pre_infer_func_signature(cdecl)
+                            cft = self.symtable.symbols.data[csym].type_id
+                    if cft != TYPE_UNKNOWN and (cft as i64) < self.types.entries.len:
+                        let ce = self.types.entries.data[cft]
+                        if ce.kind == TYPE_KIND_FUNC:
+                            let fret = self.types.funcs.data[ce.extra].ret
+                            if fret != TYPE_UNKNOWN and fret != 0 as u32 and (fret as i64) < self.types.entries.len:
+                                let fk = self.types.entries.data[fret].kind
+                                if fk == TYPE_KIND_STRUCT or fk == TYPE_KIND_SUM or fk == TYPE_KIND_GENERIC_INST or fk == TYPE_KIND_OPTION or fk == TYPE_KIND_RESULT:
+                                    result_type = fret
+
             // Infer arguments
             mut arg := self.tree.nodes.data[callee].next_sibling
             while arg != 0 as u32:
