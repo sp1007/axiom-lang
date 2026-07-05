@@ -49,7 +49,7 @@ rows=(
   "t_opmix|exit|13"
   "t_mul128|exit|7"
   "t_fcmp|exit|15"
-  "t_farg|exit|44"
+  "t_farg|exit|300"
   "t_fret|exit|75"
   "t_math|exit|127"
   "t_bignum|exit|63"
