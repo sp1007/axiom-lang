@@ -2105,6 +2105,25 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
         let inner = self.parse_expr_with_prec(BP_NONE)
         self.expect(TK_R_PAREN)
         return inner
+    if tok.kind == TK_L_BRACKET:
+        // Array literal `[e0, e1, ...]`. Unambiguous in NUD (primary) position:
+        // `[` here can only start a NEW expression (postfix indexing `a[i]` is
+        // handled as a LED on an already-parsed primary, not here) -- this
+        // combination was previously always a parse error ("expected
+        // expression nud"), so no existing valid syntax is affected.
+        self.consume() // '['
+        let node = self.tree.add_node(NODE_ARRAY_LIT, self.token_idx(tok))
+        while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
+            let prev_pos = self.pos
+            let expr = self.parse_expr_with_prec(BP_NONE)
+            if expr != 0 as u32:
+                self.append_child(node, expr)
+            if not self.check(TK_R_BRACKET):
+                self.expect(TK_COMMA)
+            if self.pos == prev_pos:
+                self.consume()
+        self.expect(TK_R_BRACKET)
+        return node
     if tok.kind == TK_SPAWN:
         self.consume()
         let node = self.tree.add_node(NODE_SPAWN_EXPR, self.token_idx(tok))
@@ -7976,6 +7995,29 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         
     elif kind == NODE_CHAR_LIT:
         result_type = TYPE_CHAR8
+
+    elif kind == NODE_ARRAY_LIT:
+        // `[e0, e1, ...]`. Element type comes from the first element (each
+        // further element is inferred with that same expected-type hint, so
+        // int/float literals coerce like any other typed context); falls
+        // back to i32 for an empty literal, mirroring NODE_INT_LIT's default.
+        mut expected_elem := TYPE_UNKNOWN
+        if expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
+            let exp_entry = self.types.entries.data[expected as i64]
+            if exp_entry.kind == TYPE_KIND_ARRAY:
+                expected_elem = exp_entry.extra as u32
+        mut elem_type := expected_elem
+        mut count := 0 as u32
+        mut child := self.tree.nodes.data[node_idx].first_child
+        while child != 0 as u32:
+            let et = self.infer_node(child, elem_type)
+            if elem_type == TYPE_UNKNOWN:
+                elem_type = et
+            count = count + 1 as u32
+            child = self.tree.nodes.data[child].next_sibling
+        if elem_type == TYPE_UNKNOWN:
+            elem_type = TYPE_I32
+        result_type = self.types.register_array(elem_type, count)
         
     elif kind == NODE_NIL_LIT:
         if expected != TYPE_UNKNOWN:
@@ -11530,6 +11572,15 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
 
+    // Element type (needed so OP_STORE below scales the index by the right
+    // element size -- mirrors the `a[i] = v` index-assignment lowering,
+    // which reads `entry.extra` the same way; see lower_assign_stmt).
+    mut elem_type_id := 0 as u32
+    if type_id != 0 as u32 and (type_id as i64) < self.mb.typetable.entries.len:
+        let arr_entry = self.mb.typetable.entries.data[type_id as i64]
+        if arr_entry.kind == TYPE_KIND_ARRAY or arr_entry.kind == TYPE_KIND_SLICE or arr_entry.kind == TYPE_KIND_POINTER:
+            elem_type_id = arr_entry.extra as u32
+
     let arr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ALLOC,
@@ -11555,7 +11606,7 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
-            type_id: 0 as u32,
+            type_id: elem_type_id,
             dest: arr_reg,
             src1: elem_reg,
             src2: idx_reg,

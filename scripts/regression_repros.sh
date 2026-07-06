@@ -114,6 +114,7 @@ rows=(
   "t_optstruct|exit|40"
   "t_optnested|exit|42"
   "t_structeq|exit|42"
+  "t_arrlit|exit|15"
 )
 
 for row in "${rows[@]}"; do

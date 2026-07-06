@@ -2367,6 +2367,29 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         
     elif kind == NODE_CHAR_LIT:
         result_type = TYPE_CHAR8
+
+    elif kind == NODE_ARRAY_LIT:
+        // `[e0, e1, ...]`. Element type comes from the first element (each
+        // further element is inferred with that same expected-type hint, so
+        // int/float literals coerce like any other typed context); falls
+        // back to i32 for an empty literal, mirroring NODE_INT_LIT's default.
+        mut expected_elem := TYPE_UNKNOWN
+        if expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
+            let exp_entry = self.types.entries.data[expected as i64]
+            if exp_entry.kind == TYPE_KIND_ARRAY:
+                expected_elem = exp_entry.extra as u32
+        mut elem_type := expected_elem
+        mut count := 0 as u32
+        mut child := self.tree.nodes.data[node_idx].first_child
+        while child != 0 as u32:
+            let et = self.infer_node(child, elem_type)
+            if elem_type == TYPE_UNKNOWN:
+                elem_type = et
+            count = count + 1 as u32
+            child = self.tree.nodes.data[child].next_sibling
+        if elem_type == TYPE_UNKNOWN:
+            elem_type = TYPE_I32
+        result_type = self.types.register_array(elem_type, count)
         
     elif kind == NODE_NIL_LIT:
         if expected != TYPE_UNKNOWN:

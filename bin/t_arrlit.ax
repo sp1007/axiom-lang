@@ -1,0 +1,22 @@
+// Fixed-size array literal `[e0, e1, ...]` had NO parser support at all (the
+// AST node NODE_ARRAY_LIT existed with backend lowering already written, but
+// nothing ever produced it -- `[1, 2, 3]` was a parse error). Adding parser +
+// typecheck support exposed a real, previously-unreachable backend bug: the
+// element OP_STORE in lower_array_lit hardcoded type_id=0 instead of the
+// element type, so the store used the wrong element stride (doubled it)
+// while indexed reads (which already carried the correct element type from
+// elsewhere) used the right one -- writes and reads disagreed. Covers both
+// direct indexing and passing the array by value to a function.
+fn sum_arr(a: [i32; 5]) -> i32:
+    mut s := 0 as i32
+    mut i := 0 as i64
+    while i < 5 as i64:
+        s = s + a[i]
+        i = i + 1 as i64
+    return s
+
+fn main() -> i32:
+    let arr: [i32; 5] = [1 as i32, 2 as i32, 3 as i32, 4 as i32, 5 as i32]
+    if arr[0 as i64] != 1 as i32 or arr[4 as i64] != 5 as i32:
+        return 1
+    return sum_arr(arr)

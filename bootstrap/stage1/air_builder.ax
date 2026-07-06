@@ -1899,6 +1899,15 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
 
+    // Element type (needed so OP_STORE below scales the index by the right
+    // element size -- mirrors the `a[i] = v` index-assignment lowering,
+    // which reads `entry.extra` the same way; see lower_assign_stmt).
+    mut elem_type_id := 0 as u32
+    if type_id != 0 as u32 and (type_id as i64) < self.mb.typetable.entries.len:
+        let arr_entry = self.mb.typetable.entries.data[type_id as i64]
+        if arr_entry.kind == TYPE_KIND_ARRAY or arr_entry.kind == TYPE_KIND_SLICE or arr_entry.kind == TYPE_KIND_POINTER:
+            elem_type_id = arr_entry.extra as u32
+
     let arr_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
         opcode: OP_ALLOC,
@@ -1924,7 +1933,7 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
-            type_id: 0 as u32,
+            type_id: elem_type_id,
             dest: arr_reg,
             src1: elem_reg,
             src2: idx_reg,
