@@ -1,0 +1,11 @@
+// Regression (BUG#72): `..` (TK_DOT_DOT) parses into a plain NODE_BINARY_EXPR
+// -- there is no dedicated Range/Slice type; NODE_FOR_STMT is the only place
+// that gives `..` real meaning (loop bounds). Used as an array index
+// (`arr[x..y]`), it silently typechecked as an ordinary numeric expression
+// and the resulting nonsensical value was used as a raw element offset --
+// a real, reproducible segfault with no diagnostic. Same class of bug as
+// err_call_field_not_function.ax / err_struct_eq_no_overload.ax.
+fn main() -> i32:
+    let arr: [i32; 5] = [1 as i32, 2 as i32, 3 as i32, 4 as i32, 5 as i32]
+    let sl = arr[1 as i64..4 as i64]
+    return sl as i32
