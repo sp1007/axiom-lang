@@ -4681,6 +4681,7 @@ pub fn push(self: ptr[StructFieldVec], sf: StructField):
 
 pub struct StructInfo:
     fields: StructFieldVec
+    generic_args: U32Vec
 
 pub struct StructInfoVec:
     data: ptr[StructInfo]
@@ -4935,7 +4936,7 @@ pub fn register_result(self: ptr[TypeTable], ok_id: u32, err_id: u32) -> u32:
 
 pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
-    (&self.structs).push(StructInfo(fields: fields))
+    (&self.structs).push(StructInfo(fields: fields, generic_args: U32Vec(data: null as ptr[u32], len: 0, cap: 0)))
     return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_STRUCT,
         padding: 0 as u8,
@@ -4945,6 +4946,28 @@ pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVe
         align: 0 as u32,
         extra: s_idx,
     ))
+
+// RFC 0013: record the concrete type-args of a monomorphized generic struct so
+// get_generic_args() never has to re-derive them by parsing the mangled name
+// (ambiguous for nested generics like MV[MV[i32]], see BUG#65). Deep-copies
+// `args` since the caller (mono.instantiate_function) does not own/outlive it.
+pub fn set_struct_generic_args(self: ptr[TypeTable], struct_type_id: u32, args: U32Vec):
+    if (struct_type_id as i64) >= self.entries.len:
+        return
+    let entry = self.entries.data[struct_type_id as i64]
+    if entry.kind != TYPE_KIND_STRUCT:
+        return
+    let s_idx = entry.extra as i64
+    if s_idx >= self.structs.len:
+        return
+    mut copied := U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+    if args.len > 0 as i64:
+        let buf = @alloc(args.len * 4 as i64) as ptr[u32]
+        @memcpy(buf as ptr[u8], args.data as ptr[u8], args.len * 4 as i64)
+        copied.data = buf
+        copied.len = args.len
+        copied.cap = args.len
+    self.structs.data[s_idx].generic_args = copied
 
 pub fn register_function(self: ptr[TypeTable], params: U32Vec, ret: u32) -> u32:
     let f_idx = self.funcs.len as u32
@@ -5519,6 +5542,7 @@ pub fn instantiate_function(mut self: ptr[Monomorphizer], template_sym_id: u32, 
     let cloned_kind = self.tree.nodes.data[cloned_root].kind
     if cloned_kind == NODE_STRUCT_DECL:
         struct_type_id = self.typetable.register_struct(mangled_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
+        self.typetable.set_struct_generic_args(struct_type_id, args)
     self.struct_type_id = struct_type_id
 
     // 2. Build type substitution map from original params using source tree
@@ -5796,7 +5820,16 @@ pub fn get_generic_args(self: ptr[TypeChecker], type_id: u32) -> U32Vec:
             out_args.push(inst_args.data[j])
             j = j + 1
         return out_args
-    
+
+    if entry.kind == TYPE_KIND_STRUCT and (entry.extra as i64) < self.types.structs.len:
+        let struct_args = &self.types.structs.data[entry.extra as i64].generic_args
+        if struct_args.len > 0 as i64:
+            mut k := 0 as i64
+            while k < struct_args.len:
+                out_args.push(struct_args.data[k])
+                k = k + 1
+            return out_args
+
     return self.get_generic_args_from_mangled(type_id)
 
 pub fn get_generic_args_from_mangled(self: ptr[TypeChecker], type_id: u32) -> U32Vec:
@@ -6674,7 +6707,8 @@ pub fn pre_infer_struct(mut self: ptr[TypeChecker], node_idx: u32):
             let in_bounds = ((struct_extra as i64) < self.types.structs.len)
             ax_printf_local("[TC-DEBUG] pre_infer_struct else: %s struct_extra=%d len=%d in_bounds=%d kind=%d\n", get_str_ptr(struct_name) as i64, struct_extra as i64, self.types.structs.len, in_bounds as i64, entry.kind as i64, 0 as i64, 0 as i64, 0 as i64)
             if (entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST) and (struct_extra as i64) < self.types.structs.len:
-                self.types.structs.data[struct_extra as i64] = StructInfo(fields: fields)
+                let prev_generic_args = self.types.structs.data[struct_extra as i64].generic_args
+                self.types.structs.data[struct_extra as i64] = StructInfo(fields: fields, generic_args: prev_generic_args)
                 let check_si = self.types.structs.data[struct_extra as i64]
                 ax_printf_local("[TC-DEBUG] post-assign: checked fields_len=%d\n", check_si.fields.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             self.set_node_type(node_idx, type_id)

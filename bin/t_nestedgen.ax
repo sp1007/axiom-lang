@@ -1,0 +1,30 @@
+// Regression (BUG#65, RFC 0013): nested generic instantiation (a generic struct
+// whose own type-arg is itself a generic instance, e.g. MV[MV[i32]]) used to
+// mis-resolve type-args via mangled-name string parsing (ambiguous recursive
+// "__" delimiter: "_AX_std_MV__MV__i32" can't be told apart from 2 flat args
+// vs. 1 nested arg) and segfault on a chained generic method call. Fix: record
+// each monomorphized struct's concrete args directly on StructInfo instead of
+// re-deriving them from the name.
+struct MV[T]:
+    data: ptr[T]
+    len: i64
+
+fn new_mv[T]() -> MV[T]:
+    let nd = @alloc(256 as i64) as ptr[T]
+    return MV[T](data: nd, len: 0 as i64)
+
+fn push[T](mut self: MV[T], item: T):
+    self.data[self.len] = item
+    self.len = self.len + 1
+
+fn get[T](self: MV[T], i: i64) -> T:
+    return self.data[i]
+
+fn main() -> i32:
+    mut outer = new_mv[MV[i32]]()
+    mut a = new_mv[i32]()
+    a.push(42)
+    outer.push(a)
+    let v0 = outer.get(0)
+    let x = v0.get(0)
+    return x

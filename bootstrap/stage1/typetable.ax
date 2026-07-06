@@ -92,6 +92,7 @@ pub fn push(self: ptr[StructFieldVec], sf: StructField):
 
 pub struct StructInfo:
     fields: StructFieldVec
+    generic_args: U32Vec
 
 pub struct StructInfoVec:
     data: ptr[StructInfo]
@@ -346,7 +347,7 @@ pub fn register_result(self: ptr[TypeTable], ok_id: u32, err_id: u32) -> u32:
 
 pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVec) -> u32:
     let s_idx = self.structs.len as u32
-    (&self.structs).push(StructInfo(fields: fields))
+    (&self.structs).push(StructInfo(fields: fields, generic_args: U32Vec(data: null as ptr[u32], len: 0, cap: 0)))
     return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_STRUCT,
         padding: 0 as u8,
@@ -356,6 +357,28 @@ pub fn register_struct(self: ptr[TypeTable], name_id: u32, fields: StructFieldVe
         align: 0 as u32,
         extra: s_idx,
     ))
+
+// RFC 0013: record the concrete type-args of a monomorphized generic struct so
+// get_generic_args() never has to re-derive them by parsing the mangled name
+// (ambiguous for nested generics like MV[MV[i32]], see BUG#65). Deep-copies
+// `args` since the caller (mono.instantiate_function) does not own/outlive it.
+pub fn set_struct_generic_args(self: ptr[TypeTable], struct_type_id: u32, args: U32Vec):
+    if (struct_type_id as i64) >= self.entries.len:
+        return
+    let entry = self.entries.data[struct_type_id as i64]
+    if entry.kind != TYPE_KIND_STRUCT:
+        return
+    let s_idx = entry.extra as i64
+    if s_idx >= self.structs.len:
+        return
+    mut copied := U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+    if args.len > 0 as i64:
+        let buf = @alloc(args.len * 4 as i64) as ptr[u32]
+        @memcpy(buf as ptr[u8], args.data as ptr[u8], args.len * 4 as i64)
+        copied.data = buf
+        copied.len = args.len
+        copied.cap = args.len
+    self.structs.data[s_idx].generic_args = copied
 
 pub fn register_function(self: ptr[TypeTable], params: U32Vec, ret: u32) -> u32:
     let f_idx = self.funcs.len as u32

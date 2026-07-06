@@ -110,6 +110,7 @@ rows=(
   "t_lambda|exit|5"
   "t_modcollide|exit|101"
   "t_hashi64|exit|42"
+  "t_nestedgen|exit|42"
 )
 
 for row in "${rows[@]}"; do
