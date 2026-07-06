@@ -30,6 +30,13 @@ pub fn check(mut self: ptr[OwnershipChecker]):
         exit(1)
 
 pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
+    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. Node index 0 is the real
+    // NODE_PROGRAM root (ast.ax::new_ast_tree), but `check()` enters here with 0
+    // and this guard returns immediately -- the traversal never visits any node.
+    // Do NOT simply drop `or node_idx == 0`: `check_move` assumes MOVE semantics,
+    // which contradicts AXIOM's alias/copy semantics (RFC 0010), so activating it
+    // as-written flags ~258 valid reuses as `E4001 use of moved value`. Real
+    // activation is sequenced in RFC 0015; keep this inert until then.
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 

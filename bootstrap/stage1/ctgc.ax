@@ -28,6 +28,11 @@ pub fn run(mut self: ptr[CtgcInjector]):
     self.traverse_and_inject(0 as u32, 0 as u32)
 
 pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
+    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
+    // the real NODE_PROGRAM root, but this guard returns immediately -- no OP_DESTROY
+    // is ever injected, so every local aggregate leaks. Enabling free is unsafe until
+    // escape analysis is sound (RFC 0015 P2/P3): the self-host compiler holds aliases
+    // into buffers it later frees (RFC 0010 §9), so premature free = UAF. Inert.
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 

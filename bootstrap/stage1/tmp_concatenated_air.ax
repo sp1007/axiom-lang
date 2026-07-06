@@ -8959,6 +8959,13 @@ pub fn check(mut self: ptr[OwnershipChecker]):
         exit(1)
 
 pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
+    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. Node index 0 is the real
+    // NODE_PROGRAM root (ast.ax::new_ast_tree), but `check()` enters here with 0
+    // and this guard returns immediately -- the traversal never visits any node.
+    // Do NOT simply drop `or node_idx == 0`: `check_move` assumes MOVE semantics,
+    // which contradicts AXIOM's alias/copy semantics (RFC 0010), so activating it
+    // as-written flags ~258 valid reuses as `E4001 use of moved value`. Real
+    // activation is sequenced in RFC 0015; keep this inert until then.
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
@@ -9064,6 +9071,10 @@ pub fn run(mut self: ptr[EscapeAnalyser]):
     free_connection_graph(self.curr_cg)
 
 pub fn traverse_nodes(mut self: ptr[EscapeAnalyser], node_idx: u32):
+    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
+    // which is the real NODE_PROGRAM root, but this guard returns immediately, so
+    // FLAG_ESCAPES_TO_HEAP is never set (its readers always see false). Making it
+    // run requires a sound escape analysis first -- see RFC 0015 P2. Inert until then.
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
@@ -9255,6 +9266,11 @@ pub fn run(mut self: ptr[CtgcInjector]):
     self.traverse_and_inject(0 as u32, 0 as u32)
 
 pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
+    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
+    // the real NODE_PROGRAM root, but this guard returns immediately -- no OP_DESTROY
+    // is ever injected, so every local aggregate leaks. Enabling free is unsafe until
+    // escape analysis is sound (RFC 0015 P2/P3): the self-host compiler holds aliases
+    // into buffers it later frees (RFC 0010 Â§9), so premature free = UAF. Inert.
     if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
         return
 
