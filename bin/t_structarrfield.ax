@@ -1,0 +1,13 @@
+// BUG#75 regression: reading AND writing an array-typed struct field. The
+// exactly-16-byte case (`data: [i32;4]`) was the trap -- OP_GET_FIELD treated
+// the 16-byte field as an inline str value, so `b.data[i]` reads faulted and
+// `b.data[i] = v` writes landed in a throwaway copy. Array fields are held by
+// address; struct fields of the same size keep the register-pair ABI.
+struct Buf:
+    data: [i32; 4]
+    n: i32
+fn main() -> i32:
+    mut b := Buf(data: [10 as i32, 20 as i32, 30 as i32, 40 as i32], n: 5 as i32)
+    b.data[1] = 99 as i32                 // write into a 16-byte array field
+    b.data[3] = b.data[0] + b.n           // read fields, write back: 10+5=15
+    return b.data[1] + b.data[3] + b.n    // 99 + 15 + 5 = 119

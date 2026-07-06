@@ -118,6 +118,7 @@ rows=(
   "t_closurecap|exit|6"
   "t_genericstruct2|exit|40"
   "t_mutparam|exit|22"
+  "t_structarrfield|exit|119"
 )
 
 for row in "${rows[@]}"; do
