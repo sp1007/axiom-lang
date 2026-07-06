@@ -7338,7 +7338,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if inferred.data[i] == TYPE_UNKNOWN:
                         inferred.data[i] = TYPE_I32
                     i = i + 1
-                
+
                 mut has_generic_arg := false
                 mut a_idx := 0 as i64
                 while a_idx < arg_types.len:
@@ -7766,6 +7766,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 existing_sym_idx = proxy_sys_idx
                             
                             mut inst_sym_idx := 0 as u32
+                            mut fresh_type_alias_inst := false
                             if existing_sym_idx != 0 as u32:
                                 inst_sym_idx = existing_sym_idx
                             else:
@@ -7829,7 +7830,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                             self.pre_infer_func_signature(m_child)
                                         m_child = next_sibling
                                     self.infer_node(cloned_root, TYPE_UNKNOWN)
-                            
+                                    fresh_type_alias_inst = true
+
                             let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
                             result_type = inst_sym.type_id
 
@@ -7840,7 +7842,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             // this type) doesn't have to re-derive them from
                             // the clone's mangled name (ambiguous for a nested
                             // generic payload -- same class as BUG#65).
-                            if cloned_kind == NODE_TYPE_ALIAS_DECL:
+                            if fresh_type_alias_inst:
                                 self.types.set_sum_generic_args(result_type, args)
 
                             if args.data != null as ptr[u32]:

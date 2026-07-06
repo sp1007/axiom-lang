@@ -1,0 +1,32 @@
+// Regression (BUG#67 residual): Some(x) called from INSIDE another already-
+// monomorphized generic method (HashMap[K,V].get returning Option[V], here
+// V=Vec[i64]) used to mis-resolve V for the caller's later .unwrap() call,
+// corrupting the field layout of the unwrapped Vec (e.g. reading len at the
+// wrong offset). Root cause: typecheck.ax's NODE_GENERIC_TYPE instantiation
+// path (used when a generic sum-type alias like Option[V] appears as a type
+// ANNOTATION, e.g. a `-> Option[V]` return type) referenced a variable
+// (cloned_kind) outside the scope where it was actually assigned -- on a
+// cache-hit (an existing monomorphized instance found by mangled name), the
+// variable held uninitialized garbage instead of NODE_TYPE_ALIAS_DECL, so
+// set_sum_generic_args (recording the concrete instantiation args) was
+// silently never called for ANY sum-type annotation instantiation. Fixed by
+// tracking "did we just do a fresh NODE_TYPE_ALIAS_DECL instantiation" with a
+// properly-scoped flag instead.
+import std.collections
+
+fn main() -> i32:
+    mut m = HashMap[i64, Vec[i64]].new()
+    mut v = Vec[i64].new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    m.insert(1, v)
+    let got = m.get(1)
+    if not got.is_some():
+        return 1
+    let vv = got.unwrap()
+    if vv.len != 3 as i64:
+        return 2
+    if vv.get(0).unwrap() != 10 as i64 or vv.get(1).unwrap() != 20 as i64 or vv.get(2).unwrap() != 30 as i64:
+        return 3
+    return 42
