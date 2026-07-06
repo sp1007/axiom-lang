@@ -6148,6 +6148,104 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 
     return self.types.register_generic_inst(entry.name_id, args)
 
+// BUG#74: `GenericStruct(field: v, ...)` constructed with NO explicit type args,
+// relying on field-value inference. The struct-sibling of try_instantiate_variant_
+// call: infer the concrete type-args from the field-init values, then run the SAME
+// monomorphization the explicit `GenericStruct[T,U](...)` annotation path uses
+// (finish_generic_instantiation) so the constructed value and any generic function
+// that later receives it agree on ONE packed struct layout. Without this the value
+// was built with the template's generic (8-byte) field slots while the receiving
+// generic function's param monomorphized to a packed concrete struct -- every field
+// past the first read at the wrong offset (silently 0/garbage, no crash). Returns
+// the template type_id unchanged when the struct is non-generic or nothing binds.
+pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, struct_type_id: u32) -> u32:
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return struct_type_id
+    let ssym_idx = self.tree.nodes.data[callee].payload
+    if ssym_idx == 0 as u32 or (ssym_idx as i64) >= self.symtable.symbols.len:
+        return struct_type_id
+    let ssym = self.symtable.symbols.data[ssym_idx as i64]
+    if ssym.kind != SYM_STRUCT or ssym.decl_node == 0 as u32 or ssym.decl_node == 0xffffffff as u32:
+        return struct_type_id
+    mut src_tree := self.tree
+    if (ssym_idx as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[ssym_idx as i64]
+        if t != null as ptr[AstTree]:
+            src_tree = t
+    if (ssym.decl_node as i64) >= src_tree.nodes.len:
+        return struct_type_id
+    if (src_tree.nodes.data[ssym.decl_node].flags & FLAG_IS_GENERIC) == 0 as u16:
+        return struct_type_id
+
+    // Ordered generic-param name-ids of the struct.
+    mut gen_params := new_u32_vec()
+    mut c := src_tree.nodes.data[ssym.decl_node].first_child
+    while c != 0 as u32:
+        let cn = src_tree.nodes.data[c]
+        if cn.kind == NODE_GENERIC_PARAMS:
+            mut gp := cn.first_child
+            while gp != 0 as u32:
+                let gp_name = self.node_text_in_tree(src_tree, gp)
+                gen_params.push(self.intern.intern(gp_name))
+                safe_free_str(gp_name)
+                gp = src_tree.nodes.data[gp].next_sibling
+            break
+        c = cn.next_sibling
+    if gen_params.len == 0 as i64:
+        if gen_params.data != null as ptr[u32]:
+            @free(gen_params.data as ptr[u8])
+        return struct_type_id
+
+    mut inferred := new_u32_vec()
+    mut gi := 0 as i64
+    while gi < gen_params.len:
+        inferred.push(TYPE_UNKNOWN)
+        gi = gi + 1
+
+    // Walk struct fields (decl order) and call args (positional) in lockstep;
+    // named args are assigned positionally by the backend (see BUG#21 in
+    // linker.ax), so field N's declared type-expr pairs with call arg N's value.
+    mut field_node := src_tree.nodes.data[ssym.decl_node].first_child
+    mut call_arg := self.tree.nodes.data[callee].next_sibling
+    while field_node != 0 as u32 and call_arg != 0 as u32:
+        let fn_node = src_tree.nodes.data[field_node]
+        if fn_node.kind == NODE_FIELD_DECL:
+            let field_type_node = fn_node.first_child
+            mut val_node := call_arg
+            if self.tree.nodes.data[call_arg].kind == NODE_NAMED_ARG:
+                val_node = self.tree.nodes.data[call_arg].first_child
+            if field_type_node != 0 as u32 and val_node != 0 as u32:
+                let val_type = self.infer_node(val_node, TYPE_UNKNOWN)
+                self.infer_generic_type_args(field_type_node, val_type, gen_params, inferred, src_tree)
+            call_arg = self.tree.nodes.data[call_arg].next_sibling
+        field_node = fn_node.next_sibling
+
+    mut bound_any := false
+    mut bi := 0 as i64
+    while bi < inferred.len:
+        if inferred.data[bi] != TYPE_UNKNOWN and not self.is_generic(inferred.data[bi]):
+            bound_any = true
+        bi = bi + 1
+
+    if gen_params.data != null as ptr[u32]:
+        @free(gen_params.data as ptr[u8])
+
+    if not bound_any:
+        if inferred.data != null as ptr[u32]:
+            @free(inferred.data as ptr[u8])
+        return struct_type_id
+
+    // Default any param we couldn't bind to i32 (same fallback function-mono uses
+    // for unbound params). All fields are supplied at construction, so this only
+    // fires for a generic param that appears in no field's type.
+    bi = 0
+    while bi < inferred.len:
+        if inferred.data[bi] == TYPE_UNKNOWN or self.is_generic(inferred.data[bi]):
+            inferred.data[bi] = TYPE_I32
+        bi = bi + 1
+
+    return self.finish_generic_instantiation(ssym_idx, inferred)
+
 // Diagnostic-only mirror of air_builder.ax's resolve_op_method: scans SYM_FUNC
 // symbols whose (mangled) name matches `method_name` (struct methods declared
 // INLINE under `struct X: fn eq(self, o): ...` get a dotted mangled name like
@@ -7099,6 +7197,119 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
 pub fn tc_is_numeric(t: u32) -> bool:
     return t == TYPE_I8 or t == TYPE_I16 or t == TYPE_I32 or t == TYPE_I64 or t == TYPE_U8 or t == TYPE_U16 or t == TYPE_U32 or t == TYPE_U64 or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_ISIZE or t == TYPE_USIZE
 
+// Shared generic-instantiation core: given a generic template symbol `sym_idx`
+// and a fully-collected `args` vector of concrete type-ids, produce the result
+// TypeID for that instantiation. TAKES OWNERSHIP of `args` (either handed to
+// register_generic_inst, which stores/frees it, or freed here after the mono
+// path). This is the exact logic the explicit `Name[T,U]` annotation path used
+// (NODE_GENERIC_TYPE below); it is factored out so the BUG#74 inferred-arg
+// struct-constructor path (`Name(field: v, ...)` with no explicit type args) can
+// run the IDENTICAL monomorphization -- producing the SAME packed concrete struct
+// layout a generic function's param would monomorphize to, which is what keeps
+// construction and later field reads on one consistent layout.
+pub fn finish_generic_instantiation(mut self: ptr[TypeChecker], sym_idx: u32, args: U32Vec) -> u32:
+    mut result_type := TYPE_UNKNOWN
+    let sym_name_id = self.symtable.symbols.data[sym_idx as i64].name_id
+    mut has_generic_arg := false
+    mut a_idx := 0 as i64
+    while a_idx < args.len:
+        if self.is_generic(args.data[a_idx]):
+            has_generic_arg = true
+            break
+        a_idx = a_idx + 1
+
+    if has_generic_arg:
+        result_type = self.types.register_generic_inst(sym_name_id, args)
+    else:
+        // Check if already instantiated
+        mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
+        let mangled_name = mono.mangle_name_ov(sym_idx, self.intern.get(sym_name_id), args)
+        let mangled_id = self.intern.intern(mangled_name)
+        mut existing_sym_idx := self.symtable.resolve(mangled_id)
+        if existing_sym_idx == 0 as u32:
+            let proxy_sys_idx = self.symtable.resolve_global(mangled_id)
+            existing_sym_idx = proxy_sys_idx
+
+        mut inst_sym_idx := 0 as u32
+        mut fresh_type_alias_inst := false
+        if existing_sym_idx != 0 as u32:
+            inst_sym_idx = existing_sym_idx
+        else:
+            // Instantiate!
+            let cloned_root = mono.instantiate_function(sym_idx, args)
+            self.tree.append_child(0 as u32, cloned_root)
+
+            // Name resolution on the cloned subtree
+            let saved_data = self.symtable.stack.data
+            let saved_len = self.symtable.stack.len
+            let saved_cap = self.symtable.stack.cap
+            mut temp_stack := new_u32_vec()
+            temp_stack.push(0 as u32)
+            if saved_len > 1:
+                temp_stack.push(saved_data[1])
+            self.symtable.stack = temp_stack
+            mut resolver := new_name_resolver(self.tree, self.intern, self.symtable)
+            resolver.resolve_node(cloned_root)
+            @free(self.symtable.stack.data as ptr[u8])
+            self.symtable.stack.data = saved_data
+            self.symtable.stack.len = saved_len
+            self.symtable.stack.cap = saved_cap
+
+            let payload_sym = self.tree.nodes.data[cloned_root].payload
+            if payload_sym != 0 as u32:
+                inst_sym_idx = payload_sym
+            else:
+                mut resolved_inst_sym := self.symtable.resolve(mangled_id)
+                if resolved_inst_sym == 0 as u32:
+                    resolved_inst_sym = self.symtable.resolve_global(mangled_id)
+                inst_sym_idx = resolved_inst_sym
+
+            let cloned_kind = self.tree.nodes.data[cloned_root].kind
+            if cloned_kind == NODE_STRUCT_DECL and mono.struct_type_id != 0 as u32:
+                self.symtable.symbols.data[inst_sym_idx as i64].type_id = mono.struct_type_id
+
+            // Register type/signature in TypeTable
+            if cloned_kind == NODE_STRUCT_DECL:
+                self.pre_infer_struct(cloned_root)
+
+                // Pre-infer signatures for all methods of the struct
+                mut m_child := self.tree.nodes.data[cloned_root].first_child
+                while m_child != 0 as u32:
+                    let mc = self.tree.nodes.data[m_child]
+                    let next_sibling = mc.next_sibling
+                    if mc.kind == NODE_FUNC_DECL:
+                        self.pre_infer_func_signature(m_child)
+                    m_child = next_sibling
+
+                self.infer_node(cloned_root, TYPE_UNKNOWN)
+            elif cloned_kind == NODE_FUNC_DECL:
+                self.pre_infer_func_signature(cloned_root)
+                self.infer_node(cloned_root, TYPE_UNKNOWN)
+            elif cloned_kind == NODE_TYPE_ALIAS_DECL:
+                self.pre_infer_type_alias(cloned_root)
+                mut m_child := self.tree.nodes.data[cloned_root].first_child
+                while m_child != 0 as u32:
+                    let mc = self.tree.nodes.data[m_child]
+                    let next_sibling = mc.next_sibling
+                    if mc.kind == NODE_FUNC_DECL:
+                        self.pre_infer_func_signature(m_child)
+                    m_child = next_sibling
+                self.infer_node(cloned_root, TYPE_UNKNOWN)
+                fresh_type_alias_inst = true
+
+        let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
+        result_type = inst_sym.type_id
+
+        // BUG#67 follow-up: record the concrete args on the monomorphized sum
+        // type (e.g. Option[Vec[i64]]) itself, so get_generic_args() on it
+        // doesn't have to re-derive them from the clone's mangled name.
+        if fresh_type_alias_inst:
+            self.types.set_sum_generic_args(result_type, args)
+
+        if args.data != null as ptr[u32]:
+            @free(args.data as ptr[u8])
+    return result_type
+
 pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u32:
     if node_idx == 0 as u32:
         if self.tree.nodes.len == 0 as i64:
@@ -7668,7 +7879,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
 
 
                 elif entry.kind == TYPE_KIND_STRUCT:
-                    result_type = callee_type
+                    // BUG#74: if this is a generic struct constructed without
+                    // explicit type args, monomorphize it from the field values.
+                    result_type = self.try_instantiate_struct_ctor(callee, callee_type)
                 elif entry.kind == TYPE_KIND_SUM:
                     result_type = self.try_instantiate_variant_call(callee, callee_type)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
@@ -7988,109 +8201,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             let arg_type = self.infer_node(arg_idx, TYPE_UNKNOWN)
                             args.push(arg_type)
                             arg_idx = self.tree.nodes.data[arg_idx].next_sibling
-                        
-                        mut has_generic_arg := false
-                        mut a_idx := 0 as i64
-                        while a_idx < args.len:
-                            if self.is_generic(args.data[a_idx]):
-                                has_generic_arg = true
-                                break
-                            a_idx = a_idx + 1
 
-                        if has_generic_arg:
-                            result_type = self.types.register_generic_inst(sym.name_id, args)
-                        else:
-                            // Check if already instantiated
-                            mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
-                            let mangled_name = mono.mangle_name_ov(sym_idx, self.intern.get(sym.name_id), args)
-                            let mangled_id = self.intern.intern(mangled_name)
-                            mut existing_sym_idx := self.symtable.resolve(mangled_id)
-                            if existing_sym_idx == 0 as u32:
-                                let proxy_sys_idx = self.symtable.resolve_global(mangled_id)
-                                existing_sym_idx = proxy_sys_idx
-                            
-                            mut inst_sym_idx := 0 as u32
-                            mut fresh_type_alias_inst := false
-                            if existing_sym_idx != 0 as u32:
-                                inst_sym_idx = existing_sym_idx
-                            else:
-                                // Instantiate!
-                                let cloned_root = mono.instantiate_function(sym_idx, args)
-                                self.tree.append_child(0 as u32, cloned_root)
-                                
-                                // Name resolution on the cloned subtree
-                                let saved_data = self.symtable.stack.data
-                                let saved_len = self.symtable.stack.len
-                                let saved_cap = self.symtable.stack.cap
-                                mut temp_stack := new_u32_vec()
-                                temp_stack.push(0 as u32)
-                                if saved_len > 1:
-                                    temp_stack.push(saved_data[1])
-                                self.symtable.stack = temp_stack
-                                mut resolver := new_name_resolver(self.tree, self.intern, self.symtable)
-                                resolver.resolve_node(cloned_root)
-                                @free(self.symtable.stack.data as ptr[u8])
-                                self.symtable.stack.data = saved_data
-                                self.symtable.stack.len = saved_len
-                                self.symtable.stack.cap = saved_cap
-                                
-                                let payload_sym = self.tree.nodes.data[cloned_root].payload
-                                if payload_sym != 0 as u32:
-                                    inst_sym_idx = payload_sym
-                                else:
-                                    mut resolved_inst_sym := self.symtable.resolve(mangled_id)
-                                    if resolved_inst_sym == 0 as u32:
-                                        resolved_inst_sym = self.symtable.resolve_global(mangled_id)
-                                    inst_sym_idx = resolved_inst_sym
-                                
-                                let cloned_kind = self.tree.nodes.data[cloned_root].kind
-                                if cloned_kind == NODE_STRUCT_DECL and mono.struct_type_id != 0 as u32:
-                                    self.symtable.symbols.data[inst_sym_idx as i64].type_id = mono.struct_type_id
-                                
-                                // Register type/signature in TypeTable
-                                if cloned_kind == NODE_STRUCT_DECL:
-                                    self.pre_infer_struct(cloned_root)
-                                    
-                                    // Pre-infer signatures for all methods of the struct
-                                    mut m_child := self.tree.nodes.data[cloned_root].first_child
-                                    while m_child != 0 as u32:
-                                        let mc = self.tree.nodes.data[m_child]
-                                        let next_sibling = mc.next_sibling
-                                        if mc.kind == NODE_FUNC_DECL:
-                                            self.pre_infer_func_signature(m_child)
-                                        m_child = next_sibling
-                                        
-                                    self.infer_node(cloned_root, TYPE_UNKNOWN)
-                                elif cloned_kind == NODE_FUNC_DECL:
-                                    self.pre_infer_func_signature(cloned_root)
-                                    self.infer_node(cloned_root, TYPE_UNKNOWN)
-                                elif cloned_kind == NODE_TYPE_ALIAS_DECL:
-                                    self.pre_infer_type_alias(cloned_root)
-                                    mut m_child := self.tree.nodes.data[cloned_root].first_child
-                                    while m_child != 0 as u32:
-                                        let mc = self.tree.nodes.data[m_child]
-                                        let next_sibling = mc.next_sibling
-                                        if mc.kind == NODE_FUNC_DECL:
-                                            self.pre_infer_func_signature(m_child)
-                                        m_child = next_sibling
-                                    self.infer_node(cloned_root, TYPE_UNKNOWN)
-                                    fresh_type_alias_inst = true
-
-                            let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
-                            result_type = inst_sym.type_id
-
-                            // BUG#67 follow-up: record the concrete args on the
-                            // monomorphized sum type (e.g. Option[Vec[i64]])
-                            // itself, so get_generic_args() on it (used later
-                            // when a caller does `.unwrap()` on a value of
-                            // this type) doesn't have to re-derive them from
-                            // the clone's mangled name (ambiguous for a nested
-                            // generic payload -- same class as BUG#65).
-                            if fresh_type_alias_inst:
-                                self.types.set_sum_generic_args(result_type, args)
-
-                            if args.data != null as ptr[u32]:
-                                @free(args.data as ptr[u8])
+                        result_type = self.finish_generic_instantiation(sym_idx, args)
     elif kind == NODE_UNARY_EXPR:
         let operand = self.tree.nodes.data[node_idx].first_child
         if operand != 0 as u32:
@@ -11312,6 +11424,25 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                 if sym.kind == SYM_STRUCT:
                     is_struct_constructor = true
                     struct_type_id = sym.type_id
+                    // BUG#74: for a generic struct constructed with no explicit
+                    // type args (`Pair(first: v, ...)`), typecheck records the
+                    // concrete MONOMORPHIZED struct type on the call node itself
+                    // (node_types[idx]); prefer it over the bare template
+                    // (sym.type_id) so the value is built with the SAME packed
+                    // field layout the receiving generic function reads it back
+                    // through. Without this the value used the template's generic
+                    // 8-byte field slots (second field always at offset 8) while
+                    // the callee read a packed concrete struct -- every combo
+                    // except a fully-8-byte-aligned one (e.g. Pair[i32,i32],
+                    // packed second at offset 4) coincidentally matched. Guarded
+                    // to STRUCT/GENERIC_INST and `ct != sym.type_id`, so a
+                    // non-generic struct (node_types == template) is unchanged.
+                    if self.mb.node_types != null as ptr[u32]:
+                        let ct = self.mb.node_types[idx as i64]
+                        if ct != 0 as u32 and ct != sym.type_id and (ct as i64) < self.mb.typetable.entries.len:
+                            let ce = self.mb.typetable.entries.data[ct as i64]
+                            if ce.kind == TYPE_KIND_STRUCT or ce.kind == TYPE_KIND_GENERIC_INST:
+                                struct_type_id = ct
         elif callee_node.kind == NODE_INDEX_EXPR or callee_node.kind == NODE_GENERIC_TYPE:
             if self.mb.node_types != null as ptr[u32]:
                 let t_id = self.mb.node_types[child as i64]

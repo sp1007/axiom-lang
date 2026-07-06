@@ -1486,6 +1486,25 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                 if sym.kind == SYM_STRUCT:
                     is_struct_constructor = true
                     struct_type_id = sym.type_id
+                    // BUG#74: for a generic struct constructed with no explicit
+                    // type args (`Pair(first: v, ...)`), typecheck records the
+                    // concrete MONOMORPHIZED struct type on the call node itself
+                    // (node_types[idx]); prefer it over the bare template
+                    // (sym.type_id) so the value is built with the SAME packed
+                    // field layout the receiving generic function reads it back
+                    // through. Without this the value used the template's generic
+                    // 8-byte field slots (second field always at offset 8) while
+                    // the callee read a packed concrete struct -- every combo
+                    // except a fully-8-byte-aligned one (e.g. Pair[i32,i32],
+                    // packed second at offset 4) coincidentally matched. Guarded
+                    // to STRUCT/GENERIC_INST and `ct != sym.type_id`, so a
+                    // non-generic struct (node_types == template) is unchanged.
+                    if self.mb.node_types != null as ptr[u32]:
+                        let ct = self.mb.node_types[idx as i64]
+                        if ct != 0 as u32 and ct != sym.type_id and (ct as i64) < self.mb.typetable.entries.len:
+                            let ce = self.mb.typetable.entries.data[ct as i64]
+                            if ce.kind == TYPE_KIND_STRUCT or ce.kind == TYPE_KIND_GENERIC_INST:
+                                struct_type_id = ct
         elif callee_node.kind == NODE_INDEX_EXPR or callee_node.kind == NODE_GENERIC_TYPE:
             if self.mb.node_types != null as ptr[u32]:
                 let t_id = self.mb.node_types[child as i64]

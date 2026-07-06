@@ -1,0 +1,20 @@
+// BUG#74 regression: a user-defined multi-param generic struct constructed
+// WITHOUT explicit type args (field-value inference), then passed through
+// generic functions that read fields. The i32/i32 case (p) is the tricky one:
+// the packed struct is exactly 8 bytes and its second field sits at offset 4,
+// whereas the pre-fix template layout put it at offset 8 -> silently read 0.
+struct Pair[A, B]:
+    first: A
+    second: B
+
+fn get_first[A, B](p: Pair[A, B]) -> A:
+    return p.first
+
+fn get_second[A, B](p: Pair[A, B]) -> B:
+    return p.second
+
+fn main() -> i32:
+    let p = Pair(first: 3 as i32, second: 7 as i32)
+    let q = Pair(first: 10 as i32, second: 20 as i64)
+    // 7 (i32/i32 second) + 3 (first) + 20 (i64 second) + 10 (first) = 40
+    return get_second(p) + get_first(p) + (get_second(q) as i32) + get_first(q)
