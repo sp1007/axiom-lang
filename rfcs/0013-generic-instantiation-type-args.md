@@ -1,6 +1,11 @@
 # RFC 0013 — Track generic instantiation type-args on `StructInfo`
 
-- **Status:** Proposed (2026-07-06)
+- **Status:** Accepted, SHIPPED (`4fb74f4`, 2026-07-06). Fixpoint verified (A==B),
+  regression suite 95/95 (`t_hashi64` + new `t_nestedgen` rows green). Section 3's
+  alternative (b) (self-describing mangled format) remains open for RFC 0011 P5
+  (generics through the `.lib`/`.dll` interface), where the mangled string is still
+  the only source of truth and the same ambiguity is latent but out of this RFC's
+  shipped scope.
 - **Author:** self-host team
 - **Tracking:** [[bug64-vec-big-aggregate-element]] BUG#65 (memory), follow-on to BUG#64
   (shipped `b08867b`) and BUG#66 (shipped `73f396d`).
