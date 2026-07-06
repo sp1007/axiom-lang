@@ -247,6 +247,15 @@ pub fn get_generic_args(self: ptr[TypeChecker], type_id: u32) -> U32Vec:
                 k = k + 1
             return out_args
 
+    if entry.kind == TYPE_KIND_SUM and (entry.extra as i64) < self.types.sumtypes.len:
+        let sum_args = &self.types.sumtypes.data[entry.extra as i64].generic_args
+        if sum_args.len > 0 as i64:
+            mut m := 0 as i64
+            while m < sum_args.len:
+                out_args.push(sum_args.data[m])
+                m = m + 1
+            return out_args
+
     return self.get_generic_args_from_mangled(type_id)
 
 pub fn get_generic_args_from_mangled(self: ptr[TypeChecker], type_id: u32) -> U32Vec:
@@ -2214,7 +2223,17 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             
                             let inst_sym = self.symtable.symbols.data[inst_sym_idx as i64]
                             result_type = inst_sym.type_id
-                            
+
+                            // BUG#67 follow-up: record the concrete args on the
+                            // monomorphized sum type (e.g. Option[Vec[i64]])
+                            // itself, so get_generic_args() on it (used later
+                            // when a caller does `.unwrap()` on a value of
+                            // this type) doesn't have to re-derive them from
+                            // the clone's mangled name (ambiguous for a nested
+                            // generic payload -- same class as BUG#65).
+                            if cloned_kind == NODE_TYPE_ALIAS_DECL:
+                                self.types.set_sum_generic_args(result_type, args)
+
                             if args.data != null as ptr[u32]:
                                 @free(args.data as ptr[u8])
     elif kind == NODE_UNARY_EXPR:

@@ -142,6 +142,7 @@ pub fn push(self: ptr[VariantInfoVec], vi: VariantInfo):
 
 pub struct SumInfo:
     variants: VariantInfoVec
+    generic_args: U32Vec
 
 pub struct SumInfoVec:
     data: ptr[SumInfo]
@@ -288,7 +289,7 @@ pub fn new_type_table() -> ptr[TypeTable]:
 
 pub fn register_sum_type(self: ptr[TypeTable], name_id: u32, variants: VariantInfoVec) -> u32:
     let s_idx = self.sumtypes.len as u32
-    (&self.sumtypes).push(SumInfo(variants: variants))
+    (&self.sumtypes).push(SumInfo(variants: variants, generic_args: U32Vec(data: null as ptr[u32], len: 0, cap: 0)))
     // RFC 0004: a user sum value is an 8-byte by-address pointer to a heap box
     // laid out as [tag: i64 @0][payload: 8B @8] = 16 bytes (kind 6 is aggregate,
     // so the VALUE stays an 8-byte pointer; the 16 is the box allocation size).
@@ -379,6 +380,31 @@ pub fn set_struct_generic_args(self: ptr[TypeTable], struct_type_id: u32, args: 
         copied.len = args.len
         copied.cap = args.len
     self.structs.data[s_idx].generic_args = copied
+
+// BUG#67 follow-up: same idea as set_struct_generic_args, but for a
+// monomorphized generic SUM TYPE (e.g. a concrete Option[Vec[i64]] clone
+// produced when typechecking a `-> Option[V]` return-type annotation with V
+// substituted). Without this, get_generic_args() falls back to parsing the
+// clone's mangled name, which is ambiguous for a nested generic payload
+// (e.g. Vec[i64] itself mangled as "...__i64") -- same architectural gap as
+// BUG#65, manifesting for sum types instead of structs.
+pub fn set_sum_generic_args(self: ptr[TypeTable], sum_type_id: u32, args: U32Vec):
+    if (sum_type_id as i64) >= self.entries.len:
+        return
+    let entry = self.entries.data[sum_type_id as i64]
+    if entry.kind != TYPE_KIND_SUM:
+        return
+    let s_idx = entry.extra as i64
+    if s_idx >= self.sumtypes.len:
+        return
+    mut copied := U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+    if args.len > 0 as i64:
+        let buf = @alloc(args.len * 4 as i64) as ptr[u32]
+        @memcpy(buf as ptr[u8], args.data as ptr[u8], args.len * 4 as i64)
+        copied.data = buf
+        copied.len = args.len
+        copied.cap = args.len
+    self.sumtypes.data[s_idx].generic_args = copied
 
 pub fn register_function(self: ptr[TypeTable], params: U32Vec, ret: u32) -> u32:
     let f_idx = self.funcs.len as u32
