@@ -896,7 +896,14 @@ pub fn main() -> i32:
 
     // RFC 0008: lambda-lift closures to top-level functions before resolution, so
     // they resolve/typecheck/lower as ordinary functions (reusing fn-ptr lowering).
-    lift_closures(parser.tree, parser.pool)
+    // BUG#73: lift_closures rejects captured-variable closures (RFC 0008 P2 is not
+    // implemented) instead of silently lifting them into a miscompile; halt here
+    // exactly like the parser.diags_count gate above (BUG#53).
+    let lift_errors = lift_closures(parser.tree, parser.pool)
+    if lift_errors > 0 as i64:
+        ax_printf_local("error: %d closure capture error(s); aborting before code generation\n", lift_errors, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        return 1
 
     // RFC 0011 P4 (increment 3c/3d): auto-(re)build the `.lib` of each imported LIBRARY
     // (a module whose source carries a `library` marker) from source when missing/stale, so

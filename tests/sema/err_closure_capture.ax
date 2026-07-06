@@ -1,0 +1,17 @@
+// Regression (BUG#73): a closure body referencing a variable from an
+// enclosing scope ("capturing" it) must be a compile error, not a silent
+// accept-then-miscompile. RFC 0008 P1 shipped only zero-capture lambda-
+// lifting (lift_one_closure re-parents the body into a new top-level
+// function with NO env struct and NO rewriting of outer references); P2
+// (real capture) is still Draft. Before this diagnostic, `base` below
+// resolved post-lift via an unscoped global symbol scan to a stale
+// register/slot from a completely different function -- `base + x` was
+// silently computed as `x + x`. Same class of bug as
+// err_call_field_not_function.ax / err_range_index.ax.
+fn test() -> i32:
+    let base = 100 as i32
+    let add = |x: i32| -> i32 base + x
+    return add(7 as i32)
+
+fn main() -> i32:
+    return test()

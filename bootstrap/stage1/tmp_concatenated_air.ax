@@ -3243,15 +3243,91 @@ fn lift_one_closure(tree: ptr[AstTree], pool: ptr[InternPool], ci: u32):
     tree.nodes.data[ci as i64].payload = name_id
     tree.nodes.data[ci as i64].first_child = NULL_IDX
 
+// BUG#73: lift_one_closure only re-parents the lambda BODY into a new
+// top-level function -- it does NOT generate an env struct or rewrite
+// references to outer-scope variables (RFC 0008 P2 "closures with capture"
+// is still Draft/unimplemented, only P1 zero-capture lambda-lifting shipped).
+// An identifier in the body that isn't one of the closure's own params
+// silently resolves, post-lift, to WHATEVER same-named symbol happens to
+// exist anywhere in the program (SymbolTable::resolve_global is an
+// unscoped linear scan) -- typically a completely unrelated variable in a
+// different function's frame, whose stale register/slot number gets
+// reused as if it belonged to the lifted function. Real, reproducible
+// wrong-answer bug (e.g. `|x| base + x` capturing an enclosing `base`
+// silently computed `x + x`), not a crash, so nothing else in the pipeline
+// ever caught it. Reject before lifting instead of miscompiling: any
+// identifier in the body that is neither one of the closure's own params
+// nor a known top-level global (fn/struct/interface/const/type-alias) is a
+// capture attempt.
+fn scan_closure_free_vars(tree: ptr[AstTree], pool: ptr[InternPool], node_idx: u32, params: U32Vec, globals: U32Vec) -> i64:
+    if node_idx == NULL_IDX:
+        return 0 as i64
+    let node = tree.nodes.data[node_idx as i64]
+    mut count := 0 as i64
+    if node.kind == NODE_IDENT:
+        let name_id = node.payload
+        mut known := false
+        mut i := 0 as i64
+        while i < params.len:
+            if params.data[i] == name_id:
+                known = true
+                break
+            i = i + 1
+        if not known:
+            i = 0 as i64
+            while i < globals.len:
+                if globals.data[i] == name_id:
+                    known = true
+                    break
+                i = i + 1
+        if not known:
+            let name_str = pool.get(name_id)
+            ax_printf_local("error: closure captures '%s' from an enclosing scope; only zero-capture closures are currently supported (RFC 0008 P2 not yet implemented)\n", get_str_ptr(name_str) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            safe_free_str(name_str)
+            count = count + 1 as i64
+    mut child := node.first_child
+    while child != NULL_IDX:
+        count = count + scan_closure_free_vars(tree, pool, child, params, globals)
+        child = tree.nodes.data[child as i64].next_sibling
+    return count
+
+fn check_closure_no_capture(tree: ptr[AstTree], pool: ptr[InternPool], ci: u32, globals: U32Vec) -> i64:
+    let first = tree.nodes.data[ci as i64].first_child
+    if first == NULL_IDX:
+        return 0 as i64
+    mut params := new_u32_vec()
+    mut prev := NULL_IDX
+    mut cur := first
+    while cur != NULL_IDX:
+        if tree.nodes.data[cur as i64].kind == NODE_PARAM_DECL:
+            params.push(tree.nodes.data[cur as i64].payload)
+        prev = cur
+        cur = tree.nodes.data[cur as i64].next_sibling
+    let body = prev
+    if body == NULL_IDX:
+        return 0 as i64
+    return scan_closure_free_vars(tree, pool, body, params, globals)
+
 // Lambda-lifting pass: run after parse, before name resolution. Rewrites every
 // NODE_CLOSURE_EXPR into a top-level function + reference. Reuses fn-ptr lowering.
-pub fn lift_closures(tree: ptr[AstTree], pool: ptr[InternPool]):
+pub fn lift_closures(tree: ptr[AstTree], pool: ptr[InternPool]) -> i64:
     let orig_len = tree.nodes.len
+    mut globals := new_u32_vec()
+    mut gc := tree.nodes.data[0].first_child
+    while gc != NULL_IDX:
+        let gcn = tree.nodes.data[gc as i64]
+        if gcn.kind == NODE_FUNC_DECL or gcn.kind == NODE_STRUCT_DECL or gcn.kind == NODE_INTERFACE_DECL or gcn.kind == NODE_CONST_DECL or gcn.kind == NODE_TYPE_ALIAS_DECL:
+            globals.push(gcn.payload)
+        gc = gcn.next_sibling
+
+    mut errors := 0 as i64
     mut ci := 1 as i64
     while ci < orig_len:
         if tree.nodes.data[ci].kind == NODE_CLOSURE_EXPR:
+            errors = errors + check_closure_no_capture(tree, pool, ci as u32, globals)
             lift_one_closure(tree, pool, ci as u32)
         ci = ci + 1 as i64
+    return errors
 
 pub fn parse_param(mut self: ptr[Parser]) -> u32:
     let param_tok = self.peek()
@@ -28252,7 +28328,14 @@ pub fn main() -> i32:
 
     // RFC 0008: lambda-lift closures to top-level functions before resolution, so
     // they resolve/typecheck/lower as ordinary functions (reusing fn-ptr lowering).
-    lift_closures(parser.tree, parser.pool)
+    // BUG#73: lift_closures rejects captured-variable closures (RFC 0008 P2 is not
+    // implemented) instead of silently lifting them into a miscompile; halt here
+    // exactly like the parser.diags_count gate above (BUG#53).
+    let lift_errors = lift_closures(parser.tree, parser.pool)
+    if lift_errors > 0 as i64:
+        ax_printf_local("error: %d closure capture error(s); aborting before code generation\n", lift_errors, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+        return 1
 
     // RFC 0011 P4 (increment 3c/3d): auto-(re)build the `.lib` of each imported LIBRARY
     // (a module whose source carries a `library` marker) from source when missing/stale, so

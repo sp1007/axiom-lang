@@ -1,0 +1,12 @@
+// Regression (BUG#73): a closure body that references its OWN params, a
+// global const, or a global function must still work fine (zero-capture,
+// RFC 0008 P1) -- this is the case that must NOT be falsely rejected by the
+// BUG#73 capture check.
+const OFFSET: i32 = 100 as i32
+
+fn helper(v: i32) -> i32:
+    return v * 2 as i32
+
+fn main() -> i32:
+    let f = |x: i32| -> i32 helper(x) + OFFSET
+    return f(3 as i32) - 100 as i32
