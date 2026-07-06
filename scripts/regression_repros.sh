@@ -120,6 +120,7 @@ rows=(
   "t_mutparam|exit|22"
   "t_structarrfield|exit|119"
   "t_retstructfield|exit|11"
+  "t_nested3field|exit|13"
 )
 
 for row in "${rows[@]}"; do

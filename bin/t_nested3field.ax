@@ -1,0 +1,19 @@
+// BUG#77 regression: nested sub-field access THROUGH a 16-byte struct field
+// (`c.b.a.v`), and binding a 16-byte struct field to a local then sub-accessing
+// it (`let bb = c.b; bb.a.v`). Both faulted because a 16-byte struct obtained via
+// GET_FIELD was held INLINE while the sub-field access assumed a POINTER -- the
+// same pointer-vs-inline representation split that caused BUG#75 (array field)
+// and BUG#76 (returning a struct field). Unified fix: 16-byte aggregates are
+// classified by-address everywhere (like OP_ALLOC/params already are).
+struct A:
+    v: i64
+struct B:
+    a: A
+    w: i64
+struct C:
+    b: B
+    z: i64
+fn main() -> i32:
+    let c = C(b: B(a: A(v: 5 as i64), w: 2 as i64), z: 1 as i64)
+    let bb = c.b                                        // 16-byte field -> local
+    return (c.b.a.v + bb.a.v + c.b.w + c.z) as i32      // 5 + 5 + 2 + 1 = 13

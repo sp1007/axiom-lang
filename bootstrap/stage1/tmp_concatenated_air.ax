@@ -17669,44 +17669,6 @@ pub fn field_is_aggregate(table: ptr[TypeTable], struct_type_id: u32, field_idx:
         return true
     return false
 
-// BUG#75: true iff field `field_idx` of `struct_type_id` is a FIXED ARRAY (kind
-// 3). Narrower than field_is_aggregate on purpose: an array field is always held
-// by-address (never the 16-byte register-pair by-value ABI a small struct uses),
-// so an exactly-16-byte array field must be excluded from both the str-inline
-// GET_FIELD copy path AND the 16-byte regalloc home, while 16-byte struct fields
-// keep their existing classification (tstruct_abi). Mirrors field_is_aggregate's
-// navigation.
-pub fn field_is_array(table: ptr[TypeTable], struct_type_id: u32, field_idx: u32) -> bool:
-    if struct_type_id == 0 as u32:
-        return false
-    mut real_type_id := struct_type_id
-    mut entry = table.entries.data[real_type_id]
-    if entry.kind == 9 as u8: // TYPE_KIND_POINTER = 9
-        real_type_id = entry.extra
-        entry = table.entries.data[real_type_id]
-    if entry.kind != 1 as u8 and entry.kind != 8 as u8: // STRUCT=1, GENERIC_INST=8
-        return false
-    mut struct_idx := 0xffffffff as u32
-    if entry.kind == 1 as u8:
-        struct_idx = entry.extra
-    else:
-        mut idx := 0 as i64
-        while idx < table.entries.len:
-            let e = table.entries.data[idx]
-            if e.kind == 1 as u8 and e.name_id == entry.name_id:
-                struct_idx = e.extra
-                break
-            idx = idx + 1
-    if struct_idx == 0xffffffff as u32:
-        return false
-    let info = table.structs.data[struct_idx]
-    if field_idx as i64 >= info.fields.len:
-        return false
-    let f = info.fields.data[field_idx]
-    if f.type_id as i64 >= table.entries.len:
-        return false
-    return table.entries.data[f.type_id].kind == 3 as u8 // TYPE_KIND_ARRAY
-
 // BUG#59: is field `field_idx` of `struct_type_id` a POINTER-SUM (sum kind 6,
 // option 11, result 12)? Such a value is an 8-byte box pointer (its entry.size is
 // 16 â€” the box allocation â€” but the VALUE stored in the field is the pointer). It
@@ -18031,21 +17993,20 @@ pub fn regalloc_is_16byte_cached(vreg: u32, fn_ptr: ptr[AirFunc], table: ptr[Typ
                         // handling is unchanged (they keep the prior classification â€”
                         // see BUG#64 comment on the dedicated OP_INDEX case above for
                         // why this one stays narrow).
-                        mut tk := 0 as u8
-                        if type_id < table.entries.len as u32:
-                            tk = table.entries.data[type_id].kind
-                        let is_tagged_ptr = tk == 6 as u8 or tk == 11 as u8 or tk == 12 as u8
-                        // BUG#75: a 16-byte fixed-array field load (OP_GET_FIELD whose
-                        // type_id is the `[i32;4]` array) is held by-ADDRESS, not as a
-                        // 16-byte inline value -- its GET_FIELD now returns the field
-                        // address (LEA). Homing it 16-byte-inline made OP_STORE take
-                        // `LEA &slot` (writing the local copy) while OP_INDEX loaded the
-                        // address from the slot -> array-field writes silently hit a
-                        // copy. Arrays never use the register-pair by-value ABI, so
-                        // excluding kind 3 here does not affect the 16-byte STRUCT case
-                        // that tstruct_abi relies on.
-                        let is_byaddr_array = tk == 3 as u8
-                        if size == 16 as u32 and not is_tagged_ptr and not is_byaddr_array:
+                        // BUG#75/76/77: a 16-byte AGGREGATE value (struct/array/tuple/
+                        // generic-inst/sum/option/result) is held BY ADDRESS in this
+                        // backend, exactly like the param path above and every other op
+                        // case here (COPY/CALL/DEREF all use `not type_is_aggregate`).
+                        // This catch-all -- which classifies OP_GET_FIELD dests -- was
+                        // the last place still homing a 16-byte aggregate as INLINE,
+                        // making the SAME struct value a pointer when produced by
+                        // OP_ALLOC/param but inline when produced by GET_FIELD. That
+                        // inconsistency crashed: array-field writes (BUG#75), returning a
+                        // struct field (BUG#76), and nested sub-field access through a
+                        // GET_FIELD'd 16-byte struct (`c.b.a.v`, BUG#77) -- each treated
+                        // inline data as a pointer or vice versa. Only a genuine inline-16
+                        // PRIMITIVE (`str`) stays 16-byte here.
+                        if size == 16 as u32 and not type_is_aggregate(table, type_id):
                             return true
                     return false
         i = i + 1
@@ -19146,18 +19107,15 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
         elif size > 16 as u32:
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: disp as i64)))
-        elif size == 16 as u32 and not field_is_array(sel.table, struct_type, inst.src2):
-            // BUG#75: this is the str-style {ptr,len} 16-byte-INLINE copy path. A
-            // fixed-array field that HAPPENS to be exactly 16 bytes (e.g. `[i32; 4]`)
-            // is NOT an inline str value -- an array is always held by-address, so it
-            // must fall through to the `field_is_aggregate` branch below (return the
-            // field ADDRESS via LEA). Without this exclusion, `b.data` for
-            // `data: [i32;4]` copied the array's first 16 bytes into a slot as if a
-            // str, then indexing that value (`b.data[i]`) deref'd two i32s (e.g.
-            // 10|20) as a pointer and faulted. Scoped to ARRAYS only (not 16-byte
-            // structs, which keep the register-pair by-value ABI that tstruct_abi
-            // depends on -- see the matching array-only guard in regalloc_is_16byte).
-            // Twin of the BUG#64 fix on the OP_INDEX size==16 branch.
+        elif size == 16 as u32 and not field_is_aggregate(sel.table, struct_type, inst.src2):
+            // BUG#75/76/77: this is the str-style {ptr,len} 16-byte-INLINE copy path,
+            // valid ONLY for a genuine 16-byte PRIMITIVE (`str`). Any 16-byte AGGREGATE
+            // field (array `[i32;4]`, or a 4xi32 nested struct) is held by-address, so
+            // it must fall through to the `field_is_aggregate` branch below and return
+            // the field ADDRESS (LEA). Copying its 16 bytes inline here made the same
+            // value a pointer elsewhere but inline here -- see the matching
+            // `not type_is_aggregate` guard in regalloc_is_16byte. Twin of the BUG#64
+            // fix on the OP_INDEX size==16 branch.
             let tmp_dest_addr = next_vreg(sel)
             out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
