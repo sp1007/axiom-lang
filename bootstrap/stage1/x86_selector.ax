@@ -1364,7 +1364,25 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         let fn_name_ret = sel.pool.get(sel.fn_ptr.name)
         if inst.src1 != 0 as u32:
             let is_16byte = regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols)
-            if is_16byte:
+            // BUG#76: decide the 16-byte return convention by the RETURN TYPE, matching
+            // the caller. The caller classifies a 16-byte AGGREGATE call result as an
+            // 8-byte POINTER (RFC 0001 -- see the `not type_is_aggregate` guards in
+            // regalloc_is_16byte's CALL case); only a genuine inline-16 PRIMITIVE (`str`)
+            // is returned in the RAX:RDX pair. When the returned value is an
+            // OP_GET_FIELD of a 16-byte struct field (`return o.inner`), that field-load
+            // reg is classified 16-byte-INLINE, so without this guard the two field
+            // halves went out in RAX:RDX while the caller read RAX as a pointer and
+            // dereferenced packed field bytes -> segfault. For a 16-byte aggregate
+            // return, hand back a POINTER to the value (LEA into RAX), exactly like an
+            // OP_ALLOC-produced return already does through the else branch below.
+            mut ret_is_agg16 := false
+            let ret_ty16 = sel.fn_ptr.ret_type as u32
+            if (ret_ty16 as i64) < sel.table.entries.len:
+                if sel.table.entries.data[ret_ty16].size == 16 as u32 and type_is_aggregate(sel.table, ret_ty16):
+                    ret_is_agg16 = true
+            if is_16byte and ret_is_agg16:
+                out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif is_16byte:
                 let tmp_src_addr = next_vreg(sel)
                 out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_src_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 // Load the high half (RDX) BEFORE the low half (RAX): the source

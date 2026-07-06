@@ -1,0 +1,19 @@
+// BUG#76 regression: returning a 16-byte struct FIELD directly from a function
+// (`return o.inner`). The GET_FIELD result is classified 16-byte-inline, but a
+// 16-byte aggregate return must go back BY POINTER (RFC 0001) to match the
+// caller -- otherwise the two field halves went out in RAX:RDX while the caller
+// read RAX as a pointer and dereferenced packed field bytes (segfault). 8-byte
+// fields and constructed-local returns were unaffected; only the direct 16-byte
+// field return was wrong.
+struct Inner:
+    a: i32
+    b: i64
+struct Outer:
+    x: i32
+    inner: Inner
+fn get_inner(o: Outer) -> Inner:
+    return o.inner
+fn main() -> i32:
+    let o = Outer(x: 1 as i32, inner: Inner(a: 3 as i32, b: 7 as i64))
+    let gi = get_inner(o)
+    return gi.a + (gi.b as i32) + o.x     // 3 + 7 + 1 = 11
