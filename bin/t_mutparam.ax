@@ -1,0 +1,13 @@
+// RFC 0015 P1 (BUG#69) regression: assigning to a `mut` PARAMETER and to a
+// `mut` LOCAL must both be accepted. The newly-activated mutability-only
+// OwnershipChecker (E4002) previously false-flagged mut params because the
+// resolver dropped FLAG_IS_MUT for NODE_PARAM_DECL (SYM_FLAG_MUT never set).
+fn addmut(mut x: i32, y: i32) -> i32:
+    x = x + y          // reassign a mut param
+    return x
+
+fn main() -> i32:
+    mut acc := 3 as i32
+    acc = addmut(10 as i32, 5 as i32)   // 15
+    acc = acc + 7 as i32                // reassign a mut local -> 22
+    return acc

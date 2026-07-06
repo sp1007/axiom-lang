@@ -1,6 +1,7 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** Draft (2026-07-06) — problem framing + phased plan; NO activation yet
+- **Status:** P1 Implemented (2026-07-06) — OwnershipChecker live as a
+  mutability-only checker (E4002); move-checking + escape + CTGC-free deferred (P2/P3)
 - **Author:** self-host team
 - **Tracking:** BUG#69 (discovered 2026-07-06 while investigating why RFC 0014
   drop-glue never fired)
@@ -99,11 +100,19 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
 - **P0 (this RFC):** framing + decisions above. Add in-code `// no-op — RFC 0015`
   notes at each guard so future readers are not misled (comment-only, zero
   behavior change).
-- **P1 — mutability-only OwnershipChecker (optional):** if decision 4.1 = "no
-  move semantics", strip `check_move`'s move-marking entirely; keep ONLY the
-  `E4002` immutable-assignment check; fix the guard; verify 0 false positives
-  across the bundled stdlib + compiler before enabling. If even `E4002` produces
-  false positives, defer the whole pass.
+- **P1 — mutability-only OwnershipChecker — ✅ DONE (2026-07-06).** Decision
+  4.1 taken = "no move semantics". `check_move` gutted to a no-op; the guard
+  fixed (`node_idx == 0xffffffff` only) so the pass runs; only `E4002`
+  immutable-assign is enforced. Building the whole compiler through the active
+  checker surfaced exactly the 2 expected E4002 sites — both **false positives**:
+  assignments to `mut` PARAMETERS (`fn substr(s, mut start, mut end): start = 0`).
+  Root cause: the resolver's `NODE_PARAM_DECL` handler dropped the parser's
+  `FLAG_IS_MUT`, so `mut` params never carried `SYM_FLAG_MUT`. Fixed in
+  resolver.ax (mirror `NODE_VAR_DECL`); `SYM_FLAG_MUT` is read ONLY by this
+  checker, so zero codegen effect. Result: 0 false positives across stdlib +
+  compiler, fixpoint A==B, regression 102/102. Tests: `bin/t_mutparam.ax`
+  (positive), `tests/sema/err_immutable_assign.ax` (reject). AXIOM now enforces
+  `let` immutability — assigning to a non-`mut` binding is a compile error.
 - **P2 — sound escape analysis:** redesign EscapeAnalyser to *conservatively*
   mark a local aggregate as non-escaping ONLY when it provably never (a) is
   returned, (b) is stored into a longer-lived aggregate/global, (c) has its

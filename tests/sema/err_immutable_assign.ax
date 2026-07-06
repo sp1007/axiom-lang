@@ -1,0 +1,10 @@
+// Regression (RFC 0015 P1 / BUG#69): assigning to an immutable `let` binding
+// must be rejected with error[E4002]. This became enforceable only once the
+// OwnershipChecker was activated (its guard `node_idx == 0` had made it a
+// complete no-op -- node 0 is the real NODE_PROGRAM root). Move-checking stays
+// disabled (AXIOM aggregates are copy/alias, RFC 0010); only mutability is
+// checked. A `mut x` here would be legal -- the point is that plain `let` is not.
+fn main() -> i32:
+    let x = 5 as i32
+    x = 9 as i32
+    return x

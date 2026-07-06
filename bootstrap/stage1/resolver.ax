@@ -872,7 +872,16 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
 
     elif kind == NODE_PARAM_DECL:
         let name_id = self.tree.nodes.data[node_idx].payload
-        let sym_idx = self.symtable.define(name_id, SYM_PARAM, 0 as u16, node_idx)
+        // RFC 0015 P1 (BUG#69): a `mut` parameter must carry SYM_FLAG_MUT, exactly
+        // like a `mut` local (NODE_VAR_DECL below). The parser records `mut` on the
+        // param node (FLAG_IS_MUT, parser.ax parse_param), but this was dropped here,
+        // so assigning to a mut param (`fn f(mut x: i64): x = 0`) tripped the newly-
+        // activated E4002 immutable-assign check. SYM_FLAG_MUT is read ONLY by the
+        // ownership checker, so this has no codegen effect.
+        mut sym_flags := 0 as u16
+        if (flags & FLAG_IS_MUT) != 0 as u16:
+            sym_flags = sym_flags | SYM_FLAG_MUT
+        let sym_idx = self.symtable.define(name_id, SYM_PARAM, sym_flags, node_idx)
         self.tree.nodes.data[node_idx].payload = sym_idx
         self.resolve_children(node_idx)
 

@@ -30,14 +30,18 @@ pub fn check(mut self: ptr[OwnershipChecker]):
         exit(1)
 
 pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
-    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. Node index 0 is the real
-    // NODE_PROGRAM root (ast.ax::new_ast_tree), but `check()` enters here with 0
-    // and this guard returns immediately -- the traversal never visits any node.
-    // Do NOT simply drop `or node_idx == 0`: `check_move` assumes MOVE semantics,
-    // which contradicts AXIOM's alias/copy semantics (RFC 0010), so activating it
-    // as-written flags ~258 valid reuses as `E4001 use of moved value`. Real
-    // activation is sequenced in RFC 0015; keep this inert until then.
-    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+    // RFC 0015 P1 (BUG#69): this pass is now ACTIVE as a mutability-only checker.
+    // The guard previously also returned on `node_idx == 0`, but node 0 is the real
+    // NODE_PROGRAM root (ast.ax::new_ast_tree) -- so the whole pass was a no-op.
+    // Only 0xffffffff is a genuine sentinel; recursive descents already filter
+    // `!= 0` at every call site before recursing, so the root is the only place the
+    // old `== 0` clause mattered, and dropping it is what turns the pass on.
+    //
+    // MOVE-checking is intentionally NOT enabled: AXIOM aggregates have alias/copy
+    // semantics (RFC 0010), not move semantics, so `check_move` is a no-op (see its
+    // body) and the E4001 path below never fires. Only the E4002 immutable-assign
+    // check is live. Escape analysis + CTGC free remain deferred (RFC 0015 P2/P3).
+    if node_idx == 0xffffffff as u32:
         return
 
     let node = self.tree.nodes.data[node_idx]
@@ -94,19 +98,11 @@ pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
 pub fn check_move(mut self: ptr[OwnershipChecker], node_idx: u32):
-    if node_idx == 0 as u32 or node_idx == 0xffffffff as u32:
-        return
-    let node = self.tree.nodes.data[node_idx]
-    if node.kind == NODE_IDENT:
-        let sym_idx = node.payload
-        if sym_idx != 0 as u32:
-            let sym = self.symtable.symbols.data[sym_idx]
-            mut is_copyable := true
-            let type_id = sym.type_id
-            if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
-                let entry = self.typetable.entries.data[type_id]
-                if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
-                    is_copyable = false
-            
-            if not is_copyable:
-                self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_MOVED
+    // RFC 0015 P1 (BUG#69): intentionally a NO-OP. AXIOM aggregates are copy/alias
+    // values (RFC 0010), not move-only, so binding/passing one does NOT consume it.
+    // The previous body marked every struct/sum/option/result/generic-inst use as
+    // SYM_FLAG_MOVED, which -- once the pass actually ran -- flagged ~258 valid
+    // read-only reuses across the stdlib + compiler as `E4001 use of moved value`.
+    // Real move semantics would need a language-level RFC (RFC 0015 §4.1); until
+    // then this stays inert and only the E4002 mutability check is enforced.
+    return

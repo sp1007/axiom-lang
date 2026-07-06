@@ -117,6 +117,7 @@ rows=(
   "t_arrlit|exit|15"
   "t_closurecap|exit|6"
   "t_genericstruct2|exit|40"
+  "t_mutparam|exit|22"
 )
 
 for row in "${rows[@]}"; do
