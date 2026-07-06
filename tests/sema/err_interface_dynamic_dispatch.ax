@@ -1,0 +1,23 @@
+// Regression (BUG#71): calling a method through an interface-TYPED value
+// (dynamic dispatch) must be a compile error, not a silent accept-then-crash.
+// AXIOM has no vtable/fat-pointer representation for interface values yet --
+// before this diagnostic, `s.area()` below silently resolved via plain scope
+// lookup to WHATEVER same-named method happened to be visible (not
+// necessarily the receiver's actual concrete type) and called it with a
+// mismatched `self` layout, segfaulting at runtime with no compile-time
+// signal. Same class of bug as err_call_field_not_function.ax /
+// err_struct_eq_no_overload.ax.
+interface Shape:
+    fn area(self: Self) -> i32
+
+struct Square:
+    side: i32
+    fn area(self: Square) -> i32:
+        return self.side * self.side
+
+fn total_area(s: Shape) -> i32:
+    return s.area()
+
+fn main() -> i32:
+    let sq = Square(side: 3 as i32)
+    return total_area(sq)

@@ -1152,6 +1152,21 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
                 if sym.type_id == 0 as u32:
                     let struct_type_id = self.types.register_struct(sym.name_id, StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0))
                     self.symtable.symbols.data[sym_idx].type_id = struct_type_id
+        elif node.kind == NODE_INTERFACE_DECL:
+            // BUG#71 prerequisite: without this, `sym.type_id` for an interface
+            // name stays 0/TYPE_UNKNOWN forever (nothing else in typecheck.ax
+            // ever touches NODE_INTERFACE_DECL), so a param typed `s: Shape`
+            // resolves to TYPE_UNKNOWN rather than something recognizable as
+            // "an interface" -- which is what let dynamic-dispatch calls through
+            // it silently resolve to an arbitrary same-named method instead of
+            // being rejected. Giving interfaces a real (minimal) type_id here is
+            // what makes that rejection check able to fire at all.
+            let sym_idx = node.payload
+            if sym_idx != 0 as u32:
+                let sym = self.symtable.symbols.data[sym_idx]
+                if sym.type_id == 0 as u32:
+                    let iface_type_id = self.types.register_interface(sym.name_id)
+                    self.symtable.symbols.data[sym_idx].type_id = iface_type_id
         i = i + 1
 
     // Phase 0.1: Register all Type Aliases / Sum Types (struct type_ids now exist,
@@ -1743,6 +1758,28 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             rec_type = self.node_types[rec_node as i64]
                         if rec_type == TYPE_UNKNOWN:
                             rec_type = self.infer_node(rec_node, TYPE_UNKNOWN)
+
+                    // Diagnostic: dynamic dispatch through an interface-typed
+                    // receiver is not implemented -- there is no vtable/fat-
+                    // pointer representation (TYPE_KIND_INTERFACE is otherwise
+                    // unhandled everywhere in air_builder). Previously this
+                    // silently resolved via plain scope lookup to WHATEVER
+                    // same-named method happened to be visible (not the actual
+                    // receiver's concrete type) and called it with a mismatched
+                    // `self` layout -- a real segfault, same accept-then-
+                    // miscompile class as BUG#53/64/68/70. Reject clearly.
+                    mut rec_unwrapped := rec_type
+                    if rec_unwrapped != TYPE_UNKNOWN and (rec_unwrapped as i64) < self.types.entries.len:
+                        mut rue := self.types.entries.data[rec_unwrapped as i64]
+                        while rue.kind == TYPE_KIND_POINTER or rue.kind == TYPE_KIND_REF:
+                            rec_unwrapped = rue.extra as u32
+                            rue = self.types.entries.data[rec_unwrapped as i64]
+                        if rue.kind == TYPE_KIND_INTERFACE:
+                            let fname = self.intern.get(field_name_id)
+                            ax_printf_local("error: dynamic dispatch through an interface-typed value is not yet supported ('%s')\n", get_str_ptr(fname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            safe_free_str(fname)
+                            self.diags_count = self.diags_count + 1 as i64
+
                     mut sym_idx := self.resolve_method_sym(field_name_id, rec_type)
                     if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                         let sym = self.symtable.symbols.data[sym_idx]

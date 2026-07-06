@@ -473,6 +473,29 @@ pub fn register_array(self: ptr[TypeTable], elem_id: u32, length: u32) -> u32:
         extra: elem_id,
     ))
 
+// Minimal interface type registration: just enough for a distinct, stable
+// type_id so receiver-type checks (e.g. rejecting unimplemented dynamic
+// dispatch through an interface value, see BUG#71) can recognize it. No
+// method-signature side table -- interfaces carry no runtime representation
+// (no vtable/fat pointer) yet, so there is nothing else to store here.
+pub fn register_interface(self: ptr[TypeTable], name_id: u32) -> u32:
+    mut i := 0 as i64
+    while i < self.entries.len:
+        let entry = self.entries.data[i]
+        if entry.kind == TYPE_KIND_INTERFACE and entry.name_id == name_id:
+            return i as u32
+        i = i + 1
+
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_INTERFACE,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 0 as u32,
+        align: 0 as u32,
+        extra: 0 as u32,
+    ))
+
 pub fn register_generic_inst(self: ptr[TypeTable], name_id: u32, args: U32Vec) -> u32:
     mut i := 0 as i64
     while i < self.entries.len:
