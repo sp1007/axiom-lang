@@ -111,6 +111,7 @@ rows=(
   "t_modcollide|exit|101"
   "t_hashi64|exit|42"
   "t_nestedgen|exit|42"
+  "t_optstruct|exit|40"
 )
 
 for row in "${rows[@]}"; do

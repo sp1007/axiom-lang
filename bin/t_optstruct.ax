@@ -1,0 +1,21 @@
+// Regression (BUG#67): Some(x)/Ok(x) unqualified variant constructor calls on
+// a GENERIC sum type (Option/Result) previously kept the bare TEMPLATE type_id
+// for the result (T still a generic placeholder) instead of instantiating a
+// concrete type from the argument. A later .unwrap() at a non-generic call
+// site then couldn't recover T, silently defaulted to i32 (same fallback as
+// BUG#66), and lost the real field layout for any struct/aggregate payload —
+// segfault. Fix: typecheck.ax's try_instantiate_variant_call registers a real
+// GENERIC_INST from the call argument's actual type.
+struct Big:
+    a: i32
+    b: i32
+    c: i32
+    d: i32
+
+fn main() -> i32:
+    let big = Big(a: 7, b: 12, c: 15, d: 6)
+    let opt = Some(big)
+    if not opt.is_some():
+        return 1
+    let got = opt.unwrap()
+    return got.a + got.b + got.c + got.d

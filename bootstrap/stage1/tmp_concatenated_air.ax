@@ -5877,8 +5877,123 @@ pub fn get_generic_args_from_mangled(self: ptr[TypeChecker], type_id: u32) -> U3
                 
             @free(arg_name_buf)
         arg_start = arg_end + 2 as i64
-        
+
     return out_args
+
+// BUG#67: an unqualified generic-sum-type variant constructor call
+// (Some(x)/Ok(x)/Err(x)) previously kept the bare TEMPLATE sum type_id for
+// its result (T/E still generic placeholders) instead of a concrete
+// instantiation. get_generic_args() on that bare template later finds no
+// real args and falls to the ambiguous mangled-name fallback (or nothing at
+// all here, since the template's name is plain "Option"/"Result"), so a
+// later generic call like `.unwrap()` can't recover T and silently defaults
+// to i32 (same fallback as BUG#66) -- fine for scalars that happen to fit,
+// corrupts anything else (segfaults for a struct payload, since the field
+// layout is lost entirely).
+//
+// Fix: when the constructed sum type is GENERIC, match each payload
+// type-expr of the specific variant being called (e.g. the lone "T" in
+// `Some(T)`, or "E" in `Err(E)`) against the alias's own ordered generic
+// params BY NAME, and register a real GENERIC_INST using the call
+// argument's actual inferred type for whichever params we can bind this
+// way. Params we can't bind from this call (e.g. E when calling Ok(x) on a
+// Result[T,E]) stay TYPE_UNKNOWN -- unresolved, not wrong; this call alone
+// cannot know them, same limit as any partial generic inference.
+pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum_type_id: u32) -> u32:
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return sum_type_id
+    let vsym_idx = self.tree.nodes.data[callee].payload
+    if vsym_idx == 0 as u32 or (vsym_idx as i64) >= self.symtable.symbols.len:
+        return sum_type_id
+    let vsym = self.symtable.symbols.data[vsym_idx as i64]
+    if vsym.kind != SYM_VARIANT or vsym.decl_node == 0 as u32:
+        return sum_type_id
+    let first_call_arg = self.tree.nodes.data[callee].next_sibling
+    if first_call_arg == 0 as u32:
+        return sum_type_id
+
+    if (sum_type_id as i64) >= self.types.entries.len:
+        return sum_type_id
+    let entry = self.types.entries.data[sum_type_id as i64]
+    if entry.name_id == 0 as u32:
+        return sum_type_id
+    mut alias_sym_idx := self.symtable.resolve(entry.name_id)
+    if alias_sym_idx == 0 as u32:
+        alias_sym_idx = self.symtable.resolve_global_fallback(entry.name_id)
+    if alias_sym_idx == 0 as u32 or (alias_sym_idx as i64) >= self.symtable.symbols.len:
+        return sum_type_id
+    let alias_sym = self.symtable.symbols.data[alias_sym_idx as i64]
+    if alias_sym.decl_node == 0 as u32:
+        return sum_type_id
+
+    mut alias_tree := self.tree
+    if (alias_sym_idx as i64) < self.symtable.symbol_trees.len:
+        let at = self.symtable.symbol_trees.data[alias_sym_idx as i64]
+        if at != null as ptr[AstTree]:
+            alias_tree = at
+    if (alias_tree.nodes.data[alias_sym.decl_node].flags & FLAG_IS_GENERIC) == 0 as u16:
+        return sum_type_id
+
+    // Ordered generic-param NAME ids of the alias, e.g. ["T"] for Option,
+    // ["T", "E"] for Result.
+    mut gp_name_ids := new_u32_vec()
+    mut c := alias_tree.nodes.data[alias_sym.decl_node].first_child
+    while c != 0 as u32:
+        let cn = alias_tree.nodes.data[c]
+        if cn.kind == NODE_GENERIC_PARAMS:
+            mut gp := cn.first_child
+            while gp != 0 as u32:
+                let gp_name = self.node_text_in_tree(alias_tree, gp)
+                gp_name_ids.push(self.intern.intern(gp_name))
+                safe_free_str(gp_name)
+                gp = alias_tree.nodes.data[gp].next_sibling
+            break
+        c = cn.next_sibling
+    if gp_name_ids.len == 0 as i64:
+        if gp_name_ids.data != null as ptr[u32]:
+            @free(gp_name_ids.data as ptr[u8])
+        return sum_type_id
+
+    mut variant_tree := self.tree
+    if (vsym_idx as i64) < self.symtable.symbol_trees.len:
+        let vt = self.symtable.symbol_trees.data[vsym_idx as i64]
+        if vt != null as ptr[AstTree]:
+            variant_tree = vt
+
+    mut args := new_u32_vec()
+    mut ai := 0 as i64
+    while ai < gp_name_ids.len:
+        args.push(TYPE_UNKNOWN)
+        ai = ai + 1
+
+    mut bound_any := false
+    mut payload_node := variant_tree.nodes.data[vsym.decl_node].first_child
+    mut call_arg := first_call_arg
+    while payload_node != 0 as u32 and call_arg != 0 as u32:
+        let payload_name = self.node_text_in_tree(variant_tree, payload_node)
+        let payload_name_id = self.intern.intern(payload_name)
+        safe_free_str(payload_name)
+        mut gi := 0 as i64
+        while gi < gp_name_ids.len:
+            if gp_name_ids.data[gi] == payload_name_id:
+                let concrete = self.infer_node(call_arg, TYPE_UNKNOWN)
+                if concrete != TYPE_UNKNOWN and not self.is_generic(concrete):
+                    args.data[gi] = concrete
+                    bound_any = true
+                break
+            gi = gi + 1
+        payload_node = variant_tree.nodes.data[payload_node].next_sibling
+        call_arg = self.tree.nodes.data[call_arg].next_sibling
+
+    if gp_name_ids.data != null as ptr[u32]:
+        @free(gp_name_ids.data as ptr[u8])
+
+    if not bound_any:
+        if args.data != null as ptr[u32]:
+            @free(args.data as ptr[u8])
+        return sum_type_id
+
+    return self.types.register_generic_inst(entry.name_id, args)
 
 pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u32, gen_params: U32Vec, inferred: U32Vec, src_tree: ptr[AstTree]):
     if tn_idx == 0 as u32 or arg_type == 0 as u32:
@@ -7276,7 +7391,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 elif entry.kind == TYPE_KIND_STRUCT:
                     result_type = callee_type
                 elif entry.kind == TYPE_KIND_SUM:
-                    result_type = callee_type
+                    result_type = self.try_instantiate_variant_call(callee, callee_type)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
                 elif self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR:
