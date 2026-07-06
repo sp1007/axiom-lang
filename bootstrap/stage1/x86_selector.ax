@@ -330,6 +330,28 @@ pub fn type_is_aggregate(table: ptr[TypeTable], type_id: u32) -> bool:
         return true
     return false
 
+// BUG#78: is `type_id` a POINTER-REPR tagged type -- a value that IS an 8-byte
+// (tagged) box pointer even though its entry.size is 16 (the box)? This covers the
+// bare sum/option/result kinds (6/11/12) AND a GENERIC_INST (kind 8) that is really
+// an Option/Result instance (`Some(x)`/`None` infer to a GENERIC_INST named
+// "Option" via try_instantiate_variant_call, NOT the kind-11 OPTION). A kind-8
+// GENERIC_INST of a plain generic STRUCT (e.g. Pair[i32,i64]) is by-VALUE and must
+// NOT match here -- so kind 8 is gated on the base name being Option/Result.
+pub fn type_is_pointer_repr(table: ptr[TypeTable], pool: ptr[InternPool], type_id: u32) -> bool:
+    if (type_id as i64) >= table.entries.len:
+        return false
+    let k = table.entries.data[type_id as i64].kind
+    if k == 6 as u8 or k == 11 as u8 or k == 12 as u8:
+        return true
+    if k == 8 as u8:
+        let nm = pool.get(table.entries.data[type_id as i64].name_id)
+        let base = extract_qualified_base_name(nm)
+        // Not freed: extract_qualified_base_name may return a string LITERAL, and
+        // freeing a literal is fatal (see mono.ax overload_tag). The tiny leak is
+        // bounded by the number of distinct types touched during codegen.
+        return base == "Option" or base == "Result"
+    return false
+
 // Returns true if field `field_idx` of `struct_type_id` is itself an aggregate
 // (a struct / generic-inst), i.e. a nested value struct. Such a field is held
 // BY ADDRESS (like every small struct value in this backend), so GET_FIELD must
@@ -1723,7 +1745,17 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-        if size == 16 as u32 and not type_is_aggregate(sel.table, elem_type):
+        if type_is_pointer_repr(sel.table, sel.pool, elem_type):
+            // BUG#78: a sum/option/result element (incl. a GENERIC_INST Option/Result)
+            // is POINTER-REPR -- the value stored in the array IS an 8-byte (tagged)
+            // box pointer, even though the element type's entry.size is 16 (the box).
+            // Load the 8-byte pointer, like OP_GET_FIELD does for such a field
+            // (field_is_pointer_sum, BUG#59). Without this, type_is_aggregate below
+            // returned the element ADDRESS and the paired OP_STORE block-copied 16
+            // bytes from the value -- for a `None` (null pointer) that read from
+            // address 0 and segfaulted while building `[Some(x), None]`.
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        elif size == 16 as u32 and not type_is_aggregate(sel.table, elem_type):
             // BUG#64: this branch is the str-style {ptr,len} 16-byte-INLINE copy. A
             // struct/sum/etc element that HAPPENS to be 16 bytes (e.g. 4×i32) is NOT
             // inline — it is held by-address like every other aggregate — so it must
@@ -1766,6 +1798,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         // must be block-copied (contents), not stored as an 8-byte pointer — same
         // inline convention as OP_SET_FIELD. Scalars (<=8B, value in reg) are stored.
         let store_is_agg = type_is_aggregate(sel.table, inst.type_id as u32)
+        // BUG#78: a sum/option/result element (incl. GENERIC_INST Option/Result) is
+        // POINTER-REPR -- entry.size is 16 (the box) but the value is an 8-byte box
+        // pointer. Store the 8-byte pointer, mirroring OP_INDEX above and
+        // field_is_pointer_sum (BUG#59). Block-copying 16 bytes from the value read
+        // FROM the pointer (its box), and for `None` (null) dereferenced address 0.
+        let store_is_ptr_sum = type_is_pointer_repr(sel.table, sel.pool, inst.type_id as u32)
 
         if inst.src2 != 0 as u32:
             let tmp_offset = next_vreg(sel)
@@ -1783,7 +1821,9 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_offset, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
-            if size > 8 as u32 or store_is_agg:
+            if store_is_ptr_sum:
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif size > 8 as u32 or store_is_agg:
                 emit_block_copy(sel, tmp_addr, 0 as u32, inst.src1, size, out_insts)
             else:
                 out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))

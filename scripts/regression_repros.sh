@@ -121,6 +121,7 @@ rows=(
   "t_structarrfield|exit|119"
   "t_retstructfield|exit|11"
   "t_nested3field|exit|13"
+  "t_arroption|exit|110"
 )
 
 for row in "${rows[@]}"; do
