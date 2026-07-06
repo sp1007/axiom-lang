@@ -1,0 +1,27 @@
+// Regression (BUG#68): a struct used as a HashMap key (or compared with ==)
+// must implement `eq` (RFC 0007 operator overload) to compare correctly.
+// Before the BUG#68 diagnostic fix, `==` on a struct WITHOUT an eq overload
+// silently fell through to comparing the two operands' ADDRESSES (structs are
+// held by-address in this backend) instead of their field contents -- a
+// HashMap[StructKey, V] would silently never find keys it had just inserted.
+// With a proper `eq` overload (as here), the comparison correctly dispatches
+// to the user method and HashMap lookups work end-to-end.
+import std.collections
+
+struct Point:
+    x: i32
+    y: i32
+    fn eq(self, o: Point) -> bool:
+        return self.x == o.x and self.y == o.y
+
+fn main() -> i32:
+    mut m = HashMap[Point, i64].new()
+    m.insert(Point(x: 1, y: 2), 100)
+    m.insert(Point(x: 3, y: 4), 200)
+    let a = m.get(Point(x: 1, y: 2))
+    if not a.is_some() or a.unwrap() != 100 as i64:
+        return 1
+    let b = m.get(Point(x: 3, y: 4))
+    if not b.is_some() or b.unwrap() != 200 as i64:
+        return 2
+    return 42

@@ -421,6 +421,59 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 
     return self.types.register_generic_inst(entry.name_id, args)
 
+// Diagnostic-only mirror of air_builder.ax's resolve_op_method: scans SYM_FUNC
+// symbols whose (mangled) name matches `method_name` (struct methods declared
+// INLINE under `struct X: fn eq(self, o): ...` get a dotted mangled name like
+// "X.eq", which plain self.symtable.resolve("eq") does NOT find -- this must
+// use the SAME substring-match helper air_builder uses at codegen time, or the
+// diagnostic and the actual lowering decision can disagree). Returns 0 when no
+// method matches, meaning air_builder would ALSO find nothing and fall back to
+// the broken native-opcode (pointer) comparison.
+pub fn diag_resolve_op_method(self: ptr[TypeChecker], method_name: str, rec_type: u32, rhs_type: u32) -> u32:
+    let method_id = self.intern.intern(method_name)
+    mut unwrapped := rec_type
+    mut e := self.types.entries.data[unwrapped as i64]
+    while e.kind == TYPE_KIND_POINTER or e.kind == TYPE_KIND_REF:
+        unwrapped = e.extra as u32
+        e = self.types.entries.data[unwrapped as i64]
+    mut rhs_unwrapped := 0 as u32
+    if rhs_type != 0 as u32:
+        rhs_unwrapped = rhs_type
+        mut re := self.types.entries.data[rhs_unwrapped as i64]
+        while re.kind == TYPE_KIND_POINTER or re.kind == TYPE_KIND_REF:
+            rhs_unwrapped = re.extra as u32
+            re = self.types.entries.data[rhs_unwrapped as i64]
+    mut i := 0 as i64
+    while i < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[i]
+        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.intern, sym.name_id, method_id):
+            if (sym.type_id as i64) < self.types.entries.len:
+                let t_entry = self.types.entries.data[sym.type_id as i64]
+                if t_entry.kind == TYPE_KIND_FUNC:
+                    let fi = self.types.funcs.data[t_entry.extra as i64]
+                    if fi.params.len > 0 as i64:
+                        mut fp := fi.params.data[0] as u32
+                        mut fpe := self.types.entries.data[fp as i64]
+                        while fpe.kind == TYPE_KIND_POINTER or fpe.kind == TYPE_KIND_REF:
+                            fp = fpe.extra as u32
+                            fpe = self.types.entries.data[fp as i64]
+                        if fp == unwrapped:
+                            mut rhs_ok := true
+                            if rhs_unwrapped != 0 as u32:
+                                rhs_ok = false
+                                if fi.params.len > 1 as i64:
+                                    mut sp := fi.params.data[1] as u32
+                                    mut spe := self.types.entries.data[sp as i64]
+                                    while spe.kind == TYPE_KIND_POINTER or spe.kind == TYPE_KIND_REF:
+                                        sp = spe.extra as u32
+                                        spe = self.types.entries.data[sp as i64]
+                                    if sp == rhs_unwrapped:
+                                        rhs_ok = true
+                            if rhs_ok:
+                                return i as u32
+        i = i + 1 as i64
+    return 0 as u32
+
 pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u32, gen_params: U32Vec, inferred: U32Vec, src_tree: ptr[AstTree]):
     if tn_idx == 0 as u32 or arg_type == 0 as u32:
         return
@@ -1583,6 +1636,42 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     self.infer_node(rhs, t1)
                 elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
                     self.infer_node(lhs, t2)
+
+                // Diagnostic: RFC 0007 lowers `a <op> b` on a STRUCT/SUM/GENERIC_INST
+                // lhs to a method call (a.eq(b)/a.lt(b)/...) ONLY IF a matching
+                // overload method is found; otherwise air_builder's lower_binary_expr
+                // silently falls through to the native scalar opcode (OP_EQ/OP_ILT/...)
+                // comparing the operands' RAW REGISTER VALUES -- which, for an
+                // aggregate held by-address, means comparing the two operands'
+                // ADDRESSES, not their field contents. Two distinct struct values with
+                // identical fields then compare as "not equal" with NO diagnostic at
+                // all (silent accept-then-miscompile, same class as BUG#53/#64). Reject
+                // it here instead: if lhs is a user-type and no overload for this
+                // operator exists, emit an error rather than emitting broken pointer-
+                // comparison code.
+                if (t1 as i64) < self.types.entries.len:
+                    let t1_entry = self.types.entries.data[t1 as i64]
+                    if t1_entry.kind == TYPE_KIND_STRUCT or t1_entry.kind == TYPE_KIND_SUM or t1_entry.kind == TYPE_KIND_GENERIC_INST:
+                        let op_text = self.node_text(node_idx)
+                        mut mname := ""
+                        if op_text == "==" or op_text == "!=":
+                            mname = "eq"
+                        elif op_text == "<":
+                            mname = "lt"
+                        elif op_text == "<=":
+                            mname = "le"
+                        elif op_text == ">":
+                            mname = "gt"
+                        elif op_text == ">=":
+                            mname = "ge"
+                        safe_free_str(op_text)
+                        if mname != "":
+                            let msym = self.diag_resolve_op_method(mname, t1, t2)
+                            if msym == 0 as u32:
+                                let tname = self.intern.get(t1_entry.name_id)
+                                ax_printf_local("error: type '%s' does not implement '%s' for this comparison; no operator overload found\n", get_str_ptr(tname) as i64, get_str_ptr(mname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+
                 result_type = TYPE_BOOL
             elif op == 2 as u16: // and / or
                 self.infer_node(lhs, TYPE_BOOL)

@@ -113,6 +113,7 @@ rows=(
   "t_nestedgen|exit|42"
   "t_optstruct|exit|40"
   "t_optnested|exit|42"
+  "t_structeq|exit|42"
 )
 
 for row in "${rows[@]}"; do

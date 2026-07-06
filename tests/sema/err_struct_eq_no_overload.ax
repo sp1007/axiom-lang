@@ -1,0 +1,18 @@
+// Regression (BUG#68-diag): comparing two struct VALUES with `==`/`!=`/`<`/etc.
+// when the struct has NO matching operator-overload method (RFC 0007: eq/lt/
+// le/gt/ge) must be a compile error, not a silent accept-then-miscompile.
+// Structs are held BY-ADDRESS in this backend; without an overload, the
+// comparison used to fall through to the native scalar opcode and compare the
+// two operands' ADDRESSES instead of their field contents -- two distinct
+// struct values with identical fields silently compared as "not equal", with
+// no diagnostic at all. Same class of bug as err_call_field_not_function.ax.
+struct Point:
+    x: i32
+    y: i32
+
+fn main() -> i32:
+    let a = Point(x: 1, y: 2)
+    let b = Point(x: 1, y: 2)
+    if a == b:
+        return 0
+    return 1
