@@ -1,0 +1,25 @@
+// BUG#79 regression: pushing `None` into a Vec[Option[T]] then reading it back.
+// `v.push(None)` monomorphizes push[T] with T=Option[i32]. The receiver
+// Vec[Option[i32]] fully determines T, so inference is complete — but the `None`
+// argument's type is under-determined (a generic-looking Option), which used to
+// trip the has_generic_arg guard and SKIP instantiation. The call then fell back
+// to the raw template name `push` -> linker error 'ax_push' (unresolved). Fix:
+// a generic-looking argument only blocks instantiation when a type param was
+// actually left unresolved (and would be i32-defaulted); when the receiver
+// resolves every param concretely, `None` no longer defers.
+fn main() -> i32:
+    mut v := new_vec[Option[i32]]()
+    v.push(Some(3 as i32))
+    v.push(None)
+    v.push(Some(7 as i32))
+    mut sum := 0 as i32
+    mut i := 0 as i64
+    while i < v.len:
+        let o = v.data[i]        // Option[i32] read directly from backing store
+        match o:
+            Some(x):
+                sum = sum + x
+            None:
+                sum = sum + 100 as i32
+        i = i + 1 as i64
+    return sum     // 3 + 100 + 7 = 110

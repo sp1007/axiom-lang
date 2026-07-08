@@ -7797,6 +7797,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         p_idx = p_idx + 1
                     c = cn.next_sibling
                 
+                // BUG#79: a type param left UNKNOWN here would be i32-defaulted
+                // below. Whether a generic-looking ARGUMENT should block
+                // instantiation depends on this: if every param was resolved
+                // concretely (e.g. a Vec[Option[i32]] receiver fully determines
+                // T), a generic-looking argument such as `None` must NOT defer.
+                mut has_unresolved := false
+                i = 0
+                while i < inferred.len:
+                    if inferred.data[i] == TYPE_UNKNOWN:
+                        has_unresolved = true
+                    i = i + 1
+
                 i = 0
                 while i < inferred.len:
                     if inferred.data[i] == TYPE_UNKNOWN:
@@ -7804,19 +7816,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     i = i + 1
 
                 mut has_generic_arg := false
-                mut a_idx := 0 as i64
-                while a_idx < arg_types.len:
-                    if self.is_generic(arg_types.data[a_idx]):
-                        has_generic_arg = true
-                        break
-                    a_idx = a_idx + 1
-                
+                // A genuinely generic inferred type param (inside a generic body)
+                // means no concrete instance can be produced yet â€” always defer.
                 mut inf_idx := 0 as i64
                 while inf_idx < inferred.len:
                     if self.is_generic(inferred.data[inf_idx]):
                         has_generic_arg = true
                         break
                     inf_idx = inf_idx + 1
+
+                // Only when a param was left UNRESOLVED (and thus i32-defaulted)
+                // does a generic ARGUMENT signal a generic context we must defer
+                // to, rather than bake a wrong i32 instance. When inference is
+                // complete, a generic-looking argument like `None` cannot block.
+                if has_unresolved:
+                    mut a_idx := 0 as i64
+                    while a_idx < arg_types.len:
+                        if self.is_generic(arg_types.data[a_idx]):
+                            has_generic_arg = true
+                            break
+                        a_idx = a_idx + 1
 
                 if has_generic_arg:
                     if gen_params.data != null as ptr[u32]:
