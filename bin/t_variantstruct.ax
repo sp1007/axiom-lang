@@ -1,0 +1,21 @@
+// BUG#81 positive oracle: the SUPPORTED way to carry multiple values in a variant
+// is a single struct payload (multi-field variant payloads like `Two(i32, i32)` are
+// rejected — VariantInfo carries one payload_type, construct stores one arg). This
+// is the workaround the diagnostic recommends; it must keep working (BUG#58 path).
+struct Pair:
+    a: i32
+    b: i32
+
+enum V:
+    One(i32)
+    Two(Pair)
+
+fn f(v: V) -> i32:
+    match v:
+        One(a):
+            return a
+        Two(p):
+            return p.a + p.b
+
+fn main() -> i32:
+    return f(Two(Pair(a: 10 as i32, b: 7 as i32)))   // 10 + 7 = 17

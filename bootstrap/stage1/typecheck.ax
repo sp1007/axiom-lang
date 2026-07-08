@@ -1369,7 +1369,23 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                             let type_expr_node = v_node_struct.first_child
                             if type_expr_node != 0 as u32:
                                 payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
-                                
+                                // BUG#81: a variant with MORE than one payload field
+                                // (e.g. `Two(i32, i32)` or `Node(Tree, Tree)`) is NOT
+                                // supported — VariantInfo carries a single payload_type,
+                                // lower_variant_construct stores only the FIRST argument,
+                                // and match extracts only one field, so the 2nd+ fields
+                                // were silently dropped: scalar payloads read 0 (wrong
+                                // answer), pointer payloads (recursive `Node(Tree,Tree)`)
+                                // dereferenced garbage (segfault). Same silent accept-
+                                // then-miscompile class as BUG#53/64/68/73; reject
+                                // cleanly instead. Workaround: wrap the fields in a
+                                // struct and use a single struct payload (BUG#58).
+                                if self.tree.nodes.data[type_expr_node].next_sibling != 0 as u32:
+                                    let mfv_name = self.intern.get(v_sym.name_id)
+                                    ax_printf_local("error: variant '%s' has multiple payload fields, which is not supported; wrap them in a struct (e.g. a single struct payload)\n", get_str_ptr(mfv_name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                    safe_free_str(mfv_name)
+                                    self.diags_count = self.diags_count + 1 as i64
+
                             variants.push(VariantInfo(
                                 name_id: v_sym.name_id,
                                 payload_type: payload_type,

@@ -1,0 +1,14 @@
+// Regression (BUG#81): an enum/sum variant declared with MORE than one payload
+// field (`Two(i32, i32)`) must be a compile error, not a silent accept-then-
+// miscompile. VariantInfo carries a single payload_type, lower_variant_construct
+// stores only the FIRST argument, and match extracts only one field, so the 2nd+
+// fields were silently dropped -- scalar payloads read 0 (wrong answer), pointer
+// payloads (a recursive `Node(Tree, Tree)`) dereferenced garbage (segfault).
+// Workaround: wrap the fields in a single struct payload. Same class of bug as
+// err_closure_capture.ax / err_call_field_not_function.ax / err_range_index.ax.
+enum V:
+    One(i32)
+    Two(i32, i32)
+
+fn main() -> i32:
+    return 0

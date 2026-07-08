@@ -124,6 +124,7 @@ rows=(
   "t_arroption|exit|110"
   "t_vecoption|exit|110"
   "t_ovcollide|exit|37"
+  "t_variantstruct|exit|17"
 )
 
 for row in "${rows[@]}"; do
