@@ -690,7 +690,34 @@ pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u
         
     return sym_idx
 
-
+// BUG#80: free-function call `f(a, ...)` to an OVERLOADED name. The resolver binds the
+// callee ident to the overload-chain HEAD (a plain scope lookup returns the FIRST-defined
+// symbol of that name) with NO argument-based disambiguation — only method calls (`x.f()`)
+// pick an overload, via resolve_method_overload keyed on the receiver type. So a user
+// function whose name collides with a stdlib one (e.g. `get`, `push`, `len` — stdlib is
+// always linked) bound to the stdlib overload and SILENTLY MISCOMPILED: the head is a
+// generic stdlib `get[T]`, so the call took the generic-instantiation path and baked
+// `get[T=UserType]` on the wrong signature, returning 0 with no diagnostic (same silent
+// accept-then-miscompile class as BUG#73). Mirror the method path for free calls: if the
+// head is overloaded, pick the overload whose FIRST parameter type matches the FIRST
+// argument (the free-call analogue of a receiver). Conservative — resolve_method_overload
+// tests the head FIRST, so a call already bound to a compatible overload is returned
+// unchanged; we only switch when the head is INCOMPATIBLE with arg0 and another overload
+// in the chain matches, which is strictly a repair of a previously-broken binding.
+pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, first_arg_node: u32) -> u32:
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return sym_idx
+    if self.symtable.symbols.data[sym_idx].next_overload == 0 as u32:
+        return sym_idx
+    if first_arg_node == 0 as u32:
+        return sym_idx
+    let arg0_type = self.infer_node(first_arg_node, TYPE_UNKNOWN)
+    if arg0_type == TYPE_UNKNOWN:
+        return sym_idx
+    let picked = self.resolve_method_overload(sym_idx, arg0_type)
+    if picked != sym_idx and picked != 0 as u32 and self.is_method_compatible(picked, arg0_type):
+        return picked
+    return sym_idx
 
 pub fn match_method_name(sym_name: str, field_name: str) -> bool:
     if sym_name == field_name:
@@ -1928,12 +1955,22 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_CALL_EXPR:
         let callee = self.tree.nodes.data[node_idx].first_child
         if callee != 0 as u32:
-            let callee_node = self.tree.nodes.data[callee]
+            mut callee_node = self.tree.nodes.data[callee]
             mut is_generic_call := false
             mut template_sym_idx := 0 as u32
 
             if callee_node.kind == NODE_IDENT:
-                let sym_idx = callee_node.payload
+                // BUG#80: disambiguate an OVERLOADED free-call by the first argument type
+                // BEFORE deciding generic-ness / binding the callee, mirroring the method
+                // path. Rewrite the tree payload so air_builder lowers the right overload;
+                // re-read callee_node afterwards (inferring the arg may realloc nodes,
+                // BUG#51). No-op unless the name is overloaded and the head mismatches.
+                let ov_first_arg = self.tree.nodes.data[callee].next_sibling
+                let ov_pick = self.resolve_free_call_overload(callee_node.payload, ov_first_arg)
+                if ov_pick != callee_node.payload:
+                    self.tree.nodes.data[callee].payload = ov_pick
+                    callee_node = self.tree.nodes.data[callee]
+                let sym_idx = ov_pick
                 if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
                     let sym = self.symtable.symbols.data[sym_idx]
                     mut src_tree := self.tree

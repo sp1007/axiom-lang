@@ -123,6 +123,7 @@ rows=(
   "t_nested3field|exit|13"
   "t_arroption|exit|110"
   "t_vecoption|exit|110"
+  "t_ovcollide|exit|37"
 )
 
 for row in "${rows[@]}"; do

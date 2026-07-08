@@ -1,0 +1,25 @@
+// BUG#80 regression: a user-defined free function whose name collides with a stdlib
+// function (`get`: Vec.get / HashMap.get, always linked) must still resolve to the
+// USER's function when called in free position with a matching argument type.
+//
+// Before the fix, the callee ident `get` bound to the overload-chain HEAD (a generic
+// stdlib `get[T]`) with no argument-based disambiguation, so `get(a)` took the generic
+// instantiation path on the wrong signature and silently returned 0 (no diagnostic) —
+// the same silent accept-then-miscompile class as BUG#73. The fix disambiguates an
+// overloaded free-call by the first argument type (the free-call analogue of a
+// method receiver), mirroring resolve_method_overload.
+struct Box:
+    tag: i32
+    val: Option[i32]
+
+fn get(b: Box) -> i32:
+    match b.val:
+        Some(x):
+            return x + b.tag
+        None:
+            return b.tag
+
+fn main() -> i32:
+    let a = Box(tag: 10 as i32, val: Some(7 as i32))
+    let b = Box(tag: 20 as i32, val: None)
+    return get(a) + get(b)   // (7+10) + 20 = 37
