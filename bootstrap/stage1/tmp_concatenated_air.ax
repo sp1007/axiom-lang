@@ -9520,6 +9520,13 @@ pub const OP_GET_FIELD: u16 = 0x010D
 pub const OP_SET_FIELD: u16 = 0x010E
 pub const OP_INDEX: u16 = 0x010F
 pub const OP_SLICE: u16 = 0x0110
+// Address of an array/pointer element (`&a[i]`): computes base + i*elem_size and
+// returns that ADDRESS, never loading the element. OP_INDEX loads scalars, so
+// `&scalar[i]` lowered as OP_INDEX+OP_MAKE_REF took the address of a TEMPORARY
+// holding the loaded value instead of the element's lvalue (BUG#84). Scoped to
+// scalar elements; aggregate `&agg[i]` still uses OP_INDEX (already returns the
+// element address) + OP_MAKE_REF pass-through.
+pub const OP_INDEX_ADDR: u16 = 0x0111
 
 // ALU class (0x02xx)
 pub const OP_ICONST: u16 = 0x0201
@@ -9887,6 +9894,8 @@ pub fn opcode_mnemonic(op: u16) -> str:
         return "index"
     if op == OP_SLICE:
         return "slice"
+    if op == OP_INDEX_ADDR:
+        return "idxaddr"
 
     if op == OP_ICONST:
         return "iconst"
@@ -11040,6 +11049,43 @@ pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     let child = node.first_child
     if child == 0 as u32:
         return 0 as u32
+
+    // BUG#84: `&a[i]` on a SCALAR element. lower_expr(child) below would LOAD the
+    // element value (OP_INDEX), and OP_MAKE_REF then takes the address of that
+    // TEMPORARY -- so the returned pointer aliases a stack temp, not the array slot
+    // (writes are lost; reads past index 0 hit zeroed stack). Emit OP_INDEX_ADDR
+    // (base + i*elem_size, no load) directly and return it, bypassing OP_MAKE_REF.
+    // Aggregate `&agg[i]` is left on the existing OP_INDEX (which already yields the
+    // element address for aggregates) + OP_MAKE_REF pass-through path, so the
+    // compiler's own `&self.data[i]` self-codegen is unchanged.
+    let child_node = self.mb.tree.nodes.data[child as i64]
+    let op_tok0 = self.mb.get_token_text(node.token_idx)
+    let is_ref_op = op_tok0 == "&"
+    @free(get_str_ptr(op_tok0))
+    if is_ref_op and child_node.kind == NODE_INDEX_EXPR:
+        mut elem_ty := 0 as u32
+        if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
+            elem_ty = self.mb.node_types[child as i64] as u32
+        if elem_ty != 0 as u32 and not type_is_aggregate(self.mb.typetable, elem_ty):
+            let arr_child = child_node.first_child
+            let arr_reg2 = self.lower_expr(arr_child)
+            let idx_child = self.mb.tree.nodes.data[arr_child as i64].next_sibling
+            mut idx_reg2 := 0 as u32
+            if idx_child != 0 as u32:
+                idx_reg2 = self.lower_expr(idx_child)
+            mut ref_ty := elem_ty
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                ref_ty = self.mb.node_types[idx as i64] as u32
+            let areg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_INDEX_ADDR,
+                type_id: ref_ty,
+                dest: areg,
+                src1: arr_reg2,
+                src2: idx_reg2,
+            ))
+            return areg
+
     let operand_reg = self.lower_expr(child)
 
     let op_token = self.mb.get_token_text(node.token_idx)
@@ -19159,6 +19205,39 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
 
             if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
                 emit_load_extend(sel, inst.dest, size, elem_type, out_insts)
+
+    elif op == OP_INDEX_ADDR:
+        // BUG#84: `&a[i]` for a SCALAR element -> element ADDRESS (base + i*elem_size),
+        // NEVER a load. Element size comes from the base pointer/array pointee (src1),
+        // not inst.type_id (which is the ptr[elem] RESULT type, size 8). Mirrors
+        // OP_INDEX's base+offset computation but MOVs the address to dest.
+        mut ia_elem := 0 as u32
+        let ia_base_ty = get_register_type(sel, inst.src1)
+        if ia_base_ty != 0 as u32 and (ia_base_ty as i64) < sel.table.entries.len:
+            let ia_bk = sel.table.entries.data[ia_base_ty].kind
+            if ia_bk == TYPE_KIND_POINTER or ia_bk == TYPE_KIND_REF or ia_bk == TYPE_KIND_SLICE or ia_bk == TYPE_KIND_ARRAY:
+                ia_elem = sel.table.entries.data[ia_base_ty].extra
+        mut ia_size := 0 as u32
+        mut ia_align := 0 as u32
+        type_size_and_align(sel.table, ia_elem, &ia_size, &ia_align)
+        if ia_size == 0 as u32:
+            ia_size = 8 as u32
+
+        let ia_off = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if ia_size > 1 as u32:
+            let ia_sz = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_sz, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: ia_size as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_IMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_sz, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // base address: str (16-byte {ptr,len}) uses its ptr field; array/pointer bases
+        // are plain (the vreg holds the by-address slot or the pointer value).
+        if regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols):
+            let ia_saddr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_STORE:
         mut size := 0 as u32

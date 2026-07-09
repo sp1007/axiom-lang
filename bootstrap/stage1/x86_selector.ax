@@ -1788,6 +1788,39 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
                 emit_load_extend(sel, inst.dest, size, elem_type, out_insts)
 
+    elif op == OP_INDEX_ADDR:
+        // BUG#84: `&a[i]` for a SCALAR element -> element ADDRESS (base + i*elem_size),
+        // NEVER a load. Element size comes from the base pointer/array pointee (src1),
+        // not inst.type_id (which is the ptr[elem] RESULT type, size 8). Mirrors
+        // OP_INDEX's base+offset computation but MOVs the address to dest.
+        mut ia_elem := 0 as u32
+        let ia_base_ty = get_register_type(sel, inst.src1)
+        if ia_base_ty != 0 as u32 and (ia_base_ty as i64) < sel.table.entries.len:
+            let ia_bk = sel.table.entries.data[ia_base_ty].kind
+            if ia_bk == TYPE_KIND_POINTER or ia_bk == TYPE_KIND_REF or ia_bk == TYPE_KIND_SLICE or ia_bk == TYPE_KIND_ARRAY:
+                ia_elem = sel.table.entries.data[ia_base_ty].extra
+        mut ia_size := 0 as u32
+        mut ia_align := 0 as u32
+        type_size_and_align(sel.table, ia_elem, &ia_size, &ia_align)
+        if ia_size == 0 as u32:
+            ia_size = 8 as u32
+
+        let ia_off = next_vreg(sel)
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        if ia_size > 1 as u32:
+            let ia_sz = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_sz, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: ia_size as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_IMUL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_sz, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // base address: str (16-byte {ptr,len}) uses its ptr field; array/pointer bases
+        // are plain (the vreg holds the by-address slot or the pointer value).
+        if regalloc_is_16byte(inst.src1, sel.fn_ptr, sel.table, sel.symbols):
+            let ia_saddr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_saddr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_saddr, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: ia_off, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
     elif op == OP_STORE:
         mut size := 0 as u32
         mut align := 0 as u32

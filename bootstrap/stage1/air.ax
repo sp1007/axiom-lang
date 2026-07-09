@@ -20,6 +20,13 @@ pub const OP_GET_FIELD: u16 = 0x010D
 pub const OP_SET_FIELD: u16 = 0x010E
 pub const OP_INDEX: u16 = 0x010F
 pub const OP_SLICE: u16 = 0x0110
+// Address of an array/pointer element (`&a[i]`): computes base + i*elem_size and
+// returns that ADDRESS, never loading the element. OP_INDEX loads scalars, so
+// `&scalar[i]` lowered as OP_INDEX+OP_MAKE_REF took the address of a TEMPORARY
+// holding the loaded value instead of the element's lvalue (BUG#84). Scoped to
+// scalar elements; aggregate `&agg[i]` still uses OP_INDEX (already returns the
+// element address) + OP_MAKE_REF pass-through.
+pub const OP_INDEX_ADDR: u16 = 0x0111
 
 // ALU class (0x02xx)
 pub const OP_ICONST: u16 = 0x0201
@@ -387,6 +394,8 @@ pub fn opcode_mnemonic(op: u16) -> str:
         return "index"
     if op == OP_SLICE:
         return "slice"
+    if op == OP_INDEX_ADDR:
+        return "idxaddr"
 
     if op == OP_ICONST:
         return "iconst"
