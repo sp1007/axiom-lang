@@ -1,0 +1,13 @@
+// Oracle (BUG#88): `str + str` must concatenate (lowered to std.string.concat),
+// not fall through to OP_IADD on the two 16-byte str values (which added their
+// pointers -> garbage/crash with no diagnostic). The `str` primitive is not a
+// STRUCT/SUM/GENERIC_INST, so the RFC 0007 operator-overload path skipped it.
+// AXIOM intends `+` to concatenate strings (std/os.ax uses `s + "." + ext`).
+fn main() -> i32:
+    let a = "foo"
+    let b = "bar"
+    let c = a + b                     // "foobar"
+    let d = c + "!"                   // "foobar!"  (chained, mixed var + literal)
+    // len("foobar")=6, len("foobar!")=7; first char of c is 'f'=102
+    return (std.string.len(c) as i32 + std.string.len(d) as i32 + (c[0] as i32 - 100 as i32)) as i32
+    // 6 + 7 + (102-100=2) = 15

@@ -731,6 +731,24 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
                     if msym != 0 as u32:
                         return self.lower_op_overload(idx, node, child, msym, is_ne)
 
+    // BUG#88: `str + str` -> std.string.concat(a, b). The `str` primitive is not a
+    // STRUCT/SUM/GENERIC_INST, so the RFC 0007 operator-overload path above skips it,
+    // and `+` fell through to OP_IADD on the two 16-byte str values -> garbage/crash
+    // with NO diagnostic. AXIOM intends `+` to concatenate strings (std/os.ax uses
+    // `s + "." + ext`). Lower it to the library `concat` call, reusing the overload
+    // call-emission path (resolve the concat symbol by name + (str,str) params).
+    if self.mb.node_types != null as ptr[u32]:
+        let sc_lt = self.mb.node_types[child as i64]
+        let sc_rhs_i = self.mb.tree.nodes.data[child as i64].next_sibling
+        if sc_lt == TYPE_STRING and sc_rhs_i != 0 as u32 and self.mb.node_types[sc_rhs_i as i64] == TYPE_STRING:
+            let sc_op = self.mb.get_token_text(node.token_idx)
+            let sc_is_plus = sc_op == "+"
+            @free(get_str_ptr(sc_op))
+            if sc_is_plus:
+                let csym = self.resolve_op_method("concat", TYPE_STRING, TYPE_STRING)
+                if csym != 0 as u32:
+                    return self.lower_op_overload(idx, node, child, csym, false)
+
     let lhs_reg = self.lower_expr(child)
 
     let rhs_idx = self.mb.tree.nodes.data[child as i64].next_sibling

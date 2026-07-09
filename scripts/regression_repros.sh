@@ -129,6 +129,7 @@ rows=(
   "t_arrelemaddr|exit|66"
   "t_fldelemaddr|exit|150"
   "t_forrange|exit|28"
+  "t_strconcat|exit|15"
 )
 
 for row in "${rows[@]}"; do
