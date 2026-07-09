@@ -1,0 +1,15 @@
+// RFC 0019: an enum/sum variant with MORE than one payload field (`Two(i32, i32)`)
+// is now SUPPORTED — desugared to a synthesized single-struct payload so all N
+// fields round-trip through construct + match. (Previously BUG#81 rejected it; the
+// old err_multifield_variant.ax negative test is obsolete.)
+enum V:
+    One(i32)
+    Two(i32, i32)
+
+fn main() -> i32:
+    let v = Two(10, 7)
+    match v:
+        One(a):
+            return a
+        Two(x, y):
+            return x + y      // 10 + 7 = 17

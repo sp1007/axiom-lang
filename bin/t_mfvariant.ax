@@ -1,0 +1,20 @@
+// Oracle (RFC 0019): multi-field variant payloads `Rect(i64,i64)` / `Tri(i64,i64,i64)`.
+// Constructs with N args and matches all N fields (not just the first — the BUG#81
+// silent-drop). Desugared to a synthesized single-struct payload. Field ORDER matters:
+// Tri(1,2,5) must bind a=1,b=2,c=5 -> 1*100+2*10+5 = 125.
+type Shape = Rect(i64, i64) | Tri(i64, i64, i64)
+fn main() -> i64:
+    let r = Rect(3, 4)
+    let t = Tri(1, 2, 5)
+    mut s := 0 as i64
+    match r:
+        Rect(w, h):
+            s = s + w * h            // 12
+        Tri(a, b, c):
+            s = s + 0
+    match t:
+        Rect(w, h):
+            s = s + 0
+        Tri(a, b, c):
+            s = s + a * 100 + b * 10 + c   // 125
+    return s                          // 12 + 125 = 137

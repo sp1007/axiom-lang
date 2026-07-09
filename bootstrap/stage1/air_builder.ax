@@ -2376,14 +2376,36 @@ pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32
     ))
 
     if payload_arg_idx != 0 as u32:
-        let pl_reg = self.lower_expr(payload_arg_idx)
-        self.fb.emit(AirInst(
-            opcode: OP_SET_FIELD,
-            type_id: sum_type_id,
-            dest: pl_reg,
-            src1: box_reg,
-            src2: 1 as u32,
-        ))
+        // RFC 0019: a multi-field variant (`Rect(3,4)`) has >1 call arg and a
+        // SYNTHESIZED struct payload_type. Gather the N args into a fresh struct box
+        // (arg[i] -> struct field i), then store the struct pointer into box field 1 —
+        // producing a value byte-identical to a user single-struct payload. A normal
+        // single payload (one arg) takes the existing path below.
+        let has_more = self.mb.tree.nodes.data[payload_arg_idx as i64].next_sibling != 0 as u32
+        mut is_multifield := false
+        if has_more and payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
+            if self.mb.typetable.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
+                is_multifield = true
+        if is_multifield:
+            let struct_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(opcode: OP_ALLOC, type_id: payload_type, dest: struct_reg, src1: 0 as u32, src2: 0 as u32))
+            mut arg := payload_arg_idx
+            mut fi := 0 as u32
+            while arg != 0 as u32:
+                let arg_reg = self.lower_expr(arg)
+                self.fb.emit(AirInst(opcode: OP_SET_FIELD, type_id: payload_type, dest: arg_reg, src1: struct_reg, src2: fi))
+                arg = self.mb.tree.nodes.data[arg as i64].next_sibling
+                fi = fi + 1 as u32
+            self.fb.emit(AirInst(opcode: OP_SET_FIELD, type_id: sum_type_id, dest: struct_reg, src1: box_reg, src2: 1 as u32))
+        else:
+            let pl_reg = self.lower_expr(payload_arg_idx)
+            self.fb.emit(AirInst(
+                opcode: OP_SET_FIELD,
+                type_id: sum_type_id,
+                dest: pl_reg,
+                src1: box_reg,
+                src2: 1 as u32,
+            ))
     return box_reg
 
 // RFC 0004: lower `match` on a user sum value to a tag-dispatch if/elif chain.
@@ -2710,9 +2732,35 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             self.fb.switch_to(then_block)
             self.terminated = false
             if payload_bind_sym != 0 as u32:
-                let pl_reg = self.fb.fresh_reg()
-                self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: payload_type, dest: pl_reg, src1: scrut_reg, src2: 1 as u32))
-                self.locals.local_map_put(payload_bind_sym, pl_reg)
+                let pat_arg0 = pat_node.first_child
+                mut is_mf := false
+                if pat_arg0 != 0 as u32 and self.mb.tree.nodes.data[pat_arg0 as i64].next_sibling != 0 as u32 and payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
+                    if self.mb.typetable.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
+                        is_mf = true
+                if is_mf:
+                    // RFC 0019: multi-field variant — read the struct payload pointer from
+                    // box field 1, then bind each pattern var to its struct field.
+                    let struct_reg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: payload_type, dest: struct_reg, src1: scrut_reg, src2: 1 as u32))
+                    let s_idx = self.mb.typetable.entries.data[payload_type as i64].extra
+                    mut bp := pat_arg0
+                    mut bfi := 0 as u32
+                    while bp != 0 as u32:
+                        if self.mb.tree.nodes.data[bp as i64].kind == NODE_BINDING_PAT:
+                            let bsym = self.mb.tree.nodes.data[bp as i64].payload
+                            mut fld_ty := 0 as u32
+                            if (s_idx as i64) < self.mb.typetable.structs.len and (bfi as i64) < self.mb.typetable.structs.data[s_idx as i64].fields.len:
+                                fld_ty = self.mb.typetable.structs.data[s_idx as i64].fields.data[bfi as i64].type_id
+                            let f_reg = self.fb.fresh_reg()
+                            self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: fld_ty, dest: f_reg, src1: struct_reg, src2: bfi))
+                            if bsym != 0 as u32:
+                                self.locals.local_map_put(bsym, f_reg)
+                        bp = self.mb.tree.nodes.data[bp as i64].next_sibling
+                        bfi = bfi + 1 as u32
+                else:
+                    let pl_reg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: payload_type, dest: pl_reg, src1: scrut_reg, src2: 1 as u32))
+                    self.locals.local_map_put(payload_bind_sym, pl_reg)
             if body != 0 as u32:
                 let bn = self.mb.tree.nodes.data[body as i64]
                 if bn.kind == NODE_BLOCK:

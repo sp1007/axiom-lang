@@ -1443,23 +1443,35 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                             mut payload_type := TYPE_UNKNOWN
                             let type_expr_node = v_node_struct.first_child
                             if type_expr_node != 0 as u32:
-                                payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
-                                // BUG#81: a variant with MORE than one payload field
-                                // (e.g. `Two(i32, i32)` or `Node(Tree, Tree)`) is NOT
-                                // supported — VariantInfo carries a single payload_type,
-                                // lower_variant_construct stores only the FIRST argument,
-                                // and match extracts only one field, so the 2nd+ fields
-                                // were silently dropped: scalar payloads read 0 (wrong
-                                // answer), pointer payloads (recursive `Node(Tree,Tree)`)
-                                // dereferenced garbage (segfault). Same silent accept-
-                                // then-miscompile class as BUG#53/64/68/73; reject
-                                // cleanly instead. Workaround: wrap the fields in a
-                                // struct and use a single struct payload (BUG#58).
                                 if self.tree.nodes.data[type_expr_node].next_sibling != 0 as u32:
-                                    let mfv_name = self.intern.get(v_sym.name_id)
-                                    ax_printf_local("error: variant '%s' has multiple payload fields, which is not supported; wrap them in a struct (e.g. a single struct payload)\n", get_str_ptr(mfv_name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                                    safe_free_str(mfv_name)
-                                    self.diags_count = self.diags_count + 1 as i64
+                                    // RFC 0019: a multi-field variant payload (`Rect(i64,i64)`)
+                                    // is desugared to a single SYNTHESIZED struct payload, so the
+                                    // proven single-struct-payload path (BUG#58) carries it
+                                    // (VariantInfo shape + sum sizing unchanged). Collect all N
+                                    // payload types into a struct `__mfv_<Sum>_<Variant>` with
+                                    // positional fields `_f0.._f(N-1)`; the constructor gathers
+                                    // the N args into it and match splits them back out.
+                                    mut synth_fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
+                                    mut ptn := type_expr_node
+                                    mut fidx := 0 as i64
+                                    while ptn != 0 as u32:
+                                        let ft = self.infer_node(ptn, TYPE_UNKNOWN)
+                                        let fn_str = std.string.concat("_f", format_int(fidx))
+                                        let fname_id = self.intern.intern(fn_str)
+                                        safe_free_str(fn_str)
+                                        (&synth_fields).push(StructField(name_id: fname_id, type_id: ft))
+                                        ptn = self.tree.nodes.data[ptn].next_sibling
+                                        fidx = fidx + 1 as i64
+                                    let sumnm = self.intern.get(sym.name_id)
+                                    let vnm = self.intern.get(v_sym.name_id)
+                                    let synth_nm = std.string.concat("__mfv_", std.string.concat(sumnm, std.string.concat("_", vnm)))
+                                    let synth_nm_id = self.intern.intern(synth_nm)
+                                    safe_free_str(synth_nm)
+                                    safe_free_str(sumnm)
+                                    safe_free_str(vnm)
+                                    payload_type = self.types.register_struct(synth_nm_id, synth_fields)
+                                else:
+                                    payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
 
                             variants.push(VariantInfo(
                                 name_id: v_sym.name_id,
@@ -1890,7 +1902,27 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             
                             // Now assign payload type to binding patterns (which are children of NODE_VARIANT_PAT)
                             let arg = pat_node.first_child
-                            if arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
+                            // RFC 0019: a multi-field variant's payload_type is a SYNTHESIZED
+                            // struct; bind each pattern var to its FIELD type, not the struct.
+                            mut mf_struct_idx := -1 as i64
+                            if arg != 0 as u32 and self.tree.nodes.data[arg].next_sibling != 0 as u32 and payload_type != TYPE_UNKNOWN and (payload_type as i64) < self.types.entries.len:
+                                if self.types.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
+                                    mf_struct_idx = self.types.entries.data[payload_type as i64].extra as i64
+                            if mf_struct_idx >= 0 as i64:
+                                mut ap := arg
+                                mut afi := 0 as i64
+                                while ap != 0 as u32:
+                                    if self.tree.nodes.data[ap].kind == NODE_BINDING_PAT:
+                                        let ap_sym = self.tree.nodes.data[ap].payload
+                                        mut fld_ty := TYPE_UNKNOWN
+                                        if mf_struct_idx < self.types.structs.len and afi < self.types.structs.data[mf_struct_idx].fields.len:
+                                            fld_ty = self.types.structs.data[mf_struct_idx].fields.data[afi].type_id
+                                        if ap_sym != 0 as u32:
+                                            self.symtable.symbols.data[ap_sym].type_id = fld_ty
+                                            self.set_node_type(ap, fld_ty)
+                                    ap = self.tree.nodes.data[ap].next_sibling
+                                    afi = afi + 1 as i64
+                            elif arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
                                 let arg_sym_idx = self.tree.nodes.data[arg].payload
                                 if arg_sym_idx != 0 as u32:
                                     self.symtable.symbols.data[arg_sym_idx].type_id = payload_type
