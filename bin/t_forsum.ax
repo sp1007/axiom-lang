@@ -1,0 +1,19 @@
+// Oracle (RFC 0018 P1 coverage): `for sh in <array-of-sum>` binds each element and a
+// called fn can `match` it. Exercises fixed-array iteration with SUM-typed (box,
+// by-address) elements + cross-fn match dispatch. (Block-form match arms — inline
+// `Pattern: stmt` arms are unsupported, same as inline-if per BUG#53.)
+type Shape = Circle(i32) | Square(i32) | Point
+fn area(s: Shape) -> i32:
+    match s:
+        Circle(r):
+            return r * r * 3 as i32
+        Square(a):
+            return a * a
+        Point:
+            return 0 as i32
+fn main() -> i32:
+    let shapes = [Circle(2), Square(3), Point, Square(5)]
+    mut total := 0 as i32
+    for sh in shapes:
+        total = total + area(sh)
+    return (total % 200) as i32   // 12 + 9 + 0 + 25 = 46
