@@ -1,0 +1,17 @@
+// Oracle (BUG#87): a `for i in a..b` loop variable must be READABLE in the body.
+// lower_for keyed the loop variable in local_map by sym.name_id, but lower_ident
+// reads locals by sym_idx (node.payload) — the same key a let/mut var-decl uses —
+// so every body reference to `i` missed the map and read 0/garbage. The loop still
+// ran the right number of times (lower_for's own get/put were mutually consistent),
+// which masked the bug when the body ignored `i`.
+fn main() -> i32:
+    mut sum := 0 as i32
+    for i in 0..5:
+        sum = sum + i as i32        // 0+1+2+3+4 = 10
+    mut prod := 1 as i32
+    for j in 1..4:
+        prod = prod * j as i32      // 1*2*3 = 6
+    mut last := -1 as i32
+    for k in 10..13:
+        last = k as i32             // 12
+    return (sum + prod + last) as i32   // 10 + 6 + 12 = 28

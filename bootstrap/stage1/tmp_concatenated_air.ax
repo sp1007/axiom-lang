@@ -13096,16 +13096,20 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.loop_exits.push(exit_block)
 
     let sym_idx = node.payload
-    mut name_id := 0 as u32
+    // BUG#87: the loop variable must be keyed in local_map by its SYMBOL INDEX
+    // (node.payload), because that is the key lower_ident uses to read it
+    // (`local_map_get(sym_idx)`) â€” exactly like a `let`/`mut` var-decl (which keys by
+    // node.payload too). Keying by `sym.name_id` here stored it under a different key,
+    // so every body reference to the loop variable missed the map and read 0/garbage
+    // (the loop still ran the right count since lower_for's own get/put were mutually
+    // consistent). name_id below IS the symbol index despite the name.
+    mut name_id := sym_idx
     mut type_id := 3 as u32 // default i32
 
     if sym_idx != 0 as u32 and (sym_idx as i64) < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[sym_idx as i64]
-        name_id = sym.name_id
         if sym.type_id != 0 as u32:
             type_id = sym.type_id as u32
-    else:
-        name_id = sym_idx
 
     let range_expr_idx = node.first_child
     mut start_reg := 0 as u32

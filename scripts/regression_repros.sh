@@ -128,6 +128,7 @@ rows=(
   "t_underscore|exit|27"
   "t_arrelemaddr|exit|66"
   "t_fldelemaddr|exit|150"
+  "t_forrange|exit|28"
 )
 
 for row in "${rows[@]}"; do
