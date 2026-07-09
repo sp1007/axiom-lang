@@ -1065,6 +1065,10 @@ pub fn parse_comptime_int(s: str) -> i64:
     mut val := 0 as i64
     while i < len:
         let c = s[i] as u8
+        // digit-group separator: skip and keep scanning (e.g. 1_000_000)
+        if c == '_' as u8:
+            i = i + 1
+            continue
         mut digit := -1 as i64
         if c >= '0' as u8 and c <= '9' as u8:
             digit = (c - '0' as u8) as i64

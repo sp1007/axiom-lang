@@ -1,0 +1,12 @@
+// Oracle (underscore digit separators): numeric literals may contain '_' as a
+// digit-group separator (e.g. 1_000_000, 0x1234_0011). Before the fix, both
+// parse_int_from_str (air_builder) and parse_comptime_int (typecheck) BROKE at
+// the first '_', silently truncating the literal: 0x1234_0011 parsed as 0x1234,
+// so (0x1234_0011 & 0xFF) yielded 0x34 = 52 instead of 0x11 = 17. std/time.ax
+// (1_000_000_000 etc.) was silently wrong for the same reason.
+fn main() -> i32:
+    let big = 0x1234_0011 as i64          // must be 0x12340011, not 0x1234
+    let low = (big & 0xFF as i64) as i32   // 0x11 = 17
+    let dec = 1_000 as i32                 // must be 1000, not 1
+    let scaled = (dec / 100 as i32) as i32 // 10
+    return (low + scaled) as i32           // 17 + 10 = 27
