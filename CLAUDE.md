@@ -584,3 +584,20 @@ All decisions must optimize for:
 - compiler correctness
 - deterministic reproducibility
 - architecture clarity
+
+---
+
+# 24. HARNESS: Autonomous Autopilot
+
+**Goal:** run this project autonomously — auto-decide the optimal next task and execute it, no confirmation prompts, grind the backlog to zero, then re-plan from the master plan.
+
+**Trigger:** for autonomous/continuation requests ("tiếp tục", "continue", "làm tiếp", "chạy tự động", "keep going", "do the plan", "next task"), use the `axiom-autopilot` skill. It orchestrates the sub-agents `axiom-investigator` (read-only diagnosis + bug probing), `axiom-implementer` (scoped fixes), and `axiom-verifier` (fixpoint+regression gate), using the `axiom-fixpoint-gate` and `axiom-bug-probe` skills. Simple one-off questions can be answered directly.
+
+**Backlog sources (priority order):** in-flight work → OPEN bugs in memory → RFC follow-ups → `docs/next-step-*.md` TASK QUEUEs (cross-check against memory/git — most shipped) → proactive probing → `docs/tasks/` milestones.
+
+**Non-negotiable:** autonomy changes *how fast* we work, never *which rules*. §3 (absolute rules), §9 (IR verification), §13 (RFC policy), and the fixpoint gate still bind. Backend/ABI/linker changes require B==C fixpoint BEFORE commit.
+
+**Change log:**
+| Date | Change | Target | Reason |
+|------|--------|--------|--------|
+| 2026-07-09 | Initial harness | .claude/agents/{investigator,implementer,verifier}.md, .claude/skills/{axiom-autopilot,axiom-fixpoint-gate,axiom-bug-probe} | User: run autonomously, stop asking for confirmation, grind backlog then re-plan |
