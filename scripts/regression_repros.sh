@@ -136,6 +136,7 @@ rows=(
   "t_mfvariant|exit|137"
   "t_strvariant|exit|44"
   "t_selftype|exit|13"
+  "t_gensumctor|exit|54"
   "t_strconcat|exit|15"
   "t_globals|exit|113"
   "sc1|exit|42"

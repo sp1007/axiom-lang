@@ -12585,14 +12585,32 @@ pub fn lower_block(mut self: ptr[FuncLowering], block_idx: u32):
 
 // RFC 0004: look up the sequential tag + payload type of variant `name_id`
 // inside sum type `sum_type_id`. Returns true if found.
+// BUG#91: resolve a type to the underlying user-sum type id, seeing through a
+// GENERIC_INST (e.g. an unannotated `One(42)` types as GENERIC_INST `Opt[i64]`, not
+// the kind-6 sum). A generic instance's name_id equals its base type's name_id
+// (same shortcut builder_type_size uses for structs). Returns 0 if not a sum.
+pub fn resolve_sum_type(self: ptr[FuncLowering], type_id: u32) -> u32:
+    if type_id == 0 as u32 or (type_id as i64) >= self.mb.typetable.entries.len:
+        return 0 as u32
+    let e = self.mb.typetable.entries.data[type_id as i64]
+    if e.kind == TYPE_KIND_SUM:
+        return type_id
+    if e.kind == TYPE_KIND_GENERIC_INST:
+        mut k := 0 as i64
+        while k < self.mb.typetable.entries.len:
+            let e2 = self.mb.typetable.entries.data[k]
+            if e2.kind == TYPE_KIND_SUM and e2.name_id == e.name_id:
+                return k as u32
+            k = k + 1
+    return 0 as u32
+
 pub fn find_variant_info(self: ptr[FuncLowering], sum_type_id: u32, name_id: u32, out_tag: ptr[i64], out_payload: ptr[u32]) -> bool:
     out_tag[0] = -1 as i64
     out_payload[0] = 0 as u32
-    if sum_type_id == 0 as u32 or (sum_type_id as i64) >= self.mb.typetable.entries.len:
+    let resolved_sum = self.resolve_sum_type(sum_type_id)
+    if resolved_sum == 0 as u32:
         return false
-    let entry = self.mb.typetable.entries.data[sum_type_id as i64]
-    if entry.kind != TYPE_KIND_SUM:
-        return false
+    let entry = self.mb.typetable.entries.data[resolved_sum as i64]
     let sum_extra = entry.extra
     if (sum_extra as i64) >= self.mb.typetable.sumtypes.len:
         return false
@@ -12887,9 +12905,11 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         return
 
     mut is_sum := false
-    if scrut_type != 0 as u32 and (scrut_type as i64) < self.mb.typetable.entries.len:
-        if self.mb.typetable.entries.data[scrut_type as i64].kind == TYPE_KIND_SUM:
-            is_sum = true
+    // BUG#91: a user sum scrutinee may be typed as a GENERIC_INST (unannotated generic
+    // construction like `One(42)` for `Opt[T]`), not a kind-6 SUM. Resolve through it,
+    // else the match silently lowered to nothing (the whole `match` disappeared).
+    if self.resolve_sum_type(scrut_type) != 0 as u32:
+        is_sum = true
     // RFC 0006 (BUG#37/#38.2): `match` on a plain integer/bool/char scrutinee is
     // the C-`switch` equivalent â€” compare the value itself against literal-pattern
     // values. (1-8 = int widths, 11 = bool, 13 = char8, 15/16 = isize/usize.)

@@ -1,0 +1,21 @@
+// Oracle (BUG#91): an UNANNOTATED user generic-sum constructor infers its type arg
+// from the argument and `match` dispatches. Before, an unannotated `One(42)` typed as
+// GENERIC_INST Opt[i64] (not kind-6 SUM); lower_match/find_variant_info only handled
+// kind-6, so the whole match silently lowered to nothing (returned 0).
+type Opt[T] = One(T) | Non
+type Pair[T] = Both(T, T) | Nothing
+fn main() -> i64:
+    let p = One(42 as i64)          // unannotated -> infer Opt[i64]
+    mut s := 0 as i64
+    match p:
+        One(a):
+            s = s + a               // 42
+        Non:
+            s = s + 0
+    let q = Both(3 as i64, 4 as i64)  // unannotated generic MULTI-field
+    match q:
+        Both(a, b):
+            s = s + a * b           // 12
+        Nothing:
+            s = s + 0
+    return s                        // 42 + 12 = 54
