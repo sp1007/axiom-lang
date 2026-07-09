@@ -52,6 +52,42 @@ pub fn is_two_operand_read(op: u16) -> bool:
         return true
     return false
 
+// RFC 0016 P2': does this opcode WRITE (overwrite) its dst vreg? Used to build the
+// per-block def-set for CFG-aware liveness. CRITICAL SAFETY RULE: an opcode that
+// only *reads* its dst (CMP/TEST/STORE/FCMP) must NOT be treated as a def — marking
+// it a def would kill the value backward across the block and shrink its live range
+// (miscompile). When unsure, return false: failing to record a def only keeps a
+// value live longer (conservative, extra spills at worst), never wrong.
+// Count trailing zeros of a non-zero u64 (position of the lowest set bit).
+pub fn ctz_u64(x: u64) -> i64:
+    if x == 0 as u64:
+        return 64 as i64
+    mut n := 0 as i64
+    mut v := x
+    while (v & (1 as u64)) == 0 as u64:
+        v = v >> (1 as u64)
+        n = n + 1 as i64
+    return n
+
+pub fn inst_defs_dst(op: u16) -> bool:
+    if op == MACH_MOV or op == MACH_MOV_IMM or op == MACH_XOR_ZERO:
+        return true
+    if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_NEG or op == MACH_NOT:
+        return true
+    if op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR:
+        return true
+    if op == MACH_SETCC or op == MACH_MOVZX_B or op == MACH_LEA or op == MACH_LOAD or op == MACH_POP:
+        return true
+    if op == MACH_IDIV or op == MACH_DIV:
+        return true
+    if op == MACH_FADD or op == MACH_FSUB or op == MACH_FMUL or op == MACH_FDIV:
+        return true
+    if op == MACH_ITOF or op == MACH_FTOI or op == MACH_MOVDQ or op == MACH_MOVQD:
+        return true
+    if op == MACH_CVTSS2SD or op == MACH_CVTSD2SS:
+        return true
+    return false
+
 pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec:
     mut max_vreg := 0 as u32
     mut i := 0 as i64
@@ -128,60 +164,220 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                     iv.end = i as i32
         i = i + 1
 
-    // Collect active vregs into a compact list — avoids scanning sparse gaps
-    // in the back-edge extension loop below.
-    let active_vregs = @alloc(map_size * 4) as ptr[u32]
-    mut active_count := 0 as i64
-    mut av := 0 as i64
-    while av < map_size:
-        if interval_map[av] != null as ptr[LiveInterval]:
-            active_vregs[active_count] = av as u32
-            active_count = active_count + 1
-        av = av + 1
+    // ===== CFG-aware liveness extension (RFC 0016 P2') =====
+    // The base [first_def, last_use] intervals above are computed in *linear
+    // instruction-array order*. That is only correct when the physical order is a
+    // CFG topological order — which it is NOT once a lowering emits blocks out of
+    // control-flow order (the if/else merge block, and future mid-expression
+    // short-circuit blocks). The old back-edge hack only patched linearly-backward
+    // jumps (loops) and could not see forward-reordered blocks, and it was not a
+    // real dataflow so it also mis-handled some loop-carried values (t_math under
+    // RPO). Here we build the basic-block CFG, solve live-in/live-out by backward
+    // dataflow, then extend each vreg's contiguous interval to cover the linear
+    // hull of every block where it is live. Extension only *grows* intervals, so it
+    // can never shrink a real live range: at worst it is conservative (more
+    // interference / spills), never a miscompile.
+    if insts_len > 0 as i64:
+        // --- 1. block boundaries: a block starts at index 0, at every LABEL, and
+        //        at the instruction right after any JMP/JCC/RET terminator. ---
+        let is_start = @alloc(insts_len) as ptr[bool]
+        @memset(is_start as ptr[u8], 0 as u8, insts_len)
+        is_start[0] = true
+        mut si := 0 as i64
+        while si < insts_len:
+            let sop = insts[si].op
+            if sop == MACH_LABEL:
+                is_start[si] = true
+            if sop == MACH_JMP or sop == MACH_JCC or sop == MACH_RET:
+                if si + 1 as i64 < insts_len:
+                    is_start[si + 1 as i64] = true
+            si = si + 1
 
-    mut max_label := 0 as u32
-    mut label_scan := 0 as i64
-    while label_scan < insts_len:
-        if insts[label_scan].op == MACH_LABEL:
-            if insts[label_scan].dst.label > max_label:
-                max_label = insts[label_scan].dst.label
-        label_scan = label_scan + 1
+        // --- 2. assign block ids + lo/hi linear bounds ---
+        let block_of = @alloc(insts_len * 4) as ptr[i32]
+        mut nb := 0 as i64
+        si = 0
+        while si < insts_len:
+            if is_start[si] and si > 0 as i64:
+                nb = nb + 1
+            block_of[si] = nb as i32
+            si = si + 1
+        let num_blocks = nb + 1 as i64
 
-    let label_to_idx_size = (max_label + 1 as u32) as i64
-    let label_to_idx = @alloc(label_to_idx_size * 8) as ptr[i64]
-    mut fill_l := 0 as i64
-    while fill_l < label_to_idx_size:
-        label_to_idx[fill_l] = -1 as i64
-        fill_l = fill_l + 1
+        let block_lo = @alloc(num_blocks * 8) as ptr[i64]
+        let block_hi = @alloc(num_blocks * 8) as ptr[i64]
+        mut bfill := 0 as i64
+        while bfill < num_blocks:
+            block_lo[bfill] = -1 as i64
+            bfill = bfill + 1
+        si = 0
+        while si < insts_len:
+            let b = block_of[si] as i64
+            if block_lo[b] < 0 as i64:
+                block_lo[b] = si
+            block_hi[b] = si
+            si = si + 1
 
-    label_scan = 0
-    while label_scan < insts_len:
-        if insts[label_scan].op == MACH_LABEL:
-            let l_id = insts[label_scan].dst.label
-            label_to_idx[l_id as i64] = label_scan
-        label_scan = label_scan + 1
+        // --- 3. label -> block id ---
+        mut max_label := 0 as u32
+        si = 0
+        while si < insts_len:
+            if insts[si].op == MACH_LABEL:
+                if insts[si].dst.label > max_label:
+                    max_label = insts[si].dst.label
+            si = si + 1
+        let l2b_size = (max_label + 1 as u32) as i64
+        let label_to_block = @alloc(l2b_size * 8) as ptr[i64]
+        mut lf := 0 as i64
+        while lf < l2b_size:
+            label_to_block[lf] = -1 as i64
+            lf = lf + 1
+        si = 0
+        while si < insts_len:
+            if insts[si].op == MACH_LABEL:
+                label_to_block[insts[si].dst.label as i64] = block_of[si] as i64
+            si = si + 1
 
-    mut be_i := 0 as i64
-    while be_i < insts_len:
-        let be_inst = &insts[be_i]
-        if be_inst.op == MACH_JMP or be_inst.op == MACH_JCC:
-            if be_inst.dst.kind == OPND_LABEL:
-                let target_label = be_inst.dst.label
-                let target_idx = label_to_idx[target_label as i64]
-                if target_idx != -1 as i64 and target_idx < be_i:
-                    // Back-edge: only scan actual active vregs, not the full map.
-                    mut v_scan := 0 as i64
-                    while v_scan < active_count:
-                        let vr = active_vregs[v_scan] as i64
-                        let iv = interval_map[vr]
-                        if iv != null as ptr[LiveInterval]:
-                            if iv.start <= target_idx as i32 and iv.end >= target_idx as i32:
-                                if iv.end < be_i as i32:
-                                    iv.end = be_i as i32
-                        v_scan = v_scan + 1
-        be_i = be_i + 1
-    @free(label_to_idx as ptr[u8])
-    @free(active_vregs as ptr[u8])
+        // --- 4. successors (up to 2): JMP->target, JCC->target+fallthrough,
+        //        RET->none, else fallthrough. Unknown targets fall through
+        //        (conservative). ---
+        let succ0 = @alloc(num_blocks * 8) as ptr[i64]
+        let succ1 = @alloc(num_blocks * 8) as ptr[i64]
+        mut sb := 0 as i64
+        while sb < num_blocks:
+            succ0[sb] = -1 as i64
+            succ1[sb] = -1 as i64
+            let last = &insts[block_hi[sb]]
+            mut handled := false
+            if last.op == MACH_JMP and last.dst.kind == OPND_LABEL:
+                succ0[sb] = label_to_block[last.dst.label as i64]
+                handled = true
+            elif last.op == MACH_JCC and last.dst.kind == OPND_LABEL:
+                succ0[sb] = label_to_block[last.dst.label as i64]
+                if sb + 1 as i64 < num_blocks:
+                    succ1[sb] = sb + 1 as i64
+                handled = true
+            elif last.op == MACH_RET:
+                handled = true
+            if not handled:
+                if sb + 1 as i64 < num_blocks:
+                    succ0[sb] = sb + 1 as i64
+            sb = sb + 1
+
+        // --- 5. per-block def/use bitsets (bit index = vreg id) ---
+        let nwords = ((max_vreg as i64) + 64 as i64) / 64 as i64
+        let use_set = @alloc(num_blocks * nwords * 8) as ptr[u64]
+        let def_set = @alloc(num_blocks * nwords * 8) as ptr[u64]
+        let live_in = @alloc(num_blocks * nwords * 8) as ptr[u64]
+        let live_out = @alloc(num_blocks * nwords * 8) as ptr[u64]
+        @memset(use_set as ptr[u8], 0 as u8, num_blocks * nwords * 8)
+        @memset(def_set as ptr[u8], 0 as u8, num_blocks * nwords * 8)
+        @memset(live_in as ptr[u8], 0 as u8, num_blocks * nwords * 8)
+        @memset(live_out as ptr[u8], 0 as u8, num_blocks * nwords * 8)
+
+        mut b2 := 0 as i64
+        while b2 < num_blocks:
+            let base_w = b2 * nwords
+            mut ii := block_lo[b2]
+            while ii <= block_hi[b2]:
+                let inst = &insts[ii]
+                // reads: src1, src2, and dst when the op reads dst too. A read is
+                // an upward-exposed use only if not yet defined earlier in the block.
+                if inst.src1.kind == OPND_VREG and inst.src1.vreg != 0 as u32:
+                    let v = inst.src1.vreg as i64
+                    let w = base_w + (v / 64 as i64)
+                    let mask = (1 as u64) << ((v & 63 as i64) as u64)
+                    if (def_set[w] & mask) == 0 as u64:
+                        use_set[w] = use_set[w] | mask
+                if inst.src2.kind == OPND_VREG and inst.src2.vreg != 0 as u32:
+                    let v = inst.src2.vreg as i64
+                    let w = base_w + (v / 64 as i64)
+                    let mask = (1 as u64) << ((v & 63 as i64) as u64)
+                    if (def_set[w] & mask) == 0 as u64:
+                        use_set[w] = use_set[w] | mask
+                if is_two_operand_read(inst.op) and inst.dst.kind == OPND_VREG and inst.dst.vreg != 0 as u32:
+                    let v = inst.dst.vreg as i64
+                    let w = base_w + (v / 64 as i64)
+                    let mask = (1 as u64) << ((v & 63 as i64) as u64)
+                    if (def_set[w] & mask) == 0 as u64:
+                        use_set[w] = use_set[w] | mask
+                // def: only opcodes that actually overwrite dst.
+                if inst_defs_dst(inst.op) and inst.dst.kind == OPND_VREG and inst.dst.vreg != 0 as u32:
+                    let v = inst.dst.vreg as i64
+                    let w = base_w + (v / 64 as i64)
+                    let mask = (1 as u64) << ((v & 63 as i64) as u64)
+                    def_set[w] = def_set[w] | mask
+                ii = ii + 1
+            b2 = b2 + 1
+
+        // --- 6. backward dataflow fixpoint ---
+        //   live_out[b] = U live_in[succ]
+        //   live_in[b]  = use[b] U (live_out[b] - def[b])
+        mut changed := true
+        while changed:
+            changed = false
+            mut bb := num_blocks - 1 as i64
+            while bb >= 0 as i64:
+                let base_w = bb * nwords
+                let s0 = succ0[bb]
+                let s1 = succ1[bb]
+                mut w := 0 as i64
+                while w < nwords:
+                    mut lo_word := 0 as u64
+                    if s0 >= 0 as i64:
+                        lo_word = lo_word | live_in[s0 * nwords + w]
+                    if s1 >= 0 as i64:
+                        lo_word = lo_word | live_in[s1 * nwords + w]
+                    live_out[base_w + w] = lo_word
+                    let new_li = use_set[base_w + w] | (lo_word & (~def_set[base_w + w]))
+                    if new_li != live_in[base_w + w]:
+                        live_in[base_w + w] = new_li
+                        changed = true
+                    w = w + 1
+                bb = bb - 1 as i64
+
+        // --- 7. extend intervals to the linear hull of live blocks ---
+        //   live_in[b]  -> the vreg is live at b's entry: cover down to block_lo[b]
+        //   live_out[b] -> the vreg is live at b's exit:  cover up to block_hi[b]
+        mut b3 := 0 as i64
+        while b3 < num_blocks:
+            let base_w = b3 * nwords
+            let lo = block_lo[b3] as i32
+            let hi = block_hi[b3] as i32
+            mut w := 0 as i64
+            while w < nwords:
+                mut liw := live_in[base_w + w]
+                while liw != 0 as u64:
+                    let tz = ctz_u64(liw)
+                    let v = (w * 64 as i64) + tz
+                    let iv = interval_map[v]
+                    if iv != null as ptr[LiveInterval]:
+                        if lo < iv.start:
+                            iv.start = lo
+                    liw = liw & (liw - 1 as u64)
+                mut low := live_out[base_w + w]
+                while low != 0 as u64:
+                    let tz = ctz_u64(low)
+                    let v = (w * 64 as i64) + tz
+                    let iv = interval_map[v]
+                    if iv != null as ptr[LiveInterval]:
+                        if hi > iv.end:
+                            iv.end = hi
+                    low = low & (low - 1 as u64)
+                w = w + 1
+            b3 = b3 + 1
+
+        @free(is_start as ptr[u8])
+        @free(block_of as ptr[u8])
+        @free(block_lo as ptr[u8])
+        @free(block_hi as ptr[u8])
+        @free(label_to_block as ptr[u8])
+        @free(succ0 as ptr[u8])
+        @free(succ1 as ptr[u8])
+        @free(use_set as ptr[u8])
+        @free(def_set as ptr[u8])
+        @free(live_in as ptr[u8])
+        @free(live_out as ptr[u8])
 
     mut result := new_live_interval_vec()
     mut v := 0 as i64
