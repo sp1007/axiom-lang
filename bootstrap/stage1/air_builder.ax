@@ -215,6 +215,13 @@ pub struct FuncLowering:
     pub terminated: bool
     pub loop_conds: U32Vec
     pub loop_exits: U32Vec
+    // BUG#89: per-loop counter register + type used to advance a `for` loop's counter
+    // when `continue` short-circuits to the condition. The body-tail increment only
+    // runs on normal fall-through, so `continue` (which jumps straight to cond) must
+    // emit the same increment inline first, or the counter never advances -> infinite
+    // loop. A while-loop pushes reg 0 (no increment). Kept parallel to loop_conds.
+    pub loop_incr_regs: U32Vec
+    pub loop_incr_types: U32Vec
     // RFC 0006 (#38.4): deferred expression node indices, in textual order.
     // Flushed LIFO at every return and at function exit (Go-style function-level
     // defer). See lower_defer / flush_defers.
@@ -229,6 +236,8 @@ pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: ptr[AirFuncBuilder], par
     fl.terminated = false
     fl.loop_conds = new_u32_vec()
     fl.loop_exits = new_u32_vec()
+    fl.loop_incr_regs = new_u32_vec()
+    fl.loop_incr_types = new_u32_vec()
     fl.defers = new_u32_vec()
     return fl
 
@@ -240,6 +249,10 @@ pub fn free_func_lowering(mut self: ptr[FuncLowering]):
         @free(self.loop_conds.data as ptr[u8])
     if self.loop_exits.data != null as ptr[u32]:
         @free(self.loop_exits.data as ptr[u8])
+    if self.loop_incr_regs.data != null as ptr[u32]:
+        @free(self.loop_incr_regs.data as ptr[u8])
+    if self.loop_incr_types.data != null as ptr[u32]:
+        @free(self.loop_incr_types.data as ptr[u8])
     if self.defers.data != null as ptr[u32]:
         @free(self.defers.data as ptr[u8])
 
@@ -2775,6 +2788,36 @@ pub fn lower_break(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 pub fn lower_continue(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if self.loop_conds.len == 0 as i64:
         return
+    // BUG#89: `continue` jumps to the loop condition, bypassing the body-tail
+    // increment. For a `for` loop, advance the counter inline first (same +1 the tail
+    // emits) so it does not spin forever; a while-loop has incr_reg 0 and is skipped.
+    if self.loop_incr_regs.len > 0 as i64:
+        let incr_reg = self.loop_incr_regs.data[self.loop_incr_regs.len - 1]
+        if incr_reg != 0 as u32:
+            let incr_type = self.loop_incr_types.data[self.loop_incr_types.len - 1]
+            let one_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_ICONST,
+                type_id: incr_type,
+                dest: one_reg,
+                src1: 1 as u32,
+                src2: 0 as u32,
+            ))
+            let nv_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_IADD,
+                type_id: incr_type,
+                dest: nv_reg,
+                src1: incr_reg,
+                src2: one_reg,
+            ))
+            self.fb.emit(AirInst(
+                opcode: OP_COPY,
+                type_id: incr_type,
+                dest: incr_reg,
+                src1: nv_reg,
+                src2: 0 as u32,
+            ))
     let target = self.loop_conds.data[self.loop_conds.len - 1]
     self.fb.emit(AirInst(
         opcode: OP_JUMP,
@@ -3095,6 +3138,10 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
     self.loop_conds.push(cond_block)
     self.loop_exits.push(exit_block)
+    // BUG#89: a while-loop has no loop increment — `continue` jumps straight to cond.
+    // Push reg 0 so lower_continue emits no increment (keeps stacks parallel).
+    self.loop_incr_regs.push(0 as u32)
+    self.loop_incr_types.push(0 as u32)
 
     let cur_block = self.fb.current_block()
     self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
@@ -3107,6 +3154,8 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if child == 0 as u32:
         self.loop_conds.pop()
         self.loop_exits.pop()
+        self.loop_incr_regs.pop()
+        self.loop_incr_types.pop()
         return
     let cn = self.mb.tree.nodes.data[child as i64]
     let cond_reg = self.lower_expr(child)
@@ -3147,6 +3196,8 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
     self.loop_conds.pop()
     self.loop_exits.pop()
+    self.loop_incr_regs.pop()
+    self.loop_incr_types.pop()
 
 pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let cond_block = self.fb.new_block()
@@ -3257,6 +3308,11 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if not is_collection:
         self.locals.local_map_put(name_id, iter_reg)
 
+    // BUG#89: record the counter (iter_reg) + its type so `continue` can advance it
+    // inline before jumping to cond (the body-tail increment only runs on fall-through).
+    self.loop_incr_regs.push(iter_reg)
+    self.loop_incr_types.push(counter_type)
+
     let cur_block = self.fb.current_block()
     self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
     self.fb.add_edge(cur_block, cond_block)
@@ -3353,6 +3409,8 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
     self.loop_conds.pop()
     self.loop_exits.pop()
+    self.loop_incr_regs.pop()
+    self.loop_incr_types.pop()
 
 pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:

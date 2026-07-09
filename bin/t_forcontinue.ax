@@ -1,0 +1,21 @@
+// Oracle (BUG#89): `continue` inside a `for` loop must run the loop increment.
+// Before, the increment lived at the body tail and `continue` jumped straight to the
+// condition block, skipping it -> the counter never advanced and the loop spun
+// forever (a hang, for BOTH range and fixed-array for-loops). Fixed by routing
+// `continue` (and normal fall-through) through a dedicated latch block that does the
+// increment before re-testing the condition. `break` (jump to exit) was unaffected.
+fn main() -> i32:
+    mut s := 0 as i32
+    for i in 0..6:
+        if i == 3:
+            continue
+        s = s + i as i32          // 0+1+2+4+5 = 12
+    let a = [10, 20, 30, 40]
+    mut t := 0 as i32
+    for x in a:
+        if x == 20:
+            continue              // skip 20
+        if x == 40:
+            break                 // stop before 40
+        t = t + x                 // 10 + 30 = 40
+    return (s + t) as i32         // 12 + 40 = 52
