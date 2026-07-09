@@ -1951,6 +1951,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_FOR_STMT:
         let iter_var = self.tree.nodes.data[node_idx].payload
         let range_expr = self.tree.nodes.data[node_idx].first_child
+        // RFC 0018 P1: element type of the loop variable (default i32 for ranges /
+        // integer bounds; overwritten to the array element type for `for x in arr`).
+        mut for_elem_ty := TYPE_I32
         if range_expr != 0 as u32:
             let iteree_ty = self.infer_node(range_expr, TYPE_UNKNOWN)
             // BUG#87 follow-up: `for x in <collection>` (Vec/HashMap/array/struct) is
@@ -1966,16 +1969,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if rop == "..":
                     for_is_range = true
                 safe_free_str(rop)
+            // RFC 0018 P1: `for x in <fixed-array>` iterates elements. Bind the loop
+            // variable to the array's element type and let air_builder's lower_for
+            // desugar it to an index loop. STRUCT/SUM/GENERIC_INST (Vec/HashMap/...)
+            // iteration is still unimplemented -> reject cleanly (that is P2), same
+            // convention as the BUG#72 slice reject, to avoid the hang/miscompile.
             if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
                 let ie_kind = self.types.entries.data[iteree_ty].kind
-                if ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_ARRAY:
+                if ie_kind == TYPE_KIND_ARRAY:
+                    for_elem_ty = self.types.entries.data[iteree_ty].extra
+                elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
                     ax_printf_local("error: iterating a collection with `for x in <collection>` is not yet supported; use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
             let body = self.tree.nodes.data[range_expr].next_sibling
             if body != 0 as u32:
                 self.infer_node(body, TYPE_UNKNOWN)
         if iter_var != 0 as u32:
-            self.symtable.symbols.data[iter_var].type_id = TYPE_I32
+            self.symtable.symbols.data[iter_var].type_id = for_elem_ty
         
     elif kind == NODE_BINARY_EXPR:
         let lhs = self.tree.nodes.data[node_idx].first_child

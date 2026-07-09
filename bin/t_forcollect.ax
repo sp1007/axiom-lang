@@ -1,0 +1,17 @@
+// Oracle (RFC 0018 P1): `for x in <fixed-array>` iterates ELEMENTS, not indices.
+// Before this, lower_for treated any non-range iteree as a numeric bound and never
+// fetched elements (the loop var was a 0-based counter) -> a hang / wrong answer;
+// typecheck rejected it outright. Now a fixed-array iteree binds the loop variable
+// to arr[i] each iteration via OP_INDEX with the element type.
+fn main() -> i32:
+    let arr = [3, 7, 11, 5]
+    mut sum := 0 as i32
+    for x in arr:
+        sum = sum + x            // elements: 3+7+11+5 = 26 (indices would give 0+1+2+3 = 6)
+    // second array + a distinct element to prove reuse and element (not index) binding
+    let ys = [10, 20, 30]
+    mut mx := 0 as i32
+    for y in ys:
+        if y > mx:
+            mx = y               // max element = 30
+    return (sum + mx) as i32     // 26 + 30 = 56

@@ -7687,6 +7687,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_FOR_STMT:
         let iter_var = self.tree.nodes.data[node_idx].payload
         let range_expr = self.tree.nodes.data[node_idx].first_child
+        // RFC 0018 P1: element type of the loop variable (default i32 for ranges /
+        // integer bounds; overwritten to the array element type for `for x in arr`).
+        mut for_elem_ty := TYPE_I32
         if range_expr != 0 as u32:
             let iteree_ty = self.infer_node(range_expr, TYPE_UNKNOWN)
             // BUG#87 follow-up: `for x in <collection>` (Vec/HashMap/array/struct) is
@@ -7702,16 +7705,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if rop == "..":
                     for_is_range = true
                 safe_free_str(rop)
+            // RFC 0018 P1: `for x in <fixed-array>` iterates elements. Bind the loop
+            // variable to the array's element type and let air_builder's lower_for
+            // desugar it to an index loop. STRUCT/SUM/GENERIC_INST (Vec/HashMap/...)
+            // iteration is still unimplemented -> reject cleanly (that is P2), same
+            // convention as the BUG#72 slice reject, to avoid the hang/miscompile.
             if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
                 let ie_kind = self.types.entries.data[iteree_ty].kind
-                if ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_ARRAY:
+                if ie_kind == TYPE_KIND_ARRAY:
+                    for_elem_ty = self.types.entries.data[iteree_ty].extra
+                elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
                     ax_printf_local("error: iterating a collection with `for x in <collection>` is not yet supported; use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
             let body = self.tree.nodes.data[range_expr].next_sibling
             if body != 0 as u32:
                 self.infer_node(body, TYPE_UNKNOWN)
         if iter_var != 0 as u32:
-            self.symtable.symbols.data[iter_var].type_id = TYPE_I32
+            self.symtable.symbols.data[iter_var].type_id = for_elem_ty
         
     elif kind == NODE_BINARY_EXPR:
         let lhs = self.tree.nodes.data[node_idx].first_child
@@ -13359,6 +13369,15 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut start_reg := 0 as u32
     mut limit_reg := 0 as u32
     mut is_range := false
+    // RFC 0018 P1: `for x in <fixed-array>` element iteration state.
+    mut is_collection := false
+    mut coll_reg := 0 as u32
+    mut elem_type := 0 as u32
+    mut coll_len := 0 as u32
+    // Type of the numeric counter driving the loop: for a range/integer-bound loop
+    // the counter IS the loop variable (its type); for a collection loop the counter
+    // is an internal i32 index (the loop variable holds the element instead).
+    mut counter_type := type_id
 
     if range_expr_idx != 0 as u32:
         let range_node = self.mb.tree.nodes.data[range_expr_idx as i64]
@@ -13375,6 +13394,19 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                         limit_reg = self.lower_expr(end_node_idx)
             @free(get_str_ptr(op_text))
 
+    // RFC 0018 P1: detect a fixed-array iteree. node_types holds the iteree's type;
+    // a TYPE_KIND_ARRAY carries compile-time length in name_id and element type in
+    // extra. (An integer-bound `for i in n` has a numeric type here and stays on the
+    // 0..n counter path below.) Typecheck rejects Vec/HashMap/struct/sum (P2).
+    if not is_range and range_expr_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+        let coll_ty = self.mb.node_types[range_expr_idx as i64] as u32
+        if coll_ty != 0 as u32 and (coll_ty as i64) < self.mb.typetable.entries.len:
+            if self.mb.typetable.entries.data[coll_ty as i64].kind == TYPE_KIND_ARRAY:
+                is_collection = true
+                elem_type = self.mb.typetable.entries.data[coll_ty as i64].extra
+                coll_len = self.mb.typetable.entries.data[coll_ty as i64].name_id
+                counter_type = 3 as u32 // i32 index counter
+
     let iter_reg = self.fb.fresh_reg()
     if is_range:
         self.fb.emit(AirInst(
@@ -13382,6 +13414,24 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             type_id: type_id,
             dest: iter_reg,
             src1: start_reg,
+            src2: 0 as u32,
+        ))
+    elif is_collection:
+        // Evaluate the array base once; iter_reg is the internal 0-based index.
+        coll_reg = self.lower_expr(range_expr_idx)
+        self.fb.emit(AirInst(
+            opcode: OP_ICONST,
+            type_id: counter_type,
+            dest: iter_reg,
+            src1: 0 as u32,
+            src2: 0 as u32,
+        ))
+        limit_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_ICONST,
+            type_id: counter_type,
+            dest: limit_reg,
+            src1: coll_len,
             src2: 0 as u32,
         ))
     else:
@@ -13395,7 +13445,10 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         if range_expr_idx != 0 as u32:
             limit_reg = self.lower_expr(range_expr_idx)
 
-    self.locals.local_map_put(name_id, iter_reg)
+    // For a collection loop the loop variable is bound in the body (to arr[i]); the
+    // counter register iter_reg must NOT shadow it.
+    if not is_collection:
+        self.locals.local_map_put(name_id, iter_reg)
 
     let cur_block = self.fb.current_block()
     self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
@@ -13406,7 +13459,12 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.terminated = false
 
     let cmp_reg = self.fb.fresh_reg()
-    let current_iter = self.locals.local_map_get(name_id)
+    // Range/integer-bound: counter is the loop var (local_map). Collection: counter is
+    // the internal iter_reg. (For a range, local_map_get(name_id) == iter_reg, so the
+    // emitted OP_LT is byte-identical to before.)
+    mut current_iter := iter_reg
+    if not is_collection:
+        current_iter = self.locals.local_map_get(name_id)
     self.fb.emit(AirInst(
         opcode: OP_LT,
         type_id: 11 as u32, // bool
@@ -13429,6 +13487,20 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.fb.switch_to(body_block)
     self.terminated = false
 
+    // RFC 0018 P1: at the top of each iteration bind the loop variable to arr[i].
+    // The loop var maps directly to this OP_INDEX result (no OP_COPY), which handles
+    // scalar elements by-value and aggregate elements by-address (RFC 0001 Â§5).
+    if is_collection:
+        let elem_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(
+            opcode: OP_INDEX,
+            type_id: elem_type,
+            dest: elem_reg,
+            src1: coll_reg,
+            src2: iter_reg,
+        ))
+        self.locals.local_map_put(name_id, elem_reg)
+
     if range_expr_idx != 0 as u32:
         let range_node = self.mb.tree.nodes.data[range_expr_idx as i64]
         let body_node_idx = range_node.next_sibling
@@ -13441,23 +13513,25 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let one_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
             opcode: OP_ICONST,
-            type_id: type_id,
+            type_id: counter_type,
             dest: one_reg,
             src1: 1 as u32,
             src2: 0 as u32,
         ))
-        let current_iter2 = self.locals.local_map_get(name_id)
+        mut current_iter2 := iter_reg
+        if not is_collection:
+            current_iter2 = self.locals.local_map_get(name_id)
         let new_val_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
             opcode: OP_IADD,
-            type_id: type_id,
+            type_id: counter_type,
             dest: new_val_reg,
             src1: current_iter2,
             src2: one_reg,
         ))
         self.fb.emit(AirInst(
             opcode: OP_COPY,
-            type_id: type_id,
+            type_id: counter_type,
             dest: current_iter2,
             src1: new_val_reg,
             src2: 0 as u32,
