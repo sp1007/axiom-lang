@@ -1,0 +1,18 @@
+// Oracle BUG#86 (truth-table value correctness, no faults). Verifies the
+// short-circuit lowering still yields the RIGHT boolean, not just skips faults.
+fn t() -> bool:
+    return true
+fn f() -> bool:
+    return false
+
+fn main() -> i32:
+    mut n := 0 as i32
+    if t() and t():
+        n = n + 1         // AND TT -> true
+    if t() and f():
+        n = n + 100       // AND TF -> false, must skip
+    if f() or t():
+        n = n + 2         // OR FT -> true
+    if f() or f():
+        n = n + 100       // OR FF -> false, must skip
+    return n              // expect 1 + 2 = 3

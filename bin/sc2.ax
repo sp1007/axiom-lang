@@ -1,0 +1,10 @@
+// Oracle BUG#86 (OR short-circuit): `true or boom(zero)` must NOT evaluate the RHS.
+// Short-circuit correct => boom skipped => exit 42. Eager => div-by-zero crash.
+fn boom(z: i32) -> bool:
+    return (100 / z) > 0
+
+fn main() -> i32:
+    let zero := 0 as i32
+    if true or boom(zero):
+        return 42
+    return 1

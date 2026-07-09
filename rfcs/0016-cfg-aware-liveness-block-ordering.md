@@ -52,8 +52,9 @@ D4. **Determinism** — RPO must be computed deterministically (fixed DFS succes
     - Blocks: split at index 0, every `MACH_LABEL`, and the instruction after any `JMP`/`JCC`/`RET`. Successors: `JMP`→target, `JCC`→target+fallthrough, `RET`→none, else fallthrough. Deterministic (fixed block/word iteration order) so builds stay reproducible.
     - Bitset dataflow (bit index = vreg id, `u64` words); monotone fixpoint converges.
     - **Gate result (all green):** A!=B → **B==C fixpoint** (new hash `BCEFC38F…`); **full regression 114/114**; **`t_math`=127** (the loop-carried-float canary that RPO regressed to 124 — now correct); +9 control-flow/feature oracles pass. This confirms the RFC thesis: it was `compute_liveness` (not block order) that had to become CFG-aware.
-- **P3 — enable short-circuit `and`/`or`:** re-apply the lowering from [[bug86-short-circuit-open]] on top of P2'. Gate: `scB` compiles trivial + B==C + regression + `sc1/sc2/sc3=42` (crash-based) + `scv=3` (truth table). Ship BUG#86.
-  - **Proven prerequisite met:** the short-circuit *lowering* is correct (isolation test), and the P2 experiment additionally proved a self-hosting short-circuit compiler is *achievable* once liveness is sound — so P3 is purely gated on P2'.
+- **P3 — enable short-circuit `and`/`or`. ✅ SHIPPED 2026-07-09 (closes BUG#86).** Added `lower_short_circuit` in `air_builder.ax` (diamond: seed `sc_res` = lhs, branch, rhs block overwrites `sc_res`, merge) + a token-based interception in `lower_binary_expr` (`and`/`&&`/`or`/`||` only — NOT the bitwise `&`/`|`). Correct now that liveness is CFG-aware (P2').
+  - **Second bug found & fixed during P3 (`lower_while` CFG edges):** the short-circuit condition of a `while` creates a diamond, so the `OP_BRANCH` lands in the diamond's *merge* block, not `cond_block`. `lower_while` was attributing the body/exit CFG edges to `cond_block` (stale), leaving the merge block with no recorded successor to the exit → `remove_unreachable_blocks()` (DCE) NOP'd the exit's `ret` → infinite loop **at -O1 only** (-O0 has no SSA opt, so it worked, which localized the bug). Fixed by capturing `branch_block = current_block()` after lowering the condition — exactly what `lower_if_chain` already did (that asymmetry is why `if …and…` worked but `while …and…` hung). `lower_for`/`**`-loop conditions are compiler-generated comparisons (never diamonds), so they were left as-is.
+  - **Gate (all green):** isolation oracles `sc1=sc2=42` (faulting-RHS skipped), `scv=3` (truth table), `scw=5` (while+and), `scstress=32` (nested chains, while-cond, mixed precedence, as-value); B compiles trivial; **B==C fixpoint** (`c777ef7b…`); full regression 114/114; t_math=127.
 
 ## 6. Alternatives
 
@@ -69,7 +70,7 @@ D4. **Determinism** — RPO must be computed deterministically (fixed DFS succes
 
 ## 8. Status
 
-**P2' SHIPPED (2026-07-09)** — CFG-aware live-in/live-out dataflow now backs `compute_liveness`; foundation for BUG#86 is in place. Only **P3 (re-apply short-circuit `and`/`or` lowering)** remains to close BUG#86.
+**RESOLVED — P2' + P3 SHIPPED (2026-07-09). BUG#86 CLOSED.** Short-circuit `and`/`or` now evaluate lazily per spec; the CFG-aware liveness foundation (P2') plus the `lower_while` CFG-edge fix (found during P3) make the diamond self-host. Final fixpoint `c777ef7b`.
 
 History / empirical results:
 - Short-circuit lowering is correct in isolation.

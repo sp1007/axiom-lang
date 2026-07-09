@@ -1,0 +1,35 @@
+// Stress the short-circuit lowering the way the compiler itself uses and/or:
+// nested chains, and/or in a while condition, and/or with (pure) call RHS,
+// and/or as an assigned value. Pure RHS => short-circuit and eager agree on value.
+fn ge0(x: i32) -> bool:
+    return x >= 0
+fn lt(a: i32, b: i32) -> bool:
+    return a < b
+
+fn main() -> i32:
+    mut acc := 0 as i32
+
+    // nested and-chain (all true) -> +1
+    if ge0(1) and ge0(2) and ge0(3):
+        acc = acc + 1
+
+    // nested or-chain (first true, rest skipped) -> +2
+    if ge0(0) or ge0(-1) or ge0(-2):
+        acc = acc + 2
+
+    // and/or in a while condition with call RHS (bounded loop)
+    mut i := 0 as i32
+    while lt(i, 5) and ge0(i):
+        i = i + 1
+    acc = acc + i                 // i should reach 5 -> +5
+
+    // mixed precedence: and binds tighter than or -> (F and X) or (T) = T -> +8
+    if lt(5, 0) and ge0(9) or ge0(0):
+        acc = acc + 8
+
+    // as-value assignment
+    let r := ge0(3) and lt(1, 2)  // true
+    if r:
+        acc = acc + 16
+
+    return acc                    // 1+2+5+8+16 = 32

@@ -693,6 +693,47 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
 
     return 0 as u32
 
+// BUG#86 / RFC 0016 P3: lower a short-circuit `and`/`or`. The result is carried
+// out of the diamond in one vreg (`sc_res`), written on each path:
+//   AND: sc_res = lhs; if lhs -> eval rhs, sc_res = rhs; else keep lhs(=false)
+//   OR : sc_res = lhs; if lhs keep lhs(=true); else -> eval rhs, sc_res = rhs
+// This produces blocks *in the middle of expression evaluation*, out of physical
+// control-flow order — correct only because compute_liveness is now CFG-aware
+// (RFC 0016 P2'): sc_res's live interval covers the linear hull of the diamond.
+pub fn lower_short_circuit(mut self: ptr[FuncLowering], lhs_idx: u32, rhs_idx: u32, is_and: bool, result_type: u32) -> u32:
+    let sc_res = self.fb.fresh_reg()
+
+    // LHS in the current block; seed sc_res with it (the value taken when we skip RHS).
+    let lhs_reg = self.lower_expr(lhs_idx)
+    self.fb.emit(AirInst(opcode: OP_COPY, type_id: result_type, dest: sc_res, src1: lhs_reg, src2: 0 as u32))
+
+    let rhs_block = self.fb.new_block()
+    let merge_block = self.fb.new_block()
+    let entry_block = self.fb.current_block()
+
+    // OP_BRANCH: dest = false-target, src1 = cond, src2 = true-target.
+    if is_and:
+        // lhs true -> evaluate rhs; lhs false -> merge with sc_res already = false.
+        self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: merge_block, src1: lhs_reg, src2: rhs_block))
+    else:
+        // lhs true -> merge with sc_res already = true; lhs false -> evaluate rhs.
+        self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: rhs_block, src1: lhs_reg, src2: merge_block))
+    self.fb.add_edge(entry_block, rhs_block)
+    self.fb.add_edge(entry_block, merge_block)
+
+    // RHS block: evaluate rhs, overwrite sc_res, fall to merge.
+    self.fb.switch_to(rhs_block)
+    self.terminated = false
+    let rhs_reg = self.lower_expr(rhs_idx)
+    self.fb.emit(AirInst(opcode: OP_COPY, type_id: result_type, dest: sc_res, src1: rhs_reg, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+    self.fb.add_edge(self.fb.current_block(), merge_block)
+
+    // Merge: sc_res holds the short-circuit result.
+    self.fb.switch_to(merge_block)
+    self.terminated = false
+    return sc_res
+
 pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
@@ -707,6 +748,24 @@ pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -
     @free(get_str_ptr(op_peek))
     if is_pow:
         return self.lower_power(idx, node, child)
+
+    // BUG#86 / RFC 0016 P3: short-circuit logical `and`/`&&`/`or`/`||` (NOT the
+    // bitwise `&`/`|`, which map to the same OP_AND/OP_OR but must stay eager).
+    // Spec (p09-t06, p08-t04) mandates: `a and b` evaluates b only if a is true;
+    // `a or b` evaluates b only if a is false. Distinguished purely by token text
+    // (opcode alone can't tell `and` from `&`). Safe to enable now that liveness
+    // is CFG-aware (P2') — the diamond-carried result vreg is allocated correctly.
+    let sc_tok = self.mb.get_token_text(node.token_idx)
+    let sc_is_and = sc_tok == "and" or sc_tok == "&&"
+    let sc_is_or = sc_tok == "or" or sc_tok == "||"
+    @free(get_str_ptr(sc_tok))
+    if sc_is_and or sc_is_or:
+        let sc_rhs = self.mb.tree.nodes.data[child as i64].next_sibling
+        if sc_rhs != 0 as u32:
+            mut sc_rtype := 4 as u32   // bool
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                sc_rtype = self.mb.node_types[idx as i64]
+            return self.lower_short_circuit(child, sc_rhs, sc_is_and, sc_rtype)
 
     // RFC 0007: operator overloading. When the lhs operand is a user type
     // (struct/sum/generic-inst), `a <op> b` lowers to the conventional method
@@ -3024,6 +3083,13 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let cn = self.mb.tree.nodes.data[child as i64]
     let cond_reg = self.lower_expr(child)
 
+    // BUG#86: lowering the condition may itself create blocks (short-circuit
+    // `and`/`or` builds a diamond), so the block that actually holds the OP_BRANCH
+    // is the *current* block, not `cond_block`. Attribute the CFG edges to it —
+    // otherwise the merge block has no recorded successor to the exit and
+    // remove_unreachable_blocks() wrongly NOPs the exit's `ret` (infinite loop at
+    // -O1). lower_if_chain already does this; while must match.
+    let branch_block = self.fb.current_block()
     self.fb.emit(AirInst(
         opcode: OP_BRANCH,
         type_id: 0 as u32,
@@ -3031,8 +3097,8 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         src1: cond_reg,
         src2: body_block,
     ))
-    self.fb.add_edge(cond_block, body_block)
-    self.fb.add_edge(cond_block, exit_block)
+    self.fb.add_edge(branch_block, body_block)
+    self.fb.add_edge(branch_block, exit_block)
 
     // Body
     self.fb.switch_to(body_block)

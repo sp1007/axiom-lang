@@ -130,6 +130,11 @@ rows=(
   "t_fldelemaddr|exit|150"
   "t_forrange|exit|28"
   "t_strconcat|exit|15"
+  "sc1|exit|42"
+  "sc2|exit|42"
+  "scv|exit|3"
+  "scw|exit|5"
+  "scstress|exit|32"
 )
 
 for row in "${rows[@]}"; do
