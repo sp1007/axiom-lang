@@ -1,0 +1,14 @@
+// Oracle (RFC 0018 P1 follow-up): `for p in <array-of-struct>` must resolve NON-first
+// fields correctly. Typecheck set the loop var's type AFTER inferring the body, so
+// `p.y` (a non-first field) resolved against an unknown type and its field index
+// defaulted to 0 -> every field read offset 0 (p.y silently returned p.x). Fixed by
+// binding the loop var's element type BEFORE body inference.
+struct P:
+    x: i32
+    y: i32
+fn main() -> i32:
+    let a = [P(x:1, y:2), P(x:3, y:4), P(x:5, y:6)]
+    mut s := 0 as i32
+    for p in a:
+        s = s + p.x + p.y * 10 as i32   // (1+20)+(3+40)+(5+60) = 129 (bug read p.y as p.x -> 99)
+    return s as i32

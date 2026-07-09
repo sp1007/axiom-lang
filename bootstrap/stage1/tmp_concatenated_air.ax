@@ -7710,13 +7710,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // desugar it to an index loop. STRUCT/SUM/GENERIC_INST (Vec/HashMap/...)
             // iteration is still unimplemented -> reject cleanly (that is P2), same
             // convention as the BUG#72 slice reject, to avoid the hang/miscompile.
+            mut for_is_collection := false
             if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
                 let ie_kind = self.types.entries.data[iteree_ty].kind
                 if ie_kind == TYPE_KIND_ARRAY:
                     for_elem_ty = self.types.entries.data[iteree_ty].extra
+                    for_is_collection = true
                 elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
                     ax_printf_local("error: iterating a collection with `for x in <collection>` is not yet supported; use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+            // RFC 0018 P1: for a COLLECTION loop, bind the loop variable's type to the
+            // element type BEFORE inferring the body, so field/method access on the
+            // element (`p.y`) resolves against the element struct (otherwise the field
+            // index defaults to 0 and every field reads offset 0 -> silent miscompile).
+            // Range/integer loops keep the original post-body assignment below so their
+            // body type environment (and codegen) is byte-identical.
+            if for_is_collection and iter_var != 0 as u32:
+                self.symtable.symbols.data[iter_var].type_id = for_elem_ty
             let body = self.tree.nodes.data[range_expr].next_sibling
             if body != 0 as u32:
                 self.infer_node(body, TYPE_UNKNOWN)
