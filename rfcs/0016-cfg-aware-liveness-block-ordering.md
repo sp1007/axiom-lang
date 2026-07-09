@@ -45,10 +45,11 @@ D4. **Determinism** — RPO must be computed deterministically (fixed DFS succes
 
 ## 5. Recommended phased plan
 
-- **P1 — terminator normalization (independent, low-risk):** add a pass (or assert) ensuring every AIR block ends with a terminator; append `OP_JUMP fallthrough_successor` where missing. Gate: A==B (should be a no-op if the invariant already holds) + regression. This is shippable on its own and de-risks everything after.
-- **P2 — RPO serialization:** compute RPO over `f.blocks` (deterministic DFS from block 0 using explicit succ edges), emit blocks in that order in `x86_selector` (and mirror in `cgen`/`wasm` if they share the assumption). Gate: **A!=B expected (every function's layout changes) → B==C mandatory** + full regression + a spread of control-flow-heavy oracles. This alone likely fixes the fragility.
-- **P3 — enable short-circuit `and`/`or`:** re-apply the lowering from [[bug86-short-circuit-open]] on top of P2. Gate: `scB` compiles trivial + B==C + regression + `sc1/sc2/sc3=42` (crash-based) + `scv=3` (truth table). Ship BUG#86.
-- **P4 (optional) — CFG-aware liveness (D1-B):** if P2 proves insufficient for some irreducible/complex case, replace linear liveness with proper live-in/live-out dataflow. Larger, defer unless P2 fails.
+- **P1 — terminator normalization (independent, low-risk):** add a pass (or assert) ensuring every AIR block ends with a terminator; append `OP_JUMP fallthrough_successor` where missing. Gate: A==B (should be a no-op if the invariant already holds) + regression. This is shippable on its own and de-risks everything after. (Note: investigation shows `ensure_return` + per-construct jumps already make the invariant hold in practice.)
+- **~~P2 — RPO serialization~~ — ATTEMPTED 2026-07-09, INSUFFICIENT (reverted).** Implemented reverse-postorder block emission (DFS from block 0 over succ edges, with a safety net appending unreachable blocks). Result: **the RPO compiler self-hosts — `scB` compiles trivial, B==C fixpoint holds** — AND ~30 spot-checked tests pass, BUT **`t_math` regressed 127→124**: a loop-carried float value (Newton/series iterations) is miscompiled. RPO produces *correct* loop ordering (postorder+reverse naturally serializes `cond,body,exit`), so the failure is **not** the ordering — it is `compute_liveness` itself being wrong for loop-carried values under the new indices. **Conclusion: reordering alone cannot fix a liveness algorithm that is not CFG-aware; it just moves which CFG shapes break.** Reverted; tree back to the BUG#88 fixpoint (`0D672CC8`).
+- **P2' (revised) — CFG-aware liveness is REQUIRED, not optional.** Replace the linear-index interval computation with proper per-block live-in/live-out dataflow (backward fixpoint over the CFG: `live_in[b] = use[b] ∪ (live_out[b] − def[b])`, `live_out[b] = ∪ live_in[succ]`), then build intervals over a block-linearized order. This makes correctness independent of block emission order and handles loops, diamonds, and mid-expression blocks uniformly. Gate: **A!=B → B==C mandatory** + full regression (MUST include `t_math`, the loop-carried-float canary) + control-flow oracles.
+- **P3 — enable short-circuit `and`/`or`:** re-apply the lowering from [[bug86-short-circuit-open]] on top of P2'. Gate: `scB` compiles trivial + B==C + regression + `sc1/sc2/sc3=42` (crash-based) + `scv=3` (truth table). Ship BUG#86.
+  - **Proven prerequisite met:** the short-circuit *lowering* is correct (isolation test), and the P2 experiment additionally proved a self-hosting short-circuit compiler is *achievable* once liveness is sound — so P3 is purely gated on P2'.
 
 ## 6. Alternatives
 
@@ -64,6 +65,11 @@ D4. **Determinism** — RPO must be computed deterministically (fixed DFS succes
 
 ## 8. Status
 
-DRAFT. Root cause fully diagnosed and reproduced (see [[bug86-short-circuit-open]]). No implementation yet — P1 (terminator normalization) is the recommended first shippable step and is independent of short-circuit. This RFC exists so the foundational change is designed deliberately rather than patched ad-hoc (which already broke self-host once).
+DRAFT — root cause diagnosed, reproduced, and **P2 (RPO) experimentally falsified as a sufficient fix** (2026-07-09). Key empirical results:
+- Short-circuit lowering is correct in isolation.
+- RPO block serialization makes a short-circuit compiler **self-host** (B==C) — proving the goal is reachable — but **regresses `t_math` 127→124** (loop-carried float), proving `compute_liveness` must become genuinely CFG-aware (P2'), not merely fed a better block order.
+- Reverted cleanly; tree at BUG#88 fixpoint `0D672CC8`.
+
+Next actionable step: **P2' (CFG-aware live-in/live-out dataflow)**, the real fix, with `t_math` as the mandatory loop-carried-value canary in the gate. P1 (terminator normalization) remains a low-risk independent precursor but investigation shows the invariant already holds (`ensure_return` + per-construct jumps). This RFC exists so the foundational change is designed deliberately rather than patched ad-hoc (which broke self-host twice: the naive short-circuit vreg, and RPO-only).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
