@@ -1443,14 +1443,21 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                             mut payload_type := TYPE_UNKNOWN
                             let type_expr_node = v_node_struct.first_child
                             if type_expr_node != 0 as u32:
-                                if self.tree.nodes.data[type_expr_node].next_sibling != 0 as u32:
-                                    // RFC 0019: a multi-field variant payload (`Rect(i64,i64)`)
-                                    // is desugared to a single SYNTHESIZED struct payload, so the
-                                    // proven single-struct-payload path (BUG#58) carries it
-                                    // (VariantInfo shape + sum sizing unchanged). Collect all N
-                                    // payload types into a struct `__mfv_<Sum>_<Variant>` with
-                                    // positional fields `_f0.._f(N-1)`; the constructor gathers
-                                    // the N args into it and match splits them back out.
+                                let first_pl_ty = self.infer_node(type_expr_node, TYPE_UNKNOWN)
+                                // RFC 0019: desugar a payload into a SYNTHESIZED struct when it is
+                                // (a) MULTI-field (`Rect(i64,i64)`), or (b) a SINGLE >8-byte primitive
+                                // like `str` — the sum box has a fixed 8-byte payload slot, so a 16-byte
+                                // str stored inline overflows/truncates (returned 0). Wrapping makes the
+                                // payload an 8-byte struct POINTER that fits, reusing the proven
+                                // single-struct-payload path. Scalars (<=8B) and existing aggregate
+                                // payloads stay as-is. The synth struct is flagged (flags bit 0) so the
+                                // constructor/match know to gather/split its fields.
+                                mut do_wrap := self.tree.nodes.data[type_expr_node].next_sibling != 0 as u32
+                                if not do_wrap and first_pl_ty != TYPE_UNKNOWN and (first_pl_ty as i64) < self.types.entries.len:
+                                    let fe = self.types.entries.data[first_pl_ty as i64]
+                                    if fe.kind == TYPE_KIND_PRIMITIVE and fe.size > 8 as u32:
+                                        do_wrap = true
+                                if do_wrap:
                                     mut synth_fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
                                     mut ptn := type_expr_node
                                     mut fidx := 0 as i64
@@ -1470,8 +1477,12 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                                     safe_free_str(sumnm)
                                     safe_free_str(vnm)
                                     payload_type = self.types.register_struct(synth_nm_id, synth_fields)
+                                    // Flag the synth struct (bit 0) so lowering routes it through the
+                                    // gather/split path even for a single field.
+                                    if (payload_type as i64) < self.types.entries.len:
+                                        self.types.entries.data[payload_type as i64].flags = self.types.entries.data[payload_type as i64].flags | 1 as u16
                                 else:
-                                    payload_type = self.infer_node(type_expr_node, TYPE_UNKNOWN)
+                                    payload_type = first_pl_ty
 
                             variants.push(VariantInfo(
                                 name_id: v_sym.name_id,
@@ -1902,12 +1913,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             
                             // Now assign payload type to binding patterns (which are children of NODE_VARIANT_PAT)
                             let arg = pat_node.first_child
-                            // RFC 0019: a multi-field variant's payload_type is a SYNTHESIZED
-                            // struct; bind each pattern var to its FIELD type, not the struct.
+                            // RFC 0019: a synthesized (flagged) payload struct — multi-field OR a
+                            // single >8B primitive (str) wrap — binds each pattern var to its FIELD
+                            // type, not the wrapper struct itself.
                             mut mf_struct_idx := -1 as i64
-                            if arg != 0 as u32 and self.tree.nodes.data[arg].next_sibling != 0 as u32 and payload_type != TYPE_UNKNOWN and (payload_type as i64) < self.types.entries.len:
-                                if self.types.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
-                                    mf_struct_idx = self.types.entries.data[payload_type as i64].extra as i64
+                            if arg != 0 as u32 and payload_type != TYPE_UNKNOWN and (payload_type as i64) < self.types.entries.len:
+                                let pe = self.types.entries.data[payload_type as i64]
+                                if pe.kind == TYPE_KIND_STRUCT and (pe.flags & 1 as u16) != 0 as u16:
+                                    mf_struct_idx = pe.extra as i64
                             if mf_struct_idx >= 0 as i64:
                                 mut ap := arg
                                 mut afi := 0 as i64

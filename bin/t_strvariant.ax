@@ -1,0 +1,15 @@
+// Oracle (RFC 0019 ext): a SINGLE str variant payload `Text(str)` (a 16-byte value)
+// is wrapped in a synth struct so the box's 8-byte payload slot holds an 8-byte
+// pointer instead of overflowing. Previously the str was truncated -> len()==0.
+type Msg = Text(str) | Num(i64)
+fn total(m: Msg) -> i64:
+    match m:
+        Text(s):
+            return len(s) as i64
+        Num(n):
+            return n
+fn main() -> i64:
+    let a = Text("hello")        // len 5
+    let b = Num(37)
+    let c = Text("hi")           // len 2
+    return total(a) + total(b) + total(c)   // 5 + 37 + 2 = 44

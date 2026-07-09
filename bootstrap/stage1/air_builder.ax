@@ -2376,15 +2376,16 @@ pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32
     ))
 
     if payload_arg_idx != 0 as u32:
-        // RFC 0019: a multi-field variant (`Rect(3,4)`) has >1 call arg and a
-        // SYNTHESIZED struct payload_type. Gather the N args into a fresh struct box
-        // (arg[i] -> struct field i), then store the struct pointer into box field 1 —
-        // producing a value byte-identical to a user single-struct payload. A normal
-        // single payload (one arg) takes the existing path below.
-        let has_more = self.mb.tree.nodes.data[payload_arg_idx as i64].next_sibling != 0 as u32
+        // RFC 0019: a SYNTHESIZED (flagged) payload struct — a multi-field variant
+        // (`Rect(3,4)`) or a single >8B primitive wrap (`Text(str)`). Gather the N call
+        // args into a fresh struct box (arg[i] -> struct field i), then store the struct
+        // pointer into box field 1 — a value byte-identical to a user single-struct
+        // payload, and one that fits the box's 8-byte payload slot. A plain single
+        // payload (scalar or user struct) takes the existing path below.
         mut is_multifield := false
-        if has_more and payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
-            if self.mb.typetable.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
+        if payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
+            let pe = self.mb.typetable.entries.data[payload_type as i64]
+            if pe.kind == TYPE_KIND_STRUCT and (pe.flags & 1 as u16) != 0 as u16:
                 is_multifield = true
         if is_multifield:
             let struct_reg = self.fb.fresh_reg()
@@ -2734,8 +2735,9 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             if payload_bind_sym != 0 as u32:
                 let pat_arg0 = pat_node.first_child
                 mut is_mf := false
-                if pat_arg0 != 0 as u32 and self.mb.tree.nodes.data[pat_arg0 as i64].next_sibling != 0 as u32 and payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
-                    if self.mb.typetable.entries.data[payload_type as i64].kind == TYPE_KIND_STRUCT:
+                if pat_arg0 != 0 as u32 and payload_type != 0 as u32 and (payload_type as i64) < self.mb.typetable.entries.len:
+                    let pe2 = self.mb.typetable.entries.data[payload_type as i64]
+                    if pe2.kind == TYPE_KIND_STRUCT and (pe2.flags & 1 as u16) != 0 as u16:
                         is_mf = true
                 if is_mf:
                     // RFC 0019: multi-field variant — read the struct payload pointer from
