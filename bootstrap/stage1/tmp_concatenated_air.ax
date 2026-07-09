@@ -7313,15 +7313,37 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
         mut has_ret_expr := false
         
         let node = self.tree.nodes.data[node_idx]
+        // Self type (RFC): a `-> Self` return on a free-function method resolves to the
+        // type of the `self` (first) parameter. AXIOM methods are free functions with a
+        // `self` param, so there is no interface/impl scope binding `Self` here; without
+        // this, `Self` stays TYPE_UNKNOWN and a method call ON a Self-returning result
+        // (`c.inc().inc()`) mis-dispatches and segfaults.
+        mut first_is_self := false
+        mut param_count := 0 as i64
         mut child := node.first_child
         while child != 0 as u32:
             let child_node = self.tree.nodes.data[child]
             let next_sibling = child_node.next_sibling
             if child_node.kind == NODE_PARAM_DECL:
                 let p_type = self.infer_node(child, TYPE_UNKNOWN)
+                if param_count == 0 as i64 and child_node.payload != 0 as u32 and (child_node.payload as i64) < self.symtable.symbols.len:
+                    let pnm = self.intern.get(self.symtable.symbols.data[child_node.payload as i64].name_id)
+                    if pnm == "self":
+                        first_is_self = true
+                    safe_free_str(pnm)
                 param_types.push(p_type)
+                param_count = param_count + 1 as i64
             elif child_node.kind == NODE_TYPE_EXPR or child_node.kind == NODE_GENERIC_TYPE:
-                ret_type = self.infer_node(child, TYPE_UNKNOWN)
+                mut is_self_ret := false
+                if first_is_self and param_types.len > 0:
+                    let rtext = self.node_text(child)
+                    if rtext == "Self":
+                        is_self_ret = true
+                    safe_free_str(rtext)
+                if is_self_ret:
+                    ret_type = param_types.data[0]
+                else:
+                    ret_type = self.infer_node(child, TYPE_UNKNOWN)
                 has_ret_expr = true
             child = next_sibling
             

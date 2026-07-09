@@ -1,0 +1,13 @@
+// Oracle (Self type): a `-> Self` return on a free-function method resolves to the
+// self/receiver type, so the result can be a receiver for further method calls
+// (`c.inc().add(10).inc()`). Previously a Self-returning method call gave an untyped
+// result and chaining segfaulted.
+struct Counter:
+    n: i64
+fn inc(self: Counter) -> Self:
+    return Counter(n: self.n + 1)
+fn add(self: Counter, k: i64) -> Self:
+    return Counter(n: self.n + k)
+fn main() -> i64:
+    let c = Counter(n: 0)
+    return c.inc().inc().add(10).inc().n    // 0+1+1+10+1 = 13
