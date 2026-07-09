@@ -1,0 +1,27 @@
+// Oracle (BUG#90): Option/Result methods on a TYPED receiver — unwrap / is_some /
+// is_none / is_ok / is_err — lowered to deterministic pointer-tagged inline logic
+// (box non-null = Some/Ok; payload = [box]) instead of std/result.ax's fragile
+// (&self) read that crashed for Options returned by mono'd generic methods.
+fn mko(x: i64) -> Option[i64]:
+    if x > 0:
+        return Some(x)
+    return None
+fn mkr(x: i64) -> Result[i64, str]:
+    if x > 0:
+        return Ok(x)
+    return Err("neg")
+fn main() -> i64:
+    mut s := 0 as i64
+    let a: Option[i64] = mko(10)
+    if a.is_some():
+        s = s + a.unwrap()          // 10
+    let b: Option[i64] = mko(-1)
+    if b.is_none():
+        s = s + 5                   // 5
+    let r: Result[i64, str] = mkr(20)
+    if r.is_ok():
+        s = s + r.unwrap()          // 20
+    let e: Result[i64, str] = mkr(-1)
+    if e.is_err():
+        s = s + 7                   // 7
+    return s                        // 10 + 5 + 20 + 7 = 42

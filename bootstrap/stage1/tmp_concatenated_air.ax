@@ -11607,6 +11607,56 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
 
     let callee_node = self.mb.tree.nodes.data[child as i64]
 
+    // BUG#90: intercept Option/Result methods (unwrap/is_some/is_none/is_ok/is_err) on
+    // a receiver typed as Option/Result, and emit the SAME deterministic pointer-tagged
+    // inline logic lower_match_tagged uses (Some/Ok=box non-null/even; payload=[box]).
+    // std/result.ax reads the box via `(&self)[0]`, which crashes when self's param
+    // home-slot doesn't hold the box pointer (e.g. an Option returned by a mono'd
+    // generic method). This is off the stdlib ABI, same tactic RFC 0012 used for match.
+    if callee_node.kind == NODE_FIELD_EXPR and self.mb.node_types != null as ptr[u32]:
+        let orc_recv = callee_node.first_child
+        if orc_recv != 0 as u32:
+            let orc_rty = self.mb.node_types[orc_recv as i64]
+            if self.opt_res_kind(orc_rty) >= 0 as i64:
+                let mtok = self.mb.get_token_text(callee_node.token_idx)
+                mut orc_handled := false
+                mut orc_reg := 0 as u32
+                if mtok == "unwrap":
+                    let rr = self.lower_expr(orc_recv)
+                    mut pl_type := 4 as u32
+                    if self.mb.node_types[idx as i64] != 0 as u32:
+                        pl_type = self.mb.node_types[idx as i64] as u32
+                    orc_reg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_DEREF, type_id: pl_type, dest: orc_reg, src1: rr, src2: 0 as u32))
+                    orc_handled = true
+                elif mtok == "is_some" or mtok == "is_none":
+                    let rr = self.lower_expr(orc_recv)
+                    let zr = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: zr, src1: 0 as u32, src2: 0 as u32))
+                    orc_reg = self.fb.fresh_reg()
+                    mut opc := OP_NE
+                    if mtok == "is_none":
+                        opc = OP_EQ
+                    self.fb.emit(AirInst(opcode: opc, type_id: 11 as u32, dest: orc_reg, src1: rr, src2: zr))
+                    orc_handled = true
+                elif mtok == "is_ok" or mtok == "is_err":
+                    let rr = self.lower_expr(orc_recv)
+                    let onr = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: onr, src1: 1 as u32, src2: 0 as u32))
+                    let bitr = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_AND, type_id: 4 as u32, dest: bitr, src1: rr, src2: onr))
+                    let zr = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: zr, src1: 0 as u32, src2: 0 as u32))
+                    orc_reg = self.fb.fresh_reg()
+                    mut opc := OP_EQ
+                    if mtok == "is_err":
+                        opc = OP_NE
+                    self.fb.emit(AirInst(opcode: opc, type_id: 11 as u32, dest: orc_reg, src1: bitr, src2: zr))
+                    orc_handled = true
+                safe_free_str(mtok)
+                if orc_handled:
+                    return orc_reg
+
     if callee_node.kind == NODE_FIELD_EXPR:
         let field_name_id = callee_node.payload
         let field_name = self.mb.pool.get(field_name_id)
@@ -12603,6 +12653,39 @@ pub fn resolve_sum_type(self: ptr[FuncLowering], type_id: u32) -> u32:
                 return k as u32
             k = k + 1
     return 0 as u32
+
+// BUG#90: does `s` equal `prefix` or start with it? (zero-alloc; both are views.)
+pub fn name_has_prefix(s: str, prefix: str) -> bool:
+    let pl = std.string.len(prefix)
+    let sl = std.string.len(s)
+    if sl < pl:
+        return false
+    let sp = get_str_ptr(s)
+    let pp = get_str_ptr(prefix)
+    mut i := 0 as i64
+    while i < pl:
+        if sp[i] != pp[i]:
+            return false
+        i = i + 1 as i64
+    return true
+
+// BUG#90: classify a receiver type as Option (0), Result (1), or neither (-1), seeing
+// through kind 11/12 and a GENERIC_INST/SUM whose base name is Option/Result.
+pub fn opt_res_kind(self: ptr[FuncLowering], type_id: u32) -> i64:
+    if type_id == 0 as u32 or (type_id as i64) >= self.mb.typetable.entries.len:
+        return -1 as i64
+    let e = self.mb.typetable.entries.data[type_id as i64]
+    if e.kind == TYPE_KIND_OPTION:
+        return 0 as i64
+    if e.kind == TYPE_KIND_RESULT:
+        return 1 as i64
+    if (e.kind == TYPE_KIND_GENERIC_INST or e.kind == TYPE_KIND_SUM) and e.name_id != 0 as u32:
+        let nm = self.mb.pool.get(e.name_id)
+        if name_has_prefix(nm, "Option"):
+            return 0 as i64
+        if name_has_prefix(nm, "Result"):
+            return 1 as i64
+    return -1 as i64
 
 pub fn find_variant_info(self: ptr[FuncLowering], sum_type_id: u32, name_id: u32, out_tag: ptr[i64], out_payload: ptr[u32]) -> bool:
     out_tag[0] = -1 as i64
