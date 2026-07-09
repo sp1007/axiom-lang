@@ -1263,6 +1263,63 @@ pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue
                 
     return ComptimeValue(kind: TYPE_VOID, int_val: 0 as i64, float_val: 0.0, bool_val: false, str_val: "")
 
+// RFC 0017 / BUG#82: is a module-level global's initializer a compile-time constant
+// scalar that the backend can fold into the data image? Phase 1 accepts literal
+// constants (and a leading unary +/- on one); absent init (idx 0) folds to zero. Must
+// stay in lockstep with air_builder.builder_fold_global_init (which does the fold).
+pub fn ax_global_init_is_const(tree: ptr[AstTree], idx: u32) -> bool:
+    if idx == 0 as u32:
+        return true
+    let n = tree.nodes.data[idx as i64]
+    if n.kind == NODE_INT_LIT or n.kind == NODE_FLOAT_LIT or n.kind == NODE_BOOL_LIT or n.kind == NODE_CHAR_LIT or n.kind == NODE_NIL_LIT:
+        return true
+    // A leading unary +/- on a constant, or a cast of a constant (`0 as u64`), is still a
+    // compile-time constant — recurse into the operand. Casts are pervasive in real
+    // stdlib globals (`mut g: u64 = 0 as u64`).
+    if n.kind == NODE_UNARY_EXPR or n.kind == NODE_CAST_EXPR:
+        return ax_global_init_is_const(tree, n.first_child)
+    return false
+
+// RFC 0017 / BUG#82: validate one module-level `let`/`mut` declaration. Rejects
+// (with a diagnostic + diags_count bump so the driver halts before codegen) any global
+// that is not a scalar (primitive/pointer, size 1..8) or whose initializer is not a
+// compile-time constant. `const` decls are a separate node kind (inlined, not storage)
+// and never reach here.
+pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
+    let sym_idx = self.tree.nodes.data[node_idx].payload
+    if sym_idx == 0 as u32:
+        return
+    let type_id = self.symtable.symbols.data[sym_idx].type_id
+    let name = self.intern.get(self.symtable.symbols.data[sym_idx].name_id)
+
+    // Separate the initializer from an optional type annotation.
+    mut init_expr := 0 as u32
+    mut child := self.tree.nodes.data[node_idx].first_child
+    while child != 0 as u32:
+        let cn = self.tree.nodes.data[child]
+        if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_GENERIC_TYPE:
+            init_expr = child
+        child = cn.next_sibling
+
+    // Type must be a scalar (primitive or pointer/ref) of size 1..8.
+    mut supported := false
+    if type_id != 0 as u32 and (type_id as i64) < self.types.entries.len:
+        let k = self.types.entries.data[type_id as i64].kind
+        if k == TYPE_KIND_PRIMITIVE or k == TYPE_KIND_POINTER or k == TYPE_KIND_REF:
+            mut gsize := 0 as u32
+            mut galign := 0 as u32
+            builder_type_size_and_align(self.types, type_id, &gsize, &galign)
+            if gsize >= 1 as u32 and gsize <= 8 as u32:
+                supported = true
+    if not supported:
+        ax_printf_local("error: module-level global '%s' must be a scalar type (integer, bool, char, float, or pointer); aggregate/struct/array globals are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        self.diags_count = self.diags_count + 1 as i64
+        return
+
+    if not ax_global_init_is_const(self.tree, init_expr):
+        ax_printf_local("error: module-level global '%s' must have a compile-time constant initializer (a literal); non-constant global initializers are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        self.diags_count = self.diags_count + 1 as i64
+
 pub fn run_type_checker(mut self: ptr[TypeChecker]):
     // Phase 0.0: Pre-register all Struct Type IDs (empty) to allow mutual / forward
     // references. MUST run before Phase 0.1 (sum-type pre-inference): a sum variant
@@ -1325,6 +1382,20 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
 
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
+
+    // Phase 4 (RFC 0017 / BUG#82): validate module-level global variables. A
+    // module-level `let`/`mut` (not `const`) gets real static storage in the backend
+    // (OP_GLOBAL_ADDR + a writable data slot). Phase 1 supports only *scalar* globals
+    // (primitive/pointer, size <= 8) with a *compile-time-constant* initializer folded
+    // into the data image. Reject anything else with a diagnostic instead of silently
+    // miscompiling (BUG#53 convention). Types are resolved now (post-inference), so the
+    // size check is reliable. Module scope = direct children of the root node.
+    mut gchild := self.tree.nodes.data[0].first_child
+    while gchild != 0 as u32:
+        let gnode = self.tree.nodes.data[gchild]
+        if gnode.kind == NODE_VAR_DECL:
+            self.check_module_global(gchild)
+        gchild = gnode.next_sibling
 
 pub fn get_full_mangled_name(self: ptr[TypeChecker], sym_idx: u32) -> str:
     let sym = self.symtable.symbols.data[sym_idx]

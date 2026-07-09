@@ -32,6 +32,13 @@ pub const OP_INDEX_ADDR: u16 = 0x0111
 // `&s.scalar_field` case (BUG#85); aggregate `&s.aggfield` still uses OP_GET_FIELD
 // (already returns the field address) + OP_MAKE_REF pass-through.
 pub const OP_FIELD_ADDR: u16 = 0x0112
+// Address of a module-level global variable (RFC 0017 / BUG#82). Materializes the
+// global's static-storage address via `lea reg,[rip+gsym]` + RELOC_PC32 (structurally
+// identical to OP_FUNC_ADDR). src1 carries the global's symbol-table index; the backend
+// registers a writable-data symbol under that index and the linker resolves the reloc to
+// the global's image RVA. A global read composes OP_GLOBAL_ADDR + OP_LOAD; a global write
+// composes OP_GLOBAL_ADDR + OP_STORE.
+pub const OP_GLOBAL_ADDR: u16 = 0x0113
 
 // ALU class (0x02xx)
 pub const OP_ICONST: u16 = 0x0201
@@ -218,8 +225,42 @@ pub fn push(mut self: AirFuncVec, f: AirFunc) -> u32:
     self.len = self.len + 1
     return idx
 
+// RFC 0017 / BUG#82: a module-level global variable with static storage. `init_lo`
+// holds the constant-folded initial value as a raw 64-bit bit-pattern (integers/bools
+// zero-extended, floats as their IEEE-754 bits); only the low `size` bytes are emitted.
+pub struct AirGlobal:
+    pub sym_id: u32
+    pub type_id: u32
+    pub size: u32
+    pub init_lo: i64
+
+pub struct AirGlobalVec:
+    pub data: ptr[AirGlobal]
+    pub len: i64
+    pub cap: i64
+
+pub fn new_air_global_vec() -> AirGlobalVec:
+    return AirGlobalVec(data: null as ptr[AirGlobal], len: 0, cap: 0)
+
+pub fn push(mut self: AirGlobalVec, g: AirGlobal) -> u32:
+    if self.len == self.cap:
+        mut new_cap := 8 as i64
+        if self.cap != 0:
+            new_cap = self.cap * 2
+        let new_data = @alloc(new_cap * (@compiler_intrinsic("size_of")[AirGlobal]() as i64)) as ptr[AirGlobal]
+        if self.data != null as ptr[AirGlobal]:
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * (@compiler_intrinsic("size_of")[AirGlobal]() as i64))
+            @free(self.data as ptr[u8])
+        self.data = new_data
+        self.cap = new_cap
+    let idx = self.len as u32
+    self.data[self.len] = g
+    self.len = self.len + 1
+    return idx
+
 pub struct AirModule:
     pub funcs: AirFuncVec
+    pub globals: AirGlobalVec
 
 pub fn free_air_module(mut m: AirModule):
     mut i := 0 as i64
@@ -228,6 +269,8 @@ pub fn free_air_module(mut m: AirModule):
         i = i + 1
     if m.funcs.data != null as ptr[AirFunc]:
         @free(m.funcs.data as ptr[u8])
+    if m.globals.data != null as ptr[AirGlobal]:
+        @free(m.globals.data as ptr[u8])
 
 pub struct AirFuncBuilder:
     pub name: u32

@@ -110,7 +110,7 @@ pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typ
     amb.symbols = symbols
     amb.typetable = typetable
     amb.pool = pool
-    amb.module = AirModule(funcs: new_air_func_vec())
+    amb.module = AirModule(funcs: new_air_func_vec(), globals: new_air_global_vec())
     amb.node_types = node_types
     return amb
 
@@ -688,10 +688,30 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
             return faddr
         if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
             return 0 as u32
+        // RFC 0017 / BUG#82: a module-level global reads from its static storage
+        // (OP_GLOBAL_ADDR + OP_LOAD), not a per-function vreg.
+        if sym.kind == SYM_VAR and self.mb.builder_global_index(sym_idx) != -1 as i64:
+            return self.lower_global_read(sym_idx, sym.type_id)
         let reg = self.locals.local_map_get(sym_idx)
         return reg
 
     return 0 as u32
+
+// RFC 0017 / BUG#82: read a module-level global's value from static storage. Composes
+// OP_GLOBAL_ADDR (address via lea rip + reloc) with OP_LOAD (sized by the value type).
+pub fn lower_global_read(mut self: ptr[FuncLowering], sym_idx: u32, type_id: u32) -> u32:
+    let addr = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: 4 as u32, dest: addr, src1: sym_idx, src2: 0 as u32))
+    let val = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_LOAD, type_id: type_id, dest: val, src1: addr, src2: 0 as u32))
+    return val
+
+// RFC 0017 / BUG#82: write `value_reg` into a module-level global's static storage.
+// Composes OP_GLOBAL_ADDR with OP_STORE (src1 = address, src2 = value).
+pub fn lower_global_write(mut self: ptr[FuncLowering], sym_idx: u32, type_id: u32, value_reg: u32):
+    let addr = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: 4 as u32, dest: addr, src1: sym_idx, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_STORE, type_id: type_id, dest: addr, src1: value_reg, src2: 0 as u32))
 
 // BUG#86 / RFC 0016 P3: lower a short-circuit `and`/`or`. The result is carried
 // out of the diamond in one vreg (`sc_res`), written on each path:
@@ -2955,6 +2975,14 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         if sym.type_id != 0 as u32:
             type_id = sym.type_id as u32
 
+    // RFC 0017 / BUG#82: assigning to a module-level global writes its static storage
+    // (OP_GLOBAL_ADDR + OP_STORE), not a per-function vreg — so the value persists
+    // across calls and read-modify-write is correct.
+    if lhs_node.payload != 0 as u32 and (lhs_node.payload as i64) < self.mb.symbols.symbols.len:
+        if self.mb.symbols.symbols.data[lhs_node.payload as i64].kind == SYM_VAR and self.mb.builder_global_index(lhs_node.payload) != -1 as i64:
+            self.lower_global_write(lhs_node.payload, type_id, val_reg)
+            return
+
     let existing_reg = self.locals.local_map_get(name_id)
     if existing_reg != 0 as u32:
         self.fb.emit(AirInst(
@@ -3380,8 +3408,152 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
     free_func_lowering(fl)
     return fn_built
 
+// RFC 0017 / BUG#82: fold a module-level global's constant initializer as a floating
+// value (handles a leading unary +/- and int→float promotion). Only reached for f32/f64
+// globals; kept in lockstep with typecheck.ax's ax_global_init_is_const gate.
+pub fn builder_global_fold_float(self: ptr[AirModuleBuilder], idx: u32) -> f64:
+    if idx == 0 as u32:
+        return 0.0
+    let node = self.tree.nodes.data[idx as i64]
+    if node.kind == NODE_CAST_EXPR:
+        return self.builder_global_fold_float(node.first_child)
+    if node.kind == NODE_UNARY_EXPR:
+        let op = self.get_token_text(node.token_idx)
+        let is_neg = op == "-"
+        @free(get_str_ptr(op))
+        let inner = self.builder_global_fold_float(node.first_child)
+        if is_neg:
+            return 0.0 - inner
+        return inner
+    if node.kind == NODE_FLOAT_LIT:
+        let text = self.get_token_text(node.token_idx)
+        let fv = atof(get_str_ptr(text))
+        @free(get_str_ptr(text))
+        return fv
+    if node.kind == NODE_INT_LIT:
+        let text = self.get_token_text(node.token_idx)
+        let v = parse_int_from_str(text)
+        @free(get_str_ptr(text))
+        return v as f64
+    return 0.0
+
+// RFC 0017 / BUG#82: fold a module-level global's constant initializer as an i64 bit
+// pattern (integers/bools/chars, with a leading unary +/-). Absent init folds to zero.
+pub fn builder_global_fold_int(self: ptr[AirModuleBuilder], idx: u32) -> i64:
+    if idx == 0 as u32:
+        return 0 as i64
+    let node = self.tree.nodes.data[idx as i64]
+    if node.kind == NODE_CAST_EXPR:
+        return self.builder_global_fold_int(node.first_child)
+    if node.kind == NODE_UNARY_EXPR:
+        let op = self.get_token_text(node.token_idx)
+        let is_neg = op == "-"
+        @free(get_str_ptr(op))
+        let inner = self.builder_global_fold_int(node.first_child)
+        if is_neg:
+            return 0 as i64 - inner
+        return inner
+    if node.kind == NODE_INT_LIT:
+        let text = self.get_token_text(node.token_idx)
+        let v = parse_int_from_str(text)
+        @free(get_str_ptr(text))
+        return v
+    if node.kind == NODE_BOOL_LIT:
+        let text = self.get_token_text(node.token_idx)
+        mut v := 0 as i64
+        if text == "true":
+            v = 1 as i64
+        @free(get_str_ptr(text))
+        return v
+    if node.kind == NODE_CHAR_LIT:
+        let text = self.get_token_text(node.token_idx)
+        mut val := 0 as i64
+        let length = std.string.len(text)
+        if length >= 3 and text[0] as u8 == '\'' as u8 and text[length - 1] as u8 == '\'' as u8:
+            if text[1] as u8 == '\\' as u8 and length >= 4:
+                let esc = text[2] as u8
+                if esc == 'n' as u8:
+                    val = 10 as i64
+                elif esc == 't' as u8:
+                    val = 9 as i64
+                elif esc == 'r' as u8:
+                    val = 13 as i64
+                elif esc == '\'' as u8:
+                    val = 39 as i64
+                elif esc == '\\' as u8:
+                    val = 92 as i64
+                elif esc == '0' as u8:
+                    val = 0 as i64
+                elif esc == 'b' as u8:
+                    val = 8 as i64
+                elif esc == 'f' as u8:
+                    val = 12 as i64
+                else:
+                    val = esc as i64
+            else:
+                val = text[1] as i64
+        @free(get_str_ptr(text))
+        return val
+    return 0 as i64
+
+// RFC 0017 / BUG#82: fold a global's constant initializer to the raw i64 bit pattern
+// stored in AirGlobal.init_lo. Float types (f32=9, f64=10) encode IEEE-754 bits; every
+// other scalar uses the integer value.
+pub fn builder_fold_global_init(self: ptr[AirModuleBuilder], idx: u32, type_id: u32) -> i64:
+    if type_id == 9 as u32:
+        let fv = self.builder_global_fold_float(idx)
+        mut f32v := fv as f32
+        return ((&f32v as ptr[u32])[0]) as i64
+    if type_id == 10 as u32:
+        let fv = self.builder_global_fold_float(idx)
+        mut d := fv
+        return ((&d as ptr[u64])[0]) as i64
+    return self.builder_global_fold_int(idx)
+
+// RFC 0017 / BUG#82: collect one module-level `let`/`mut` declaration into the module's
+// global table. The typechecker Phase 4 gate has already rejected non-scalar and
+// non-constant-init globals, so this only sees valid scalars.
+pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
+    let sym_idx = node.payload
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symbols.symbols.len:
+        return
+    let type_id = self.symbols.symbols.data[sym_idx as i64].type_id
+    mut size := 0 as u32
+    mut align := 0 as u32
+    builder_type_size_and_align(self.typetable, type_id, &size, &align)
+    if size == 0 as u32 or size > 8 as u32:
+        return
+    mut init_expr := 0 as u32
+    mut child := node.first_child
+    while child != 0 as u32:
+        let cn = self.tree.nodes.data[child as i64]
+        if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_PTR_TYPE and cn.kind != NODE_SLICE_TYPE and cn.kind != NODE_ARRAY_TYPE and cn.kind != NODE_FUNC_TYPE and cn.kind != NODE_GENERIC_TYPE:
+            init_expr = child
+        child = cn.next_sibling
+    let bits = self.builder_fold_global_init(init_expr, type_id)
+    (&self.module.globals).push(AirGlobal(sym_id: sym_idx, type_id: type_id, size: size, init_lo: bits))
+
+// RFC 0017 / BUG#82: index of a symbol in the module's global table, or -1. Used by
+// lower_ident / assignment lowering to route reads/writes through OP_GLOBAL_ADDR.
+pub fn builder_global_index(self: ptr[AirModuleBuilder], sym_idx: u32) -> i64:
+    mut i := 0 as i64
+    while i < self.module.globals.len:
+        if self.module.globals.data[i].sym_id == sym_idx:
+            return i
+        i = i + 1
+    return -1 as i64
+
 pub fn build_module(self: ptr[AirModuleBuilder]):
     let root = self.tree.nodes.data[0]
+    // RFC 0017 / BUG#82: collect module-level globals FIRST so every function body that
+    // reads/writes a global can route it through OP_GLOBAL_ADDR (membership is complete
+    // before any function is lowered).
+    mut gchild := root.first_child
+    while gchild != 0 as u32:
+        let gnode = self.tree.nodes.data[gchild as i64]
+        if gnode.kind == NODE_VAR_DECL:
+            self.collect_global(gnode)
+        gchild = gnode.next_sibling
     mut child := root.first_child
     while child != 0 as u32:
         let node = self.tree.nodes.data[child as i64]

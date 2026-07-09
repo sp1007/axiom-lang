@@ -1666,6 +1666,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         // result register is typed as a plain 8-byte GPR.
         out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 3 as u32, label: 0 as u32, imm: inst.src1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
+    elif op == OP_GLOBAL_ADDR:
+        // RFC 0017 / BUG#82: address of a module-level global. src1 = the global's
+        // symbol index. Emits `lea reg,[rip+gsym]` + RELOC_PC32 via the MACH_MOV_IMM
+        // vreg=4 marker — same ASLR-safe form as OP_FUNC_ADDR, but the target symbol
+        // lives in the writable .data section instead of .text.
+        out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 4 as u32, label: 0 as u32, imm: inst.src1 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
     elif op == OP_SPAWN:
         let arg0 = abi_int_arg_reg(sel.abi_name, 0)
         let arg1 = abi_int_arg_reg(sel.abi_name, 1)

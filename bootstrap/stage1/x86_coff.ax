@@ -72,7 +72,7 @@ extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn fclose(stream: ptr[void]) -> i32
 
-pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
+pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
     // 1. Build string table
     mut strtab := new_byte_vec()
     push_u32_le(&strtab, 4 as u32) // length placeholder
@@ -101,15 +101,23 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
     // 2. Lay out COFF components
     let text_size = code.len
     let rdata_size = rdata.len
-    
-    let text_raw_ptr = 100 as i64 // FileHeader (20) + 2 * SectionHeader (80) = 100
+    // RFC 0017 / BUG#82: an optional writable .data section (section 3) holds module-level
+    // globals. Emitted ONLY when non-empty, so a program with no globals produces a
+    // byte-identical 2-section object (fixpoint-preserving).
+    let data_size = data.len
+    let has_data = data_size > 0 as i64
+    mut num_sections := 2 as i64
+    if has_data:
+        num_sections = 3 as i64
+    let text_raw_ptr = 20 as i64 + num_sections * 40 as i64 // FileHeader(20) + N*SectionHeader(40)
     let rdata_raw_ptr = text_raw_ptr + text_size
-    let relocs_offset = rdata_raw_ptr + rdata_size
+    let data_raw_ptr = rdata_raw_ptr + rdata_size
+    let relocs_offset = data_raw_ptr + data_size
     let symbol_table_offset = relocs_offset + relocs.len * 10 as i64
-    
+
     // 3. Write COFF File Header (20 bytes)
     push_u16_le(out_bytes, 0x8664 as u16) // AMD64
-    push_u16_le(out_bytes, 2 as u16)      // 2 sections (.text and .rdata)
+    push_u16_le(out_bytes, num_sections as u16) // .text, .rdata [, .data]
     push_u32_le(out_bytes, 0 as u32)      // TimeDateStamp
     push_u32_le(out_bytes, symbol_table_offset as u32)
     push_u32_le(out_bytes, symbols.len as u32)
@@ -155,10 +163,33 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
     push_u16_le(out_bytes, 0 as u16) // NumLineNums
     // INITIALIZED_DATA | READ (0x40000040)
     push_u32_le(out_bytes, 0x00000040 as u32 | 0x40000000 as u32)
-    
+
+    // 4c. Write Section Header 3 (.data) — RFC 0017: writable global storage (only when
+    // globals exist). INITIALIZED_DATA | READ | WRITE (0xC0000040).
+    if has_data:
+        push_byte(out_bytes, '.' as u8)
+        push_byte(out_bytes, 'd' as u8)
+        push_byte(out_bytes, 'a' as u8)
+        push_byte(out_bytes, 't' as u8)
+        push_byte(out_bytes, 'a' as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_u32_le(out_bytes, 0 as u32) // VirtualSize
+        push_u32_le(out_bytes, 0 as u32) // VirtualAddress
+        push_u32_le(out_bytes, data_size as u32)
+        push_u32_le(out_bytes, data_raw_ptr as u32)
+        push_u32_le(out_bytes, 0 as u32) // RelocsPtr
+        push_u32_le(out_bytes, 0 as u32) // LineNumsPtr
+        push_u16_le(out_bytes, 0 as u16) // NumRelocs
+        push_u16_le(out_bytes, 0 as u16) // NumLineNums
+        push_u32_le(out_bytes, 0x00000040 as u32 | 0x40000000 as u32 | 0x80000000 as u32) // INIT_DATA|READ|WRITE
+
     // 5. Write raw section data
     push_bytes(out_bytes, code.data, text_size)
     push_bytes(out_bytes, rdata.data, rdata_size)
+    if has_data:
+        push_bytes(out_bytes, data.data, data_size)
 
     
     // 6. Write Relocation Table
@@ -202,9 +233,9 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFR
     if strtab.data != null as ptr[u8]:
         @free(strtab.data)
 
-pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec]) -> bool:
+pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec]) -> bool:
     mut out_bytes := new_byte_vec()
-    coff_serialize(code, rdata, relocs, symbols, &out_bytes)
+    coff_serialize(code, rdata, data, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
     let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
@@ -648,6 +679,31 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: info.name, value: info.offset, section_num: text_sec_idx as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         i = i + 1
         
+    // RFC 0017 / BUG#82: emit module-level global storage into a writable .data section
+    // (COFF section 3). Each global's constant-folded init bytes go into `data_buf` at a
+    // naturally-aligned offset; a section-3 STATIC symbol (named via the same
+    // x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through) is registered here,
+    // BEFORE the sym-map pre-pass, so the reloc binds to this defined data symbol. Only
+    // for COFF (the win64 self-host target); ELF globals are Phase 2 (RFC 0017 §4).
+    mut data_buf := new_byte_vec()
+    if not is_elf64:
+        mut gi := 0 as i64
+        while gi < mod.globals.len:
+            let g = mod.globals.data[gi]
+            mut gsize := g.size as i64
+            if gsize < 1 as i64:
+                gsize = 1 as i64
+            while (data_buf.len % gsize) != 0 as i64:
+                push_byte(&data_buf, 0 as u8)
+            let goff = data_buf.len as u32
+            mut b := 0 as i64
+            while b < gsize:
+                push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
+                b = b + 1
+            let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
+            push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: goff, section_num: 3 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
+            gi = gi + 1
+
     ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
         all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
@@ -755,12 +811,14 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
     else:
-        success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &coff_relocs, &coff_syms)
-        
+        success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &coff_relocs, &coff_syms)
+
     if all_code.data != null as ptr[u8]:
         @free(all_code.data)
     if rdata_buf.data != null as ptr[u8]:
         @free(rdata_buf.data)
+    if data_buf.data != null as ptr[u8]:
+        @free(data_buf.data)
     if str_keys.data != null as ptr[u32]:
         @free(str_keys.data as ptr[u8])
     if str_offsets.data != null as ptr[u32]:

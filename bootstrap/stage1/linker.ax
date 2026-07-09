@@ -155,6 +155,10 @@ pub struct ParsedObject:
     pub sym_names: LinkerStrVec
     pub relocs: ParsedRelocVec
     pub va: u64
+    // RFC 0017 / BUG#82: writable module-level global storage (COFF section 3). `data_va`
+    // is the image virtual address assigned to this object's data block during layout.
+    pub data: ByteVec
+    pub data_va: u64
 
 pub struct ParsedObjectPtrVec:
     pub data: ptr[ptr[ParsedObject]]
@@ -293,6 +297,8 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     obj.sym_names = sym_names
     obj.relocs = relocs
     obj.va = 0 as u64
+    obj.data = new_byte_vec()
+    obj.data_va = 0 as u64
     return obj
 
 // --------------------------------------------------------------------------
@@ -311,20 +317,29 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     
     mut rdata_off := 0 as i64
     mut rdata_size := 0 as i64
-    
+
+    // RFC 0017 / BUG#82: optional writable .data section (module-level globals).
+    mut data_sec_off := 0 as i64
+    mut data_sec_size := 0 as i64
+
     mut i := 0 as i64
     while i < num_sections:
         let off = 20 + i * 40
-        
+
         // Read section name (first 8 bytes)
         mut is_text := false
         if data[off] == '.' as u8 and data[off + 1] == 't' as u8 and data[off + 2] == 'e' as u8 and data[off + 3] == 'x' as u8 and data[off + 4] == 't' as u8:
             is_text = true
-            
+
         mut is_rdata := false
         if data[off] == '.' as u8 and data[off + 1] == 'r' as u8 and data[off + 2] == 'd' as u8 and data[off + 3] == 'a' as u8 and data[off + 4] == 't' as u8 and data[off + 5] == 'a' as u8:
             is_rdata = true
-            
+
+        // `.data` (writable globals). Distinguished from `.rdata` by the leading char.
+        mut is_data := false
+        if data[off] == '.' as u8 and data[off + 1] == 'd' as u8 and data[off + 2] == 'a' as u8 and data[off + 3] == 't' as u8 and data[off + 4] == 'a' as u8 and data[off + 5] == 0 as u8:
+            is_data = true
+
         if is_text:
             text_size = read_u32_le(data, off + 16) as i64
             text_off = read_u32_le(data, off + 20) as i64
@@ -333,7 +348,10 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
         elif is_rdata:
             rdata_size = read_u32_le(data, off + 16) as i64
             rdata_off = read_u32_le(data, off + 20) as i64
-            
+        elif is_data:
+            data_sec_size = read_u32_le(data, off + 16) as i64
+            data_sec_off = read_u32_le(data, off + 20) as i64
+
         i = i + 1
         
     let strtab_off = symtab_off + sym_count * 18
@@ -426,7 +444,11 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     mut rdata_vec := new_byte_vec()
     if rdata_size > 0:
         push_bytes(&rdata_vec, (data as i64 + rdata_off) as ptr[u8], rdata_size)
-        
+
+    mut data_vec := new_byte_vec()
+    if data_sec_size > 0:
+        push_bytes(&data_vec, (data as i64 + data_sec_off) as ptr[u8], data_sec_size)
+
     let obj = @alloc(@compiler_intrinsic("size_of")[ParsedObject]()) as ptr[ParsedObject]
     obj.text = text_vec
     obj.rdata = rdata_vec
@@ -434,6 +456,8 @@ pub fn linker_parse_coff(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     obj.sym_names = sym_names
     obj.relocs = relocs
     obj.va = 0 as u64
+    obj.data = data_vec
+    obj.data_va = 0 as u64
     return obj
 
 // --------------------------------------------------------------------------
@@ -1836,15 +1860,34 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut sym_i := 0 as i64
         while sym_i < obj.symbols.len:
             let sym = &obj.symbols.data[sym_i]
-            if sym.defined:
+            // RFC 0017 / BUG#82: section-3 (.data global) symbols are added to
+            // func_names/func_offsets LATER, after the writable data region is laid out
+            // (their image RVA is not known yet). Skip here to keep the two arrays parallel.
+            if sym.defined and sym.section != 3 as i64:
                 push_linker_str(&func_names, sym.name)
             sym_i = sym_i + 1
         i = i + 1
-        
+
     mut kernel32_imports := new_linker_str_vec()
     mut ax_runtime_imports := new_linker_str_vec()
     mut ucrtbase_imports := new_linker_str_vec()
     mut user_buckets := new_user_dll_bucket_vec() // RFC 0009: per-DLL user extern imports
+
+    // RFC 0017 / BUG#82: names of module-level global data symbols (COFF section 3). A
+    // reloc targeting one of these is a DEFINED reference (its VA is resolved later, once
+    // the writable data region is laid out inside .idata), NOT a dynamic import — so the
+    // import classifier below must skip them.
+    mut global_names := new_linker_str_vec()
+    mut gi_scan := 0 as i64
+    while gi_scan < objects.len:
+        let gobj = objects.data[gi_scan]
+        mut gs := 0 as i64
+        while gs < gobj.symbols.len:
+            let gsym = &gobj.symbols.data[gs]
+            if gsym.defined and gsym.section == 3 as i64:
+                push_linker_str(&global_names, gsym.name)
+            gs = gs + 1
+        gi_scan = gi_scan + 1
 
     i = 0
     while i < objects.len:
@@ -1862,7 +1905,15 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                             is_defined = true
                             break
                         search = search + 1
-                    
+
+                    if not is_defined:
+                        mut gsearch := 0 as i64
+                        while gsearch < global_names.len:
+                            if global_names.data[gsearch] == target_name:
+                                is_defined = true
+                                break
+                            gsearch = gsearch + 1
+
                     if not is_defined:
                         let user_dll = user_dll_for_symbol(self, target_name)
                         if user_dll != "":
@@ -1915,13 +1966,14 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut sym_i := 0 as i64
         while sym_i < obj.symbols.len:
             let sym = &obj.symbols.data[sym_i]
-            if sym.defined:
+            // RFC 0017 / BUG#82: skip section-3 globals (added after data-region layout).
+            if sym.defined and sym.section != 3 as i64:
                 mut offset_va := sym.offset
                 if sym.section == 2: // .rdata
                     offset_va = obj.text.len as u64 + sym.offset
                 push_parsed_reloc(&func_offsets, ParsedReloc(offset: (merged_code.len as u64 + offset_va) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
             sym_i = sym_i + 1
-            
+
         push_bytes(&merged_code, obj.text.data, obj.text.len)
         push_bytes(&merged_code, obj.rdata.data, obj.rdata.len)
         i = i + 1
@@ -2284,7 +2336,35 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         write_buf_u32_le(idata_buf.data, off + 8, 0 as u32)
         write_buf_u32_le(idata_buf.data, off + 12, 0 as u32)
         write_buf_u32_le(idata_buf.data, off + 16, 0 as u32)
-        
+
+        // RFC 0017 / BUG#82: place module-level global storage at the END of the writable
+        // .idata section, after the import directory. Every write_buf into idata_buf above
+        // uses fixed offsets computed earlier, so appending here perturbs nothing. Each
+        // object's .data block is appended (8-byte aligned) and its section-3 symbols are
+        // registered into func_names/func_offsets (parallel — both skip section 3 in the
+        // earlier passes) so OP_GLOBAL_ADDR PC32 relocs resolve to the global's image VA.
+        mut gobj_i := 0 as i64
+        while gobj_i < objects.len:
+            let gobj = objects.data[gobj_i]
+            if gobj.data.len > 0:
+                while (idata_buf.len % 8 as i64) != 0 as i64:
+                    push_byte(&idata_buf, 0 as u8)
+                let region_rva = (idata_rva as i64 + idata_buf.len) as u64
+                gobj.data_va = region_rva
+                mut db := 0 as i64
+                while db < gobj.data.len:
+                    push_byte(&idata_buf, gobj.data.data[db])
+                    db = db + 1
+                mut gsym_i := 0 as i64
+                while gsym_i < gobj.symbols.len:
+                    let gsym = &gobj.symbols.data[gsym_i]
+                    if gsym.defined and gsym.section == 3 as i64:
+                        push_linker_str(&func_names, gsym.name)
+                        let sym_rva = region_rva + gsym.offset
+                        push_parsed_reloc(&func_offsets, ParsedReloc(offset: (sym_rva - 0x1000 as u64) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
+                    gsym_i = gsym_i + 1
+            gobj_i = gobj_i + 1
+
         // Pad merged_code to thunks_offset
         while merged_code.len < thunks_offset:
             push_byte(&merged_code, 0 as u8)

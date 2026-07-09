@@ -130,6 +130,7 @@ rows=(
   "t_fldelemaddr|exit|150"
   "t_forrange|exit|28"
   "t_strconcat|exit|15"
+  "t_globals|exit|113"
   "sc1|exit|42"
   "sc2|exit|42"
   "scv|exit|3"

@@ -1,0 +1,21 @@
+// RFC 0017 / BUG#82 oracle: module-level globals with real static storage.
+// Covers: non-zero constant init, cross-function read-modify-write, multiple
+// globals of mixed scalar types (i32 / inferred-i32 / bool), and a global read
+// inside a condition. Expected exit code: 113.
+
+mut g_counter: i32 = 0
+mut g_base := 100
+let g_flag: bool = true
+
+fn bump() -> i32:
+    g_counter = g_counter + 1
+    return g_counter
+
+fn main() -> i32:
+    let a = bump()          // g_counter -> 1, a = 1
+    let b = bump()          // g_counter -> 2, b = 2
+    mut r := g_base         // 100 (non-zero init actually ran)
+    r = r + a + b           // 103
+    if g_flag:              // global bool read in condition
+        r = r + 10          // 113
+    return r

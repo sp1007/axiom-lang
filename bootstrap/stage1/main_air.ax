@@ -1025,6 +1025,13 @@ pub fn main() -> i32:
                     let f = mod_air_builder.module.funcs.data[f_idx]
                     (&air_builder.module.funcs).push(f)
                     f_idx = f_idx + 1 as i64
+
+                // RFC 0017 / BUG#82: append this module's global variables too, so their
+                // static storage + data symbols are emitted alongside the merged funcs.
+                mut g_idx := 0 as i64
+                while g_idx < mod_air_builder.module.globals.len:
+                    (&air_builder.module.globals).push(mod_air_builder.module.globals.data[g_idx])
+                    g_idx = g_idx + 1 as i64
                 
                 // Free mod_air_builder itself but NOT the inner functions (since they were merged)
                 @free(mod_air_builder as ptr[u8])

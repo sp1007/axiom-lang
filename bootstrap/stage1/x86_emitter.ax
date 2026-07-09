@@ -200,6 +200,20 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
                     addend: -4 as i64
                 ))
                 x86_encode_lea_rip(dst, 0 as i32, buf)
+            elif inst.src1.vreg == 4 as u32: // RFC 0017 / BUG#82: global data address
+                // imm = the global's symbol index (resolve_binary_sym_name yields the
+                // global's .data symbol). lea reg,[rip+disp32] + PC-relative reloc, so the
+                // writable-data address survives ASLR rebasing (same form as vreg==3).
+                let g_offset = buf.len + 3 as i64
+                push_reloc(&e.relocs, Relocation(
+                    offset: g_offset,
+                    kind: RELOC_PC32,
+                    padding1: 0 as u8,
+                    padding2: 0 as u16,
+                    sym_name: imm as u32,
+                    addend: -4 as i64
+                ))
+                x86_encode_lea_rip(dst, 0 as i32, buf)
             elif inst.src1.vreg == 2 as u32: // String literal!
                 let offset = buf.len + 3 as i64
                 let base: i64 = 3758096384
