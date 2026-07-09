@@ -1881,7 +1881,25 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let iter_var = self.tree.nodes.data[node_idx].payload
         let range_expr = self.tree.nodes.data[node_idx].first_child
         if range_expr != 0 as u32:
-            self.infer_node(range_expr, TYPE_UNKNOWN)
+            let iteree_ty = self.infer_node(range_expr, TYPE_UNKNOWN)
+            // BUG#87 follow-up: `for x in <collection>` (Vec/HashMap/array/struct) is
+            // NOT implemented. lower_for treats any non-range iteree as a numeric limit
+            // and the loop variable as a 0-based counter, never fetching elements -- so
+            // `for x in vec` compares the counter against the Vec's ADDRESS and loops
+            // ~forever (a real hang, no diagnostic). Only integer bounds (`for i in n`)
+            // and ranges (`for i in a..b`) are supported. Reject aggregate iteration
+            // cleanly instead of hanging (same convention as the BUG#72 slice reject).
+            mut for_is_range := false
+            if self.tree.nodes.data[range_expr].kind == NODE_BINARY_EXPR:
+                let rop = self.node_text(range_expr)
+                if rop == "..":
+                    for_is_range = true
+                safe_free_str(rop)
+            if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
+                let ie_kind = self.types.entries.data[iteree_ty].kind
+                if ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_ARRAY:
+                    ax_printf_local("error: iterating a collection with `for x in <collection>` is not yet supported; use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             let body = self.tree.nodes.data[range_expr].next_sibling
             if body != 0 as u32:
                 self.infer_node(body, TYPE_UNKNOWN)

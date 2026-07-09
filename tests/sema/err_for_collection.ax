@@ -1,0 +1,14 @@
+// Regression (BUG#87 follow-up): iterating a collection with `for x in <collection>`
+// is not implemented. lower_for treats a non-range iteree as a numeric limit and the
+// loop variable as a 0-based counter (it never fetches elements), so `for x in vec`
+// compares the counter against the Vec's address and loops ~forever -- a real hang
+// with no diagnostic. It must be a clean compile error until real iterator-protocol
+// iteration exists. Integer bounds (`for i in n`) and ranges (`for i in a..b`) are
+// supported and must keep working. Same class as err_range_index.ax (BUG#72).
+fn main() -> i32:
+    mut v = new_vec[i32]()
+    v.push(5 as i32)
+    mut s := 0 as i32
+    for x in v:
+        s = s + x as i32
+    return s as i32
