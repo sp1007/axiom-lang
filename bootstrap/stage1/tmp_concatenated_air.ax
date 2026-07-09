@@ -9527,6 +9527,11 @@ pub const OP_SLICE: u16 = 0x0110
 // scalar elements; aggregate `&agg[i]` still uses OP_INDEX (already returns the
 // element address) + OP_MAKE_REF pass-through.
 pub const OP_INDEX_ADDR: u16 = 0x0111
+// Address of a struct field (`&s.f`): computes base + field_offset via LEA and
+// returns that ADDRESS, never loading the field. Twin of OP_INDEX_ADDR for the
+// `&s.scalar_field` case (BUG#85); aggregate `&s.aggfield` still uses OP_GET_FIELD
+// (already returns the field address) + OP_MAKE_REF pass-through.
+pub const OP_FIELD_ADDR: u16 = 0x0112
 
 // ALU class (0x02xx)
 pub const OP_ICONST: u16 = 0x0201
@@ -9896,6 +9901,8 @@ pub fn opcode_mnemonic(op: u16) -> str:
         return "slice"
     if op == OP_INDEX_ADDR:
         return "idxaddr"
+    if op == OP_FIELD_ADDR:
+        return "fldaddr"
 
     if op == OP_ICONST:
         return "iconst"
@@ -11085,6 +11092,31 @@ pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
                 src2: idx_reg2,
             ))
             return areg
+
+    // BUG#85: `&s.f` on a SCALAR field -- same defect as `&a[i]`. lower_expr(child)
+    // (OP_GET_FIELD) LOADS the field value for scalars, so OP_MAKE_REF would take the
+    // address of that temp. Emit OP_FIELD_ADDR (base + field_offset LEA, no load).
+    // Only a genuine field LOAD (has an object child, not a qualified-variant/const
+    // field-expr) with a scalar field type; aggregate `&s.aggfield` keeps the
+    // OP_GET_FIELD (already returns the field address) + OP_MAKE_REF path.
+    if is_ref_op and child_node.kind == NODE_FIELD_EXPR and child_node.first_child != 0 as u32 and (child_node.flags & 2048 as u16) == 0 as u16:
+        mut fld_ty := 0 as u32
+        if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
+            fld_ty = self.mb.node_types[child as i64] as u32
+        if fld_ty != 0 as u32 and not type_is_aggregate(self.mb.typetable, fld_ty):
+            let obj_reg2 = self.lower_expr(child_node.first_child)
+            mut ref_ty2 := fld_ty
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                ref_ty2 = self.mb.node_types[idx as i64] as u32
+            let freg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_FIELD_ADDR,
+                type_id: ref_ty2,
+                dest: freg,
+                src1: obj_reg2,
+                src2: child_node.extra_idx,
+            ))
+            return freg
 
     let operand_reg = self.lower_expr(child)
 
@@ -19294,6 +19326,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 else:
                     out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
+
+    elif op == OP_FIELD_ADDR:
+        // BUG#85: `&s.f` for a SCALAR field -> field ADDRESS (base + field_offset),
+        // never a load. Mirrors OP_GET_FIELD's aggregate branch (LEA), always. src2 =
+        // OPND_IMM marks it as a pointer+disp LEA for the spill rewrite.
+        let fa_struct = get_register_type(sel, inst.src1)
+        let fa_disp = field_offset(sel.table, fa_struct, inst.src2)
+        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: fa_disp as i64)))
 
     elif op == OP_GET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)

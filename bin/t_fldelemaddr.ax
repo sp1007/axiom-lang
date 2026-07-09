@@ -1,0 +1,22 @@
+// Oracle (BUG#85): &s.f on a SCALAR field must yield the field's lvalue address,
+// so a write through the pointer mutates the struct. Before the fix, `&s.f`
+// lowered as OP_GET_FIELD (load the field value for scalars) + OP_MAKE_REF
+// (address of that temporary), so writes were lost. Twin of BUG#84 (&a[i]).
+struct Pt:
+    x: i32
+    y: i32
+    z: i32
+
+fn set_to(p: ptr[i32], v: i32):
+    p[0] = v
+
+fn main() -> i32:
+    mut s: Pt = Pt(x: 3 as i32, y: 5 as i32, z: 7 as i32)
+    let px = &s.x
+    let pz = &s.z
+    set_to(px, 40 as i32)          // s.x := 40
+    set_to(pz, 100 as i32)         // s.z := 100
+    let via_y = &s.y
+    let ry = via_y[0] as i32       // read s.y through pointer = 5
+    // s is now {40, 5, 100}; 40 + 5 + 100 + ry(5) = 150
+    return (s.x + s.y + s.z + ry) as i32

@@ -1877,6 +1877,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                     out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
 
+    elif op == OP_FIELD_ADDR:
+        // BUG#85: `&s.f` for a SCALAR field -> field ADDRESS (base + field_offset),
+        // never a load. Mirrors OP_GET_FIELD's aggregate branch (LEA), always. src2 =
+        // OPND_IMM marks it as a pointer+disp LEA for the spill rewrite.
+        let fa_struct = get_register_type(sel, inst.src1)
+        let fa_disp = field_offset(sel.table, fa_struct, inst.src2)
+        out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: fa_disp as i64)))
+
     elif op == OP_GET_FIELD:
         let struct_type = get_register_type(sel, inst.src1)
         let disp = field_offset(sel.table, struct_type, inst.src2)

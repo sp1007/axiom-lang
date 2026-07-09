@@ -27,6 +27,11 @@ pub const OP_SLICE: u16 = 0x0110
 // scalar elements; aggregate `&agg[i]` still uses OP_INDEX (already returns the
 // element address) + OP_MAKE_REF pass-through.
 pub const OP_INDEX_ADDR: u16 = 0x0111
+// Address of a struct field (`&s.f`): computes base + field_offset via LEA and
+// returns that ADDRESS, never loading the field. Twin of OP_INDEX_ADDR for the
+// `&s.scalar_field` case (BUG#85); aggregate `&s.aggfield` still uses OP_GET_FIELD
+// (already returns the field address) + OP_MAKE_REF pass-through.
+pub const OP_FIELD_ADDR: u16 = 0x0112
 
 // ALU class (0x02xx)
 pub const OP_ICONST: u16 = 0x0201
@@ -396,6 +401,8 @@ pub fn opcode_mnemonic(op: u16) -> str:
         return "slice"
     if op == OP_INDEX_ADDR:
         return "idxaddr"
+    if op == OP_FIELD_ADDR:
+        return "fldaddr"
 
     if op == OP_ICONST:
         return "iconst"

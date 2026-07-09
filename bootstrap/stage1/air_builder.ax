@@ -1042,6 +1042,31 @@ pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             ))
             return areg
 
+    // BUG#85: `&s.f` on a SCALAR field -- same defect as `&a[i]`. lower_expr(child)
+    // (OP_GET_FIELD) LOADS the field value for scalars, so OP_MAKE_REF would take the
+    // address of that temp. Emit OP_FIELD_ADDR (base + field_offset LEA, no load).
+    // Only a genuine field LOAD (has an object child, not a qualified-variant/const
+    // field-expr) with a scalar field type; aggregate `&s.aggfield` keeps the
+    // OP_GET_FIELD (already returns the field address) + OP_MAKE_REF path.
+    if is_ref_op and child_node.kind == NODE_FIELD_EXPR and child_node.first_child != 0 as u32 and (child_node.flags & 2048 as u16) == 0 as u16:
+        mut fld_ty := 0 as u32
+        if self.mb.node_types != null as ptr[u32] and self.mb.node_types[child as i64] != 0 as u32:
+            fld_ty = self.mb.node_types[child as i64] as u32
+        if fld_ty != 0 as u32 and not type_is_aggregate(self.mb.typetable, fld_ty):
+            let obj_reg2 = self.lower_expr(child_node.first_child)
+            mut ref_ty2 := fld_ty
+            if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+                ref_ty2 = self.mb.node_types[idx as i64] as u32
+            let freg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_FIELD_ADDR,
+                type_id: ref_ty2,
+                dest: freg,
+                src1: obj_reg2,
+                src2: child_node.extra_idx,
+            ))
+            return freg
+
     let operand_reg = self.lower_expr(child)
 
     let op_token = self.mb.get_token_text(node.token_idx)

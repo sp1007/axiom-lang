@@ -127,6 +127,7 @@ rows=(
   "t_variantstruct|exit|17"
   "t_underscore|exit|27"
   "t_arrelemaddr|exit|66"
+  "t_fldelemaddr|exit|150"
 )
 
 for row in "${rows[@]}"; do
