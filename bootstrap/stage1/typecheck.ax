@@ -192,6 +192,8 @@ pub fn parse_type_from_name(self: ptr[TypeChecker], name: str) -> u32:
         return 11 as u32
     elif name == "string" or name == "str":
         return 12 as u32
+    elif name == "bytes":
+        return 22 as u32
     elif name == "char8":
         return 13 as u32
     elif name == "void":
@@ -2709,7 +2711,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if (cand_text == "i8" or cand_text == "i16" or cand_text == "i32" or cand_text == "int" or
                         cand_text == "i64" or cand_text == "u8" or cand_text == "u16" or cand_text == "u32" or cand_text == "rune" or
                         cand_text == "u64" or cand_text == "f32" or cand_text == "f64" or cand_text == "bool" or
-                        cand_text == "str" or cand_text == "string" or cand_text == "char" or cand_text == "void" or
+                        cand_text == "str" or cand_text == "string" or cand_text == "bytes" or cand_text == "char" or cand_text == "void" or
                         cand_text == "isize" or cand_text == "usize"):
                         text = cand_text
                     else:
@@ -2762,6 +2764,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 result_type = 11 as u32
             elif text == "str" or text == "string":
                 result_type = 12 as u32
+            elif text == "bytes":
+                result_type = 22 as u32
             elif text == "char":
                 result_type = 13 as u32
             elif text == "void":
@@ -2854,6 +2858,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 result_type = 11 as u32
             elif text == "str" or text == "string":
                 result_type = 12 as u32
+            elif text == "bytes":
+                result_type = 22 as u32
             elif text == "char":
                 result_type = 13 as u32
             elif text == "void":
@@ -3059,7 +3065,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
                             obj_type = entry.extra
                             entry = self.types.entries.data[obj_type]
-                        if obj_type == TYPE_STRING:
+                        if obj_type == TYPE_STRING or obj_type == TYPE_BYTES:
+                            // RFC 0020: `bytes` shares str's {ptr,len} layout, so `.ptr`/`.len`
+                            // resolve identically (field 0 = ptr[u8], field 1 = i64 byte length).
                             let field_name_id = self.tree.nodes.data[node_idx].payload
                             let field_name = self.intern.get(field_name_id)
                             let ptr_field := field_name as ptr[u8]
@@ -3309,9 +3317,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     let c_entry = self.types.entries.data[col_type]
                     if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                         result_type = c_entry.extra
-                    elif col_type == TYPE_STRING:
-                        result_type = 5 as u32
-                    
+                    elif col_type == TYPE_STRING or col_type == TYPE_BYTES:
+                        result_type = 5 as u32 // str/bytes index -> u8 byte
+
     elif kind == NODE_COMPTIME:
         let child = self.tree.nodes.data[node_idx].first_child
         if child != 0 as u32:

@@ -33,6 +33,7 @@ pub const TYPE_EQ: u32 = 18
 pub const TYPE_HASH: u32 = 19
 pub const TYPE_DISPLAY: u32 = 20
 pub const TYPE_ACTOR_REF: u32 = 21
+pub const TYPE_BYTES: u32 = 22 // RFC 0020: raw byte buffer; same {ptr,len} 16B repr as str, distinct type (byte iteration/semantics)
 
 pub struct ComptimeValue:
     kind: u32
@@ -284,6 +285,9 @@ pub fn new_type_table() -> ptr[TypeTable]:
 
     // 21: ActorRef
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
+
+    // 22: bytes (RFC 0020) — raw byte buffer, same 16-byte {ptr,len} repr as str.
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 16 as u32, align: 8 as u32, extra: 0 as u32))
 
     return tt
 

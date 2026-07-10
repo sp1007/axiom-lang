@@ -150,6 +150,7 @@ rows=(
   "t_partialmatch|reject|"
   "t_forvec|exit|60"
   "t_rune|exit|65"
+  "t_bytesview|exit|204"
 )
 
 for row in "${rows[@]}"; do

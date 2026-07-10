@@ -1969,6 +1969,14 @@ pub fn lower_cast_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
 
+    // RFC 0020: `str` <-> `bytes` share the same {ptr,len} 16-byte repr, so the cast
+    // is a pure reinterpret (a zero-cost view). Reuse the source register directly —
+    // an OP_CAST would treat the value as an 8-byte scalar and drop the len field.
+    if self.mb.node_types != null as ptr[u32] and (type_id == 12 as u32 or type_id == 22 as u32):
+        let src_ty0 = self.mb.node_types[child as i64]
+        if src_ty0 == 12 as u32 or src_ty0 == 22 as u32:
+            return src_reg
+
     // RFC 0006 (BUG#33/BUG#35): int↔float casts must be real convert
     // instructions, not OP_CAST copy-reinterpret. int→float → OP_ITOF
     // (cvtsi2sd); float→int → OP_FTOI (cvttsd2si, truncate toward zero).

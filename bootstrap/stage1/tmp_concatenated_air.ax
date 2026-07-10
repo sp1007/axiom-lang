@@ -3950,6 +3950,7 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.define_builtin("usize", 16, intern)
     st.define_builtin("ActorRef", 21, intern)
     st.define_builtin("str", 12, intern)
+    st.define_builtin("bytes", 22, intern) // RFC 0020: raw byte buffer (distinct from str)
     st.define_builtin("ptr", 0, intern)
     st.define_builtin("null", 0, intern)
     st.define_builtin("alloc", 0, intern)
@@ -4746,6 +4747,7 @@ pub const TYPE_EQ: u32 = 18
 pub const TYPE_HASH: u32 = 19
 pub const TYPE_DISPLAY: u32 = 20
 pub const TYPE_ACTOR_REF: u32 = 21
+pub const TYPE_BYTES: u32 = 22 // RFC 0020: raw byte buffer; same {ptr,len} 16B repr as str, distinct type (byte iteration/semantics)
 
 pub struct ComptimeValue:
     kind: u32
@@ -4997,6 +4999,9 @@ pub fn new_type_table() -> ptr[TypeTable]:
 
     // 21: ActorRef
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_STRUCT, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 8 as u32, align: 8 as u32, extra: 0 as u32))
+
+    // 22: bytes (RFC 0020) â€” raw byte buffer, same 16-byte {ptr,len} repr as str.
+    (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 16 as u32, align: 8 as u32, extra: 0 as u32))
 
     return tt
 
@@ -5948,6 +5953,8 @@ pub fn parse_type_from_name(self: ptr[TypeChecker], name: str) -> u32:
         return 11 as u32
     elif name == "string" or name == "str":
         return 12 as u32
+    elif name == "bytes":
+        return 22 as u32
     elif name == "char8":
         return 13 as u32
     elif name == "void":
@@ -8465,7 +8472,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if (cand_text == "i8" or cand_text == "i16" or cand_text == "i32" or cand_text == "int" or
                         cand_text == "i64" or cand_text == "u8" or cand_text == "u16" or cand_text == "u32" or cand_text == "rune" or
                         cand_text == "u64" or cand_text == "f32" or cand_text == "f64" or cand_text == "bool" or
-                        cand_text == "str" or cand_text == "string" or cand_text == "char" or cand_text == "void" or
+                        cand_text == "str" or cand_text == "string" or cand_text == "bytes" or cand_text == "char" or cand_text == "void" or
                         cand_text == "isize" or cand_text == "usize"):
                         text = cand_text
                     else:
@@ -8518,6 +8525,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 result_type = 11 as u32
             elif text == "str" or text == "string":
                 result_type = 12 as u32
+            elif text == "bytes":
+                result_type = 22 as u32
             elif text == "char":
                 result_type = 13 as u32
             elif text == "void":
@@ -8610,6 +8619,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 result_type = 11 as u32
             elif text == "str" or text == "string":
                 result_type = 12 as u32
+            elif text == "bytes":
+                result_type = 22 as u32
             elif text == "char":
                 result_type = 13 as u32
             elif text == "void":
@@ -8815,7 +8826,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
                             obj_type = entry.extra
                             entry = self.types.entries.data[obj_type]
-                        if obj_type == TYPE_STRING:
+                        if obj_type == TYPE_STRING or obj_type == TYPE_BYTES:
+                            // RFC 0020: `bytes` shares str's {ptr,len} layout, so `.ptr`/`.len`
+                            // resolve identically (field 0 = ptr[u8], field 1 = i64 byte length).
                             let field_name_id = self.tree.nodes.data[node_idx].payload
                             let field_name = self.intern.get(field_name_id)
                             let ptr_field := field_name as ptr[u8]
@@ -9065,9 +9078,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     let c_entry = self.types.entries.data[col_type]
                     if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                         result_type = c_entry.extra
-                    elif col_type == TYPE_STRING:
-                        result_type = 5 as u32
-                    
+                    elif col_type == TYPE_STRING or col_type == TYPE_BYTES:
+                        result_type = 5 as u32 // str/bytes index -> u8 byte
+
     elif kind == NODE_COMPTIME:
         let child = self.tree.nodes.data[node_idx].first_child
         if child != 0 as u32:
@@ -12441,6 +12454,14 @@ pub fn lower_cast_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
+
+    // RFC 0020: `str` <-> `bytes` share the same {ptr,len} 16-byte repr, so the cast
+    // is a pure reinterpret (a zero-cost view). Reuse the source register directly â€”
+    // an OP_CAST would treat the value as an 8-byte scalar and drop the len field.
+    if self.mb.node_types != null as ptr[u32] and (type_id == 12 as u32 or type_id == 22 as u32):
+        let src_ty0 = self.mb.node_types[child as i64]
+        if src_ty0 == 12 as u32 or src_ty0 == 22 as u32:
+            return src_reg
 
     // RFC 0006 (BUG#33/BUG#35): intâ†”float casts must be real convert
     // instructions, not OP_CAST copy-reinterpret. intâ†’float â†’ OP_ITOF
