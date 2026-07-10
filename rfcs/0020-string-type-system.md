@@ -1,8 +1,23 @@
 # RFC 0020 — String Type System (UTF-8 `str` + `bytes` + `rune`, with room for other encodings)
 
-Status: Draft (design only — awaiting approval before implementation)
+Status: Accepted — P1a `rune`, P1b `bytes` + str↔bytes views, P2a `for b in bytes` SHIPPED; P2b `for c in str` (codepoint decode) next
 Author: autopilot
 Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-utf8-default]]
+
+## Implementation status (2026-07-10)
+- ✅ **P1a `rune`** (`edf515a`) — Unicode scalar, alias of u32.
+- ✅ **P1b `bytes`** (`14114fe`) — distinct `TYPE_BYTES=22`, shares str's {ptr,len}
+  16B repr; `.len`/`b[i]`→u8; zero-cost `s as bytes` / `b as str` reinterpret cast
+  (lower_cast reuses the source register for str↔bytes).
+- ✅ **P2a `for b in bytes`** (`76ee1f7`) — yields u8 (array-style OP_INDEX + runtime
+  bytes.len bound).
+- ⏳ **P2b `for c in str`** — codepoint iteration yielding `rune`; needs a variable-
+  width UTF-8 decode. Plan: add a stdlib `utf8_decode(s, off) -> i64` (packed
+  `(width<<32)|codepoint`) and have `lower_for` emit a call to it per iteration
+  (byte_offset counter, bound = s.len, advance by width) — OR inline the decode in
+  AIR. Reuses the P2a scaffold. Existing `str_char_count`/`is_valid_utf8` intrinsics
+  are related runtime helpers.
+- ⏳ **P3** — `ascii` type + `utf16`/`utf32` interop; grapheme segmentation later.
 
 ## 1. Motivation
 
