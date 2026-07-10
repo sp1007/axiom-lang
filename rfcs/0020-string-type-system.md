@@ -1,6 +1,6 @@
 # RFC 0020 — String Type System (UTF-8 `str` + `bytes` + `rune`, with room for other encodings)
 
-Status: Accepted — P1a `rune`, P1b `bytes` + str↔bytes views, P2a `for b in bytes` SHIPPED; P2b `for c in str` (codepoint decode) next
+Status: Accepted — P1 (`rune`, `bytes`, views) + P2 (`for b in bytes`, `for c in str`) SHIPPED; P3 (`ascii`, `utf16`/`utf32`) next
 Author: autopilot
 Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-utf8-default]]
 
@@ -11,13 +11,17 @@ Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-u
   (lower_cast reuses the source register for str↔bytes).
 - ✅ **P2a `for b in bytes`** (`76ee1f7`) — yields u8 (array-style OP_INDEX + runtime
   bytes.len bound).
-- ⏳ **P2b `for c in str`** — codepoint iteration yielding `rune`; needs a variable-
-  width UTF-8 decode. Plan: add a stdlib `utf8_decode(s, off) -> i64` (packed
-  `(width<<32)|codepoint`) and have `lower_for` emit a call to it per iteration
-  (byte_offset counter, bound = s.len, advance by width) — OR inline the decode in
-  AIR. Reuses the P2a scaffold. Existing `str_char_count`/`is_valid_utf8` intrinsics
-  are related runtime helpers.
+- ✅ **P2b `for c in str`** (`13cff98`) — codepoint iteration yielding `rune`. stdlib
+  `utf8_decode(s, off) -> i64` (packed `(width<<32)|codepoint`); `lower_for` resolves
+  it via `resolve_op_method` (NOT a direct qualified call — that segfaults for str
+  args, see BUG#93) and emits an `OP_CALL` per iteration; byte-offset counter advances
+  by the variable width via a new `loop_incr_steps` stack (honored by the body-tail
+  increment and `continue`). Verified: "AΩ"=2 codepoints, "日本語"=3 (not 9 bytes),
+  ASCII "ABC" sum=198.
 - ⏳ **P3** — `ascii` type + `utf16`/`utf32` interop; grapheme segmentation later.
+  Also: `str.chars()`/`str.bytes()`/`char_indices()` view methods; `str[a..b]` slice
+  boundary policy. NB [[bug93-qualified-str-call-segfault]] blocks ergonomic direct
+  `std.string.*` calls with str args.
 
 ## 1. Motivation
 
