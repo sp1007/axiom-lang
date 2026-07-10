@@ -1,0 +1,19 @@
+// Oracle: a non-void function that returns via a match with explicit `return`
+// in every arm compiles and runs correctly (the FIXED form of the HashSet.contains
+// bug, and the shape the missing-return check must NOT false-positive on).
+fn check(n: i64) -> Option[i64]:
+    if n > 0:
+        return Some(n)
+    return None
+
+fn classify(n: i64) -> i64:
+    match check(n):
+        Some(x):
+            return 10
+        None:
+            return 20
+
+fn main() -> i64:
+    // classify(7) -> Some -> 10 ; classify(-3) -> None -> 20 ; total 30.
+    // Under the old silent-drop bug (no return / inline arm) this returned garbage.
+    return classify(7) + classify(-3)

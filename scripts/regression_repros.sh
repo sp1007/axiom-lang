@@ -145,6 +145,8 @@ rows=(
   "scv|exit|3"
   "scw|exit|5"
   "scstress|exit|32"
+  "t_matchret|exit|30"
+  "t_missingret|reject|"
 )
 
 for row in "${rows[@]}"; do
@@ -154,6 +156,11 @@ for row in "${rows[@]}"; do
   out_exe="/tmp/reg_${name}.exe"
   rm -f "$out_exe"
   timeout "$TIMEOUT" "$AXC" build "$src" -o "$out_exe" -O1 >/dev/null 2>&1
+  if [ "$cmp" = "reject" ]; then
+    # Expect the compiler to REJECT this program (diagnostic, no exe emitted).
+    if [ ! -f "$out_exe" ]; then echo "PASS $name (rejected)"; pass=$((pass+1)); else echo "FAIL $name (expected rejection, got exe)"; fail=$((fail+1)); failed="$failed $name"; fi
+    continue
+  fi
   if [ ! -f "$out_exe" ]; then echo "FAIL $name (build produced no exe)"; fail=$((fail+1)); failed="$failed $name"; continue; fi
   got_out=$("$out_exe" 2>/dev/null); got_exit=$?
   if [ "$cmp" = "exit" ]; then got="$got_exit"; else got="$got_out"; fi
