@@ -1,0 +1,16 @@
+// Oracle (reject): a user sum must NOT reuse a builtin Option/Result variant name.
+// The constructor lowers Some/None/Ok/Err tokens to the pointer-tagged builtin layout
+// unconditionally, so a user sum shadowing one gets a mixed representation and silently
+// miscompiles on match (returned the field offset / 16 instead of the value). Rejected
+// with a clear diagnostic; rename the variant (or use non-shadowing names).
+type Pair[T] = P(T, T) | None
+
+fn sum(p: Pair[i64]) -> i64:
+    match p:
+        P(a, b):
+            return a + b
+        None:
+            return 0
+
+fn main() -> i64:
+    return sum(P(4, 7))

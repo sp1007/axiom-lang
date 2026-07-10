@@ -161,6 +161,7 @@ rows=(
   "t_inlinearmstmt|reject|"
   "t_optstrmatch|exit|10"
   "t_gentree|exit|15"
+  "t_variantshadow|reject|"
 )
 
 for row in "${rows[@]}"; do

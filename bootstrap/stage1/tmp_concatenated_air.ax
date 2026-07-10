@@ -7494,7 +7494,15 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
             if sum_node != 0 as u32:
                 mut variants := new_variant_info_vec()
                 mut tag := 0 as u8
-                
+                // The names Some/None (Ok/Err) are reserved for the builtin Option
+                // (Result) sum: the CONSTRUCTOR always lowers those tokens to the
+                // pointer-tagged builtin layout (null / box|1), regardless of any user
+                // sum declaring them. A user sum reusing such a name would therefore get
+                // a MIXED representation (its other variants tag-at-field-0, the shadowed
+                // one builtin) and silently miscompile on match. Reject it (rename the
+                // variant); full support would need type-directed construction (RFC).
+                let sum_base_nm = extract_qualified_base_name(self.intern.get(sym.name_id))
+                let sum_is_builtin = sum_base_nm == "Option" or sum_base_nm == "Result"
                 mut v_node := self.tree.nodes.data[sum_node].first_child
                 while v_node != 0 as u32:
                     let v_node_struct = self.tree.nodes.data[v_node]
@@ -7503,6 +7511,11 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                         let v_sym_idx = v_node_struct.payload
                         if v_sym_idx != 0 as u32:
                             let v_sym = self.symtable.symbols.data[v_sym_idx]
+                            if not sum_is_builtin:
+                                let vnm = self.intern.get(v_sym.name_id)
+                                if vnm == "Some" or vnm == "None" or vnm == "Ok" or vnm == "Err":
+                                    ax_printf_local("error: sum variant '%s' shadows a builtin Option/Result variant; rename it (Some/None are reserved for Option, Ok/Err for Result)\n", get_str_ptr(vnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                    self.diags_count = self.diags_count + 1 as i64
                             
                             mut payload_type := TYPE_UNKNOWN
                             let type_expr_node = v_node_struct.first_child
