@@ -2681,10 +2681,39 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
                     mut vpl := 0 as u32
                     if self.find_variant_info(scrut_type, vname, &vt, &vpl):
                         pl_type = vpl
+                // Option/Result are registered as dedicated kinds (11/12) with the
+                // payload in `extra` (Some/Ok inner) and `name_id` (Result Err) — not
+                // as a sum with a variant vector — so find_variant_info can't see them.
+                // Derive the payload type directly so a str (12) payload gets its full
+                // 16-byte DEREF instead of the 8-byte default (else `s.len` reads junk).
+                if pl_type == 0 as u32 and scrut_type != 0 as u32 and (scrut_type as i64) < self.mb.typetable.entries.len:
+                    let se = self.mb.typetable.entries.data[scrut_type as i64]
+                    if se.kind == TYPE_KIND_OPTION:
+                        pl_type = se.extra
+                    elif se.kind == TYPE_KIND_RESULT:
+                        if arm_kind == 3 as i64:
+                            pl_type = se.name_id
+                        else:
+                            pl_type = se.extra
                 if pl_type == 0 as u32 and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
                     let bt = self.mb.symbols.symbols.data[payload_bind_sym as i64].type_id
                     if bt != 0 as u32:
                         pl_type = bt
+                // A str payload is stored INLINE as a 16-byte str: the constructor
+                // (Some/Ok/Err, ~line 1656) uses store_t=12 whenever the payload EXPR is
+                // str. But for a str variant the sum table records the RFC 0019 synth
+                // struct that WRAPS the str (a single-str-field struct), whose type id
+                // isn't str(12) — so a plain DEREF would take the 8-byte path and drop
+                // the length half (`s.len` reads junk). Unwrap a single-str-field struct
+                // back to str(12) so the DEREF loads the full 16 bytes, mirroring the
+                // constructor exactly. (Genuine multi-field / >8B user-struct payloads
+                // are heap-boxed as an 8-byte pointer and must NOT be unwrapped.)
+                if pl_type != 0 as u32 and (pl_type as i64) < self.mb.typetable.entries.len:
+                    let pe = self.mb.typetable.entries.data[pl_type as i64]
+                    if pe.kind == TYPE_KIND_STRUCT and (pe.flags & 1 as u16) != 0 as u16 and (pe.extra as i64) < self.mb.typetable.structs.len:
+                        let si = self.mb.typetable.structs.data[pe.extra as i64]
+                        if si.fields.len == 1 as i64 and si.fields.data[0].type_id == 12 as u32:
+                            pl_type = 12 as u32
                 if pl_type == 0 as u32:
                     pl_type = 4 as u32
                 let pl_reg = self.fb.fresh_reg()

@@ -1,0 +1,25 @@
+// Oracle: match on Option[str] / Result[str,E] must extract the FULL 16-byte str
+// payload, not just the 8-byte pointer half. Before the fix, find_variant_info
+// reported the RFC 0019 synth struct wrapping the str, so the DEREF took the 8-byte
+// path and `s.len` read a garbage length half. Expected exit: 5 + 5 = 10.
+import std.string
+
+fn opt() -> Option[str]:
+    return Some("found")
+
+fn res() -> Result[str, i32]:
+    return Ok("hello")
+
+fn main() -> i32:
+    mut code = 0
+    match opt():
+        Some(s):
+            code = code + std.string.len(s) as i32
+        None:
+            code = code + 100
+    match res():
+        Ok(s):
+            code = code + std.string.len(s) as i32
+        Err(e):
+            code = code + 100
+    return code

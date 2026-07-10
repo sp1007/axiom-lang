@@ -159,6 +159,7 @@ rows=(
   "t_freefncollision|exit|15"
   "t_freefncollision_arity|exit|105"
   "t_inlinearmstmt|reject|"
+  "t_optstrmatch|exit|10"
 )
 
 for row in "${rows[@]}"; do
