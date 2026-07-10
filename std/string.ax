@@ -15,6 +15,31 @@ pub fn len(s: str) -> i64:
 pub fn char_count(s: str) -> i64:
     return @compiler_intrinsic("str_char_count")
 
+/// RFC 0020: decode the UTF-8 codepoint that starts at byte offset `off`, returning
+/// a packed i64 — low 32 bits = the Unicode codepoint, high 32 bits = the byte width
+/// (1..4). Assumes valid UTF-8 and `off < s.len` (the caller bounds the loop). This
+/// is the per-iteration helper the compiler emits for `for c in str` (RFC 0020 P2b).
+pub fn utf8_decode(s: str, off: i64) -> i64:
+    // NB: the width is packed into the HIGH 32 bits, so the shift must be i64 —
+    // `1 << 32` with a default-i32 literal shifts in 32-bit (count masked to 0).
+    let b0 = s[off] as i64
+    if b0 < 0x80:
+        return ((1 as i64) << 32) | b0
+    if b0 < 0xE0:
+        let b1 = s[off + 1] as i64
+        let cp2 = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+        return ((2 as i64) << 32) | cp2
+    if b0 < 0xF0:
+        let b1 = s[off + 1] as i64
+        let b2 = s[off + 2] as i64
+        let cp3 = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+        return ((3 as i64) << 32) | cp3
+    let b1 = s[off + 1] as i64
+    let b2 = s[off + 2] as i64
+    let b3 = s[off + 3] as i64
+    let cp4 = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+    return ((4 as i64) << 32) | cp4
+
 /// Concatenates two strings.
 ///
 /// Implemented in AXIOM (value ABI) rather than via the `str_concat` intrinsic:

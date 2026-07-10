@@ -222,6 +222,11 @@ pub struct FuncLowering:
     // loop. A while-loop pushes reg 0 (no increment). Kept parallel to loop_conds.
     pub loop_incr_regs: U32Vec
     pub loop_incr_types: U32Vec
+    // RFC 0020 P2b: per-loop counter STEP register. 0 means the default +1 (range /
+    // array / Vec / bytes loops). For `for c in str` the step is the current
+    // codepoint's UTF-8 byte width, so the counter advances variably — both the
+    // body-tail increment and `continue` add this reg instead of a constant 1.
+    pub loop_incr_steps: U32Vec
     // RFC 0006 (#38.4): deferred expression node indices, in textual order.
     // Flushed LIFO at every return and at function exit (Go-style function-level
     // defer). See lower_defer / flush_defers.
@@ -238,6 +243,7 @@ pub fn new_func_lowering(mb: ptr[AirModuleBuilder], fb: ptr[AirFuncBuilder], par
     fl.loop_exits = new_u32_vec()
     fl.loop_incr_regs = new_u32_vec()
     fl.loop_incr_types = new_u32_vec()
+    fl.loop_incr_steps = new_u32_vec()
     fl.defers = new_u32_vec()
     return fl
 
@@ -253,6 +259,8 @@ pub fn free_func_lowering(mut self: ptr[FuncLowering]):
         @free(self.loop_incr_regs.data as ptr[u8])
     if self.loop_incr_types.data != null as ptr[u32]:
         @free(self.loop_incr_types.data as ptr[u8])
+    if self.loop_incr_steps.data != null as ptr[u32]:
+        @free(self.loop_incr_steps.data as ptr[u8])
     if self.defers.data != null as ptr[u32]:
         @free(self.defers.data as ptr[u8])
 
@@ -2956,21 +2964,25 @@ pub fn lower_continue(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let incr_reg = self.loop_incr_regs.data[self.loop_incr_regs.len - 1]
         if incr_reg != 0 as u32:
             let incr_type = self.loop_incr_types.data[self.loop_incr_types.len - 1]
-            let one_reg = self.fb.fresh_reg()
-            self.fb.emit(AirInst(
-                opcode: OP_ICONST,
-                type_id: incr_type,
-                dest: one_reg,
-                src1: 1 as u32,
-                src2: 0 as u32,
-            ))
+            // RFC 0020 P2b: a non-zero step reg (str codepoint width) advances the
+            // counter variably; otherwise add a constant 1.
+            mut step_reg := self.loop_incr_steps.data[self.loop_incr_steps.len - 1]
+            if step_reg == 0 as u32:
+                step_reg = self.fb.fresh_reg()
+                self.fb.emit(AirInst(
+                    opcode: OP_ICONST,
+                    type_id: incr_type,
+                    dest: step_reg,
+                    src1: 1 as u32,
+                    src2: 0 as u32,
+                ))
             let nv_reg = self.fb.fresh_reg()
             self.fb.emit(AirInst(
                 opcode: OP_IADD,
                 type_id: incr_type,
                 dest: nv_reg,
                 src1: incr_reg,
-                src2: one_reg,
+                src2: step_reg,
             ))
             self.fb.emit(AirInst(
                 opcode: OP_COPY,
@@ -3303,6 +3315,7 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // Push reg 0 so lower_continue emits no increment (keeps stacks parallel).
     self.loop_incr_regs.push(0 as u32)
     self.loop_incr_types.push(0 as u32)
+    self.loop_incr_steps.push(0 as u32)
 
     let cur_block = self.fb.current_block()
     self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
@@ -3317,6 +3330,7 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         self.loop_exits.pop()
         self.loop_incr_regs.pop()
         self.loop_incr_types.pop()
+        self.loop_incr_steps.pop()
         return
     let cn = self.mb.tree.nodes.data[child as i64]
     let cond_reg = self.lower_expr(child)
@@ -3359,6 +3373,7 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.loop_exits.pop()
     self.loop_incr_regs.pop()
     self.loop_incr_types.pop()
+    self.loop_incr_steps.pop()
 
 // RFC 0018 P2: resolve the underlying struct of a STRUCT/GENERIC_INST type and
 // return the type_id of the field whose name interns to `field_name_id`, writing its
@@ -3438,6 +3453,13 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // RFC 0020 P2: `for b in bytes` — like an array (direct OP_INDEX on the value,
     // which yields the u8 byte) but with a RUNTIME bound (bytes.len, field 1).
     mut is_bytes := false
+    // RFC 0020 P2b: `for c in str` — UTF-8 codepoint iteration. The counter is a BYTE
+    // offset; each iteration calls std.string.utf8_decode(s, off) -> packed
+    // (width<<32)|codepoint, binds the loop var (rune) to the codepoint, and advances
+    // the offset by the variable width (str_width_reg).
+    mut is_string := false
+    mut str_decode_sym := 0 as u32
+    mut str_width_reg := 0 as u32
     // Type of the numeric counter driving the loop: for a range/integer-bound loop
     // the counter IS the loop variable (its type); for a collection loop the counter
     // is an internal i32 index (the loop variable holds the element instead).
@@ -3493,6 +3515,19 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                 elem_type = 5 as u32 // u8
                 counter_type = 4 as u32 // i64 index counter (matches the i64 len field)
                 vec_len_idx = 1 as u32 // len is field 1 in the {ptr,len} layout
+            elif coll_ty == TYPE_STRING:
+                // RFC 0020 P2b: iterate UTF-8 codepoints. Resolve the decode helper via
+                // the same symbol path the `str + str` -> concat overload uses (a direct
+                // `string.utf8_decode(..)` call currently miscompiles for str args).
+                let dsym = self.resolve_op_method("utf8_decode", TYPE_STRING, 4 as u32)
+                if dsym != 0 as u32:
+                    is_collection = true
+                    is_string = true
+                    str_decode_sym = dsym
+                    elem_type = 7 as u32 // rune (u32 codepoint)
+                    counter_type = 4 as u32 // i64 byte offset
+                    vec_len_idx = 1 as u32 // str.len (byte length) is field 1
+                    str_width_reg = self.fb.fresh_reg()
 
     let iter_reg = self.fb.fresh_reg()
     if is_range:
@@ -3514,9 +3549,9 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
         limit_reg = self.fb.fresh_reg()
-        if is_vec or is_bytes:
+        if is_vec or is_bytes or is_string:
             // Runtime bound: load the len (i64) field once before the loop
-            // (Vec.len / bytes.len, both at vec_len_idx).
+            // (Vec.len / bytes.len / str.len byte length, all at vec_len_idx).
             self.fb.emit(AirInst(
                 opcode: OP_GET_FIELD,
                 type_id: 4 as u32, // i64
@@ -3552,6 +3587,8 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // inline before jumping to cond (the body-tail increment only runs on fall-through).
     self.loop_incr_regs.push(iter_reg)
     self.loop_incr_types.push(counter_type)
+    // str: advance by the codepoint width (str_width_reg); others: 0 => default +1.
+    self.loop_incr_steps.push(str_width_reg)
 
     let cur_block = self.fb.current_block()
     self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
@@ -3593,7 +3630,27 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // RFC 0018 P1: at the top of each iteration bind the loop variable to arr[i].
     // The loop var maps directly to this OP_INDEX result (no OP_COPY), which handles
     // scalar elements by-value and aggregate elements by-address (RFC 0001 §5).
-    if is_collection:
+    if is_collection and is_string:
+        // RFC 0020 P2b: decode the UTF-8 codepoint at the current byte offset via
+        // std.string.utf8_decode(s, off) -> packed (width<<32)|codepoint. Bind the
+        // loop var (rune) to the low 32 bits; stash the width (high 32) for the
+        // variable increment.
+        let arg_start = self.fb.emit_extra(2 as u32)
+        self.fb.emit_extra(coll_reg)
+        self.fb.emit_extra(iter_reg)
+        let packed_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_CALL, type_id: str_decode_sym, dest: packed_reg, src1: 0 as u32, src2: arg_start))
+        // codepoint = packed & 0xFFFFFFFF
+        let mask_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: mask_reg, src1: 0xFFFFFFFF as u32, src2: 0 as u32))
+        let cp_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_AND, type_id: 4 as u32, dest: cp_reg, src1: packed_reg, src2: mask_reg))
+        // width = packed >> 32 (logical) -> str_width_reg (used by the increment)
+        let sh_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 4 as u32, dest: sh_reg, src1: 32 as u32, src2: 0 as u32))
+        self.fb.emit(AirInst(opcode: OP_SHR, type_id: 4 as u32, dest: str_width_reg, src1: packed_reg, src2: sh_reg))
+        self.locals.local_map_put(name_id, cp_reg)
+    elif is_collection:
         // The array/Vec base to index: for a fixed array the collection reg IS the
         // element base; for a Vec the elements live behind the vec.data pointer, so
         // load that field first (per-iteration — cheap, and keeps coll_reg as the
@@ -3628,14 +3685,17 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                 self.lower_block(body_node_idx)
 
     if not self.terminated:
-        let one_reg = self.fb.fresh_reg()
-        self.fb.emit(AirInst(
-            opcode: OP_ICONST,
-            type_id: counter_type,
-            dest: one_reg,
-            src1: 1 as u32,
-            src2: 0 as u32,
-        ))
+        // Step amount: for `for c in str` advance by the codepoint width; otherwise +1.
+        mut step_reg := str_width_reg
+        if not is_string:
+            step_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_ICONST,
+                type_id: counter_type,
+                dest: step_reg,
+                src1: 1 as u32,
+                src2: 0 as u32,
+            ))
         mut current_iter2 := iter_reg
         if not is_collection:
             current_iter2 = self.locals.local_map_get(name_id)
@@ -3645,7 +3705,7 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             type_id: counter_type,
             dest: new_val_reg,
             src1: current_iter2,
-            src2: one_reg,
+            src2: step_reg,
         ))
         self.fb.emit(AirInst(
             opcode: OP_COPY,
@@ -3666,6 +3726,7 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.loop_exits.pop()
     self.loop_incr_regs.pop()
     self.loop_incr_types.pop()
+    self.loop_incr_steps.pop()
 
 pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if node.first_child != 0 as u32:

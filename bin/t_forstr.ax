@@ -1,0 +1,20 @@
+// Oracle (RFC 0020 P2b): `for c in str` iterates UTF-8 CODEPOINTS (not bytes),
+// binding c to a rune. "AΩ" is 3 bytes but 2 codepoints: 'A'=U+0041(65),
+// 'Ω'=U+03A9(937). A byte loop would see 3 elements and wrong values.
+import std.string
+
+fn main() -> i64:
+    let s = "AΩ"
+    mut count = 0 as i64
+    mut sum = 0 as i64
+    for c in s:
+        count = count + 1
+        sum = sum + (c as i64)
+    // count must be 2 (codepoints), sum = 65 + 937 = 1002.
+    // encode: count*1000 ... but 8-bit exit truncates; assert via arithmetic instead.
+    mut r = 0 as i64
+    if count == 2:
+        r = r + 10
+    if sum == 1002:
+        r = r + 5
+    return r   // both correct -> 15

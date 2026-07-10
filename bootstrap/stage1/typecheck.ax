@@ -2221,6 +2221,10 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // RFC 0020 P2: `for b in bytes` yields u8 bytes (byte semantics).
                     for_elem_ty = 5 as u32 // u8
                     for_is_collection = true
+                elif iteree_ty == TYPE_STRING:
+                    // RFC 0020 P2b: `for c in str` yields UTF-8 codepoints (rune = u32).
+                    for_elem_ty = 7 as u32 // rune
+                    for_is_collection = true
                 elif ie_kind == TYPE_KIND_ARRAY:
                     for_elem_ty = self.types.entries.data[iteree_ty].extra
                     for_is_collection = true
