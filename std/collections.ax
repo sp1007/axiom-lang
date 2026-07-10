@@ -281,9 +281,13 @@ pub fn len[T](self: HashSet[T]) -> i64:
     return self.map.len()
 
 pub fn contains[T](self: HashSet[T], item: T) -> bool:
+    // NB: block-form match arms — inline arms (`Some(_): true`) mis-lower to always
+    // taking the first arm, so this used to return true for ANY item.
     match self.map.get(item):
-        Some(_): true
-        None: false
+        Some(x):
+            return true
+        None:
+            return false
 
 pub fn insert[T](mut self: HashSet[T], item: T) -> bool:
     let exists = self.contains(item)
