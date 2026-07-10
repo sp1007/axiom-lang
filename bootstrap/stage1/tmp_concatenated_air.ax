@@ -2508,6 +2508,20 @@ pub fn parse_match_arm(mut self: ptr[Parser]) -> u32:
         if body != 0 as u32:
             self.append_child(node, body)
     else:
+        // Inline `:` body. A value expression is allowed (`Some(_): 0`), but a STATEMENT
+        // (return/if/while/for/let/mut/break/continue/match) is not a value â€” the same
+        // unsupported inline-suite form rejected for if/while (BUG#53). Feeding it to
+        // parse_expr desyncs the arm loop into 10+ confusing cascade errors, so detect the
+        // statement keyword up front and emit ONE actionable diagnostic, then skip the rest
+        // of the physical line so the next arm (or DEDENT) parses cleanly (Â§8).
+        let nb = self.peek()
+        if (nb.kind == TK_RETURN or nb.kind == TK_IF or nb.kind == TK_WHILE or
+            nb.kind == TK_FOR or nb.kind == TK_LET or nb.kind == TK_MUT or
+            nb.kind == TK_BREAK or nb.kind == TK_CONTINUE or nb.kind == TK_MATCH):
+            self.errorf(nb, "match arm body must be an indented block; an inline ':' with a statement is not supported -- put the statement(s) on the next line, indented")
+            while self.pos < self.tokens.len and self.tokens.data[self.pos].kind != TK_NEWLINE and self.tokens.data[self.pos].kind != TK_DEDENT:
+                self.pos = self.pos + 1
+            return node
         let expr = self.parse_expr_with_prec(BP_NONE)
         if expr != 0 as u32:
             self.append_child(node, expr)

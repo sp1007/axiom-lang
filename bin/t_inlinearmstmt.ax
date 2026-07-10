@@ -1,0 +1,16 @@
+// Oracle (diagnostics, §8): an inline `:` match-arm body that is a STATEMENT
+// (`Ok(v): return v`) is not a value and is unsupported — same class as the
+// inline-if suite rejected by BUG#53. The parser must emit ONE actionable
+// diagnostic per offending arm and recover to the next arm, NOT desync into a
+// 10+ error cascade ("expected pattern"/"expected expression nud" ...).
+// Reject-mode oracle: no exe is produced.
+fn parse(ok: bool) -> Result[i32, str]:
+    if ok:
+        return Ok(42)
+    return Err("bad")
+
+fn main() -> i32:
+    let r = parse(true)
+    match r:
+        Ok(v): return v
+        Err(e): return 0 as i32 - 1
