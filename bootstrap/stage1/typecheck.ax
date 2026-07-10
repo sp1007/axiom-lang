@@ -730,7 +730,50 @@ pub fn sym_decl_param_count(self: ptr[TypeChecker], sym_idx: u32) -> i64:
         c = tree.nodes.data[c as i64].next_sibling
     return n
 
-pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, first_arg_node: u32) -> u32:
+// True iff this SYM_FUNC would emit the BARE mangled name `ax_<name>` in the backend
+// (x86_resolve_sym_name / cgen), i.e. it has NO struct/sum receiver to disambiguate it.
+// Two bare-mangling functions with the same name link-collide (one `ax_<name>` wins),
+// silently mis-dispatching a call. Mirrors x86_regs.ax:198-302 so the uniquing pass in
+// run_type_checker tags precisely the functions the backend would otherwise merge.
+pub fn free_fn_bare_mangles(self: ptr[TypeChecker], sym_idx: u32) -> bool:
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return false
+    let sym = self.symtable.symbols.data[sym_idx as i64]
+    if sym.kind != SYM_FUNC:
+        return false
+    // extern keeps its raw name; MODDUP is already unique; generic templates are
+    // monomorphized (instances mangle elsewhere) — none participate in this collision.
+    if (sym.flags & SYM_FLAG_EXTERN) != 0 as u16:
+        return false
+    if (sym.flags & 2048 as u16) != 0 as u16:
+        return false
+    if (sym.flags & SYM_FLAG_GENERIC) != 0 as u16:
+        return false
+    // Special names the backend passes through verbatim (never `ax_<name>`).
+    let nm = self.intern.get(sym.name_id)
+    let special = (nm == "main" or nm == "_AX_main_main_v_v" or nm == "memcpy" or
+                   nm == "memset" or nm == "memmove" or nm == "realloc" or
+                   nm == "free" or nm == "alloc" or nm == "malloc")
+    safe_free_str(nm)
+    if special:
+        return false
+    // A struct/sum FIRST parameter (single pointer unwrap, mirroring the backend, and only
+    // when it carries a name) yields `ax_<Struct>_<fn>` — unique per receiver, so NOT bare.
+    if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.types.entries.len:
+        let f_entry = self.types.entries.data[sym.type_id as i64]
+        if f_entry.kind == TYPE_KIND_FUNC:
+            let fi = self.types.funcs.data[f_entry.extra as i64]
+            if fi.params.len > 0 as i64:
+                mut fp := fi.params.data[0]
+                let pe = self.types.entries.data[fp as i64]
+                if pe.kind == TYPE_KIND_POINTER:
+                    fp = pe.extra
+                let pe2 = self.types.entries.data[fp as i64]
+                if (pe2.kind == TYPE_KIND_STRUCT or pe2.kind == TYPE_KIND_SUM) and pe2.name_id != 0 as u32:
+                    return false
+    return true
+
+pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, first_arg_node: u32, call_argc: i64) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
         return sym_idx
     if self.symtable.symbols.data[sym_idx].next_overload == 0 as u32:
@@ -757,6 +800,20 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
             ci = self.symtable.symbols.data[ci as i64].next_overload
         return sym_idx
     let arg0_type = self.infer_node(first_arg_node, TYPE_UNKNOWN)
+    // ARITY + arg0-type disambiguation. A name colliding with a bundled stdlib overload
+    // resolves (scope lookup) to the stdlib chain HEAD. If the user's own overload has a
+    // DIFFERENT arity but the SAME arg0 type (user `len(str,i32)` vs stdlib `len(str)`),
+    // arg0-type alone (BUG#80) picks the stdlib head. Walk the chain and prefer the overload
+    // whose parameter count matches the call AND whose arg0 type is compatible. This binds
+    // the call to the user's symbol so codegen targets the right (uniquely-mangled) body
+    // [[bug-freefn-stdlib-collision-noarg]]. Preserves BUG#80 (equal-arity collisions still
+    // disambiguate by arg0 type; a wrong-type head is skipped) and head-first order.
+    mut ci := sym_idx
+    while ci != 0 as u32:
+        if self.sym_decl_param_count(ci) == call_argc:
+            if arg0_type == TYPE_UNKNOWN or self.is_method_compatible(ci, arg0_type):
+                return ci
+        ci = self.symtable.symbols.data[ci].next_overload
     if arg0_type == TYPE_UNKNOWN:
         return sym_idx
     let picked = self.resolve_method_overload(sym_idx, arg0_type)
@@ -1576,6 +1633,44 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
 
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
+
+    // Phase 3.5 (mangling uniquing, [[bug-freefn-stdlib-collision-noarg]]): a user free fn
+    // whose name collides with a bundled stdlib free fn where BOTH bare-mangle to
+    // `ax_<name>` (scalar/str/no receiver) would link-merge and silently mis-dispatch
+    // (SIGSEGV / wrong result). The backend already emits a UNIQUE `ax_<name>__m<idx>` for
+    // any symbol flagged SYM_FLAG_MODDUP, but the resolver only sets that for CROSS-TREE
+    // dups — and the driver concatenates stdlib+user into ONE tree, so same-tree collisions
+    // slip through. Tag every bare-mangling function that shares its name with an EARLIER
+    // bare-mangling function so each gets a distinct symbol; the FIRST keeps the bare name
+    // (existing callers unchanged). Paired with the arity disambiguation in
+    // resolve_free_call_overload, the call binds to the user's symbol and targets its unique
+    // body. Types are resolved now, so the struct-receiver test is reliable. Precompute the
+    // bare-mangle bitmap once (O(n)) so the pairwise scan is plain integer comparisons.
+    let nsym = self.symtable.symbols.len
+    if nsym > 1 as i64:
+        mut bare := @alloc(nsym) as ptr[u8]
+        mut bi := 0 as i64
+        while bi < nsym:
+            if self.free_fn_bare_mangles(bi as u32):
+                bare[bi] = 1 as u8
+            else:
+                bare[bi] = 0 as u8
+            bi = bi + 1
+        mut mi := 1 as i64
+        while mi < nsym:
+            if bare[mi] == 1 as u8:
+                let nm_id = self.symtable.symbols.data[mi].name_id
+                mut mj := 0 as i64
+                mut collides := false
+                while mj < mi:
+                    if bare[mj] == 1 as u8 and self.symtable.symbols.data[mj].name_id == nm_id:
+                        collides = true
+                        mj = mi
+                    mj = mj + 1
+                if collides:
+                    self.symtable.symbols.data[mi].flags = self.symtable.symbols.data[mi].flags | 2048 as u16
+            mi = mi + 1
+        @free(bare as ptr[u8])
 
     // Phase 4 (RFC 0017 / BUG#82): validate module-level global variables. A
     // module-level `let`/`mut` (not `const`) gets real static storage in the backend
@@ -2409,7 +2504,12 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 // re-read callee_node afterwards (inferring the arg may realloc nodes,
                 // BUG#51). No-op unless the name is overloaded and the head mismatches.
                 let ov_first_arg = self.tree.nodes.data[callee].next_sibling
-                let ov_pick = self.resolve_free_call_overload(callee_node.payload, ov_first_arg)
+                mut ov_argc := 0 as i64
+                mut ov_an := ov_first_arg
+                while ov_an != 0 as u32:
+                    ov_argc = ov_argc + 1 as i64
+                    ov_an = self.tree.nodes.data[ov_an].next_sibling
+                let ov_pick = self.resolve_free_call_overload(callee_node.payload, ov_first_arg, ov_argc)
                 if ov_pick != callee_node.payload:
                     self.tree.nodes.data[callee].payload = ov_pick
                     callee_node = self.tree.nodes.data[callee]

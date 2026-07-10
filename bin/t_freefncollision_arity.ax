@@ -1,0 +1,12 @@
+// Oracle ([[bug-freefn-stdlib-collision-noarg]] residual): a user top-level free fn whose
+// name collides with a bundled stdlib free fn where BOTH bare-mangle to `ax_<name>` (here
+// user `len(str,i32)` vs stdlib `std.string.len(str)`) must call the USER body — not
+// silently dispatch to the stdlib overload (which dropped the 2nd arg and returned the byte
+// length 2, or SIGSEGV'd on a scalar arg0). Fixed by (1) arity+arg0 disambiguation binding
+// the call to the user's symbol and (2) a typecheck pass tagging the later bare-mangling
+// function SYM_FLAG_MODDUP so codegen emits a unique `ax_len__m<idx>`. Expected: 105.
+fn len(a: str, b: i32) -> i32:
+    return b + 100
+
+fn main() -> i32:
+    return len("hi", 5)
