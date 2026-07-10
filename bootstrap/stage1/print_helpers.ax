@@ -546,6 +546,24 @@ pub fn extract_qualified_base_name(name: str) -> str:
         return std.string.slice(base, 0, d_idx)
     return std.string.concat("", base)
 
+// RFC 0018 P2: strip the module qualifier AND the generic-argument suffix so a
+// monomorphized container type resolves to its bare constructor name, e.g.
+// "std.collections.Vec[i64]" -> "Vec". Used to recognize `Vec[T]` for `for x in vec`.
+pub fn extract_base_type_name(name: str) -> str:
+    let q = extract_qualified_base_name(name)
+    let length = std.string.len(q)
+    let p = get_str_ptr(q)
+    mut br := length
+    mut i := 0 as i64
+    while i < length:
+        if p[i] == '[' as u8:
+            br = i
+            break
+        i = i + 1
+    if br == length:
+        return q
+    return std.string.slice(q, 0, br)
+
 
 pub fn extract_base_name(name: str) -> str:
     let length = std.string.len(name)

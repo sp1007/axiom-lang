@@ -148,6 +148,7 @@ rows=(
   "t_matchret|exit|30"
   "t_missingret|reject|"
   "t_partialmatch|reject|"
+  "t_forvec|exit|60"
 )
 
 for row in "${rows[@]}"; do

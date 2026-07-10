@@ -549,6 +549,24 @@ pub fn extract_qualified_base_name(name: str) -> str:
         return std.string.slice(base, 0, d_idx)
     return std.string.concat("", base)
 
+// RFC 0018 P2: strip the module qualifier AND the generic-argument suffix so a
+// monomorphized container type resolves to its bare constructor name, e.g.
+// "std.collections.Vec[i64]" -> "Vec". Used to recognize `Vec[T]` for `for x in vec`.
+pub fn extract_base_type_name(name: str) -> str:
+    let q = extract_qualified_base_name(name)
+    let length = std.string.len(q)
+    let p = get_str_ptr(q)
+    mut br := length
+    mut i := 0 as i64
+    while i < length:
+        if p[i] == '[' as u8:
+            br = i
+            break
+        i = i + 1
+    if br == length:
+        return q
+    return std.string.slice(q, 0, br)
+
 
 pub fn extract_base_name(name: str) -> str:
     let length = std.string.len(name)
@@ -7955,8 +7973,20 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if ie_kind == TYPE_KIND_ARRAY:
                     for_elem_ty = self.types.entries.data[iteree_ty].extra
                     for_is_collection = true
+                elif (ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.intern.get(self.types.entries.data[iteree_ty].name_id)) == "Vec":
+                    // RFC 0018 P2: `for x in vec` where vec: Vec[T]. In a monomorphic
+                    // context the Vec is a mono STRUCT (`_AX_std_Vec__i64`); in a generic
+                    // context a GENERIC_INST. Its sole generic arg is the element type;
+                    // air_builder's lower_for desugars to `vec.data[i]` for `i in 0..vec.len`.
+                    let gargs = self.get_generic_args(iteree_ty)
+                    if gargs.len >= 1 as i64:
+                        for_elem_ty = gargs.data[0]
+                        for_is_collection = true
+                    else:
+                        ax_printf_local("error: cannot determine the element type of this Vec for `for x in vec`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
                 elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
-                    ax_printf_local("error: iterating a collection with `for x in <collection>` is not yet supported; use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    ax_printf_local("error: iterating this collection with `for x in <collection>` is not yet supported (only fixed arrays and Vec[T]); use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
             // RFC 0018 P1: for a COLLECTION loop, bind the loop variable's type to the
             // element type BEFORE inferring the body, so field/method access on the
@@ -13794,6 +13824,41 @@ pub fn lower_while(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     self.loop_incr_regs.pop()
     self.loop_incr_types.pop()
 
+// RFC 0018 P2: resolve the underlying struct of a STRUCT/GENERIC_INST type and
+// return the type_id of the field whose name interns to `field_name_id`, writing its
+// field index to *out_idx. Returns 0 if not resolvable. Mirrors the typecheck field
+// resolution (generic-inst base-name match) so indices agree with OP_GET_FIELD.
+fn fl_resolve_field(self: ptr[FuncLowering], type_id: u32, field_name_id: u32, out_idx: ptr[u32]) -> u32:
+    if (type_id as i64) >= self.mb.typetable.entries.len:
+        return 0 as u32
+    let entry = self.mb.typetable.entries.data[type_id as i64]
+    mut struct_extra := entry.extra
+    mut is_struct := false
+    if entry.kind == TYPE_KIND_STRUCT:
+        is_struct = true
+    elif entry.kind == TYPE_KIND_GENERIC_INST:
+        let entry_base = extract_qualified_base_name(self.mb.pool.get(entry.name_id))
+        mut i := 0 as i64
+        while i < self.mb.typetable.entries.len:
+            let e = self.mb.typetable.entries.data[i]
+            if e.kind == TYPE_KIND_STRUCT:
+                let e_base = extract_qualified_base_name(self.mb.pool.get(e.name_id))
+                if e_base == entry_base:
+                    struct_extra = e.extra
+                    is_struct = true
+                    break
+            i = i + 1
+    if not is_struct or (struct_extra as i64) >= self.mb.typetable.structs.len:
+        return 0 as u32
+    let si = &self.mb.typetable.structs.data[struct_extra as i64]
+    mut j := 0 as i64
+    while j < si.fields.len:
+        if si.fields.data[j].name_id == field_name_id:
+            out_idx.* = j as u32
+            return si.fields.data[j].type_id
+        j = j + 1
+    return 0 as u32
+
 pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let cond_block = self.fb.new_block()
     let body_block = self.fb.new_block()
@@ -13827,6 +13892,13 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut coll_reg := 0 as u32
     mut elem_type := 0 as u32
     mut coll_len := 0 as u32
+    // RFC 0018 P2: `for x in vec` (Vec[T]) state. Unlike a fixed array the length is a
+    // RUNTIME field (vec.len) and the elements live behind the vec.data pointer, so we
+    // load both fields instead of using a compile-time bound / direct OP_INDEX.
+    mut is_vec := false
+    mut vec_data_idx := 0 as u32
+    mut vec_data_type := 0 as u32
+    mut vec_len_idx := 0 as u32
     // Type of the numeric counter driving the loop: for a range/integer-bound loop
     // the counter IS the loop variable (its type); for a collection loop the counter
     // is an internal i32 index (the loop variable holds the element instead).
@@ -13854,11 +13926,25 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if not is_range and range_expr_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
         let coll_ty = self.mb.node_types[range_expr_idx as i64] as u32
         if coll_ty != 0 as u32 and (coll_ty as i64) < self.mb.typetable.entries.len:
-            if self.mb.typetable.entries.data[coll_ty as i64].kind == TYPE_KIND_ARRAY:
+            let coll_kind = self.mb.typetable.entries.data[coll_ty as i64].kind
+            if coll_kind == TYPE_KIND_ARRAY:
                 is_collection = true
                 elem_type = self.mb.typetable.entries.data[coll_ty as i64].extra
                 coll_len = self.mb.typetable.entries.data[coll_ty as i64].name_id
                 counter_type = 3 as u32 // i32 index counter
+            elif (coll_kind == TYPE_KIND_GENERIC_INST or coll_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.mb.pool.get(self.mb.typetable.entries.data[coll_ty as i64].name_id)) == "Vec":
+                // RFC 0018 P2: iterate a Vec[T] by loading vec.len (bound) and indexing
+                // vec.data. The loop variable's type (type_id) is the element type T,
+                // bound by typecheck. Counter is i64 to match the i64 len field.
+                let data_nid = self.mb.pool.intern("data")
+                let len_nid = self.mb.pool.intern("len")
+                vec_data_type = fl_resolve_field(self, coll_ty, data_nid, &vec_data_idx)
+                let len_ty = fl_resolve_field(self, coll_ty, len_nid, &vec_len_idx)
+                if vec_data_type != 0 as u32 and len_ty != 0 as u32:
+                    is_collection = true
+                    is_vec = true
+                    elem_type = type_id // loop var type == element type T
+                    counter_type = 4 as u32 // i64 index counter (matches vec.len)
 
     let iter_reg = self.fb.fresh_reg()
     if is_range:
@@ -13870,7 +13956,7 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
     elif is_collection:
-        // Evaluate the array base once; iter_reg is the internal 0-based index.
+        // Evaluate the collection base once; iter_reg is the internal 0-based index.
         coll_reg = self.lower_expr(range_expr_idx)
         self.fb.emit(AirInst(
             opcode: OP_ICONST,
@@ -13880,13 +13966,23 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
         limit_reg = self.fb.fresh_reg()
-        self.fb.emit(AirInst(
-            opcode: OP_ICONST,
-            type_id: counter_type,
-            dest: limit_reg,
-            src1: coll_len,
-            src2: 0 as u32,
-        ))
+        if is_vec:
+            // Runtime bound: load vec.len (i64) once before the loop.
+            self.fb.emit(AirInst(
+                opcode: OP_GET_FIELD,
+                type_id: 4 as u32, // i64
+                dest: limit_reg,
+                src1: coll_reg,
+                src2: vec_len_idx,
+            ))
+        else:
+            self.fb.emit(AirInst(
+                opcode: OP_ICONST,
+                type_id: counter_type,
+                dest: limit_reg,
+                src1: coll_len,
+                src2: 0 as u32,
+            ))
     else:
         self.fb.emit(AirInst(
             opcode: OP_ICONST,
@@ -13949,12 +14045,27 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // The loop var maps directly to this OP_INDEX result (no OP_COPY), which handles
     // scalar elements by-value and aggregate elements by-address (RFC 0001 Â§5).
     if is_collection:
+        // The array/Vec base to index: for a fixed array the collection reg IS the
+        // element base; for a Vec the elements live behind the vec.data pointer, so
+        // load that field first (per-iteration â€” cheap, and keeps coll_reg as the
+        // struct for the len already read above).
+        mut index_base := coll_reg
+        if is_vec:
+            let data_reg = self.fb.fresh_reg()
+            self.fb.emit(AirInst(
+                opcode: OP_GET_FIELD,
+                type_id: vec_data_type,
+                dest: data_reg,
+                src1: coll_reg,
+                src2: vec_data_idx,
+            ))
+            index_base = data_reg
         let elem_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
             opcode: OP_INDEX,
             type_id: elem_type,
             dest: elem_reg,
-            src1: coll_reg,
+            src1: index_base,
             src2: iter_reg,
         ))
         self.locals.local_map_put(name_id, elem_reg)
