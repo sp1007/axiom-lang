@@ -1,0 +1,9 @@
+// Regression (BUG#93): a module-qualified call to a module that is neither
+// imported nor bundled must be a clean compile error, NOT a silent accept-then-
+// miscompile. On the native textual-bundling path the resolver leaves such a
+// `NODE_FIELD_EXPR` callee unresolved (flag 2048 unset), typecheck used to fall
+// through leniently, and air_builder lowered the callee to a garbage register and
+// emitted `call *reg` -> jump to an unmapped address -> SIGSEGV (exit 139) with no
+// diagnostic. Same accept-then-miscompile class as BUG#53/#68/#88. Must reject.
+fn main() -> i32:
+    return std.nosuchmodule.frobnicate(1) as i32

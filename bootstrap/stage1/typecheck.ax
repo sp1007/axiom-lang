@@ -2428,7 +2428,58 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         if sym.kind == SYM_FUNC and ((sym.flags & SYM_FLAG_GENERIC) != 0 as u16 or (sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32 and (sym.decl_node as i64) < src_tree.nodes.len and (src_tree.nodes.data[sym.decl_node].flags & FLAG_IS_GENERIC) != 0 as u16)):
                             is_generic_call = true
                             template_sym_idx = sym_idx
-            
+
+                    // BUG#93: a namespace-qualified call whose member did not resolve.
+                    // On the native build imports are stripped textually, so `std`/
+                    // `math`/`string` are never SYM_MODULE and the resolver leaves
+                    // `std.math.gcd(...)` / `string.concat(a,b)` as an unresolved
+                    // NODE_FIELD_EXPR (flag 2048 unset). air_builder then lowers the
+                    // callee to a garbage register and emits `call *reg` -> silent
+                    // SIGSEGV. Detect it precisely: walk the receiver chain down to its
+                    // ROOT identifier and re-resolve that name. If the root binds to
+                    // nothing, the whole chain is an undefined namespace reference, not
+                    // a value -- so this is an unresolved module-qualified call, NOT a
+                    // value method like `r.unwrap()` (whose root binds to a SYM_VAR/
+                    // SYM_PARAM and is spared). Reject cleanly (accept-then-miscompile
+                    // class, BUG#53/#68/#88). The compiler's own source has no surviving
+                    // `std.X.Y` field-exprs post-strip, so this never trips self-build.
+                    if sym_idx == 0 as u32 and rec_node != 0 as u32:
+                        mut lroot := rec_node
+                        mut lk := self.tree.nodes.data[lroot].kind
+                        while lk == NODE_FIELD_EXPR:
+                            let nc = self.tree.nodes.data[lroot].first_child
+                            if nc == 0 as u32:
+                                break
+                            lroot = nc
+                            lk = self.tree.nodes.data[lroot].kind
+                        if lroot != 0 as u32 and self.tree.nodes.data[lroot].kind == NODE_IDENT:
+                            let root_spell = self.node_text(lroot)
+                            if root_spell != "":
+                                // Decide if the root ident is BOUND. `symtable.resolve`
+                                // only sees module/global scope here (local scopes are
+                                // already popped), so it CANNOT be used to detect a
+                                // local/param receiver. Instead use the payload the
+                                // resolver stamped on the ident: a bound ident's payload
+                                // is its symbol index, and that symbol's name_id equals
+                                // the ident spelling's name_id. An UNBOUND namespace ident
+                                // keeps its raw name_id as payload, indexing some
+                                // unrelated symbol whose name_id will not match. Compare
+                                // interned name_ids (u32) -- no dependency on str equality
+                                // lowering. This distinguishes a real value receiver
+                                // (`r`, `self`, a global) from an undefined namespace
+                                // (`std`, `math`, `string`).
+                                let spell_name_id = self.intern.intern_string(root_spell)
+                                mut root_bound := false
+                                let rp = self.tree.nodes.data[lroot].payload
+                                if rp != 0 as u32 and (rp as i64) < self.symtable.symbols.len:
+                                    if self.symtable.symbols.data[rp].name_id == spell_name_id:
+                                        root_bound = true
+                                if not root_bound:
+                                    let fname = self.intern.get(field_name_id)
+                                    ax_printf_local("error: unresolved call to '%s' on undefined namespace '%s' -- module not imported or not bundled on this build\n", get_str_ptr(fname) as i64, get_str_ptr(root_spell) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                    safe_free_str(fname)
+                                    self.diags_count = self.diags_count + 1 as i64
+
             if is_generic_call:
                 let decl_node = self.symtable.symbols.data[template_sym_idx].decl_node
                 
