@@ -1,0 +1,10 @@
+// Oracle: an inline int-array literal in a struct constructor field must coerce to the
+// field's declared element type. Before the fix, `Grid(cells: [11,22,33,44])` where
+// `cells: [i64;4]` stored the elements at i32 stride (4) into the 32-byte field slot ->
+// g.cells[1] read 33 (bytes 8..15), cells[2]/[3] read 0. Expected exit: 110.
+struct Grid:
+    cells: [i64; 4]
+
+fn main() -> i64:
+    let g = Grid(cells: [11, 22, 33, 44])
+    return g.cells[0] + g.cells[1] + g.cells[2] + g.cells[3]

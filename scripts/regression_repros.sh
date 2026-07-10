@@ -155,6 +155,7 @@ rows=(
   "t_forstr|exit|15"
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"
+  "t_ctorarrfield|exit|110"
 )
 
 for row in "${rows[@]}"; do
