@@ -156,6 +156,7 @@ rows=(
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"
   "t_ctorarrfield|exit|110"
+  "t_freefncollision|exit|15"
 )
 
 for row in "${rows[@]}"; do

@@ -706,12 +706,55 @@ pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u
 // tests the head FIRST, so a call already bound to a compatible overload is returned
 // unchanged; we only switch when the head is INCOMPATIBLE with arg0 and another overload
 // in the chain matches, which is strictly a repair of a previously-broken binding.
+// Number of declared parameters of a SYM_FUNC, counted from its DECL node in its OWN tree
+// (so it is tree-safe and does not depend on the signature having been type-inferred yet).
+// Returns -1 when unknown / not a function. Used for arity-based overload disambiguation.
+pub fn sym_decl_param_count(self: ptr[TypeChecker], sym_idx: u32) -> i64:
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return -1 as i64
+    let sym = self.symtable.symbols.data[sym_idx as i64]
+    if sym.kind != SYM_FUNC or sym.decl_node == 0 as u32 or sym.decl_node == 0xffffffff as u32:
+        return -1 as i64
+    mut tree := self.tree
+    if (sym_idx as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[sym_idx as i64]
+        if t != null as ptr[AstTree]:
+            tree = t
+    if (sym.decl_node as i64) >= tree.nodes.len:
+        return -1 as i64
+    mut n := 0 as i64
+    mut c := tree.nodes.data[sym.decl_node as i64].first_child
+    while c != 0 as u32:
+        if tree.nodes.data[c as i64].kind == NODE_PARAM_DECL:
+            n = n + 1 as i64
+        c = tree.nodes.data[c as i64].next_sibling
+    return n
+
 pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, first_arg_node: u32) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
         return sym_idx
     if self.symtable.symbols.data[sym_idx].next_overload == 0 as u32:
         return sym_idx
     if first_arg_node == 0 as u32:
+        // Zero-arg call `f()`. A plain scope lookup binds the callee to the overload-chain
+        // HEAD, which for a name colliding with a bundled stdlib symbol is the stdlib
+        // overload (stdlib is concatenated first -> defined first -> head). If that head
+        // takes parameters (e.g. `run(mut self)`, `close(self)`), the zero-arg call would
+        // silently dispatch to the wrong body reading a GARBAGE first arg -> return 0 or
+        // SIGSEGV, no diagnostic (same accept-then-miscompile class as BUG#80, which only
+        // disambiguated by arg[0] type and thus could not handle a zero-arg / arity
+        // mismatch). Repair by ARITY: if the head takes >0 params, switch to a 0-param
+        // overload in the chain (the user's own `f()`), if one exists. Only switches when
+        // the head arity MISMATCHES the (zero) call arity, so a correctly-bound zero-arg
+        // call is returned unchanged (conservative, mirroring the arg0-type path below).
+        let head_pc = self.sym_decl_param_count(sym_idx)
+        if head_pc <= 0 as i64:
+            return sym_idx
+        mut ci := self.symtable.symbols.data[sym_idx].next_overload
+        while ci != 0 as u32:
+            if self.sym_decl_param_count(ci) == 0 as i64:
+                return ci
+            ci = self.symtable.symbols.data[ci as i64].next_overload
         return sym_idx
     let arg0_type = self.infer_node(first_arg_node, TYPE_UNKNOWN)
     if arg0_type == TYPE_UNKNOWN:

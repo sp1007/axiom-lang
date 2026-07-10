@@ -1,0 +1,11 @@
+// Oracle: a user zero-arg free fn whose name collides with a bundled stdlib `pub fn` of
+// different arity (`run(mut self)` in std/scheduler.ax) must call the USER body, not
+// silently dispatch to the stdlib overload on a garbage `self` (which returned 0 / crashed).
+// Built from repo root so the stdlib is bundled and the collision is live. Expected: 15.
+fn run() -> i32:
+    mut acc := 0 as i32
+    acc = acc + 15
+    return acc
+
+fn main() -> i32:
+    return run()
