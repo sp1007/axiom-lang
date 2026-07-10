@@ -160,6 +160,7 @@ rows=(
   "t_freefncollision_arity|exit|105"
   "t_inlinearmstmt|reject|"
   "t_optstrmatch|exit|10"
+  "t_gentree|exit|15"
 )
 
 for row in "${rows[@]}"; do

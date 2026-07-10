@@ -438,6 +438,21 @@ pub fn field_is_pointer_sum(table: ptr[TypeTable], struct_type_id: u32, field_id
     let fk = table.entries.data[f.type_id].kind
     if fk == 6 as u8 or fk == 11 as u8 or fk == 12 as u8:
         return true
+    // BUG#92: a kind-8 GENERIC_INST of a user SUM (e.g. a recursive `Tree[T]` field)
+    // is ALSO pointer-repr — its value is an 8-byte box pointer, exactly like a bare
+    // sum. Without this, field_is_aggregate (true for any kind-8) wins and GET_FIELD
+    // returns the field ADDRESS instead of loading the box pointer, so a child is read
+    // as its own field offset and recursion segfaults. A generic_inst of a generic
+    // STRUCT (Pair[i32,i64], Vec[T]) is by-VALUE and must NOT match, so gate on the
+    // base name resolving to a SUM entry.
+    if fk == 8 as u8:
+        let fname = table.entries.data[f.type_id].name_id
+        mut si := 0 as i64
+        while si < table.entries.len:
+            let se = table.entries.data[si]
+            if se.kind == 6 as u8 and se.name_id == fname:
+                return true
+            si = si + 1
     return false
 
 pub fn abi_int_arg_reg(abi: str, idx: i64) -> u8:

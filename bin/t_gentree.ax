@@ -1,0 +1,17 @@
+// Oracle BUG#92: a GENERIC recursive multi-field variant `Tree[T] = Node(T,Tree[T],Tree[T])`
+// must read its child fields as 8-byte box pointers, not by-address. Before the fix,
+// field_is_pointer_sum did not recognize a kind-8 generic_inst-of-sum field, so
+// field_is_aggregate won and GET_FIELD returned the field ADDRESS → recursion segfaulted.
+// Expected exit: 1+2+4+5+3 = 15.
+type Tree[T] = Node(T, Tree[T], Tree[T]) | Leaf
+
+fn total(t: Tree[i64]) -> i64:
+    match t:
+        Node(v, l, r):
+            return v + total(l) + total(r)
+        Leaf:
+            return 0
+
+fn main() -> i64:
+    let t = Node(1, Node(2, Node(4, Leaf, Leaf), Node(5, Leaf, Leaf)), Node(3, Leaf, Leaf))
+    return total(t)
