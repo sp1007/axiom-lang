@@ -1,6 +1,6 @@
 # RFC 0018 — `for x in <collection>` element iteration
 
-Status: Accepted (P1 shipped)
+Status: Accepted (P1 arrays + P2 Vec[T] shipped)
 Author: autopilot
 Related: BUG#87 (for-range loop var), BUG#72 (slice reject convention)
 
@@ -60,10 +60,27 @@ no new opcode and no ABI change. The internal counter register is never exposed
 to the program, so the loop variable holds the *element*, matching BUG#87's rule
 that the loop var is read via `local_map_get(sym_idx)`.
 
+### P2 — Vec[T] (shipped)
+
+`for x in vec` where `vec: Vec[T]`. A Vec is `{ data: ptr[T], len: i64, cap: i64 }`,
+so unlike a fixed array the length is a RUNTIME field and elements live behind the
+`data` pointer. `lower_for` loads `vec.len` (i64) once as the bound, and each
+iteration loads `vec.data` and `OP_INDEX`es it with an i64 counter, binding the loop
+var to the element (scalars by-value, aggregates by-address per RFC 0001 §5).
+
+- **Typecheck** (`typecheck.ax`, NODE_FOR_STMT): a Vec iteree resolves to a mono
+  STRUCT (`_AX_std_Vec__i64`) or GENERIC_INST; recognized via `extract_base_type_name`
+  (strips module qualifier + generic args -> "Vec"). Loop var bound to the sole
+  generic arg (element type). HashMap/other structs still rejected.
+- **Lowering** (`air_builder.ax`): new `fl_resolve_field` resolves the data/len
+  field indices+types; the Vec branch of `lower_for` emits the field-loads + index.
+- **Test**: oracle `t_forvec` (element sum 60). Compiler source uses no for-in-Vec,
+  so self-codegen is byte-identical (A==B).
+
 ### P2 — future
 
-- `Vec[T]` / `HashMap` / string iteration (needs runtime `.len` + `.get(i)` and
-  an iterator convention). Still rejected in P1.
+- `HashMap` / `HashSet` / string iteration (needs an iterator convention / bucket
+  walk). Still rejected.
 - Multi-dimensional / nested-array iteration.
 
 ## Drawbacks / alternatives
