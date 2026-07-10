@@ -1,0 +1,14 @@
+// Oracle: fixed-array return type + `for x in <call returning array>` + `let: [T;N]`
+// annotation. Before the fix, `fn mk() -> [i64;3]` was treated as returning VOID (the
+// NODE_ARRAY_TYPE return annotation was dropped), so the returned `[i32;N]` literal was
+// never coerced to the declared `[i64;N]` element type -> wrong OP_INDEX stride ->
+// `for x in mk()` hung and `mk()[i]` read garbage. Expected exit: 60 + 10 = 70.
+fn mk() -> [i64;3]:
+    return [10, 20, 30]
+
+fn main() -> i64:
+    mut s := 0 as i64
+    for x in mk():
+        s = s + x            // 10 + 20 + 30 = 60
+    let a: [i64;3] = [3, 5, 7]
+    return s + a[0] + a[2]   // 60 + 3 + 7 = 70

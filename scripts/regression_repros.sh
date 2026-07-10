@@ -153,6 +153,7 @@ rows=(
   "t_bytesview|exit|204"
   "t_forbytes|exit|198"
   "t_forstr|exit|15"
+  "t_arrret|exit|70"
 )
 
 for row in "${rows[@]}"; do

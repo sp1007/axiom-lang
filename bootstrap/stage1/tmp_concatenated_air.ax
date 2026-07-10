@@ -7473,6 +7473,17 @@ pub fn pre_infer_struct(mut self: ptr[TypeChecker], node_idx: u32):
                 ax_printf_local("[TC-DEBUG] post-assign: checked fields_len=%d\n", check_si.fields.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             self.set_node_type(node_idx, type_id)
 
+// Is `k` a type-annotation node kind (a node that `infer_node` resolves to a type)?
+// `[T;N]` (NODE_ARRAY_TYPE), `[T]` (NODE_SLICE_TYPE), `*T` (NODE_PTR_TYPE) and
+// `fn(..)->..` (NODE_FUNC_TYPE) are genuine type annotations, but earlier code only
+// tested NODE_TYPE_EXPR/NODE_GENERIC_TYPE. In a `fn f() -> [T;N]` return position or a
+// `let a: [T;N] = ..` annotation those bracket/star/fn forms were dropped -> the return
+// type silently became VOID / the let annotation was ignored, so an array literal was
+// never coerced to the declared element type (a `[i32;N]` value then flowed into a
+// `[i64;N]` slot -> wrong OP_INDEX stride -> silent miscompile). Centralize the test.
+pub fn is_type_annotation_node(k: u8) -> bool:
+    return k == NODE_TYPE_EXPR or k == NODE_GENERIC_TYPE or k == NODE_ARRAY_TYPE or k == NODE_SLICE_TYPE or k == NODE_PTR_TYPE or k == NODE_FUNC_TYPE
+
 pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
     mut has_existing := false
@@ -7509,7 +7520,7 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
                     safe_free_str(pnm)
                 param_types.push(p_type)
                 param_count = param_count + 1 as i64
-            elif child_node.kind == NODE_TYPE_EXPR or child_node.kind == NODE_GENERIC_TYPE:
+            elif is_type_annotation_node(child_node.kind):
                 mut is_self_ret := false
                 if first_is_self and param_types.len > 0:
                     let rtext = self.node_text(child)
@@ -7765,7 +7776,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         mut child := self.tree.nodes.data[node_idx].first_child
         while child != 0 as u32:
             let child_node = self.tree.nodes.data[child]
-            if child_node.kind == NODE_TYPE_EXPR or child_node.kind == NODE_GENERIC_TYPE:
+            if is_type_annotation_node(child_node.kind):
                 type_node = child
             else:
                 init_expr = child
@@ -8800,7 +8811,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         if elem_type == TYPE_UNKNOWN:
             elem_type = TYPE_I32
         result_type = self.types.register_array(elem_type, count)
-        
+
     elif kind == NODE_NIL_LIT:
         if expected != TYPE_UNKNOWN:
             result_type = expected
