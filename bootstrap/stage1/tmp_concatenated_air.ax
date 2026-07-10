@@ -7978,7 +7978,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             mut for_is_collection := false
             if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
                 let ie_kind = self.types.entries.data[iteree_ty].kind
-                if ie_kind == TYPE_KIND_ARRAY:
+                if iteree_ty == TYPE_BYTES:
+                    // RFC 0020 P2: `for b in bytes` yields u8 bytes (byte semantics).
+                    for_elem_ty = 5 as u32 // u8
+                    for_is_collection = true
+                elif ie_kind == TYPE_KIND_ARRAY:
                     for_elem_ty = self.types.entries.data[iteree_ty].extra
                     for_is_collection = true
                 elif (ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.intern.get(self.types.entries.data[iteree_ty].name_id)) == "Vec":
@@ -13921,6 +13925,9 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut vec_data_idx := 0 as u32
     mut vec_data_type := 0 as u32
     mut vec_len_idx := 0 as u32
+    // RFC 0020 P2: `for b in bytes` â€” like an array (direct OP_INDEX on the value,
+    // which yields the u8 byte) but with a RUNTIME bound (bytes.len, field 1).
+    mut is_bytes := false
     // Type of the numeric counter driving the loop: for a range/integer-bound loop
     // the counter IS the loop variable (its type); for a collection loop the counter
     // is an internal i32 index (the loop variable holds the element instead).
@@ -13967,6 +13974,15 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     is_vec = true
                     elem_type = type_id // loop var type == element type T
                     counter_type = 4 as u32 // i64 index counter (matches vec.len)
+            elif coll_ty == TYPE_BYTES:
+                // RFC 0020 P2: bytes shares str's {ptr@0, len@1} repr; OP_INDEX on the
+                // value yields a u8 (proven by `b[i]`), so iterate like an array with a
+                // runtime bound = bytes.len (field 1).
+                is_collection = true
+                is_bytes = true
+                elem_type = 5 as u32 // u8
+                counter_type = 4 as u32 // i64 index counter (matches the i64 len field)
+                vec_len_idx = 1 as u32 // len is field 1 in the {ptr,len} layout
 
     let iter_reg = self.fb.fresh_reg()
     if is_range:
@@ -13988,8 +14004,9 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
         limit_reg = self.fb.fresh_reg()
-        if is_vec:
-            // Runtime bound: load vec.len (i64) once before the loop.
+        if is_vec or is_bytes:
+            // Runtime bound: load the len (i64) field once before the loop
+            // (Vec.len / bytes.len, both at vec_len_idx).
             self.fb.emit(AirInst(
                 opcode: OP_GET_FIELD,
                 type_id: 4 as u32, // i64

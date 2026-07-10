@@ -2217,7 +2217,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             mut for_is_collection := false
             if not for_is_range and iteree_ty != TYPE_UNKNOWN and (iteree_ty as i64) < self.types.entries.len:
                 let ie_kind = self.types.entries.data[iteree_ty].kind
-                if ie_kind == TYPE_KIND_ARRAY:
+                if iteree_ty == TYPE_BYTES:
+                    // RFC 0020 P2: `for b in bytes` yields u8 bytes (byte semantics).
+                    for_elem_ty = 5 as u32 // u8
+                    for_is_collection = true
+                elif ie_kind == TYPE_KIND_ARRAY:
                     for_elem_ty = self.types.entries.data[iteree_ty].extra
                     for_is_collection = true
                 elif (ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.intern.get(self.types.entries.data[iteree_ty].name_id)) == "Vec":
