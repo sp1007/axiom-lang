@@ -1,0 +1,17 @@
+// Oracle: a non-exhaustive match as the TAIL of a non-void function (an uncovered
+// variant, no catch-all and no fallthrough return) MUST be rejected — the unmatched
+// case falls off the end and returns garbage. This exercises the exhaustiveness-aware
+// terminator analysis (FLAG_MATCH_PARTIAL). Expected: compile ERROR (no exe).
+fn check(n: i64) -> Option[i64]:
+    if n > 0:
+        return Some(n)
+    return None
+
+fn pick(n: i64) -> i64:
+    match check(n):
+        Some(x):
+            return 7
+    // None is uncovered and there is nothing after the match -> falls off the end.
+
+fn main() -> i64:
+    return pick(-1)

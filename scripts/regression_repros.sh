@@ -147,6 +147,7 @@ rows=(
   "scstress|exit|32"
   "t_matchret|exit|30"
   "t_missingret|reject|"
+  "t_partialmatch|reject|"
 )
 
 for row in "${rows[@]}"; do

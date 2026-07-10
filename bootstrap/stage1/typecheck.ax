@@ -1375,9 +1375,13 @@ pub fn stmt_terminates(self: ptr[TypeChecker], node_idx: u32) -> bool:
             child = self.tree.nodes.data[child].next_sibling
         return has_else and all_term
     if kind == NODE_MATCH_STMT:
-        // children: scrutinee, arm*. Terminates iff there is >=1 arm and every arm
-        // terminates (assumes exhaustiveness; a non-exhaustive match falling through
-        // is a separate concern we do not diagnose here).
+        // children: scrutinee, arm*. Terminates iff every arm terminates AND the
+        // match is not a CONFIRMED non-exhaustive one (which can fall through off the
+        // end). The FLAG_MATCH_PARTIAL bit is set by the typechecker only when it is
+        // certain a variant is uncovered with no catch-all, so an unmarked match is
+        // conservatively treated as total.
+        if (self.tree.nodes.data[node_idx].flags & FLAG_MATCH_PARTIAL) != 0 as u16:
+            return false
         mut any_arm := false
         mut all_term := true
         mut child := self.tree.nodes.data[node_idx].first_child
@@ -1397,6 +1401,73 @@ pub fn tc_func_body(self: ptr[TypeChecker], func_idx: u32) -> u32:
             return child
         child = self.tree.nodes.data[child].next_sibling
     return 0 as u32
+
+// Returns true ONLY when the typechecker is CERTAIN a match does not cover all
+// cases: the scrutinee resolves to a sum/Option/Result whose full variant set is
+// known, there is NO catch-all (wildcard or bare-binding) arm, and at least one
+// variant is left uncovered. Any uncertainty (unknown type, unresolved
+// generic-inst base, out-of-range index, non-sum scrutinee) returns false so the
+// missing-return terminator analysis treats the match as total and never rejects
+// valid code. AXIOM allows non-exhaustive matches to FALL THROUGH, so this is used
+// only to decide whether a match is a guaranteed terminator -- it is NOT a
+// standalone exhaustiveness error.
+pub fn match_is_confidently_partial(self: ptr[TypeChecker], match_idx: u32, scrutinee_type: u32) -> bool:
+    if scrutinee_type == TYPE_UNKNOWN or (scrutinee_type as i64) >= self.types.entries.len:
+        return false
+    let s_entry = self.types.entries.data[scrutinee_type as i64]
+    if not (s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST or s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT):
+        return false
+    mut sum_extra := s_entry.extra
+    if s_entry.kind == TYPE_KIND_GENERIC_INST:
+        mut resolved := false
+        mut idx := 0 as i64
+        while idx < self.types.entries.len:
+            let e = self.types.entries.data[idx]
+            let e_base = extract_qualified_base_name(self.intern.get(e.name_id))
+            let s_base = extract_qualified_base_name(self.intern.get(s_entry.name_id))
+            if e.kind == TYPE_KIND_SUM and e_base == s_base:
+                sum_extra = e.extra
+                resolved = true
+                break
+            idx = idx + 1
+        if not resolved:
+            return false
+    if (sum_extra as i64) >= self.types.sumtypes.len:
+        return false
+    let sum_info = self.types.sumtypes.data[sum_extra]
+    // Pass 1: a wildcard or bare-binding arm covers everything -> total.
+    mut child := self.tree.nodes.data[match_idx].first_child
+    if child != 0 as u32:
+        child = self.tree.nodes.data[child].next_sibling
+    while child != 0 as u32:
+        if self.tree.nodes.data[child].kind == NODE_MATCH_ARM:
+            let pat = self.tree.nodes.data[child].first_child
+            if pat != 0 as u32:
+                let pk = self.tree.nodes.data[pat].kind
+                if pk == NODE_WILDCARD_PAT or pk == NODE_BINDING_PAT:
+                    return false
+        child = self.tree.nodes.data[child].next_sibling
+    // Pass 2: every declared variant must be covered by some VARIANT_PAT arm.
+    mut vi := 0 as i64
+    while vi < sum_info.variants.len:
+        let v_name = sum_info.variants.data[vi].name_id
+        mut covered := false
+        mut c2 := self.tree.nodes.data[match_idx].first_child
+        if c2 != 0 as u32:
+            c2 = self.tree.nodes.data[c2].next_sibling
+        while c2 != 0 as u32:
+            if self.tree.nodes.data[c2].kind == NODE_MATCH_ARM:
+                let pat = self.tree.nodes.data[c2].first_child
+                if pat != 0 as u32 and self.tree.nodes.data[pat].kind == NODE_VARIANT_PAT:
+                    let vsym = self.tree.nodes.data[pat].payload
+                    if vsym != 0 as u32:
+                        if self.symtable.symbols.data[vsym].name_id == v_name:
+                            covered = true
+            c2 = self.tree.nodes.data[c2].next_sibling
+        if not covered:
+            return true
+        vi = vi + 1
+    return false
 
 pub fn run_type_checker(mut self: ptr[TypeChecker]):
     // Phase 0.0: Pre-register all Struct Type IDs (empty) to allow mutual / forward
@@ -1979,9 +2050,15 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if arm_type == TYPE_UNKNOWN:
                     arm_type = t
                 arm = self.tree.nodes.data[arm].next_sibling
-            
+
             self.current_match_scrutinee = prev_scrutinee
             result_type = arm_type
+
+            // Mark confirmed non-exhaustive matches so the missing-return terminator
+            // analysis knows this match can fall through (used only for that check;
+            // AXIOM permits non-exhaustive matches to fall through at runtime).
+            if self.match_is_confidently_partial(node_idx, scrutinee_type):
+                self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | FLAG_MATCH_PARTIAL
 
     elif kind == NODE_MATCH_ARM:
         let pattern = self.tree.nodes.data[node_idx].first_child
