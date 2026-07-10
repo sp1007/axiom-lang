@@ -8520,11 +8520,41 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 if fk == TYPE_KIND_STRUCT or fk == TYPE_KIND_SUM or fk == TYPE_KIND_GENERIC_INST or fk == TYPE_KIND_OPTION or fk == TYPE_KIND_RESULT:
                                     result_type = fret
 
-            // Infer arguments
+            // Infer arguments. For a fixed-array PARAMETER of a plain free function, pass
+            // the param type as the arg's expected type so a direct `[..]` literal coerces
+            // to the declared element type (a bare-int literal otherwise defaults to
+            // [i32;N] and mismatches an [i64;N] param). If the arg is STILL a different
+            // fixed-array type (e.g. a variable `let x = [1,2,3]` => [i32;3] passed to an
+            // [i64;3] param), that is a genuine element/length mismatch that would silently
+            // miscompile the callee's OP_INDEX stride -> reject cleanly (BUG#53 convention).
+            // Gated to NODE_IDENT, non-generic callees (free functions have no `self`
+            // param and concrete param types), so method/generic arg positions are never
+            // misaligned; scoped to array<->array so all other args are untouched. Since no
+            // bundled code uses fixed-array params, the self-host fixpoint is unaffected.
+            mut fp_data := null as ptr[u32]
+            mut fp_len := 0 as i64
+            if not is_generic_call and self.tree.nodes.data[callee].kind == NODE_IDENT and callee_type != TYPE_UNKNOWN and (callee_type as i64) < self.types.entries.len:
+                let ce = self.types.entries.data[callee_type as i64]
+                if ce.kind == TYPE_KIND_FUNC and (ce.extra as i64) < self.types.funcs.len:
+                    let fi2 = self.types.funcs.data[ce.extra as i64]
+                    fp_data = fi2.params.data
+                    fp_len = fi2.params.len
             mut arg := self.tree.nodes.data[callee].next_sibling
+            mut apos := 0 as i64
             while arg != 0 as u32:
-                self.infer_node(arg, TYPE_UNKNOWN)
+                mut pexp := TYPE_UNKNOWN
+                mut param_is_arr := false
+                if fp_data != null as ptr[u32] and apos < fp_len:
+                    let cand = fp_data[apos]
+                    if cand != TYPE_UNKNOWN and (cand as i64) < self.types.entries.len and self.types.entries.data[cand as i64].kind == TYPE_KIND_ARRAY:
+                        pexp = cand
+                        param_is_arr = true
+                let at = self.infer_node(arg, pexp)
+                if param_is_arr and at != pexp and at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and self.types.entries.data[at as i64].kind == TYPE_KIND_ARRAY:
+                    ax_printf_local("error: array argument type mismatch: this argument is a different fixed-array type than the parameter (different element type or length); annotate the local `let x: [T;N] = ..` or cast the elements to match\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
                 arg = self.tree.nodes.data[arg].next_sibling
+                apos = apos + 1 as i64
                 
     elif kind == NODE_IDENT:
         let sym_idx = self.tree.nodes.data[node_idx].payload

@@ -154,6 +154,7 @@ rows=(
   "t_forbytes|exit|198"
   "t_forstr|exit|15"
   "t_arrret|exit|70"
+  "t_arrargmismatch|reject|"
 )
 
 for row in "${rows[@]}"; do
