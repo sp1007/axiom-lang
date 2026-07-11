@@ -1,0 +1,13 @@
+// Oracle (exit=40): correct-arity method calls must still compile & run — guards
+// the arity check against false-positives on a 0-arg and a 2-arg instance method.
+struct Pt:
+    x: i64
+    fn getx(self) -> i64:
+        return self.x
+    fn add(self, a: i64, b: i64) -> i64:
+        return self.x + a + b
+pub fn main() -> i32:
+    let p = Pt(x: 7 as i64)
+    let a = p.getx()                       // 7 (0 explicit args)
+    let c = p.add(10 as i64, 16 as i64)    // 33 (2 explicit args)
+    return (a + c) as i32                  // 7 + 33 = 40

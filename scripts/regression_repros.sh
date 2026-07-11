@@ -175,6 +175,9 @@ rows=(
   "t_scalarmember|reject|"
   "t_floatneg|exit|74"
   "t_constshift|exit|35"
+  "t_methodmany|reject|"
+  "t_methodfew|reject|"
+  "t_methodok|exit|40"
 )
 
 for row in "${rows[@]}"; do

@@ -8399,6 +8399,84 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             is_generic_call = true
                             template_sym_idx = sym_idx
 
+                    // Method arity check (accept-then-miscompile, BUG#53 class â€” the twin
+                    // of the free-function arity check in the TYPE_KIND_FUNC branch below):
+                    // a concrete (non-generic) method call `recv.m(args...)` with the wrong
+                    // number of explicit arguments was silently accepted â€” extra args were
+                    // dropped, missing args read uninitialized registers. A non-generic method
+                    // is NOT bound by resolve_method_sym (that only matches generic templates,
+                    // BUG#45); it is matched later by name + receiver-type exactly like
+                    // `method_ret_type` / air_builder's dispatch. Mirror that match here: a
+                    // method's param[0] IS the receiver, so an INSTANCE call `recv.m(a,b)`
+                    // expects (declared params - 1) explicit args and a STATIC call
+                    // `Type.m(recv,a,b)` â€” receiver named as a bare type â€” expects exactly
+                    // (declared params). Overload-safe: reject only when method(s) of this
+                    // name+receiver EXIST but NONE match the call's arity (mirrors the free-fn
+                    // overload philosophy). Gated TIGHTLY to stay self-host-safe: non-generic
+                    // only (generic methods like `map`/`unwrap` have unreliable inferred arity
+                    // and false-positived the fixpoint), and only a plain user STRUCT/SUM
+                    // receiver (excludes Option/Result/Vec builtin + backend-intercepted
+                    // methods). Module-qualified calls take the flag-2048 branch above.
+                    if not is_generic_call and rec_type != TYPE_UNKNOWN and (rec_type as i64) < self.types.entries.len:
+                        mut rec_uw := rec_type
+                        mut rue2 := self.types.entries.data[rec_uw as i64]
+                        while rue2.kind == TYPE_KIND_POINTER or rue2.kind == TYPE_KIND_REF:
+                            rec_uw = rue2.extra as u32
+                            rue2 = self.types.entries.data[rec_uw as i64]
+                        if rue2.kind == TYPE_KIND_STRUCT or rue2.kind == TYPE_KIND_SUM:
+                            // A STATIC call names the receiver as a bare type: the
+                            // first_child ident binds to a TYPE symbol, not a value.
+                            mut is_static_call := false
+                            if rec_node != 0 as u32:
+                                let rcn = self.tree.nodes.data[rec_node]
+                                if rcn.kind == NODE_IDENT or rcn.kind == NODE_TYPE_EXPR:
+                                    let rcsym = rcn.payload
+                                    if rcsym != 0 as u32 and (rcsym as i64) < self.symtable.symbols.len:
+                                        let rck = self.symtable.symbols.data[rcsym as i64].kind
+                                        if rck == SYM_STRUCT or rck == SYM_TYPE_ALIAS or rck == SYM_INTERFACE or rck == SYM_BUILTIN_TYPE:
+                                            is_static_call = true
+                            mut mact := 0 as i64
+                            mut mac := self.tree.nodes.data[callee].next_sibling
+                            while mac != 0 as u32:
+                                mact = mact + 1 as i64
+                                mac = self.tree.nodes.data[mac as i64].next_sibling
+                            // Scan for concrete methods matching name + receiver type
+                            // (mirrors method_ret_type). found_any: a real method exists;
+                            // arity_ok: at least one has the right (self-adjusted) arity.
+                            let m_field_name = self.intern.get(field_name_id)
+                            mut found_any := false
+                            mut arity_ok := false
+                            mut msi := 0 as i64
+                            while msi < self.symtable.symbols.len:
+                                let msym = self.symtable.symbols.data[msi]
+                                if msym.kind == SYM_FUNC and msym.type_id != TYPE_UNKNOWN and (msym.type_id as i64) < self.types.entries.len and (msym.flags & SYM_FLAG_GENERIC) == 0 as u16:
+                                    if self.intern.name_matches_method(msym.name_id, m_field_name):
+                                        let mfe = self.types.entries.data[msym.type_id as i64]
+                                        if mfe.kind == TYPE_KIND_FUNC and (mfe.extra as i64) < self.types.funcs.len:
+                                            let mfi = self.types.funcs.data[mfe.extra as i64]
+                                            if mfi.params.len > 0 as i64:
+                                                mut mfp := mfi.params.data[0]
+                                                while mfp != TYPE_UNKNOWN and (mfp as i64) < self.types.entries.len:
+                                                    let mpe = self.types.entries.data[mfp as i64]
+                                                    if mpe.kind == TYPE_KIND_POINTER or mpe.kind == TYPE_KIND_REF:
+                                                        mfp = mpe.extra as u32
+                                                    else:
+                                                        break
+                                                if mfp == rec_uw:
+                                                    found_any = true
+                                                    let mdecl = self.sym_decl_param_count(msi as u32)
+                                                    if mdecl >= 1 as i64:
+                                                        mut expected_expl := mdecl - 1 as i64
+                                                        if is_static_call:
+                                                            expected_expl = mdecl
+                                                        if mact == expected_expl:
+                                                            arity_ok = true
+                                msi = msi + 1 as i64
+                            if found_any and not arity_ok:
+                                ax_printf_local("error: method '%s' called with %d argument(s) but no overload takes that many\n", get_str_ptr(m_field_name) as i64, mact, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+                            safe_free_str(m_field_name)
+
                     // BUG#93: a namespace-qualified call whose member did not resolve.
                     // On the native build imports are stripped textually, so `std`/
                     // `math`/`string` are never SYM_MODULE and the resolver leaves
