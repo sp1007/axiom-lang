@@ -2840,6 +2840,44 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if entry.kind == TYPE_KIND_FUNC:
                     let fi = self.types.funcs.data[entry.extra]
                     result_type = fi.ret
+                    // Arity check (was silent accept-then-miscompile, BUG#53 class): a
+                    // call with the wrong number of arguments compiled clean and
+                    // miscompiled -- missing args read uninitialized registers, extra
+                    // args were silently dropped. AXIOM has no variadic user functions
+                    // or default arguments, so a concrete FUNC callee's arity is exact.
+                    // Scoped TIGHTLY to a plain NODE_IDENT free-function callee that is
+                    // NOT generic: this is where the args are a clean sibling list with
+                    // no implicit receiver. Method / UFCS / generic-method calls
+                    // (field-expr callees, e.g. the generic `map`/`ok_or`) are NOT
+                    // checked here -- their arg/receiver/partial-signature shape is
+                    // unreliable at inference time and would false-positive (broke the
+                    // self-host: `'map' expects 1, found 0`). Free-function arity is the
+                    // common mistake and is safe to check exactly.
+                    if not is_generic_call and self.tree.nodes.data[callee].kind == NODE_IDENT:
+                        mut fnm := "function"
+                        mut fnm_owned := false
+                        let cpay = self.tree.nodes.data[callee].payload
+                        if cpay != 0 as u32 and (cpay as i64) < self.symtable.symbols.len:
+                            fnm = self.intern.get(self.symtable.symbols.data[cpay as i64].name_id)
+                            fnm_owned = true
+                        // `compiler_intrinsic` is the one internal VARIADIC intrinsic
+                        // (declared 1 param but magic-called `@compiler_intrinsic("op")
+                        // [T](...)` with varying arity) -- exclude it. User functions
+                        // are never variadic.
+                        mut is_intrinsic := false
+                        if fnm == "compiler_intrinsic" or fnm == "@compiler_intrinsic" or fnm == "ax_compiler_intrinsic":
+                            is_intrinsic = true
+                        if not is_intrinsic:
+                            mut actual_args := 0 as i64
+                            mut ac := self.tree.nodes.data[callee].next_sibling
+                            while ac != 0 as u32:
+                                actual_args = actual_args + 1 as i64
+                                ac = self.tree.nodes.data[ac as i64].next_sibling
+                            if actual_args != fi.params.len:
+                                ax_printf_local("error: '%s' expects %d argument(s), found %d\n", get_str_ptr(fnm) as i64, fi.params.len, actual_args, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+                        if fnm_owned:
+                            safe_free_str(fnm)
 
 
                 elif entry.kind == TYPE_KIND_STRUCT:

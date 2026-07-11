@@ -165,6 +165,9 @@ rows=(
   "t_nomethod|reject|"
   "t_nonexhenum|reject|"
   "t_exhaustenum|exit|3"
+  "t_arityfew|reject|"
+  "t_aritymany|reject|"
+  "t_arityok|exit|21"
 )
 
 for row in "${rows[@]}"; do
