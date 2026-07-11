@@ -11,9 +11,21 @@ extern "C" fn malloc(n: u64) -> ptr[u8]
 pub fn len(s: str) -> i64:
     return s.len
 
-/// Returns the number of UTF-8 characters.
+/// Returns the number of UTF-8 codepoints (characters) in `s`.
+///
+/// Implemented in AXIOM (value ABI). The `str_char_count` intrinsic is only
+/// lowered by the C backend; on the native/self-link path it returned 0 (garbage
+/// RAX). Counts UTF-8 LEADING bytes — every byte that is not a `10xxxxxx`
+/// continuation byte begins a new codepoint.
 pub fn char_count(s: str) -> i64:
-    return @compiler_intrinsic("str_char_count")
+    let sp = s.ptr
+    mut count := 0 as i64
+    mut i := 0 as i64
+    while i < s.len:
+        if (sp[i] & 0xC0 as u8) != 0x80 as u8:
+            count = count + 1 as i64
+        i = i + 1 as i64
+    return count
 
 /// RFC 0020: decode the UTF-8 codepoint that starts at byte offset `off`, returning
 /// a packed i64 — low 32 bits = the Unicode codepoint, high 32 bits = the byte width
@@ -327,6 +339,35 @@ pub fn to_f64(s: str) -> Result[f64, str]:
     else:
         return Err("Invalid float format")
 
-/// Checks if string is valid UTF-8.
+/// Checks whether `s` is well-formed UTF-8.
+///
+/// Implemented in AXIOM (value ABI). The `str_is_valid_utf8` intrinsic is only
+/// lowered by the C backend; on the native/self-link path it returned false
+/// (garbage RAX). Validates the leading-byte class, that enough continuation
+/// bytes follow, and that each continuation byte is `10xxxxxx`.
 pub fn is_valid_utf8(s: str) -> bool:
-    return @compiler_intrinsic("str_is_valid_utf8")
+    let sp = s.ptr
+    let n = s.len
+    mut i := 0 as i64
+    while i < n:
+        let c = sp[i]
+        mut extra := 0 as i64
+        if c < 0x80 as u8:                        // 0xxxxxxx (ASCII)
+            extra = 0 as i64
+        elif (c & 0xE0 as u8) == 0xC0 as u8:      // 110xxxxx
+            extra = 1 as i64
+        elif (c & 0xF0 as u8) == 0xE0 as u8:      // 1110xxxx
+            extra = 2 as i64
+        elif (c & 0xF8 as u8) == 0xF0 as u8:      // 11110xxx
+            extra = 3 as i64
+        else:                                     // continuation/invalid leading byte
+            return false
+        if i + extra >= n:                        // truncated multibyte sequence
+            return false
+        mut k := 1 as i64
+        while k <= extra:
+            if (sp[i + k] & 0xC0 as u8) != 0x80 as u8:
+                return false
+            k = k + 1 as i64
+        i = i + 1 as i64 + extra
+    return true

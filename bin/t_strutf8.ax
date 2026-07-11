@@ -1,0 +1,15 @@
+// Oracle (exit 74): char_count + is_valid_utf8 reimplemented in pure AXIOM.
+// Both were @compiler_intrinsic("str_*") that the native/self-link backend never
+// lowered -> returned 0/false (garbage RAX). Verifies codepoint counting for
+// ASCII + multibyte, and UTF-8 validation of valid vs truncated sequences.
+import std.string
+fn main() -> i64:
+    mut acc := "hello".char_count()          // 5
+    acc = acc + "日本語".char_count() * 10    // +30 -> 35
+    acc = acc + "AΩ日x".char_count()          // +4  -> 39
+    if "日本語".is_valid_utf8():              // valid
+        acc = acc + 30                         // -> 69
+    let trunc = std.string.slice("日", 0, 1)  // 1 leading byte, truncated
+    if not std.string.is_valid_utf8(trunc):   // invalid
+        acc = acc + 5                          // -> 74
+    return acc
