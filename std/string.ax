@@ -68,6 +68,50 @@ pub fn concat(a: str, b: str) -> str:
     buf[total] = 0 as u8
     return buf as str
 
+/// Formats a signed 64-bit integer as its base-10 decimal string.
+///
+/// Implemented in AXIOM (value ABI). Integer formatting otherwise lives only in
+/// std.fmt's `to_str` (out-of-grammar brace dialect + `@compiler_intrinsic
+/// ("i64_to_str")`, which the native/self-link backend never lowers), so a plain
+/// `to_str(n)` crashed on native. Mirrors the compiler's own `format_int`.
+pub fn to_str(n: i64) -> str:
+    if n == 0 as i64:
+        let z = malloc(2 as u64) as ptr[u8]
+        z[0] = '0' as u8
+        z[1] = 0 as u8
+        return z as str
+    // i64::MIN has no positive negation — emit its literal directly.
+    if n == -9223372036854775808 as i64:
+        return concat("-9223372036854775808", "")
+    mut neg := false
+    mut v := n
+    if n < 0 as i64:
+        neg = true
+        v = 0 as i64 - n
+    // Build the digits least-significant-first, then reverse into the result.
+    let rev = malloc(24 as u64) as ptr[u8]
+    mut rl := 0 as i64
+    while v > 0 as i64:
+        let d = (v % 10 as i64) as u8
+        rev[rl] = ('0' as u8 + d)
+        rl = rl + 1 as i64
+        v = v / 10 as i64
+    mut total := rl
+    if neg:
+        total = total + 1 as i64
+    let buf = malloc((total + 1 as i64) as u64) as ptr[u8]
+    mut pos := 0 as i64
+    if neg:
+        buf[0] = '-' as u8
+        pos = 1 as i64
+    mut k := 0 as i64
+    while k < rl:
+        buf[pos + k] = rev[rl - 1 as i64 - k]
+        k = k + 1 as i64
+    buf[total] = 0 as u8
+    @free(rev as ptr[u8])
+    return buf as str
+
 /// Returns a substring [start, end).
 ///
 /// Implemented in AXIOM (value ABI); the `str_slice` intrinsic is not lowered

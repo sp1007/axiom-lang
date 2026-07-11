@@ -1,0 +1,14 @@
+// Oracle (exit 88): std.string.to_str — signed i64 -> decimal string, pure AXIOM
+// (int formatting otherwise only in out-of-grammar std.fmt via an intrinsic the
+// native backend never lowers -> to_str(n) crashed). Verifies digit count for
+// positive/negative/zero and content via concat length.
+import std.string
+fn main() -> i64:
+    mut acc := to_str(12345).len       // 5
+    acc = acc + to_str(-987).len       // +4 -> 9  ("-987")
+    acc = acc + to_str(0).len          // +1 -> 10
+    acc = acc + to_str(-9223372036854775808).len  // +20 -> 30 (i64::MIN)
+    let joined = std.string.concat("val=", to_str(29))  // "val=29" len 6
+    acc = acc + joined.len             // +6 -> 36
+    acc = acc + to_str(52).len * 26    // +2*26=52 -> 88
+    return acc
