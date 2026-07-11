@@ -1,0 +1,16 @@
+// Oracle (exit=210): RFC 0017 P2 — non-constant module-level global initializers.
+// Before P2 these were rejected ("must have a compile-time constant initializer");
+// now they are evaluated at program entry (a prologue in `main`, in source-declaration
+// order) and stored into static storage. Exercises: a non-const call+arith initializer
+// `A = dbl(K)`, a const-folded global `B = 100` (unchanged path), and cross-function
+// read-modify-write of a runtime-initialized global.
+const K: i64 = 5
+fn dbl(n: i64) -> i64:
+    return n * 2 as i64
+mut A: i64 = dbl(K)      // non-const -> 10 at entry
+mut B: i64 = 100         // const -> folded into .data
+fn bump():
+    A = A + B            // 10 + 100 = 110
+pub fn main() -> i32:
+    bump()
+    return (A + B) as i32   // 110 + 100 = 210

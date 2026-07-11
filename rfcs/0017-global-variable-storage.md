@@ -135,9 +135,20 @@ source has one global (`g_documents`), so the self-built compiler binary *will* 
 - Non-constant initializer → diagnostic reject.
 - Oracles: non-zero init, cross-fn RMW counter, multiple globals, mixed types.
 
-### Phase 2 (future)
-- Aggregate/struct/array globals.
-- Non-constant initializers via a synthetic `__axiom_global_init` called at `main` entry.
+### Phase 2
+- **✅ SHIPPED — Non-constant scalar initializers.** `mut g := compute()`, `mut v := f(K)`,
+  etc. are now accepted (typecheck no longer rejects them). A non-constant initializer
+  leaves the global's `.data` bytes zeroed and records the init AST node; `air_builder`
+  emits a **prologue in `main`** that evaluates each such initializer and stores it into
+  the global (`OP_GLOBAL_ADDR` + `OP_STORE`), in **source-declaration order**, before any
+  user code. Chosen over a separate synthetic `__axiom_global_init` symbol because the
+  entry is already `main` and injecting there needs no new call-site wiring or linker
+  work. A unit with no non-constant globals (the compiler itself — only `g_documents`,
+  a zero const) emits nothing extra, so the fixpoint holds (**A == B**, 166/166). Oracle
+  `t_globalinit` (exit=210: non-const call+arith init, const-folded global, cross-fn RMW).
+  Forward references (an initializer reading a global declared *later*) observe that
+  global's pre-init `.data` value; declaration order is the defined semantics.
+- Aggregate/struct/array globals (still rejected in typecheck).
 - `.bss` for zero-initialized globals (image-size optimization).
 - ELF `.data` parity hardening (Phase 1 mirrors COFF; ELF exercised only under `--target`).
 

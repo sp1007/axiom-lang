@@ -1418,9 +1418,10 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
         self.diags_count = self.diags_count + 1 as i64
         return
 
-    if not ax_global_init_is_const(self.tree, init_expr):
-        ax_printf_local("error: module-level global '%s' must have a compile-time constant initializer (a literal); non-constant global initializers are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        self.diags_count = self.diags_count + 1 as i64
+    // RFC 0017 P2: non-constant scalar initializers are now supported — they are
+    // evaluated at program entry (a prologue in `main`, in source-declaration order)
+    // rather than folded into `.data`. Only aggregate globals remain rejected above.
+    // `init_expr` is left to be type-checked by the normal declaration traversal.
 
 // --- Missing-return analysis (BUG#53 family) ---------------------------------
 // A non-void function that can fall off the end of its body silently returns a

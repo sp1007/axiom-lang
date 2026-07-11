@@ -3899,6 +3899,24 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
 
     fl.register_params(idx, node)
 
+    // RFC 0017 P2: run non-constant module-level global initializers at program entry,
+    // in source-declaration order, as the first thing `main` does. Each is evaluated and
+    // stored into the global's static storage (OP_GLOBAL_ADDR + OP_STORE via
+    // lower_global_write). Constant globals (init_node == 0) are already materialized in
+    // `.data` and need no runtime init. The globals table is fully populated before any
+    // function is lowered (build_module collects globals first), so the write routing is
+    // complete. A unit with no non-constant globals (the compiler itself) emits nothing
+    // extra here, preserving the fixpoint.
+    let fname = self.pool.get(name_id)
+    if fname == "main":
+        mut gi := 0 as i64
+        while gi < self.module.globals.len:
+            let g = self.module.globals.data[gi]
+            if g.init_node != 0 as u32:
+                let vreg = fl.lower_expr(g.init_node)
+                fl.lower_global_write(g.sym_id, g.type_id, vreg)
+            gi = gi + 1
+
     mut body_idx := 0 as u32
     mut child := node.first_child
     while child != 0 as u32:
@@ -4046,8 +4064,18 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
         if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_PTR_TYPE and cn.kind != NODE_SLICE_TYPE and cn.kind != NODE_ARRAY_TYPE and cn.kind != NODE_FUNC_TYPE and cn.kind != NODE_GENERIC_TYPE:
             init_expr = child
         child = cn.next_sibling
-    let bits = self.builder_fold_global_init(init_expr, type_id)
-    (&self.module.globals).push(AirGlobal(sym_id: sym_idx, type_id: type_id, size: size, init_lo: bits))
+    // RFC 0017 P2: a compile-time-constant initializer is folded into the `.data`
+    // image bytes (init_lo). A non-constant initializer leaves the storage zeroed and
+    // records the AST node so it is evaluated + stored at program entry (see lower_func
+    // for `main`). Aggregate globals are still rejected in typecheck (size > 8 filtered
+    // above), so only scalars reach here.
+    mut bits := 0 as i64
+    mut init_node := 0 as u32
+    if ax_global_init_is_const(self.tree, init_expr):
+        bits = self.builder_fold_global_init(init_expr, type_id)
+    else:
+        init_node = init_expr
+    (&self.module.globals).push(AirGlobal(sym_id: sym_idx, type_id: type_id, size: size, init_lo: bits, init_node: init_node))
 
 // RFC 0017 / BUG#82: index of a symbol in the module's global table, or -1. Used by
 // lower_ident / assignment lowering to route reads/writes through OP_GLOBAL_ADDR.
