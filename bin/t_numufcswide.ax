@@ -1,0 +1,20 @@
+// Oracle (exit 7): numeric UFCS widening — a narrower-than-i64 integer receiver
+// (bare int literal defaults to i32, an inferred generic-inst field, an explicit
+// i32) dispatches to the i64 free fns std.string.to_str/to_hex via the method
+// form. Previously only an `i64` receiver matched (exact first-param), so
+// `a.to_str()` on an i32 rejected while the call-form `to_str(a)` worked — an
+// ergonomic asymmetry. No receiver cast is emitted: narrow-int registers are
+// already sign/zero-extended to 64-bit by the selector.
+import std.string
+
+struct Box[T]:
+    v: T
+
+fn main() -> i64:
+    let a = 42                       // bare literal -> i32
+    mut acc := a.to_str().len         // "42" -> 2
+    let b = Box(v: 7)                 // fully-inferred generic-inst, field i32
+    acc = acc + b.v.to_str().len      // "7"  -> +1 = 3
+    let c: i32 = 12345
+    acc = acc + c.to_hex().len        // 0x3039 = "3039" -> +4 = 7
+    return acc

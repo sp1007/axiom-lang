@@ -1093,7 +1093,21 @@ pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32
                                 fp = pe.extra
                             else:
                                 break
-                        if fp == unwrapped_rec:
+                        // Numeric UFCS widening: a narrower integer receiver
+                        // (i8/i16/i32/u8/u16/u32) matches an i64 first-param free
+                        // fn — mirroring the i32->i64 coercion the free-CALL form
+                        // already permits (`to_str(x)` works but `x.to_str()` used
+                        // to reject). Safe with NO cast because every narrow-int
+                        // producer normalizes its register to full 64-bit width
+                        // (x86_selector emit_wrap_to_width/emit_load_extend), so the
+                        // receiver value already equals `x as i64` — the lowering
+                        // passes it directly (air_builder ~1598). NOT extended to
+                        // f32->f64: an f32 in an XMM reg is not an f64 (needs a real
+                        // cvtss2sd), so that would miscompile without emitting a cast.
+                        mut num_widen := false
+                        if fp == TYPE_I64 and (unwrapped_rec == TYPE_I8 or unwrapped_rec == TYPE_I16 or unwrapped_rec == TYPE_I32 or unwrapped_rec == TYPE_U8 or unwrapped_rec == TYPE_U16 or unwrapped_rec == TYPE_U32):
+                            num_widen = true
+                        if fp == unwrapped_rec or num_widen:
                             result = fi.ret
                             break
         idx = idx + 1 as i64

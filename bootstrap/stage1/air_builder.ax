@@ -1597,6 +1597,17 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                                 mut matches_type := false
                                                 if first_param == rec_type:
                                                     matches_type = true
+                                                // Numeric UFCS widening (mirror of the
+                                                // typecheck gate, method_ret_type ~1096):
+                                                // a narrower integer receiver matches an
+                                                // i64 first param (4). No receiver cast is
+                                                // emitted: narrow-int registers are already
+                                                // normalized to full 64-bit width by the
+                                                // selector, so the value equals `recv as
+                                                // i64` already. NOT f32->f64 (needs a real
+                                                // cvtss2sd, would miscompile with no cast).
+                                                if first_param == 4 as u32 and (rec_type == 1 as u32 or rec_type == 2 as u32 or rec_type == 3 as u32 or rec_type == 5 as u32 or rec_type == 6 as u32 or rec_type == 7 as u32):
+                                                    matches_type = true
                                                 if matches_type:
                                                     method_sym_idx = i as u32
                                                     resolved = true
