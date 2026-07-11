@@ -170,6 +170,7 @@ rows=(
   "t_arityok|exit|21"
   "t_badfield|reject|"
   "t_goodfield|exit|5"
+  "t_vecindex|reject|"
 )
 
 for row in "${rows[@]}"; do
