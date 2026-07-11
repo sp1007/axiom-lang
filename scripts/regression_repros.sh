@@ -168,6 +168,8 @@ rows=(
   "t_arityfew|reject|"
   "t_aritymany|reject|"
   "t_arityok|exit|21"
+  "t_badfield|reject|"
+  "t_goodfield|exit|5"
 )
 
 for row in "${rows[@]}"; do

@@ -3581,6 +3581,44 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     result_type = sym.type_id
                                     self.tree.nodes.data[node_idx].payload = sym_idx
                                     self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags | 2048 as u16
+                                else:
+                                    // Diagnostic (was silent accept-then-miscompile,
+                                    // BUG#53/68/81/93 class): `recv.name` (value load)
+                                    // where `name` is neither a field of recv's struct,
+                                    // a variant, nor a method/UFCS free fn. air_builder
+                                    // then loaded field offset 0 / a garbage address ->
+                                    // wrong value or SIGSEGV, no signal (e.g. `c.zzz`
+                                    // reads `c.x`). SAFETY: like the undefined-method
+                                    // fix, use a RECEIVER-AGNOSTIC test (reject only when
+                                    // NO struct anywhere has a field of this name AND no
+                                    // SYM_FUNC matches it) so cross-module field-list
+                                    // timing never false-positives a valid access.
+                                    let mnm = self.intern.get(field_name_id)
+                                    mut member_exists := false
+                                    mut sfi := 0 as i64
+                                    while sfi < self.types.structs.len and not member_exists:
+                                        let sinfo = self.types.structs.data[sfi]
+                                        mut ffi := 0 as i64
+                                        while ffi < sinfo.fields.len:
+                                            if sinfo.fields.data[ffi].name_id == field_name_id:
+                                                member_exists = true
+                                                break
+                                            ffi = ffi + 1 as i64
+                                        sfi = sfi + 1 as i64
+                                    if not member_exists:
+                                        mut mi := 0 as i64
+                                        while mi < self.symtable.symbols.len:
+                                            let msym = self.symtable.symbols.data[mi]
+                                            if msym.kind == SYM_FUNC and self.intern.name_matches_method(msym.name_id, mnm):
+                                                member_exists = true
+                                                break
+                                            mi = mi + 1 as i64
+                                    if not member_exists:
+                                        let tnm = self.intern.get(entry.name_id)
+                                        ax_printf_local("error: no field or method '%s' on type '%s'\n", get_str_ptr(mnm) as i64, get_str_ptr(tnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                        safe_free_str(tnm)
+                                        self.diags_count = self.diags_count + 1 as i64
+                                    safe_free_str(mnm)
                     else:
                         let sym_idx = self.symtable.resolve(self.tree.nodes.data[node_idx].payload)
                         if sym_idx != 0 as u32:
