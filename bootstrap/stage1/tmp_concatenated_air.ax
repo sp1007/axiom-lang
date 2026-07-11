@@ -8296,6 +8296,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     else:
                         ax_printf_local("error: cannot determine the element type of this Vec for `for x in vec`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.diags_count = self.diags_count + 1 as i64
+                elif (ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.intern.get(self.types.entries.data[iteree_ty].name_id)) == "HashMap":
+                    // RFC 0018 P2: `for k in m` where m: HashMap[K,V] iterates the KEYS
+                    // (the occupied-slot keys). Bind the loop variable to K (generic arg
+                    // 0); air_builder's lower_for walks the table slots, guards on
+                    // `occupied[i]`, and binds the var to `keys[i]`.
+                    let gargs = self.get_generic_args(iteree_ty)
+                    if gargs.len >= 1 as i64:
+                        for_elem_ty = gargs.data[0]
+                        for_is_collection = true
+                    else:
+                        ax_printf_local("error: cannot determine the key type of this HashMap for `for k in m`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
                 elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
                     ax_printf_local("error: iterating this collection with `for x in <collection>` is not yet supported (only fixed arrays and Vec[T]); use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
@@ -14789,6 +14801,21 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut is_string := false
     mut str_decode_sym := 0 as u32
     mut str_width_reg := 0 as u32
+    // RFC 0018 P2 (HashMap): `for k in m` walks the open-addressed table slots
+    // 0..cap and yields the KEY of every OCCUPIED slot. HashMap layout is parallel
+    // arrays {keys, values, hashes, occupied, size, cap}; the loop is a plain
+    // 0..cap index loop whose body is GUARDED by `occupied[i]` (the increment runs
+    // for every slot, only the user body runs when occupied). Field indices are
+    // resolved by name (order-independent).
+    mut is_hashmap := false
+    mut hm_keys_idx := 0 as u32
+    mut hm_keys_type := 0 as u32 // type of `keys` field (ptr[K])
+    mut hm_occ_idx := 0 as u32
+    mut hm_occ_type := 0 as u32 // type of `occupied` field (ptr[bool])
+    mut hm_occ_elem := 11 as u32 // pointee of `occupied` (bool)
+    mut hm_cap_idx := 0 as u32
+    mut hm_keep_block := 0 as u32 // body-runs block (slot occupied)
+    mut hm_cont_block := 0 as u32 // per-slot continue/increment block
     // Type of the numeric counter driving the loop: for a range/integer-bound loop
     // the counter IS the loop variable (its type); for a collection loop the counter
     // is an internal i32 index (the loop variable holds the element instead).
@@ -14857,6 +14884,29 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     counter_type = 4 as u32 // i64 byte offset
                     vec_len_idx = 1 as u32 // str.len (byte length) is field 1
                     str_width_reg = self.fb.fresh_reg()
+            elif (coll_kind == TYPE_KIND_GENERIC_INST or coll_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.mb.pool.get(self.mb.typetable.entries.data[coll_ty as i64].name_id)) == "HashMap":
+                // RFC 0018 P2 (HashMap): `for k in m` yields each occupied KEY. Resolve
+                // the parallel-array field indices by name (keys/occupied/cap) so the
+                // slot walk is layout-order-independent. Element (key) type is the loop
+                // var type bound by typecheck (HashMap[K,V] generic arg 0).
+                let keys_nid = self.mb.pool.intern("keys")
+                let occ_nid = self.mb.pool.intern("occupied")
+                let cap_nid = self.mb.pool.intern("cap")
+                let keys_ty = fl_resolve_field(self, coll_ty, keys_nid, &hm_keys_idx)
+                let occ_ty = fl_resolve_field(self, coll_ty, occ_nid, &hm_occ_idx)
+                let cap_ty = fl_resolve_field(self, coll_ty, cap_nid, &hm_cap_idx)
+                if keys_ty != 0 as u32 and occ_ty != 0 as u32 and cap_ty != 0 as u32:
+                    is_collection = true
+                    is_hashmap = true
+                    hm_keys_type = keys_ty
+                    hm_occ_type = occ_ty
+                    elem_type = type_id // loop var type == key type K
+                    counter_type = 4 as u32 // i64 slot index (matches cap)
+                    // pointee of `occupied` (ptr[bool]) for the OP_INDEX element type.
+                    if (occ_ty as i64) < self.mb.typetable.entries.len:
+                        let oe = self.mb.typetable.entries.data[occ_ty as i64]
+                        if oe.kind == TYPE_KIND_POINTER:
+                            hm_occ_elem = oe.extra
 
     let iter_reg = self.fb.fresh_reg()
     if is_range:
@@ -14878,7 +14928,16 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
         limit_reg = self.fb.fresh_reg()
-        if is_vec or is_bytes or is_string:
+        if is_hashmap:
+            // HashMap slot walk: the bound is the table capacity (cap field).
+            self.fb.emit(AirInst(
+                opcode: OP_GET_FIELD,
+                type_id: 4 as u32, // i64
+                dest: limit_reg,
+                src1: coll_reg,
+                src2: hm_cap_idx,
+            ))
+        elif is_vec or is_bytes or is_string:
             // Runtime bound: load the len (i64) field once before the loop
             // (Vec.len / bytes.len / str.len byte length, all at vec_len_idx).
             self.fb.emit(AirInst(
@@ -14959,7 +15018,29 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // RFC 0018 P1: at the top of each iteration bind the loop variable to arr[i].
     // The loop var maps directly to this OP_INDEX result (no OP_COPY), which handles
     // scalar elements by-value and aggregate elements by-address (RFC 0001 Â§5).
-    if is_collection and is_string:
+    if is_collection and is_hashmap:
+        // RFC 0018 P2 (HashMap): guard the body by `occupied[iter]`. Load the bool;
+        // if the slot is empty branch straight to the per-slot continue block (which
+        // increments and re-tests cond) so the user body never sees a stale key. When
+        // occupied, bind the loop var to `keys[iter]` and fall into the body.
+        let occ_ptr_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: hm_occ_type, dest: occ_ptr_reg, src1: coll_reg, src2: hm_occ_idx))
+        let occ_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_INDEX, type_id: hm_occ_elem, dest: occ_reg, src1: occ_ptr_reg, src2: iter_reg))
+        hm_keep_block = self.fb.new_block()
+        hm_cont_block = self.fb.new_block()
+        // OP_BRANCH: cond true -> src2 (keep), false -> dest (cont).
+        self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: hm_cont_block, src1: occ_reg, src2: hm_keep_block))
+        self.fb.add_edge(body_block, hm_keep_block)
+        self.fb.add_edge(body_block, hm_cont_block)
+        self.fb.switch_to(hm_keep_block)
+        self.terminated = false
+        let keys_ptr_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: hm_keys_type, dest: keys_ptr_reg, src1: coll_reg, src2: hm_keys_idx))
+        let key_reg = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_INDEX, type_id: elem_type, dest: key_reg, src1: keys_ptr_reg, src2: iter_reg))
+        self.locals.local_map_put(name_id, key_reg)
+    elif is_collection and is_string:
         // RFC 0020 P2b: decode the UTF-8 codepoint at the current byte offset via
         // std.string.utf8_decode(s, off) -> packed (width<<32)|codepoint. Bind the
         // loop var (rune) to the low 32 bits; stash the width (high 32) for the
@@ -15013,6 +15094,16 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             if body_node.kind == NODE_BLOCK:
                 self.lower_block(body_node_idx)
 
+    // RFC 0018 P2 (HashMap): merge the occupied (post-body) path and the empty-slot
+    // path into the per-slot continue block, then let the shared increment below run
+    // there (advance the slot index and re-test cond). Both edges feed hm_cont_block.
+    if is_hashmap:
+        if not self.terminated:
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: hm_cont_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), hm_cont_block)
+        self.fb.switch_to(hm_cont_block)
+        self.terminated = false
+
     if not self.terminated:
         // Step amount: for `for c in str` advance by the codepoint width; otherwise +1.
         mut step_reg := str_width_reg
@@ -15045,7 +15136,11 @@ pub fn lower_for(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         ))
 
         self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: cond_block, src2: 0 as u32))
-        self.fb.add_edge(body_block, cond_block)
+        // HashMap runs the increment in hm_cont_block; every other loop in body_block.
+        mut incr_src := body_block
+        if is_hashmap:
+            incr_src = hm_cont_block
+        self.fb.add_edge(incr_src, cond_block)
 
     // Exit
     self.fb.switch_to(exit_block)

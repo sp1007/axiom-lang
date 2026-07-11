@@ -1,0 +1,34 @@
+// Oracle (RFC 0018 P2): `for k in m` iterates a HashMap's occupied KEYS.
+// air_builder walks table slots 0..cap, guards the body on `occupied[i]`, and binds
+// the loop var to `keys[i]`. Exercises: several inserts (incl. a resize past the
+// initial cap of 16), key sum, value lookup via .get inside the loop, `continue`,
+// and that the count equals the map size. Result kept < 256 for the exit-code oracle.
+import std.collections
+
+fn main() -> i64:
+    mut m = new_hashmap[i64, i64]()
+    mut i = 0 as i64
+    while i < 12:
+        m.insert(i, i * 2)
+        i = i + 1
+
+    mut ksum = 0 as i64
+    mut vsum = 0 as i64
+    mut cnt = 0 as i64
+    for k in m:
+        if k == 0:
+            continue                 // skip key 0 (its value 0 anyway)
+        cnt = cnt + 1
+        ksum = ksum + k              // 1+2+...+11 = 66
+        vsum = vsum + m.get(k).unwrap()  // 2*(1..11) = 132
+
+    mut r = 0 as i64
+    if cnt == 11:                    // 11 non-zero keys visited
+        r = r + 1
+    if ksum == 66:
+        r = r + 2
+    if vsum == 132:
+        r = r + 4
+    if m.len() == 12:                // all 12 present
+        r = r + 8
+    return r                          // 1+2+4+8 = 15

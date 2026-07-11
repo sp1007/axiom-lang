@@ -154,6 +154,7 @@ rows=(
   "t_forbytes|exit|198"
   "t_forstr|exit|15"
   "t_strslice|exit|142"
+  "t_hashiter|exit|15"
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"
   "t_ctorarrfield|exit|110"

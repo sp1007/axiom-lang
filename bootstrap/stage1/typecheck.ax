@@ -2500,6 +2500,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     else:
                         ax_printf_local("error: cannot determine the element type of this Vec for `for x in vec`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.diags_count = self.diags_count + 1 as i64
+                elif (ie_kind == TYPE_KIND_GENERIC_INST or ie_kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.intern.get(self.types.entries.data[iteree_ty].name_id)) == "HashMap":
+                    // RFC 0018 P2: `for k in m` where m: HashMap[K,V] iterates the KEYS
+                    // (the occupied-slot keys). Bind the loop variable to K (generic arg
+                    // 0); air_builder's lower_for walks the table slots, guards on
+                    // `occupied[i]`, and binds the var to `keys[i]`.
+                    let gargs = self.get_generic_args(iteree_ty)
+                    if gargs.len >= 1 as i64:
+                        for_elem_ty = gargs.data[0]
+                        for_is_collection = true
+                    else:
+                        ax_printf_local("error: cannot determine the key type of this HashMap for `for k in m`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
                 elif ie_kind == TYPE_KIND_STRUCT or ie_kind == TYPE_KIND_SUM or ie_kind == TYPE_KIND_GENERIC_INST:
                     ax_printf_local("error: iterating this collection with `for x in <collection>` is not yet supported (only fixed arrays and Vec[T]); use a range `for i in 0..n` or a `while` loop with .len/.get\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
