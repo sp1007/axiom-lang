@@ -1,0 +1,15 @@
+// Oracle (exit 46): std.string.split reimplemented in pure AXIOM (value ABI).
+// The native/self-link backend never lowered the str_split intrinsic, so the
+// old @compiler_intrinsic("str_split") returned garbage -> SIGSEGV. Verifies
+// element count, per-element contents (via .len), and multi-char / trailing-sep.
+import std.string
+fn main() -> i64:
+    let a = "a,bb,ccc,dddd".split(",")       // 4 elems, lens 1+2+3+4=10
+    mut acc := a.len                          // 4
+    for p in a:
+        acc = acc + p.len                     // +10 -> 14
+    let b = "x::yy::zzz".split("::")          // 3 elems
+    acc = acc + b.len * 10                     // +30 -> 44
+    let c = "t,".split(",")                    // trailing sep -> ["t",""], 2 elems
+    acc = acc + c.len                          // +2 -> 46
+    return acc

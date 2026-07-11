@@ -131,9 +131,47 @@ pub fn ends_with(s: str, suffix: str) -> bool:
         i = i + 1 as i64
     return true
 
-/// Splits string by separator.
+/// Splits `s` on each (non-overlapping) occurrence of `sep`, left to right.
+/// Follows the Rust model: a trailing separator yields a trailing empty piece
+/// (`"a,".split(",")` -> `["a", ""]`), and `sep` never matching yields `[s]`.
+///
+/// Implemented in AXIOM (value ABI). The `str_split` intrinsic is only lowered
+/// by the C backend (-> ax_str_split); the native/self-link backend does NOT
+/// lower it, so the previous `@compiler_intrinsic("str_split")` returned garbage
+/// and segfaulted. Built from the working `slice` primitive + Vec[str], exactly
+/// like trim/to_upper/replace above.
 pub fn split(s: str, sep: str) -> Vec[str]:
-    return @compiler_intrinsic("str_split")
+    mut result = Vec[str].new()
+    let seplen = sep.len
+    // Degenerate separator: no meaningful split point — return the whole string.
+    if seplen == 0 as i64:
+        result.push(s)
+        return result
+    let sp = s.ptr
+    let bp = sep.ptr
+    mut start := 0 as i64
+    while start <= s.len:
+        // Find the next `sep` at or after `start`.
+        mut idx := -1 as i64
+        mut i := start
+        while i + seplen <= s.len:
+            mut j := 0 as i64
+            mut matched := true
+            while j < seplen:
+                if sp[i + j] != bp[j]:
+                    matched = false
+                    break
+                j = j + 1 as i64
+            if matched:
+                idx = i
+                break
+            i = i + 1 as i64
+        if idx < 0 as i64:
+            result.push(slice(s, start, s.len))
+            break
+        result.push(slice(s, start, idx))
+        start = idx + seplen
+    return result
 
 /// Trims whitespace (space, tab, CR, LF) from both ends.
 ///
