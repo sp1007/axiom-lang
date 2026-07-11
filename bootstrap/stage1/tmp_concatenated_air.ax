@@ -14159,7 +14159,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
     elif lhs_node.kind == NODE_INDEX_EXPR:
         let arr_idx = lhs_node.first_child
-        let arr_reg = self.lower_expr(arr_idx)
+        mut arr_reg = self.lower_expr(arr_idx)
         let index_idx = self.mb.tree.nodes.data[arr_idx as i64].next_sibling
         mut index_reg := 0 as u32
         if index_idx != 0 as u32:
@@ -14176,6 +14176,22 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             let entry = self.mb.typetable.entries.data[arr_type as i64]
             if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_SLICE or entry.kind == TYPE_KIND_ARRAY:
                 type_id = entry.extra as u32
+            elif (entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.mb.pool.get(entry.name_id)) == "Vec":
+                // RFC 0021: `v[i] = x` stores into `vec.data[i]`. Load the `data`
+                // pointer field first (mirror of the read-side data-load in
+                // lower_index_expr); without it OP_STORE would write into the
+                // {data,len,cap} HEADER (a silent miscompile -- the element type
+                // typing of a Vec index-expr made `v[i] = x` accepted but the store
+                // went to the header, so `v.get(i)` still saw the old value). Element
+                // type from the index-expr node (typecheck set it to T).
+                let data_nid = self.mb.pool.intern("data")
+                mut vd_idx := 0 as u32
+                let vd_type = fl_resolve_field(self, arr_type, data_nid, &vd_idx)
+                if vd_type != 0 as u32:
+                    let data_reg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: vd_type, dest: data_reg, src1: arr_reg, src2: vd_idx))
+                    arr_reg = data_reg
+                type_id = self.mb.node_types[lhs_idx as i64]
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,

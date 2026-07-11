@@ -1,0 +1,17 @@
+// Oracle (exit 42): RFC 0021 lvalue -- `v[i] = x` writes through vec.data[i]
+// (was a silent miscompile: the store hit the {data,len,cap} header, get(i)
+// still saw the old value).
+import std.collections
+fn main() -> i32:
+    mut c = Vec[i64].new()
+    c.push(10)
+    c.push(20)
+    c.push(30)
+    c[1] = 99
+    c[2] = c[0] + c[1]
+    mut ok := 0 as i32
+    if c.get(1).unwrap() == 99 as i64:
+        ok = ok + 10
+    if c[2] == 109 as i64:
+        ok = ok + 32
+    return ok
