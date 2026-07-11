@@ -7312,7 +7312,14 @@ pub fn match_is_confidently_partial(self: ptr[TypeChecker], match_idx: u32, scru
     if (sum_extra as i64) >= self.types.sumtypes.len:
         return false
     let sum_info = self.types.sumtypes.data[sum_extra]
-    // Pass 1: a wildcard or bare-binding arm covers everything -> total.
+    // Pass 1: a wildcard or a TRUE catch-all bare-binding arm covers everything ->
+    // total. A bare NODE_BINDING_PAT whose name IS a variant of this sum is a
+    // no-payload TAG-match (mirrors air_builder ~2833-2846: `find_variant_info` on
+    // the bound name), NOT a catch-all -- so it must NOT short-circuit here, else a
+    // non-exhaustive no-payload-enum match (`Red | Green | Blue` matching only Red,
+    // Green) is wrongly treated as total and the missing-return terminator check is
+    // suppressed -> silent garbage fall-through. (If the binding payload is not yet
+    // resolved to a symbol, treat it conservatively as a catch-all == prior behavior.)
     mut child := self.tree.nodes.data[match_idx].first_child
     if child != 0 as u32:
         child = self.tree.nodes.data[child].next_sibling
@@ -7321,10 +7328,14 @@ pub fn match_is_confidently_partial(self: ptr[TypeChecker], match_idx: u32, scru
             let pat = self.tree.nodes.data[child].first_child
             if pat != 0 as u32:
                 let pk = self.tree.nodes.data[pat].kind
-                if pk == NODE_WILDCARD_PAT or pk == NODE_BINDING_PAT:
+                if pk == NODE_WILDCARD_PAT:
                     return false
+                if pk == NODE_BINDING_PAT:
+                    if not self.binding_pat_is_variant(pat, sum_info):
+                        return false
         child = self.tree.nodes.data[child].next_sibling
-    // Pass 2: every declared variant must be covered by some VARIANT_PAT arm.
+    // Pass 2: every declared variant must be covered by a VARIANT_PAT arm OR a bare
+    // no-payload variant BINDING_PAT arm (both are tag-matches at lowering time).
     mut vi := 0 as i64
     while vi < sum_info.variants.len:
         let v_name = sum_info.variants.data[vi].name_id
@@ -7335,15 +7346,32 @@ pub fn match_is_confidently_partial(self: ptr[TypeChecker], match_idx: u32, scru
         while c2 != 0 as u32:
             if self.tree.nodes.data[c2].kind == NODE_MATCH_ARM:
                 let pat = self.tree.nodes.data[c2].first_child
-                if pat != 0 as u32 and self.tree.nodes.data[pat].kind == NODE_VARIANT_PAT:
-                    let vsym = self.tree.nodes.data[pat].payload
-                    if vsym != 0 as u32:
-                        if self.symtable.symbols.data[vsym].name_id == v_name:
-                            covered = true
+                if pat != 0 as u32:
+                    let pkk = self.tree.nodes.data[pat].kind
+                    if pkk == NODE_VARIANT_PAT or pkk == NODE_BINDING_PAT:
+                        let vsym = self.tree.nodes.data[pat].payload
+                        if vsym != 0 as u32 and (vsym as i64) < self.symtable.symbols.len:
+                            if self.symtable.symbols.data[vsym].name_id == v_name:
+                                covered = true
             c2 = self.tree.nodes.data[c2].next_sibling
         if not covered:
             return true
         vi = vi + 1
+    return false
+
+// True if a bare NODE_BINDING_PAT's bound name matches a declared variant of the
+// given sum (a no-payload tag-match), false for a genuine catch-all binding or an
+// as-yet-unresolved pattern. Mirrors air_builder's find_variant_info-by-name.
+pub fn binding_pat_is_variant(self: ptr[TypeChecker], pat: u32, sum_info: SumInfo) -> bool:
+    let bsi = self.tree.nodes.data[pat].payload
+    if bsi == 0 as u32 or (bsi as i64) >= self.symtable.symbols.len:
+        return false
+    let bnid = self.symtable.symbols.data[bsi as i64].name_id
+    mut vj := 0 as i64
+    while vj < sum_info.variants.len:
+        if sum_info.variants.data[vj].name_id == bnid:
+            return true
+        vj = vj + 1
     return false
 
 pub fn run_type_checker(mut self: ptr[TypeChecker]):

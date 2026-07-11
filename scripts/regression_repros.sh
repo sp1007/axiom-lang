@@ -163,6 +163,8 @@ rows=(
   "t_gentree|exit|15"
   "t_variantshadow|reject|"
   "t_nomethod|reject|"
+  "t_nonexhenum|reject|"
+  "t_exhaustenum|exit|3"
 )
 
 for row in "${rows[@]}"; do

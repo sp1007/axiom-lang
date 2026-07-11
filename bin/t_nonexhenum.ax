@@ -1,0 +1,15 @@
+// Oracle (reject): a non-exhaustive match on a NO-PAYLOAD enum that is the fn's
+// terminating statement must trigger the missing-return diagnostic (Blue omitted,
+// no wildcard) -- previously the bare-variant arm `Red` was misread as a catch-all
+// so the match was treated as total and f(Blue) fell through to garbage.
+type Color = Red | Green | Blue
+
+fn f(c: Color) -> i32:
+    match c:
+        Red:
+            return 1
+        Green:
+            return 2
+
+fn main() -> i32:
+    return f(Blue)
