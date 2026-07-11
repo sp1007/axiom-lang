@@ -3959,26 +3959,31 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             else:
                 let col_type = self.infer_node(collection, TYPE_UNKNOWN)
                 let idx = self.tree.nodes.data[collection].next_sibling
+                // RFC 0020 P3: `s[a..b]` on a str/bytes is a SUBSTRING slice.
+                // `..` (TK_DOT_DOT) parses into a plain NODE_BINARY_EXPR (parser.ax's
+                // parse_led treats it like +/-/etc; no dedicated range node exists) and
+                // NODE_FOR_STMT is otherwise the only place that gives it meaning (loop
+                // bounds). For a str/bytes base we now ACCEPT it: air_builder lowers it
+                // to `std.string.slice(s, a, b)` (byte-indexed, Rust model, bounds-safe)
+                // and the result is a fresh view of the SAME base type. For any other
+                // base (BUG#72) it stays a hard reject -- used as a raw element offset it
+                // is a real, reproducible segfault with no diagnostic.
+                mut is_range_slice := false
                 if idx != 0 as u32:
-                    // Diagnostic (BUG#72): `..` (TK_DOT_DOT) parses into a plain
-                    // NODE_BINARY_EXPR (parser.ax's parse_led treats it exactly
-                    // like +/-/etc, no dedicated range node/type exists) and
-                    // NODE_FOR_STMT is the only place that gives it real meaning
-                    // (as loop bounds). Used as an index (`a[x..y]`), it silently
-                    // typechecks as a plain numeric expression and the resulting
-                    // (nonsensical) value is used as a raw element offset --
-                    // real, reproducible segfault, no diagnostic. Reject it here
-                    // instead of implementing slicing (a real feature: needs a
-                    // Range/Slice-from-range design, out of scope for this fix).
                     let idx_node = self.tree.nodes.data[idx]
                     if idx_node.kind == NODE_BINARY_EXPR:
                         let idx_op_text = self.node_text(idx)
                         if idx_op_text == "..":
-                            ax_printf_local("error: range-slicing ('a[x..y]') is not yet supported; index must be a single value\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                            self.diags_count = self.diags_count + 1 as i64
+                            if col_type == TYPE_STRING or col_type == TYPE_BYTES:
+                                is_range_slice = true
+                            else:
+                                ax_printf_local("error: range-slicing ('a[x..y]') is not yet supported for this type; index must be a single value\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
                         safe_free_str(idx_op_text)
                     self.infer_node(idx, TYPE_UNKNOWN)
-                if col_type != TYPE_UNKNOWN:
+                if is_range_slice:
+                    result_type = col_type // str[a..b] -> str, bytes[a..b] -> bytes
+                elif col_type != TYPE_UNKNOWN:
                     let c_entry = self.types.entries.data[col_type]
                     if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                         result_type = c_entry.extra

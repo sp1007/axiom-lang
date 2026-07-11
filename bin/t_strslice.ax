@@ -1,0 +1,29 @@
+// Oracle (RFC 0020 P3): `s[a..b]` is a byte-indexed SUBSTRING slice (Rust model).
+// Lowered to std.string.slice(s, a, b): a fresh, bounds-safe view of the same base
+// type (str[..] -> str, bytes[..] -> bytes). Literal + variable bounds, .len, index
+// of the slice, for-in over the slice, and out-of-range clamping are all exercised.
+// (Result kept < 256 for the 8-bit exit-code oracle.)
+import std.string
+
+fn main() -> i64:
+    let s = "hello world"
+    let a = s[0..5]              // "hello", len 5
+    let b = s[6..11]             // "world", len 5
+    mut r = a.len + b.len        // 10
+    r = r + (b[0] as i64)        // + 'w' = 119  -> 129
+
+    // Variable bounds + out-of-range end clamps to s.len.
+    mut lo = 6 as i64
+    let sub = s[lo..100]         // clamps to "world", len 5
+    r = r + sub.len              // 134
+
+    // Iterate the slice (count codepoints of "hello").
+    mut cnt = 0 as i64
+    for c in a:
+        cnt = cnt + 1
+    r = r + cnt                  // 139
+
+    // bytes slice keeps the bytes view type.
+    let by = (s as bytes)[0..3]  // "hel" as bytes, len 3
+    r = r + by.len               // 142
+    return r                     // 142

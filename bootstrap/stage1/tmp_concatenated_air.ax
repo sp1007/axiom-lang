@@ -2068,6 +2068,27 @@ pub fn parse_expr_with_prec(mut self: ptr[Parser], min_bp: i32) -> u32:
         left = self.parse_led(left, tok, bp)
         if left == 0 as u32:
             break
+    // Diagnostic recovery: a `{` immediately after a complete primary is never
+    // valid in expression position -- struct literals use call syntax
+    // `Type(field: value)`, and blocks are indentation-based (no brace blocks).
+    // Without this, a Rust/Go-style `Point{x: 1, y: 2}` detonates into a ~10-
+    // error cascade ("expected newline" + "expected expression nud" per token).
+    // Emit ONE targeted diagnostic and skip the balanced brace block to recover.
+    // Fixpoint-safe: the compiler's own sources never place `{` after an
+    // expression, so this branch never fires during self-compilation (A==B).
+    if left != 0 as u32:
+        if self.peek_raw().kind == TK_L_BRACE:
+            let brace_tok = self.peek_raw()
+            self.errorf(brace_tok, "struct literals use parentheses, not braces: write `Type(field: value, ...)`")
+            self.consume() // '{'
+            mut depth := 1 as i32
+            while depth > 0 as i32 and not self.check_raw(TK_EOF):
+                let t = self.peek_raw()
+                if t.kind == TK_L_BRACE:
+                    depth = depth + 1 as i32
+                elif t.kind == TK_R_BRACE:
+                    depth = depth - 1 as i32
+                self.consume()
     return left
 
 pub fn parse_nud(mut self: ptr[Parser]) -> u32:
@@ -9734,26 +9755,31 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             else:
                 let col_type = self.infer_node(collection, TYPE_UNKNOWN)
                 let idx = self.tree.nodes.data[collection].next_sibling
+                // RFC 0020 P3: `s[a..b]` on a str/bytes is a SUBSTRING slice.
+                // `..` (TK_DOT_DOT) parses into a plain NODE_BINARY_EXPR (parser.ax's
+                // parse_led treats it like +/-/etc; no dedicated range node exists) and
+                // NODE_FOR_STMT is otherwise the only place that gives it meaning (loop
+                // bounds). For a str/bytes base we now ACCEPT it: air_builder lowers it
+                // to `std.string.slice(s, a, b)` (byte-indexed, Rust model, bounds-safe)
+                // and the result is a fresh view of the SAME base type. For any other
+                // base (BUG#72) it stays a hard reject -- used as a raw element offset it
+                // is a real, reproducible segfault with no diagnostic.
+                mut is_range_slice := false
                 if idx != 0 as u32:
-                    // Diagnostic (BUG#72): `..` (TK_DOT_DOT) parses into a plain
-                    // NODE_BINARY_EXPR (parser.ax's parse_led treats it exactly
-                    // like +/-/etc, no dedicated range node/type exists) and
-                    // NODE_FOR_STMT is the only place that gives it real meaning
-                    // (as loop bounds). Used as an index (`a[x..y]`), it silently
-                    // typechecks as a plain numeric expression and the resulting
-                    // (nonsensical) value is used as a raw element offset --
-                    // real, reproducible segfault, no diagnostic. Reject it here
-                    // instead of implementing slicing (a real feature: needs a
-                    // Range/Slice-from-range design, out of scope for this fix).
                     let idx_node = self.tree.nodes.data[idx]
                     if idx_node.kind == NODE_BINARY_EXPR:
                         let idx_op_text = self.node_text(idx)
                         if idx_op_text == "..":
-                            ax_printf_local("error: range-slicing ('a[x..y]') is not yet supported; index must be a single value\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                            self.diags_count = self.diags_count + 1 as i64
+                            if col_type == TYPE_STRING or col_type == TYPE_BYTES:
+                                is_range_slice = true
+                            else:
+                                ax_printf_local("error: range-slicing ('a[x..y]') is not yet supported for this type; index must be a single value\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
                         safe_free_str(idx_op_text)
                     self.infer_node(idx, TYPE_UNKNOWN)
-                if col_type != TYPE_UNKNOWN:
+                if is_range_slice:
+                    result_type = col_type // str[a..b] -> str, bytes[a..b] -> bytes
+                elif col_type != TYPE_UNKNOWN:
                     let c_entry = self.types.entries.data[col_type]
                     if c_entry.kind == TYPE_KIND_POINTER or c_entry.kind == TYPE_KIND_SLICE or c_entry.kind == TYPE_KIND_ARRAY:
                         result_type = c_entry.extra
@@ -13141,8 +13167,42 @@ pub fn lower_index_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     if child == 0 as u32:
         return 0 as u32
 
-    mut arr_reg = self.lower_expr(child)
     let idx_expr = self.mb.tree.nodes.data[child as i64].next_sibling
+
+    // RFC 0020 P3: `s[a..b]` on a str/bytes base is a SUBSTRING slice, not an
+    // element index. Typecheck accepts this only for str/bytes (result type =
+    // base type); here we lower it to `std.string.slice(s, a, b)` (the same
+    // library value-ABI call the `str + str` -> concat lowering uses), reusing
+    // the proven str-return path instead of assembling a 16-byte {ptr,len} view
+    // in codegen. Detected by the `..` binary-expr index; the compiler itself
+    // never slices, so the self-host fixpoint is unaffected on the frontend side.
+    if idx_expr != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+        let child_ty0 = self.mb.node_types[child as i64]
+        if child_ty0 == 12 as u32 or child_ty0 == 22 as u32:
+            let ie_node = self.mb.tree.nodes.data[idx_expr as i64]
+            if ie_node.kind == NODE_BINARY_EXPR:
+                let ie_op = self.mb.get_token_text(ie_node.token_idx)
+                let ie_is_range = ie_op == ".."
+                @free(get_str_ptr(ie_op))
+                if ie_is_range:
+                    let lo_idx = ie_node.first_child
+                    if lo_idx != 0 as u32:
+                        let hi_idx = self.mb.tree.nodes.data[lo_idx as i64].next_sibling
+                        if hi_idx != 0 as u32:
+                            let ssym = self.resolve_op_method("slice", TYPE_STRING, 0 as u32)
+                            if ssym != 0 as u32:
+                                let s_reg = self.lower_expr(child)
+                                let lo_reg = self.lower_expr(lo_idx)
+                                let hi_reg = self.lower_expr(hi_idx)
+                                let arg_start = self.fb.emit_extra(3 as u32)
+                                self.fb.emit_extra(s_reg)
+                                self.fb.emit_extra(lo_reg)
+                                self.fb.emit_extra(hi_reg)
+                                let sl_reg = self.fb.fresh_reg()
+                                self.fb.emit(AirInst(opcode: OP_CALL, type_id: ssym, dest: sl_reg, src1: 0 as u32, src2: arg_start))
+                                return sl_reg
+
+    mut arr_reg = self.lower_expr(child)
     mut idx_reg := 0 as u32
     if idx_expr != 0 as u32:
         idx_reg = self.lower_expr(idx_expr)
