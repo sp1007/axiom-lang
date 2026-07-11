@@ -1567,7 +1567,15 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         // through to getfld + indirect call -> SIGSEGV (accept-then-
                         // miscompile, BUG#53 class). The match-by-first-param loop below is
                         // already receiver-type-agnostic, so only the guard needs widening.
-                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT or rec_type == TYPE_STRING or rec_type == TYPE_BYTES:
+                        // TYPE_KIND_PRIMITIVE covers str/bytes AND the scalar numerics
+                        // (i64/u64/f64/...): a numeric UFCS method-form like `n.to_str()`
+                        // / `n.to_hex()` resolves to a free fn whose first param is that
+                        // primitive (std.string.to_str(i64), ...), exactly like the str
+                        // receivers shipped in RFC 0020 P3. Without this, a primitive
+                        // receiver fell through to getfld + indirect call -> SIGSEGV
+                        // (accept-then-miscompile, BUG#53 class). The match-by-first-param
+                        // loop below is receiver-type-agnostic, so only the guard widens.
+                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT or entry.kind == TYPE_KIND_PRIMITIVE:
                             let m_name_tok = self.mb.get_token_text(callee_node.token_idx)
                             let method_id = self.mb.pool.intern(m_name_tok)
                             safe_free_str(m_name_tok)

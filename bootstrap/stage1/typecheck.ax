@@ -3195,14 +3195,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             // (as a method name)? If so, a real UFCS/method call may
                             // resolve later — do NOT reject.
                             mut name_exists := false
-                            if ruw == TYPE_STRING or ruw == TYPE_BYTES:
-                                // RFC 0020 P3: a `str`/`bytes` PRIMITIVE receiver has NO user
-                                // methods — UFCS resolves ONLY to a free fn whose first param
-                                // is `str`/`bytes`. Use a RECEIVER-SPECIFIC test (not the
-                                // global name scan) so `s.push(x)` — where `push` exists for
-                                // Vec but not str — is rejected cleanly here instead of
-                                // reaching air_builder's resolve_op_method (which returns 0)
-                                // and miscompiling via getfld + indirect call (BUG#53 class).
+                            if rue3.kind == TYPE_KIND_PRIMITIVE:
+                                // RFC 0020 P3 (+ numeric UFCS): a PRIMITIVE receiver — `str`/
+                                // `bytes` OR a scalar numeric (`i64`, `f64`, ...) — has NO user
+                                // methods; UFCS resolves ONLY to a free fn whose first param IS
+                                // that primitive. Use a RECEIVER-SPECIFIC test (not the global
+                                // name scan) so `s.push(x)` (push exists for Vec, not str) and
+                                // `n.trim()` (trim exists for str, not i64) are rejected cleanly
+                                // here instead of reaching air_builder's dispatch loop (which
+                                // finds no first-param match, returns 0) and miscompiling via
+                                // getfld + indirect call (BUG#53 class).
                                 if self.method_ret_type(self.tree.nodes.data[callee].payload, ruw) != 0 as u32:
                                     name_exists = true
                             else:

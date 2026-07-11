@@ -8991,14 +8991,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             // (as a method name)? If so, a real UFCS/method call may
                             // resolve later â€” do NOT reject.
                             mut name_exists := false
-                            if ruw == TYPE_STRING or ruw == TYPE_BYTES:
-                                // RFC 0020 P3: a `str`/`bytes` PRIMITIVE receiver has NO user
-                                // methods â€” UFCS resolves ONLY to a free fn whose first param
-                                // is `str`/`bytes`. Use a RECEIVER-SPECIFIC test (not the
-                                // global name scan) so `s.push(x)` â€” where `push` exists for
-                                // Vec but not str â€” is rejected cleanly here instead of
-                                // reaching air_builder's resolve_op_method (which returns 0)
-                                // and miscompiling via getfld + indirect call (BUG#53 class).
+                            if rue3.kind == TYPE_KIND_PRIMITIVE:
+                                // RFC 0020 P3 (+ numeric UFCS): a PRIMITIVE receiver â€” `str`/
+                                // `bytes` OR a scalar numeric (`i64`, `f64`, ...) â€” has NO user
+                                // methods; UFCS resolves ONLY to a free fn whose first param IS
+                                // that primitive. Use a RECEIVER-SPECIFIC test (not the global
+                                // name scan) so `s.push(x)` (push exists for Vec, not str) and
+                                // `n.trim()` (trim exists for str, not i64) are rejected cleanly
+                                // here instead of reaching air_builder's dispatch loop (which
+                                // finds no first-param match, returns 0) and miscompiling via
+                                // getfld + indirect call (BUG#53 class).
                                 if self.method_ret_type(self.tree.nodes.data[callee].payload, ruw) != 0 as u32:
                                     name_exists = true
                             else:
@@ -12813,7 +12815,15 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         // through to getfld + indirect call -> SIGSEGV (accept-then-
                         // miscompile, BUG#53 class). The match-by-first-param loop below is
                         // already receiver-type-agnostic, so only the guard needs widening.
-                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT or rec_type == TYPE_STRING or rec_type == TYPE_BYTES:
+                        // TYPE_KIND_PRIMITIVE covers str/bytes AND the scalar numerics
+                        // (i64/u64/f64/...): a numeric UFCS method-form like `n.to_str()`
+                        // / `n.to_hex()` resolves to a free fn whose first param is that
+                        // primitive (std.string.to_str(i64), ...), exactly like the str
+                        // receivers shipped in RFC 0020 P3. Without this, a primitive
+                        // receiver fell through to getfld + indirect call -> SIGSEGV
+                        // (accept-then-miscompile, BUG#53 class). The match-by-first-param
+                        // loop below is receiver-type-agnostic, so only the guard widens.
+                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT or entry.kind == TYPE_KIND_PRIMITIVE:
                             let m_name_tok = self.mb.get_token_text(callee_node.token_idx)
                             let method_id = self.mb.pool.intern(m_name_tok)
                             safe_free_str(m_name_tok)

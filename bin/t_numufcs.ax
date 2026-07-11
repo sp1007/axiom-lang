@@ -1,0 +1,13 @@
+// Oracle (exit 11): numeric UFCS method-form — n.to_str()/n.to_hex()/
+// n.to_radix(b)/f.to_str() dispatch to std.string free fns whose first param is
+// the primitive receiver (i64/f64). Previously a primitive receiver segfaulted
+// (accept-then-miscompile, BUG#53 class).
+import std.string
+fn main() -> i64:
+    let n = 255 as i64
+    mut acc := n.to_str().len                  // "255" -> 3
+    acc = acc + n.to_hex().len                 // "ff"  -> +2 = 5
+    acc = acc + (64 as i64).to_radix(8).len     // "100" -> +3 = 8
+    let f = 3.5
+    acc = acc + f.to_str().len                 // "3.5" -> +3 = 11
+    return acc
