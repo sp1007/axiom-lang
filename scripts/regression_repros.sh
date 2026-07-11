@@ -182,6 +182,7 @@ rows=(
   "t_unwrapok|exit|42"
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"
+  "t_bracelit|reject|"
 )
 
 for row in "${rows[@]}"; do

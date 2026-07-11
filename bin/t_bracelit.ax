@@ -1,0 +1,12 @@
+// Oracle (reject): brace-form struct literal `Type{field: value}` is NOT valid
+// AXIOM syntax (construction uses call form `Type(field: value)`). Before this
+// fix a `{` after a primary expression detonated into a ~10-error cascade
+// ("expected newline" + "expected expression nud" per token); now it produces
+// exactly one targeted diagnostic and recovers by skipping the brace block.
+// The program must be REJECTED (no exe emitted).
+struct Pt:
+    x: i64
+    y: i64
+pub fn main() -> i32:
+    let p = Pt{x: 3, y: 4}
+    return (p.x + p.y) as i32

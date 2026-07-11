@@ -191,6 +191,27 @@ pub fn parse_expr_with_prec(mut self: ptr[Parser], min_bp: i32) -> u32:
         left = self.parse_led(left, tok, bp)
         if left == 0 as u32:
             break
+    // Diagnostic recovery: a `{` immediately after a complete primary is never
+    // valid in expression position -- struct literals use call syntax
+    // `Type(field: value)`, and blocks are indentation-based (no brace blocks).
+    // Without this, a Rust/Go-style `Point{x: 1, y: 2}` detonates into a ~10-
+    // error cascade ("expected newline" + "expected expression nud" per token).
+    // Emit ONE targeted diagnostic and skip the balanced brace block to recover.
+    // Fixpoint-safe: the compiler's own sources never place `{` after an
+    // expression, so this branch never fires during self-compilation (A==B).
+    if left != 0 as u32:
+        if self.peek_raw().kind == TK_L_BRACE:
+            let brace_tok = self.peek_raw()
+            self.errorf(brace_tok, "struct literals use parentheses, not braces: write `Type(field: value, ...)`")
+            self.consume() // '{'
+            mut depth := 1 as i32
+            while depth > 0 as i32 and not self.check_raw(TK_EOF):
+                let t = self.peek_raw()
+                if t.kind == TK_L_BRACE:
+                    depth = depth + 1 as i32
+                elif t.kind == TK_R_BRACE:
+                    depth = depth - 1 as i32
+                self.consume()
     return left
 
 pub fn parse_nud(mut self: ptr[Parser]) -> u32:
