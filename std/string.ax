@@ -216,6 +216,45 @@ pub fn to_hex(n: i64) -> str:
     @free(rev as ptr[u8])
     return buf as str
 
+/// Formats an integer in an arbitrary radix (base 2..36) as a lowercase string,
+/// no prefix and no leading zeros ("0" for zero). Digits above 9 use 'a'..'z'.
+/// The value is interpreted as an unsigned 64-bit pattern (matching `to_hex`).
+/// A base outside 2..36 is clamped to that range.
+///
+/// Implemented in AXIOM (value ABI); subsumes binary/octal/hex formatting.
+pub fn to_radix(n: i64, base: i64) -> str:
+    mut b := base
+    if b < 2 as i64:
+        b = 2 as i64
+    if b > 36 as i64:
+        b = 36 as i64
+    if n == 0 as i64:
+        let z = malloc(2 as u64) as ptr[u8]
+        z[0] = '0' as u8
+        z[1] = 0 as u8
+        return z as str
+    // Unsigned interpretation; base-2 needs up to 64 digits.
+    mut v := n as u64
+    let ub := b as u64
+    let rev = malloc(64 as u64) as ptr[u8]
+    mut rl := 0 as i64
+    while v > 0 as u64:
+        let d = (v % ub) as u8
+        if d < 10 as u8:
+            rev[rl] = ('0' as u8 + d)
+        else:
+            rev[rl] = ('a' as u8 + (d - 10 as u8))
+        rl = rl + 1 as i64
+        v = v / ub
+    let buf = malloc((rl + 1 as i64) as u64) as ptr[u8]
+    mut k := 0 as i64
+    while k < rl:
+        buf[k] = rev[rl - 1 as i64 - k]
+        k = k + 1 as i64
+    buf[rl] = 0 as u8
+    @free(rev as ptr[u8])
+    return buf as str
+
 /// Returns a substring [start, end).
 ///
 /// Implemented in AXIOM (value ABI); the `str_slice` intrinsic is not lowered

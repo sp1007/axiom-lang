@@ -1,0 +1,26 @@
+// Oracle (exit 99): std.string.to_radix — i64 -> arbitrary-base (2..36) string,
+// pure AXIOM, unsigned 64-bit interpretation. Verifies binary/octal/base-36 plus
+// clamping and a content check.
+import std.string
+fn main() -> i64:
+    mut acc := to_radix(5, 2).len         // "101"    len 3
+    acc = acc + to_radix(8, 8).len        // "10"     +2 -> 5
+    acc = acc + to_radix(0, 2).len        // "0"      +1 -> 6
+    acc = acc + to_radix(255, 16).len     // "ff"     +2 -> 8
+    // base clamped to [2,36]: base 40 -> 36, base 1 -> 2
+    acc = acc + to_radix(35, 40).len      // base->36 "z" +1 -> 9
+    acc = acc + to_radix(2, 1).len        // base->2  "10" +2 -> 11
+    // content check: to_radix(255, 2) == "11111111" (8 ones)
+    let bin = to_radix(255, 2)
+    let bp = bin.ptr
+    mut ok := true
+    if bin.len != 8 as i64:
+        ok = false
+    mut i := 0 as i64
+    while i < 8 as i64:
+        if bp[i] != '1' as u8:
+            ok = false
+        i = i + 1 as i64
+    if ok:
+        acc = acc + 88 as i64             // -> 99
+    return acc

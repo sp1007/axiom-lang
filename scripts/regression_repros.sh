@@ -160,6 +160,7 @@ rows=(
   "t_tostr|exit|88"
   "t_tostrf|exit|91"
   "t_tohex|exit|123"
+  "t_toradix|exit|99"
   "t_cseredef|exit|12"
   "t_hashiter|exit|15"
   "t_arrret|exit|70"
