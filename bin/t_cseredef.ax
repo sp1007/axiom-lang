@@ -1,0 +1,16 @@
+// Oracle (exit 12): CSE soundness — a repeated straight-line self-assignment
+// `x = x <op> x` must recompute against the reassigned value, not reuse the
+// first result. AIR is not strict SSA, so `b=b*b; b=b*b` produced two identical
+// `MUL b,b` insts; cse_func reused the stale first result (b stuck at 4 instead
+// of 16->256) at -O1. Fix: stop CSE at the first redefinition of a source.
+fn main() -> i64:
+    mut b := 3 as i64
+    b = b + b        // 6
+    b = b + b        // 12   (was 6: 2nd add was a no-op)
+    // valid CSE must still fire: a*c computed twice with no redef in between.
+    let a = 5 as i64
+    let c = 3 as i64
+    let x = a * c
+    let y = a * c
+    // b(12) + (x+y==30) - 30 == 12
+    return b + (x + y) - 30

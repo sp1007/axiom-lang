@@ -159,6 +159,7 @@ rows=(
   "t_strutf8|exit|74"
   "t_tostr|exit|88"
   "t_tostrf|exit|91"
+  "t_cseredef|exit|12"
   "t_hashiter|exit|15"
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"

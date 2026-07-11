@@ -16961,10 +16961,25 @@ pub fn cse_func(f: ptr[AirFunc]) -> bool:
                 i = i + 1 as u32
                 continue
 
-            mut j := 0 as u32
-            while j < i:
-                let inst_idx_j = f.block_instrs.data[blk.instrs_start + j]
+            // Scan earlier instructions in this block for an identical
+            // expression. CSE keys on (opcode, src1, src2) â€” sound ONLY while
+            // neither source operand is redefined between the two instructions.
+            // AIR is not strict SSA (a mutable local reuses one register), so
+            // `b = b * b; b = b * b` lowers to `t1 = MUL b,b; b = COPY t1;
+            // t2 = MUL b,b; b = COPY t2` â€” the two MULs look identical but the
+            // second must recompute against the reassigned `b`. Scan DOWNWARD
+            // from i and STOP at the first instruction that redefines src1 or
+            // src2: any match beyond it would reuse a stale value (the silent
+            // -O1 miscompile: second squaring became a no-op).
+            mut j := (i as i64) - 1 as i64
+            while j >= 0 as i64:
+                let inst_idx_j = f.block_instrs.data[blk.instrs_start + (j as u32)]
                 let inst_j = f.insts.data[inst_idx_j]
+                // A redefinition of either source invalidates all earlier
+                // candidates (check BEFORE matching so a self-referential
+                // `b = <op> b` that redefines its own source is not reused).
+                if inst_j.dest != 0 as u32 and (inst_j.dest == inst_i.src1 or inst_j.dest == inst_i.src2):
+                    break
                 if inst_j.opcode == inst_i.opcode and inst_j.src1 == inst_i.src1 and inst_j.src2 == inst_i.src2 and inst_j.dest != 0 as u32 and inst_j.opcode != OP_NOP:
                     mut cur_inst := &f.insts.data[inst_idx_i]
                     cur_inst.opcode = OP_COPY
@@ -16972,7 +16987,7 @@ pub fn cse_func(f: ptr[AirFunc]) -> bool:
                     cur_inst.src2 = 0 as u32
                     changed = true
                     break
-                j = j + 1 as u32
+                j = j - 1 as i64
             i = i + 1 as u32
 
         bi = bi + 1 as i64
