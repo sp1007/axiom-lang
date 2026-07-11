@@ -123,18 +123,18 @@ pub fn eval_binary(op: u16, a: u64, b: u64, out_val: ptr[u64]) -> bool:
     elif op == OP_XOR:
         out_val[0] = a ^ b
         return true
-    elif op == OP_SHL:
-        if b >= 64 as u64:
-            out_val[0] = 0 as u64
-            return true
-        out_val[0] = a << b
-        return true
-    elif op == OP_SHR:
-        if b >= 64 as u64:
-            out_val[0] = 0 as u64
-            return true
-        out_val[0] = (ai >> (b as i64)) as u64
-        return true
+    elif op == OP_SHL or op == OP_SHR:
+        // Do NOT const-fold `const << const` / `const >> const`. When both operands
+        // were compile-time constants this fold produced a WRONG value at -O1 (the
+        // folded `iconst` came out 0 -> garbage) and crashed native codegen on some
+        // `>>` inputs, while `-O0` and every non-both-const shift (var<<var,
+        // var<<const, const<<var) were correct. The arithmetic here (`a << b`) is
+        // itself right and var-shifts work, so the defect is in how the folded
+        // constant is applied/materialized for a shift specifically; leaving shifts
+        // to the (correct) runtime lowering restores correctness. The lost
+        // optimization -- folding two integer LITERALS in a shift -- is negligible.
+        // (BUG from bug-probe round 5; exact fold/apply micro-cause still open.)
+        return false
 
     return false
 

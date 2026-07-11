@@ -174,6 +174,7 @@ rows=(
   "t_vecset|exit|42"
   "t_scalarmember|reject|"
   "t_floatneg|exit|74"
+  "t_constshift|exit|35"
 )
 
 for row in "${rows[@]}"; do
