@@ -1,9 +1,16 @@
-// Oracle (reject): direct subscript `v[i]` on a Vec silently read the {data,len,cap}
-// header (c[1] returned the length, wide elements segfaulted) instead of vec.data[i].
-// AXIOM has no Index operator; reject and point at v.get(i) / for-in.
+// Oracle (exit 7): RFC 0021 -- `v[i]` on a Vec[T] reads vec.data[i] (was a silent
+// header-read miscompile: c[1] returned the length). Verifies all three elements.
 import std.collections
 fn main() -> i32:
     mut c = Vec[i64].new()
     c.push(70)
     c.push(80)
-    return c[1] as i32
+    c.push(90)
+    mut ok := 0 as i32
+    if c[0] == 70 as i64:
+        ok = ok + 1
+    if c[1] == 80 as i64:
+        ok = ok + 2
+    if c[2] == 90 as i64:
+        ok = ok + 4
+    return ok

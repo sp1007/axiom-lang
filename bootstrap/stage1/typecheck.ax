@@ -3788,23 +3788,25 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     elif col_type == TYPE_STRING or col_type == TYPE_BYTES:
                         result_type = 5 as u32 // str/bytes index -> u8 byte
                     elif c_entry.kind == TYPE_KIND_STRUCT or c_entry.kind == TYPE_KIND_GENERIC_INST:
-                        // Diagnostic (was silent accept-then-miscompile, BUG#53 class,
-                        // sibling of the BUG#72 range-slice reject just above): `v[i]`
-                        // on a `Vec` (a by-address `{data,len,cap}` aggregate) left
-                        // result_type UNKNOWN, and air_builder's lower_index_expr then
-                        // emitted OP_INDEX on the Vec's ADDRESS -> it read the struct
-                        // HEADER (`c[1]` returned the length; wider elements segfaulted)
-                        // instead of `vec.data[i]`. AXIOM has no Index operator; Vec
-                        // access is `v.get(i) -> Option[T]` (bounds-checked) or
-                        // `for x in v`. Reject cleanly. (Ergonomic `v[i]` subscript is a
-                        // language addition -> RFC follow-up.) Scoped to a Vec base name
-                        // so ordinary pointer/array `.data[i]` indexing is untouched and
-                        // the self-host fixpoint is unaffected.
+                        // RFC 0021: `v[i]` on a `Vec[T]` evaluates to the element type T
+                        // (== `vec.data[i]`; air_builder's lower_index_expr loads the
+                        // `data` field before OP_INDEX). Previously this fell through
+                        // UNKNOWN and OP_INDEX read the `{data,len,cap}` HEADER (`c[1]`
+                        // returned the length; wide elements segfaulted) -- a silent
+                        // miscompile (BUG#53 class, first closed by a reject in d94aa8e).
+                        // Scoped to a Vec base name so ordinary pointer/array `.data[i]`
+                        // indexing is untouched and the self-host fixpoint is A==B (the
+                        // compiler never subscripts a Vec). Element type resolved the
+                        // same way the for-in-vec binding does (get_generic_args[0]).
                         let cnm = self.intern.get(c_entry.name_id)
                         let cbase = extract_base_type_name(cnm)
                         if cbase == "Vec":
-                            ax_printf_local("error: cannot index a Vec directly with '[]'; use v.get(i) or 'for x in v'\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                            self.diags_count = self.diags_count + 1 as i64
+                            let vargs = self.get_generic_args(col_type)
+                            if vargs.len >= 1 as i64:
+                                result_type = vargs.data[0]
+                            else:
+                                ax_printf_local("error: cannot determine the element type of this Vec for `v[i]`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
                         safe_free_str(cbase)
                         safe_free_str(cnm)
 

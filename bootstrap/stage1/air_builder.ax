@@ -1936,7 +1936,7 @@ pub fn lower_index_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     if child == 0 as u32:
         return 0 as u32
 
-    let arr_reg = self.lower_expr(child)
+    mut arr_reg = self.lower_expr(child)
     let idx_expr = self.mb.tree.nodes.data[child as i64].next_sibling
     mut idx_reg := 0 as u32
     if idx_expr != 0 as u32:
@@ -1950,6 +1950,25 @@ pub fn lower_index_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
                 type_id = sym.type_id as u32
+
+    // RFC 0021: `v[i]` on a `Vec[T]` is `vec.data[i]`. The operand is a by-address
+    // `{data,len,cap}` aggregate, so index its `data` POINTER field, not the header.
+    // Load `data` first, then OP_INDEX on it -- the same sequence the for-in-vec
+    // lowering uses (~3688). Detected by the operand's static Vec base name, so plain
+    // pointer/array `p[i]` (the only forms the compiler itself uses) is unchanged and
+    // the self-host fixpoint stays A==B.
+    if self.mb.node_types != null as ptr[u32]:
+        let child_ty = self.mb.node_types[child as i64]
+        if child_ty != 0 as u32 and (child_ty as i64) < self.mb.typetable.entries.len:
+            let ce = self.mb.typetable.entries.data[child_ty as i64]
+            if (ce.kind == TYPE_KIND_GENERIC_INST or ce.kind == TYPE_KIND_STRUCT) and extract_base_type_name(self.mb.pool.get(ce.name_id)) == "Vec":
+                let data_nid = self.mb.pool.intern("data")
+                mut vd_idx := 0 as u32
+                let vd_type = fl_resolve_field(self, child_ty, data_nid, &vd_idx)
+                if vd_type != 0 as u32:
+                    let data_reg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: vd_type, dest: data_reg, src1: arr_reg, src2: vd_idx))
+                    arr_reg = data_reg
 
     let reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
