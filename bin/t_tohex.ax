@@ -1,0 +1,15 @@
+// Oracle (exit 123): std.string.to_hex — i64 -> lowercase hex string, pure AXIOM
+// (unsigned 64-bit interpretation, no "0x" prefix, no leading zeros). Verifies
+// digit counts for representative values plus a content check ("abc").
+import std.string
+fn main() -> i64:
+    mut acc := to_hex(255).len        // 2   ("ff")
+    acc = acc + to_hex(0).len         // +1  -> 3  ("0")
+    acc = acc + to_hex(4096).len      // +4  -> 7  ("1000")
+    acc = acc + to_hex(-1).len        // +16 -> 23 ("ffffffffffffffff")
+    // content check: to_hex(2748) == "abc"
+    let h = to_hex(2748)
+    let hp = h.ptr
+    if h.len == 3 as i64 and hp[0] == 'a' as u8 and hp[1] == 'b' as u8 and hp[2] == 'c' as u8:
+        acc = acc + 100 as i64        // -> 123
+    return acc
