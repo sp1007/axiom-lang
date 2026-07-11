@@ -1,0 +1,15 @@
+// RFC 0020 P3: UFCS method-form calls on a primitive `str` receiver
+// (`s.trim()`, `s.contains()`, `s.to_upper()`, `s.index_of()`), including
+// chaining a str-returning method into another. Previously accepted by
+// typecheck but miscompiled (getfld + indirect call) -> SIGSEGV.
+fn main() -> i64:
+    let s = "  hello world  "
+    let t = s.trim()
+    mut acc := t.len
+    if t.contains("world"):
+        acc = acc + 100
+    let u = t.to_upper()
+    if u.starts_with("HELLO"):
+        acc = acc + 30
+    acc = acc + t.index_of("world")
+    return acc

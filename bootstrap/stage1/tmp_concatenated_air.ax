@@ -8903,7 +8903,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     let mret = self.method_ret_type(self.tree.nodes.data[callee].payload, rt)
                     if mret != TYPE_UNKNOWN and mret != 0 as u32 and (mret as i64) < self.types.entries.len:
                         let mk = self.types.entries.data[mret].kind
-                        if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT:
+                        // RFC 0020 P3: `str`/`bytes` are 16-byte {ptr,len} PRIMITIVE
+                        // aggregates â€” a str-returning UFCS method (`s.trim()`,
+                        // `s.to_upper()`, ...) needs its return type recovered too, else
+                        // the `let t = s.trim()` copy defaults to 8 bytes and drops half
+                        // the {ptr,len} pair -> corrupt str/segfault (same failure the
+                        // aggregate-return recovery guards against for structs).
+                        if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT or mret == TYPE_STRING or mret == TYPE_BYTES:
                             result_type = mret
 
             // BUG#61: a GENERIC function call whose instantiated callee symbol's FUNC
@@ -8985,13 +8991,24 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             // (as a method name)? If so, a real UFCS/method call may
                             // resolve later â€” do NOT reject.
                             mut name_exists := false
-                            mut si := 0 as i64
-                            while si < self.symtable.symbols.len:
-                                let ssym = self.symtable.symbols.data[si]
-                                if ssym.kind == SYM_FUNC and self.intern.name_matches_method(ssym.name_id, mname):
+                            if ruw == TYPE_STRING or ruw == TYPE_BYTES:
+                                // RFC 0020 P3: a `str`/`bytes` PRIMITIVE receiver has NO user
+                                // methods â€” UFCS resolves ONLY to a free fn whose first param
+                                // is `str`/`bytes`. Use a RECEIVER-SPECIFIC test (not the
+                                // global name scan) so `s.push(x)` â€” where `push` exists for
+                                // Vec but not str â€” is rejected cleanly here instead of
+                                // reaching air_builder's resolve_op_method (which returns 0)
+                                // and miscompiling via getfld + indirect call (BUG#53 class).
+                                if self.method_ret_type(self.tree.nodes.data[callee].payload, ruw) != 0 as u32:
                                     name_exists = true
-                                    break
-                                si = si + 1 as i64
+                            else:
+                                mut si := 0 as i64
+                                while si < self.symtable.symbols.len:
+                                    let ssym = self.symtable.symbols.data[si]
+                                    if ssym.kind == SYM_FUNC and self.intern.name_matches_method(ssym.name_id, mname):
+                                        name_exists = true
+                                        break
+                                    si = si + 1 as i64
                             if not name_exists:
                                 // A builtin PRIMITIVE receiver (str/bytes/int/...) has an
                                 // empty type name_id, so print a type-less variant rather
@@ -12787,7 +12804,16 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                             if (rec_type as i64) < self.mb.typetable.entries.len:
                                 entry = self.mb.typetable.entries.data[rec_type as i64]
                         
-                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+                        // RFC 0020 P3: UFCS method dispatch on a PRIMITIVE `str`/`bytes`
+                        // receiver â€” `s.trim()`, `s.contains(x)`, ... resolve to a free
+                        // function whose first param is `str`/`bytes` (e.g. std.string.*),
+                        // exactly like a struct method (param[0] == receiver). Previously
+                        // typecheck accepted the call (a matching free fn exists) but this
+                        // dispatch loop excluded primitive receivers, so the callee fell
+                        // through to getfld + indirect call -> SIGSEGV (accept-then-
+                        // miscompile, BUG#53 class). The match-by-first-param loop below is
+                        // already receiver-type-agnostic, so only the guard needs widening.
+                        if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT or rec_type == TYPE_STRING or rec_type == TYPE_BYTES:
                             let m_name_tok = self.mb.get_token_text(callee_node.token_idx)
                             let method_id = self.mb.pool.intern(m_name_tok)
                             safe_free_str(m_name_tok)
