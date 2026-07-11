@@ -9,6 +9,7 @@ Purpose: run the AXIOM compiler project the way the user wants — **auto-decide
 
 ## Standing user directives (from memory — treat as law)
 - **Do not ask for confirmation.** Choose the optimal direction and execute it. The user observes little; act.
+- **Auto-run shell commands.** The gate/probe/build workflow (fast_fixpoint.ps1, regression_repros.sh, per-program compile/run, git) is shell-driven — run these bash/PowerShell commands automatically, never pausing to ask. (Enforcement caveat: the actual prompt-suppression is a `.claude/settings.json` `permissions.allow` setting the user must apply once — auto mode forbids Claude from self-granting permission rules. If prompts still appear, note it and keep going; do NOT reach for `-ExecutionPolicy Bypass` or other flagged security bypasses — run scripts directly via `& scripts/x.ps1`.) See CLAUDE.md §24 "Execution autonomy".
 - **Auto-commit + push to `main`** after a change is GREEN (see the gate). Commit message ends with the Co-Authored-By trailer.
 - **Fixpoint-async rule:** frontend-only change ⇒ commit after regression is GREEN, fixpoint can settle asynchronously. Backend/ABI/linker change ⇒ fixpoint (B==C) is MANDATORY *before* commit.
 - **Auto-compact** context when near full; keep going across the summary.

@@ -597,7 +597,10 @@ All decisions must optimize for:
 
 **Non-negotiable:** autonomy changes *how fast* we work, never *which rules*. §3 (absolute rules), §9 (IR verification), §13 (RFC policy), and the fixpoint gate still bind. Backend/ABI/linker changes require B==C fixpoint BEFORE commit.
 
+**Execution autonomy (bash/shell):** the gate + probe + build workflow is shell-driven (fast_fixpoint.ps1, regression_repros.sh, per-program compile/run). Standing directive: **run these shell commands automatically, without pausing to ask.** This is the intended operating mode — do not stop the loop to request confirmation for routine build/test/git commands. Caveat (enforcement, not policy): actually suppressing the permission prompt is controlled by `.claude/settings.json` `permissions.allow` (or the session run-mode), which the auto-mode safety classifier forbids Claude from editing itself (self-granting permissions = privilege escalation). So the *directive* lives here; the *enforcement* must be applied by the user once — add `"Bash"` (and `"PowerShell"`) to `permissions.allow`, or run with bypass mode. Until then, prompts may still appear even though the harness intends no-ask execution. Never chase this by using `-ExecutionPolicy Bypass` or other flagged security-mitigation bypasses; run scripts directly (`& scripts/foo.ps1`).
+
 **Change log:**
 | Date | Change | Target | Reason |
 |------|--------|--------|--------|
 | 2026-07-09 | Initial harness | .claude/agents/{investigator,implementer,verifier}.md, .claude/skills/{axiom-autopilot,axiom-fixpoint-gate,axiom-bug-probe} | User: run autonomously, stop asking for confirmation, grind backlog then re-plan |
+| 2026-07-11 | Added "Execution autonomy (bash/shell)" directive: auto-run build/test/git shell commands without asking; documented that prompt-suppression must be enforced by user via settings.json (auto-mode classifier blocks self-granting) | CLAUDE.md §24, .claude/skills/axiom-autopilot/SKILL.md | User (/harness): "bổ sung thêm yêu cầu tự động thực hiện các bash command, không cần hỏi" |
