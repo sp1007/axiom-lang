@@ -1,0 +1,12 @@
+// Oracle (exit 44): field read off an explicit/annotated generic-inst struct is
+// monomorphized to the concrete field type, so it works as a UFCS method receiver.
+// Before: `b.v` returned the template param placeholder T (not i64), so
+// `b.v.to_str()` rejected (typecheck read f.type_id straight from the template).
+import std.string
+struct Box[T]:
+    v: T
+fn main() -> i64:
+    let b = Box[i64](v: 42)
+    mut acc := b.v                    // 42 (plain field read still correct)
+    acc = acc + b.v.to_str().len      // "42" -> +2 = 44 (field read as UFCS receiver)
+    return acc

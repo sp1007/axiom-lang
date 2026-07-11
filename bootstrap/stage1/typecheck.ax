@@ -3726,7 +3726,32 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     while j < struct_info.fields.len:
                                         let f = struct_info.fields.data[j]
                                         if f.name_id == field_name_id:
-                                            result_type = f.type_id
+                                            mut ft := f.type_id
+                                            // Monomorphize a generic-param field type via the
+                                            // instance's concrete args. Under an INFERRED generic
+                                            // construction (`Box(v: 42)`, no explicit `Box[i64]`)
+                                            // the receiver is a GENERIC_INST over the TEMPLATE, so
+                                            // the field type read straight from the template is the
+                                            // bare param placeholder `T` — not `i64`. Contexts that
+                                            // impose an expected type (arith/fn-arg) papered over it,
+                                            // but a method-form receiver imposes none, so `b.v.to_str()`
+                                            // saw type `T` and rejected. Substitution is guarded to
+                                            // ONLY remap a genuine TYPE_KIND_GENERIC placeholder that
+                                            // matches a template param position (concrete field types
+                                            // and monomorphized structs are left untouched — no-op).
+                                            if entry.kind == TYPE_KIND_GENERIC_INST and (ft as i64) < self.types.entries.len and self.types.entries.data[ft as i64].kind == TYPE_KIND_GENERIC:
+                                                let inst_args = self.get_generic_args(obj_type)
+                                                let tmpl_params = &self.types.structs.data[struct_extra].generic_args
+                                                if inst_args.len > 0 as i64 and inst_args.len == tmpl_params.len:
+                                                    mut pi := 0 as i64
+                                                    while pi < tmpl_params.len:
+                                                        if tmpl_params.data[pi] == ft:
+                                                            ft = inst_args.data[pi]
+                                                            break
+                                                        pi = pi + 1 as i64
+                                                if inst_args.data != null as ptr[u32]:
+                                                    @free(inst_args.data as ptr[u8])
+                                            result_type = ft
                                             self.tree.nodes.data[node_idx].extra_idx = j as u32
                                             found = true
                                             break
