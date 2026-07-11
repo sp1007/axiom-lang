@@ -1,0 +1,9 @@
+// Oracle (exit 19): std.string.to_str(u64) unsigned-decimal overload. 2^63 =
+// 9223372036854775808 ("...808", 19 chars). Through the signed to_str(i64) this
+// bit pattern is i64::MIN -> "-9223372036854775808" (20 chars), so a wrong
+// result would be 20. Also exercises the u64 receiver via the numeric UFCS
+// method form (exact first-param match, no widening needed).
+import std.string
+fn main() -> i64:
+    let big = (9223372036854775807 as u64) + (1 as u64)   // 2^63
+    return big.to_str().len                                // 19

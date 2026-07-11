@@ -158,6 +158,7 @@ rows=(
   "t_strsplit|exit|46"
   "t_strutf8|exit|74"
   "t_tostr|exit|88"
+  "t_tostru64|exit|19"
   "t_tostrf|exit|91"
   "t_tohex|exit|123"
   "t_toradix|exit|99"

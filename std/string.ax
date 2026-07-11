@@ -180,6 +180,37 @@ pub fn to_str(f: f64) -> str:
     buf[idx] = 0 as u8
     return buf as str
 
+/// Formats an unsigned 64-bit integer as its base-10 decimal string. Overload of
+/// `to_str` resolved by arg type. Unlike `to_str(i64)`, the full u64 range prints
+/// as a positive value: a value >= 2^63 would print negative through the signed
+/// overload (its two's-complement reinterpretation), so `to_str(big_u64)` needs
+/// this unsigned path.
+///
+/// Implemented in AXIOM (value ABI); uses unsigned div/mod so no negative case.
+pub fn to_str(n: u64) -> str:
+    if n == 0 as u64:
+        let z = malloc(2 as u64) as ptr[u8]
+        z[0] = '0' as u8
+        z[1] = 0 as u8
+        return z as str
+    // Digits least-significant-first (max 20 for u64::MAX), then reversed.
+    let rev = malloc(24 as u64) as ptr[u8]
+    mut rl := 0 as i64
+    mut v := n
+    while v > 0 as u64:
+        let d = (v % 10 as u64) as u8
+        rev[rl] = ('0' as u8 + d)
+        rl = rl + 1 as i64
+        v = v / 10 as u64
+    let buf = malloc((rl + 1 as i64) as u64) as ptr[u8]
+    mut k := 0 as i64
+    while k < rl:
+        buf[k] = rev[rl - 1 as i64 - k]
+        k = k + 1 as i64
+    buf[rl] = 0 as u8
+    @free(rev as ptr[u8])
+    return buf as str
+
 /// Formats an integer as a lowercase base-16 (hexadecimal) string, no "0x"
 /// prefix and no leading zeros ("0" for zero). The value is interpreted as an
 /// unsigned 64-bit pattern, so `to_hex(-1)` yields "ffffffffffffffff".
