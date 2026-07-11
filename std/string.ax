@@ -112,6 +112,74 @@ pub fn to_str(n: i64) -> str:
     @free(rev as ptr[u8])
     return buf as str
 
+/// Formats an f64 as a decimal string with up to 6 fractional digits (trailing
+/// zeros and a bare '.' stripped). Overload of `to_str` resolved by arg type.
+///
+/// Implemented in AXIOM (value ABI). std.fmt's `f64` formatter uses
+/// `@compiler_intrinsic("f64_to_str")`, which the native/self-link backend never
+/// lowers -> `to_str(3.14)` printed garbage. Mirrors the compiler's own
+/// `ax_sprintf_local` fixed-precision formatter (NOT shortest-round-trip; NaN/Inf
+/// and |value| beyond i64 range are out of scope, matching that formatter).
+pub fn to_str(f: f64) -> str:
+    let buf = malloc(40 as u64) as ptr[u8]
+    mut idx := 0 as i64
+    mut v := f
+    if v < 0.0:
+        buf[idx] = '-' as u8
+        idx = idx + 1 as i64
+        v = 0.0 - v
+    let int_part = v as i64
+    let frac = v - (int_part as f64)
+    // Integer part: digits least-significant-first, then reversed into buf.
+    let tmp = malloc(24 as u64) as ptr[u8]
+    mut tl := 0 as i64
+    mut iv := int_part
+    if iv == 0 as i64:
+        tmp[0] = '0' as u8
+        tl = 1 as i64
+    else:
+        while iv > 0 as i64:
+            let dg = (iv % 10 as i64) as u8
+            tmp[tl] = ('0' as u8 + dg)
+            tl = tl + 1 as i64
+            iv = iv / 10 as i64
+    mut i := 0 as i64
+    while i < tl:
+        buf[idx] = tmp[tl - 1 as i64 - i]
+        idx = idx + 1 as i64
+        i = i + 1 as i64
+    @free(tmp as ptr[u8])
+    // Fractional part: 6 digits, rounded, clamped to avoid a carry into int part.
+    buf[idx] = '.' as u8
+    idx = idx + 1 as i64
+    mut fv := (frac * 1000000.0 + 0.5) as i64
+    if fv >= 1000000 as i64:
+        fv = 999999 as i64
+    let fbuf = malloc(8 as u64) as ptr[u8]
+    mut j := 0 as i64
+    mut fval := fv
+    while j < 6 as i64:
+        let dg = (fval % 10 as i64) as u8
+        fbuf[5 as i64 - j] = ('0' as u8 + dg)
+        fval = fval / 10 as i64
+        j = j + 1 as i64
+    j = 0 as i64
+    while j < 6 as i64:
+        buf[idx] = fbuf[j]
+        idx = idx + 1 as i64
+        j = j + 1 as i64
+    @free(fbuf as ptr[u8])
+    // Strip trailing zeros, then a bare trailing '.'.
+    while idx > 0 as i64 and buf[idx - 1 as i64] == '0' as u8:
+        idx = idx - 1 as i64
+    if idx > 0 as i64 and buf[idx - 1 as i64] == '.' as u8:
+        idx = idx - 1 as i64
+    if idx == 0 as i64:
+        buf[0] = '0' as u8
+        idx = 1 as i64
+    buf[idx] = 0 as u8
+    return buf as str
+
 /// Returns a substring [start, end).
 ///
 /// Implemented in AXIOM (value ABI); the `str_slice` intrinsic is not lowered

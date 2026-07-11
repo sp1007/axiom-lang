@@ -1,0 +1,25 @@
+// Oracle (exit 91): std.string.to_str(f64) — decimal float formatting, pure AXIOM
+// (float-format otherwise only in out-of-grammar std.fmt via the native-unlowered
+// f64_to_str intrinsic -> to_str(3.14) printed garbage). Also checks the i64/f64
+// overload coexists. Content verified via starts_with + exact len == equality.
+import std.string
+fn eq(a: str, b: str) -> bool:
+    return std.string.starts_with(a, b) and a.len == b.len
+fn main() -> i64:
+    if not eq(to_str(3.14), "3.14"):
+        return 1
+    if not eq(to_str(-2.5), "-2.5"):
+        return 2
+    if not eq(to_str(42.0), "42"):
+        return 3
+    if not eq(to_str(0.001), "0.001"):
+        return 4
+    if not eq(to_str(12345), "12345"):   // i64 overload
+        return 5
+    // distinctive length arithmetic: 4 + 4*3 + 2*5 + 5*7 + 3*10 = 91
+    mut acc := to_str(3.14).len
+    acc = acc + to_str(-2.5).len * 3
+    acc = acc + to_str(42.0).len * 5
+    acc = acc + to_str(0.001).len * 7
+    acc = acc + to_str(999).len * 10
+    return acc
