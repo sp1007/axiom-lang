@@ -172,6 +172,7 @@ rows=(
   "t_goodfield|exit|5"
   "t_vecindex|exit|7"
   "t_vecset|exit|42"
+  "t_scalarmember|reject|"
 )
 
 for row in "${rows[@]}"; do

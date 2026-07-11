@@ -3619,6 +3619,49 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                         safe_free_str(tnm)
                                         self.diags_count = self.diags_count + 1 as i64
                                     safe_free_str(mnm)
+                        elif entry.kind == TYPE_KIND_PRIMITIVE:
+                            // Diagnostic (was silent accept-then-miscompile, BUG#53
+                            // class): `n.foo` on a primitive scalar (i32/i64/.../bool/
+                            // char/f64 -- str/bytes are handled by the `.ptr`/`.len`
+                            // branch above). A primitive has no fields, and scalar UFCS
+                            // method receivers are unsupported (a `scalar.method()` call
+                            // segfaults too). This left result_type UNKNOWN and
+                            // air_builder read field offset 0 / a garbage address ->
+                            // SIGSEGV, no signal. SAFETY (mirrors the nonexistent-field
+                            // fix): receiver-AGNOSTIC -- reject only when the member name
+                            // matches NO struct field AND NO SYM_FUNC anywhere. Scanning
+                            // struct fields too is essential: a value's type can be
+                            // transiently a PRIMITIVE during inference (an operator-
+                            // overload result `a + b` reads as its RHS scalar before the
+                            // overload return type settles), so a member that is a real
+                            // field of SOME struct must not be rejected here -- it is
+                            // handled once the correct aggregate type resolves. `n.foo`
+                            // (name nowhere) still rejects; `d.v` (v is a field of Num,
+                            // d transiently typed i64) does not.
+                            let field_name_id = self.tree.nodes.data[node_idx].payload
+                            let pmn = self.intern.get(field_name_id)
+                            mut pexists := false
+                            mut psfi := 0 as i64
+                            while psfi < self.types.structs.len and not pexists:
+                                let psinfo = self.types.structs.data[psfi]
+                                mut pffi := 0 as i64
+                                while pffi < psinfo.fields.len:
+                                    if psinfo.fields.data[pffi].name_id == field_name_id:
+                                        pexists = true
+                                        break
+                                    pffi = pffi + 1 as i64
+                                psfi = psfi + 1 as i64
+                            mut pmi := 0 as i64
+                            while pmi < self.symtable.symbols.len and not pexists:
+                                let psym = self.symtable.symbols.data[pmi]
+                                if psym.kind == SYM_FUNC and self.intern.name_matches_method(psym.name_id, pmn):
+                                    pexists = true
+                                    break
+                                pmi = pmi + 1 as i64
+                            if not pexists:
+                                ax_printf_local("error: no member '%s' on a primitive value (primitives have no fields or methods)\n", get_str_ptr(pmn) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+                            safe_free_str(pmn)
                     else:
                         let sym_idx = self.symtable.resolve(self.tree.nodes.data[node_idx].payload)
                         if sym_idx != 0 as u32:
