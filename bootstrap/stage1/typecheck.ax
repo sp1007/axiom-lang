@@ -1714,6 +1714,75 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
             self.check_module_global(gchild)
         gchild = gnode.next_sibling
 
+    // Phase 5 (accept-then-miscompile, BUG#53 class — "forgot to unwrap"): a bare
+    // FIELD load `o.field` on a value whose type is Option[T]/Result[T,E] silently read
+    // offset 0 of the box/tag (garbage) instead of the payload's field — the user meant
+    // `o.unwrap().field` (or a match). Option/Result are SUM types (`Some(T) | None`)
+    // with NO user-accessible data fields, so ANY bare field-load on such a value is a
+    // mistake. Runs POST-inference (node_types populated + generic returns recovered by
+    // the BUG#61 recovery blocks), so the receiver type is reliable even for a chained
+    // `v.get(i).field` receiver — the inference-time attempt failed precisely because
+    // that chained receiver was still untyped mid-traversal. Method calls (`o.unwrap()`)
+    // are field-expr CALLEES: excluded via a callee bitmap. Qualified constructor forms
+    // (`Option.Some(x)`) are excluded both as callees and by the bare-type-name guard.
+    let nnodes = self.tree.nodes.len
+    if nnodes > 0 as i64:
+        mut callee_bm := @alloc(nnodes) as ptr[u8]
+        mut ci := 0 as i64
+        while ci < nnodes:
+            callee_bm[ci] = 0 as u8
+            ci = ci + 1
+        ci = 0 as i64
+        while ci < nnodes:
+            if self.tree.nodes.data[ci].kind == NODE_CALL_EXPR:
+                let cc = self.tree.nodes.data[ci].first_child
+                if cc != 0 as u32 and (cc as i64) < nnodes:
+                    callee_bm[cc as i64] = 1 as u8
+            ci = ci + 1
+        mut fi2 := 0 as i64
+        while fi2 < nnodes:
+            let fnode = self.tree.nodes.data[fi2]
+            if fnode.kind == NODE_FIELD_EXPR and callee_bm[fi2] == 0 as u8:
+                let frecv = fnode.first_child
+                if frecv != 0 as u32 and (frecv as i64) < self.node_types_cap:
+                    mut frt := self.node_types[frecv as i64]
+                    if frt != TYPE_UNKNOWN and (frt as i64) < self.types.entries.len:
+                        mut frue := self.types.entries.data[frt as i64]
+                        while frue.kind == TYPE_KIND_POINTER or frue.kind == TYPE_KIND_REF:
+                            frt = frue.extra as u32
+                            frue = self.types.entries.data[frt as i64]
+                        // Detect Option/Result robustly: a concrete Option[Cell] is a
+                        // MONOMORPHIZED sum entry named `_AX_std_Option__Cell` (payload
+                        // separator `Option__`), NOT the bare TYPE_KIND_OPTION — so match
+                        // both the raw kind AND the mangled `Option__`/`Result__` name (the
+                        // same forms the `.new()` collection detection uses at ~3628).
+                        mut is_opt_res := false
+                        if frue.kind == TYPE_KIND_OPTION or frue.kind == TYPE_KIND_RESULT:
+                            is_opt_res = true
+                        elif (frue.kind == TYPE_KIND_GENERIC_INST or frue.kind == TYPE_KIND_SUM) and frue.name_id != 0 as u32:
+                            let frnm = self.intern.get(frue.name_id)
+                            if std.string.contains(frnm, "Option__") or std.string.contains(frnm, "Result__"):
+                                is_opt_res = true
+                            safe_free_str(frnm)
+                        if is_opt_res:
+                            // Exclude a bare TYPE-NAME receiver (`Option.None`, qualified form):
+                            // its first_child ident binds to a type symbol, not a value.
+                            mut is_typename := false
+                            let rcn = self.tree.nodes.data[frecv as i64]
+                            if rcn.kind == NODE_IDENT or rcn.kind == NODE_TYPE_EXPR:
+                                let rcsym = rcn.payload
+                                if rcsym != 0 as u32 and (rcsym as i64) < self.symtable.symbols.len:
+                                    let rck = self.symtable.symbols.data[rcsym as i64].kind
+                                    if rck == SYM_STRUCT or rck == SYM_TYPE_ALIAS or rck == SYM_INTERFACE or rck == SYM_BUILTIN_TYPE:
+                                        is_typename = true
+                            if not is_typename:
+                                let ufn = self.intern.get(fnode.payload)
+                                ax_printf_local("error: cannot access field '%s' on an Option/Result value; unwrap it first (.unwrap() or match) before accessing the payload\n", get_str_ptr(ufn) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                safe_free_str(ufn)
+                                self.diags_count = self.diags_count + 1 as i64
+            fi2 = fi2 + 1
+        @free(callee_bm as ptr[u8])
+
 pub fn get_full_mangled_name(self: ptr[TypeChecker], sym_idx: u32) -> str:
     let sym = self.symtable.symbols.data[sym_idx]
     let sym_name = self.intern.get(sym.name_id)
