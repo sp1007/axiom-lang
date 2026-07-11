@@ -1,0 +1,21 @@
+// Oracle (exit=41): static-form method calls `Type.method(recv, args...)` mixed with
+// instance calls in one function. Before the fix, air_builder lowered the TYPE name as a
+// bogus receiver register and passed it as an extra first arg, shifting every real
+// argument by one slot -> arg/home-slot corruption -> SIGSEGV for anything but a single
+// 1-param static call. Fix: a static receiver (symbol kind = type, not value) does NOT
+// synthesize a receiver reg; `self` is the first explicit arg. Exercises: instance call,
+// two static calls, a 2-param static call, and instance+static mix.
+struct Pt:
+    x: i64
+    fn getx(self) -> i64:
+        return self.x
+    fn add(self, k: i64) -> i64:
+        return self.x + k
+pub fn main() -> i32:
+    let p = Pt(x: 7 as i64)
+    let a = p.getx()          // instance -> 7
+    let b = Pt.getx(p)        // static   -> 7
+    let c = Pt.add(p, 5 as i64)   // 2-param static -> 12
+    let q = Pt(x: 15 as i64)
+    let d = Pt.getx(q)        // static on another value -> 15
+    return (a + b + c + d) as i32   // 7+7+12+15 = 41

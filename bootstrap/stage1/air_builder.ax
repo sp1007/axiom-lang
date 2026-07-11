@@ -1755,9 +1755,23 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
     mut temp_count := 0 as u32
 
     if is_method_call:
-        let receiver_reg = self.lower_expr(receiver_node_idx)
-        temp_args[temp_count as i64] = receiver_reg
-        temp_count = temp_count + 1 as u32
+        // A static-form call `Type.method(args)` names a TYPE as the "receiver",
+        // and `self` is passed explicitly as the first argument. In that case we
+        // must NOT synthesize a receiver register: lowering the bare type name
+        // yields a bogus value and shifts every real argument by one slot, which
+        // corrupts the call's argument/home-slot layout (SIGSEGV for anything but
+        // the degenerate single-arg case). Detect it by the receiver symbol kind
+        // (a type, not a value) and let the explicit args carry `self`.
+        mut is_static_recv := false
+        let rnode = self.mb.tree.nodes.data[receiver_node_idx as i64]
+        if rnode.kind == NODE_IDENT and rnode.payload != 0 as u32 and (rnode.payload as i64) < self.mb.symbols.symbols.len:
+            let rk = self.mb.symbols.symbols.data[rnode.payload as i64].kind
+            if rk == SYM_STRUCT or rk == SYM_TYPE_ALIAS or rk == SYM_INTERFACE:
+                is_static_recv = true
+        if not is_static_recv:
+            let receiver_reg = self.lower_expr(receiver_node_idx)
+            temp_args[temp_count as i64] = receiver_reg
+            temp_count = temp_count + 1 as u32
 
     mut arg := callee_node.next_sibling
     while arg != 0 as u32:

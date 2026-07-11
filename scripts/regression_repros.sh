@@ -180,6 +180,7 @@ rows=(
   "t_methodok|exit|40"
   "t_forgotunwrap|reject|"
   "t_unwrapok|exit|42"
+  "t_staticcall|exit|41"
 )
 
 for row in "${rows[@]}"; do
