@@ -1,0 +1,10 @@
+// Oracle (reject): calling a method name that is NEITHER a field NOR a method of
+// the receiver's concrete type must be REJECTED at compile time, not silently
+// lowered to a `getfld` + indirect call (garbage register) -> SIGSEGV.
+// Same accept-then-miscompile class as BUG#53/68/81/93.
+struct P:
+    x: i32
+
+fn main() -> i32:
+    let p = P(x: 5)
+    return p.ghost() as i32     // expect: error: no method 'ghost' on type 'P'

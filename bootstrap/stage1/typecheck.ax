@@ -2915,6 +2915,68 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 if fk == TYPE_KIND_STRUCT or fk == TYPE_KIND_SUM or fk == TYPE_KIND_GENERIC_INST or fk == TYPE_KIND_OPTION or fk == TYPE_KIND_RESULT:
                                     result_type = fret
 
+            // Diagnostic (was silent accept-then-miscompile, same class as BUG#53/68/
+            // 81/93): `recv.name(...)` where `name` names NO callable at all — neither
+            // a data field, an interface method, a real method, nor a free function
+            // usable via UFCS (`fn name(self: T, ...)`). infer_node(callee) could not
+            // resolve the field name, so `callee_type == TYPE_UNKNOWN` (distinct from
+            // the "field, not a function" case above, where the name resolved to a
+            // field and callee_type is known) and the method flag 2048 is unset
+            // (resolved methods set it at ~3455, generic methods at ~2800). All
+            // recovery blocks above left result_type UNKNOWN. Previously air_builder's
+            // lower_call_expr, finding no method/UFCS match (loop ~1565), fell through
+            // to `lower_expr(callee)` -> `getfld` of a non-existent field (garbage
+            // register) -> INDIRECT `call reg` -> SIGSEGV, with no compile-time signal.
+            //
+            // SAFETY (self-host fixpoint): the receiver's concrete type is NOT reliably
+            // resolved at inference time — a cross-module param type (`in_file: File`
+            // from std.io) can still read as a placeholder here, so a receiver-type-
+            // matched lookup (method_ret_type) would FALSE-POSITIVE on valid UFCS calls
+            // like `in_file.read(...)`. Instead use a RECEIVER-AGNOSTIC test: reject
+            // only when NO SYM_FUNC anywhere matches `name` as a method name. If any
+            // same-named function exists, defer to normal method/UFCS resolution (which
+            // completes with full type info in air_builder) — conservative, never
+            // breaks a real call. `p.ghost()` (no `ghost` fn anywhere) is rejected;
+            // `in_file.read()` (a `read` fn exists) is left alone. Also gated:
+            //   - callee_type == UNKNOWN  => excludes field-not-fn + every FUNC/STRUCT/
+            //     SUM/constructor call (those have a known callee_type).
+            //   - flag 2048 unset         => excludes every RESOLVED method.
+            //   - receiver known & not INTERFACE => excludes BUG#93 module-qualified
+            //     chains (receiver UNKNOWN) and interface dispatch (own diagnostic).
+            if result_type == TYPE_UNKNOWN and callee_type == TYPE_UNKNOWN and self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR and (self.tree.nodes.data[callee].flags & 2048 as u16) == 0 as u16:
+                let recv_n = self.tree.nodes.data[callee].first_child
+                if recv_n != 0 as u32:
+                    mut recv_t := TYPE_UNKNOWN
+                    if (recv_n as i64) < self.node_types_cap:
+                        recv_t = self.node_types[recv_n as i64]
+                    if recv_t == TYPE_UNKNOWN:
+                        recv_t = self.infer_node(recv_n, TYPE_UNKNOWN)
+                    if recv_t != TYPE_UNKNOWN and (recv_t as i64) < self.types.entries.len:
+                        mut ruw := recv_t
+                        mut rue3 := self.types.entries.data[ruw as i64]
+                        while rue3.kind == TYPE_KIND_POINTER or rue3.kind == TYPE_KIND_REF:
+                            ruw = rue3.extra as u32
+                            rue3 = self.types.entries.data[ruw as i64]
+                        if rue3.kind != TYPE_KIND_INTERFACE:
+                            let mname = self.intern.get(self.tree.nodes.data[callee].payload)
+                            // Receiver-agnostic: is there ANY function named `mname`
+                            // (as a method name)? If so, a real UFCS/method call may
+                            // resolve later — do NOT reject.
+                            mut name_exists := false
+                            mut si := 0 as i64
+                            while si < self.symtable.symbols.len:
+                                let ssym = self.symtable.symbols.data[si]
+                                if ssym.kind == SYM_FUNC and self.intern.name_matches_method(ssym.name_id, mname):
+                                    name_exists = true
+                                    break
+                                si = si + 1 as i64
+                            if not name_exists:
+                                let tname = self.intern.get(rue3.name_id)
+                                ax_printf_local("error: no method '%s' on type '%s'\n", get_str_ptr(mname) as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                safe_free_str(tname)
+                                self.diags_count = self.diags_count + 1 as i64
+                            safe_free_str(mname)
+
             // Infer arguments. For a fixed-array PARAMETER of a plain free function, pass
             // the param type as the arg's expected type so a direct `[..]` literal coerces
             // to the declared element type (a bare-int literal otherwise defaults to

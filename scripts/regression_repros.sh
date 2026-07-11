@@ -162,6 +162,7 @@ rows=(
   "t_optstrmatch|exit|10"
   "t_gentree|exit|15"
   "t_variantshadow|reject|"
+  "t_nomethod|reject|"
 )
 
 for row in "${rows[@]}"; do
