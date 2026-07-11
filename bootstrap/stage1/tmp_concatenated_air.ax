@@ -15382,7 +15382,11 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
 
         if is_unary_foldable(inst.opcode):
             let src1_val = vals[inst.src1]
-            if src1_val.known:
+            // BUG#40 sibling: never integer-fold OP_NEG on a FLOAT operand. eval_unary
+            // computes two's-complement `-(a as i64)`, which corrupts an IEEE-754 bit
+            // pattern (a float `-x` folded to garbage/0.0 at -O1). Leave float neg to
+            // the selector's XMM sign-flip. Mirrors the binary fold's has_flt guard.
+            if src1_val.known and not is_flt[inst.src1]:
                 let ok = eval_unary(inst.opcode, src1_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST
@@ -20446,14 +20450,28 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
     elif op == OP_NEG:
         let t = get_register_type(sel, inst.src1)
         if t == 9 as u32 or t == 10 as u32:
-            // Float negation: XOR the sign bit. tmp_sign holds the mask in a GPR
-            // scratch. next_vreg(sel) gives a fresh dense vreg (never an AIR dest
-            // â†’ GPR); formerly `inst.dest + 60000` which inflated graph_size. See
-            // the OP_FCONST comment above for the perf rationale.
-            let tmp_sign = next_vreg(sel)
-            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0x8000000000000000 as u64 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            out_insts.push(MachInst(op: MACH_XOR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_sign, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            // Float negation: flip the sign bit. The value lives in an XMM register,
+            // and an integer XOR cannot operate on XMM (the old code emitted
+            // `xor xmm, gpr`, which the encoder could not form -> the sign was never
+            // flipped, so `-x` returned +|x| at -O0). Round-trip through a GPR:
+            //   movq  gpr_bits, xmm(src1)      ; MACH_MOVQD (xmm -> r64)
+            //   mov   gpr_mask, <sign mask>
+            //   xor   gpr_bits, gpr_mask       ; flip the sign bit in the GPR domain
+            //   movq/movd xmm(dest), gpr_bits  ; MACH_MOVDQ (r64 -> xmm), width by type
+            // Mask + move width by type: f32 (t9) sign = bit 31 (0x80000000, movd);
+            // f64 (t10) sign = bit 63 (0x8000000000000000, movq). next_vreg gives
+            // fresh dense GPR-classed vregs (never an AIR dest); see OP_FCONST above.
+            mut fnw := 8 as u8
+            mut sign_mask := 0x8000000000000000 as u64 as i64
+            if t == 9 as u32:
+                fnw = 4 as u8
+                sign_mask = 0x80000000 as u64 as i64
+            let gpr_bits = next_vreg(sel)
+            let gpr_mask = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_MOVQD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_bits, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_mask, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sign_mask), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_XOR, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_bits, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_mask, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_MOVDQ, cc: 0 as u8, padding: fnw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: gpr_bits, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
             out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             out_insts.push(MachInst(op: MACH_NEG, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))

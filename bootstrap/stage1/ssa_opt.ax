@@ -251,7 +251,11 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
 
         if is_unary_foldable(inst.opcode):
             let src1_val = vals[inst.src1]
-            if src1_val.known:
+            // BUG#40 sibling: never integer-fold OP_NEG on a FLOAT operand. eval_unary
+            // computes two's-complement `-(a as i64)`, which corrupts an IEEE-754 bit
+            // pattern (a float `-x` folded to garbage/0.0 at -O1). Leave float neg to
+            // the selector's XMM sign-flip. Mirrors the binary fold's has_flt guard.
+            if src1_val.known and not is_flt[inst.src1]:
                 let ok = eval_unary(inst.opcode, src1_val.val, out_val)
                 if ok:
                     inst.opcode = OP_ICONST

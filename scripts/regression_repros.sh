@@ -173,6 +173,7 @@ rows=(
   "t_vecindex|exit|7"
   "t_vecset|exit|42"
   "t_scalarmember|reject|"
+  "t_floatneg|exit|74"
 )
 
 for row in "${rows[@]}"; do
