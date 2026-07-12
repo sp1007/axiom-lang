@@ -1,0 +1,13 @@
+// Oracle (exit=65): RFC 0017 P2 — a >16-byte struct global (3x i64 = 24 bytes)
+// with cross-function field mutation. Guards the .data slot sizing for non-16B
+// aggregates.
+struct T3:
+    a: i64
+    b: i64
+    c: i64
+mut g: T3 = T3(a: 100, b: 200, c: 300)
+fn bump():
+    g.b = g.b + 50           // 250
+fn main() -> i32:
+    bump()
+    return ((g.a + g.b + g.c) / 10) as i32   // (100+250+300)/10 = 65

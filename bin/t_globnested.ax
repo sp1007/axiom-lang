@@ -1,0 +1,12 @@
+// Oracle (exit=40): RFC 0017 P2 — a struct global whose field is itself a struct;
+// nested field access `g.inner.x` reads/writes through the global address.
+struct Inner:
+    x: i64
+    y: i64
+struct Outer:
+    tag: i64
+    inner: Inner
+mut g: Outer = Outer(tag: 5, inner: Inner(x: 10, y: 20))
+fn main() -> i32:
+    g.inner.x = g.inner.x + g.tag   // 15
+    return (g.tag + g.inner.x + g.inner.y) as i32   // 5+15+20 = 40

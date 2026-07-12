@@ -1,0 +1,13 @@
+// Oracle (exit=30): RFC 0017 P2 — a module-level STRUCT global with static storage.
+// The initializer runs at program entry; tweak() does cross-function field
+// read-modify-write on the global's `.data` slot.
+struct Cfg:
+    a: i64
+    b: i64
+mut g: Cfg = Cfg(a: 10, b: 5)
+fn tweak():
+    g.a = g.a + g.b      // 15
+    g.b = g.b * 3        // 15
+fn main() -> i32:
+    tweak()
+    return (g.a + g.b) as i32   // 30

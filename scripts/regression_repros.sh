@@ -230,6 +230,13 @@ rows=(
   "t_u64cmp|exit|7"
   "t_optveciter|exit|6"
   "t_deepopt|exit|99"
+  # RFC 0017 P2 — aggregate (struct/array/tuple) module-level globals
+  "t_globstruct|exit|30"
+  "t_globarr|exit|80"
+  "t_globnested|exit|40"
+  "t_globarriter|exit|119"
+  "t_globbig|exit|65"
+  "t_globpass|exit|42"
 )
 
 for row in "${rows[@]}"; do

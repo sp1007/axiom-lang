@@ -721,7 +721,19 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
 // RFC 0017 / BUG#82: read a module-level global's value from static storage. Composes
 // OP_GLOBAL_ADDR (address via lea rip + reloc) with OP_LOAD (sized by the value type).
 pub fn lower_global_read(mut self: ptr[FuncLowering], sym_idx: u32, type_id: u32) -> u32:
+    // RFC 0017 P2: a by-address AGGREGATE global (struct/array/tuple) is represented by
+    // the ADDRESS of its static storage — exactly like a local aggregate vreg. Return the
+    // OP_GLOBAL_ADDR result directly (NO load), typed as the aggregate so get_register_type
+    // reports the struct type and a downstream OP_GET_FIELD / OP_INDEX composes base+offset.
+    // Scalars keep the address-typed-as-pointer + OP_LOAD form (byte-identical to before).
+    mut is_agg := false
+    if type_id != 0 as u32 and (type_id as i64) < self.mb.typetable.entries.len:
+        let gk = self.mb.typetable.entries.data[type_id as i64].kind
+        is_agg = gk == TYPE_KIND_STRUCT or gk == TYPE_KIND_ARRAY or gk == TYPE_KIND_TUPLE
     let addr = self.fb.fresh_reg()
+    if is_agg:
+        self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: type_id, dest: addr, src1: sym_idx, src2: 0 as u32))
+        return addr
     self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: 4 as u32, dest: addr, src1: sym_idx, src2: 0 as u32))
     let val = self.fb.fresh_reg()
     self.fb.emit(AirInst(opcode: OP_LOAD, type_id: type_id, dest: val, src1: addr, src2: 0 as u32))
@@ -4200,7 +4212,17 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     mut size := 0 as u32
     mut align := 0 as u32
     builder_type_size_and_align(self.typetable, type_id, &size, &align)
-    if size == 0 as u32 or size > 8 as u32:
+    if size == 0 as u32:
+        return
+    // RFC 0017 P2: a by-address AGGREGATE global (struct/array/tuple) gets a `.data`
+    // slot of its full size; scalars are still capped at 8 bytes (stored inline).
+    // The typecheck Phase 4 gate already rejected everything else, so this mirror
+    // just distinguishes the two storage strategies.
+    mut is_agg := false
+    if (type_id as i64) < self.typetable.entries.len:
+        let gk = self.typetable.entries.data[type_id as i64].kind
+        is_agg = gk == TYPE_KIND_STRUCT or gk == TYPE_KIND_ARRAY or gk == TYPE_KIND_TUPLE
+    if not is_agg and size > 8 as u32:
         return
     mut init_expr := 0 as u32
     mut child := node.first_child
@@ -4209,14 +4231,15 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
         if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_PTR_TYPE and cn.kind != NODE_SLICE_TYPE and cn.kind != NODE_ARRAY_TYPE and cn.kind != NODE_FUNC_TYPE and cn.kind != NODE_GENERIC_TYPE:
             init_expr = child
         child = cn.next_sibling
-    // RFC 0017 P2: a compile-time-constant initializer is folded into the `.data`
-    // image bytes (init_lo). A non-constant initializer leaves the storage zeroed and
-    // records the AST node so it is evaluated + stored at program entry (see lower_func
-    // for `main`). Aggregate globals are still rejected in typecheck (size > 8 filtered
-    // above), so only scalars reach here.
+    // A scalar with a compile-time-constant initializer is folded into the `.data`
+    // image bytes (init_lo). Everything else (a non-constant scalar, OR any aggregate)
+    // leaves the storage zeroed and records the AST node so it is evaluated + stored at
+    // program entry (see lower_func for `main`). Aggregates are ALWAYS runtime-init:
+    // their initializer is a constructor expression whose value is a by-address
+    // aggregate, block-copied into the slot by lower_global_write's OP_STORE.
     mut bits := 0 as i64
     mut init_node := 0 as u32
-    if ax_global_init_is_const(self.tree, init_expr):
+    if not is_agg and ax_global_init_is_const(self.tree, init_expr):
         bits = self.builder_fold_global_init(init_expr, type_id)
     else:
         init_node = init_expr

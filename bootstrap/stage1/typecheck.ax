@@ -1456,7 +1456,13 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
             init_expr = child
         child = cn.next_sibling
 
-    // Type must be a scalar (primitive or pointer/ref) of size 1..8.
+    // A global is supported if it is either a scalar (primitive/pointer/ref of size
+    // 1..8, stored inline in `.data`) OR — RFC 0017 P2 — a by-address AGGREGATE:
+    // a struct, fixed array, or tuple. Aggregate globals get a zeroed `.data` slot
+    // sized to the type; a present initializer is evaluated at program entry (the
+    // `main` prologue) and block-copied into that slot (see collect_global /
+    // lower_global_read). Pointer-repr sum/Option/Result globals are still deferred
+    // (they need the 8-byte box-pointer store path, not a block copy).
     mut supported := false
     if type_id != 0 as u32 and (type_id as i64) < self.types.entries.len:
         let k = self.types.entries.data[type_id as i64].kind
@@ -1466,8 +1472,10 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
             builder_type_size_and_align(self.types, type_id, &gsize, &galign)
             if gsize >= 1 as u32 and gsize <= 8 as u32:
                 supported = true
+        elif k == TYPE_KIND_STRUCT or k == TYPE_KIND_ARRAY or k == TYPE_KIND_TUPLE:
+            supported = true
     if not supported:
-        ax_printf_local("error: module-level global '%s' must be a scalar type (integer, bool, char, float, or pointer); aggregate/struct/array globals are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error: module-level global '%s' must be a scalar, struct, fixed-array, or tuple type; pointer-repr (Option/Result/sum) globals are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         self.diags_count = self.diags_count + 1 as i64
         return
 
