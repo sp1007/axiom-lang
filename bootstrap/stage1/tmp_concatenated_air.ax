@@ -9558,8 +9558,21 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         mut vexp := TYPE_UNKNOWN
                         if fpos < si.fields.len:
                             let fty = si.fields.data[fpos].type_id
-                            if fty != TYPE_UNKNOWN and (fty as i64) < self.types.entries.len and self.types.entries.data[fty as i64].kind == TYPE_KIND_ARRAY:
-                                vexp = fty
+                            if fty != TYPE_UNKNOWN and (fty as i64) < self.types.entries.len:
+                                let fk = self.types.entries.data[fty as i64].kind
+                                if fk == TYPE_KIND_ARRAY:
+                                    vexp = fty
+                                elif fk == TYPE_KIND_STRUCT:
+                                    // RFC 0022: a TUPLE-typed field â€” pass its declared type so a
+                                    // `(a, b)` literal coerces its elements to the field's element
+                                    // types. Without this the literal defaults to {i32,i32} (8B) and
+                                    // is stored into an {i64,i64} (16B) field slot, so the second
+                                    // element reads garbage. Guarded to `__tup` structs (never a
+                                    // named struct field, whose value is a distinct constructor).
+                                    let fnm = self.intern.get(self.types.entries.data[fty as i64].name_id)
+                                    if std.string.starts_with(fnm, "__tup"):
+                                        vexp = fty
+                                    safe_free_str(fnm)
                         if vnode != 0 as u32:
                             self.infer_node(vnode, vexp)
                         carg = self.tree.nodes.data[carg as i64].next_sibling

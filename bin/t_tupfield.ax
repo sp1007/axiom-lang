@@ -1,0 +1,14 @@
+// Oracle (exit=33): RFC 0022 — a TUPLE-typed struct field. Found by probing: a `(a,b)`
+// literal in a struct constructor field was not coerced to the field's declared tuple
+// type, so it was built as {i32,i32} (8B) and stored into an {i64,i64} (16B) field slot,
+// making the second element read garbage (BUG-class: tuple element width mismatch). The
+// ctor-field coercion (which already handled array fields) now also passes a `__tup` field
+// type as the value's expected type. Exercises: a tuple field with a trailing scalar, a
+// nested-tuple-field write across the field, and reading both elements.
+struct Box:
+    pair: (i64, i64)
+    tag: i64
+fn main() -> i32:
+    mut b = Box(pair: (10, 20), tag: 3)
+    b.pair.0 = 12                       // write nested tuple field element
+    return (b.pair.0 + b.pair.1 + b.tag - 2) as i32   // 12 + 20 + 3 - 2 = 33

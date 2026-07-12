@@ -273,6 +273,8 @@ rows=(
   "t_tuple3|exit|50"
   # RFC 0022 P4 — chained tuple field access `t.N.M` (float-selector split)
   "t_tuple4|exit|10"
+  # RFC 0022 — tuple-typed struct field (ctor-field element coercion)
+  "t_tupfield|exit|33"
 )
 
 for row in "${rows[@]}"; do
