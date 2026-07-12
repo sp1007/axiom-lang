@@ -52,6 +52,38 @@ pub fn utf8_decode(s: str, off: i64) -> i64:
     let cp4 = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
     return ((4 as i64) << 32) | cp4
 
+/// RFC 0020 P3 — explicit BYTE view of a string. `str` and `bytes` share the
+/// {ptr,len} 16-byte repr, so this is a zero-cost reinterpret (no copy): `for b in
+/// s.as_bytes()` iterates raw `u8`, and `s.as_bytes()[i]`/`s.as_bytes().len` are
+/// byte-level — the same values as `s[i]`/`s.len` but explicitly typed `bytes`.
+/// (Named `as_bytes`, matching Rust's `str::as_bytes`; a bare `bytes` method is not
+/// possible — `bytes` is a TYPE name, so `s.bytes()` / `bytes(x)` mean conversion.)
+pub fn as_bytes(s: str) -> bytes:
+    return s as bytes
+
+/// RFC 0020 P3 — explicit CODEPOINT view of a string. `for c in s.chars()` iterates
+/// Unicode scalars (`rune`), identical to `for c in s` (str for-in is already
+/// codepoint iteration). Zero-cost: same UTF-8 buffer; only the per-`str` iteration
+/// semantic applies. Provided for API familiarity and as the dual of `.as_bytes()`.
+pub fn chars(s: str) -> str:
+    return s
+
+/// RFC 0020 P3 — codepoint random access. Returns the `n`th UTF-8 codepoint of `s`
+/// (0-based) as a `rune`, or 0 if `n` is out of range. O(n): decodes from the start
+/// via `utf8_decode` (there is no O(1) codepoint index — `s[i]` is a raw byte). For
+/// sequential access prefer `for c in s` / `s.chars()`.
+pub fn char_at(s: str, n: i64) -> rune:
+    mut off := 0 as i64
+    mut i := 0 as i64
+    while off < s.len:
+        let dec = utf8_decode(s, off)
+        if i == n:
+            return (dec & 4294967295) as rune
+        // width is packed in the HIGH 32 bits; shift the i64 to advance the offset.
+        off = off + (dec >> 32)
+        i = i + 1 as i64
+    return 0 as rune
+
 /// Concatenates two strings.
 ///
 /// Implemented in AXIOM (value ABI) rather than via the `str_concat` intrinsic:

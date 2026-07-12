@@ -1,0 +1,15 @@
+// Oracle (exit 244): RFC 0020 P3 string view methods. "héllo" = 5 codepoints /
+// 6 bytes (é = U+00E9 = 2 UTF-8 bytes). s.as_bytes() -> byte view (for-in u8) = 6;
+// s.chars() -> codepoint view (for-in rune) = 5; s.char_at(1) = 'é' = 233.
+// 6 + 5 + 233 = 244. Exercises .as_bytes()/.chars()/.char_at() via UFCS + for-in
+// over a method-call iteree.
+import std.string
+fn main() -> i64:
+    let s = "héllo"
+    mut bcount := 0 as i64
+    for b in s.as_bytes():
+        bcount = bcount + 1 as i64
+    mut ccount := 0 as i64
+    for c in s.chars():
+        ccount = ccount + 1 as i64
+    return bcount + ccount + (s.char_at(1) as i64)

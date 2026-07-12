@@ -165,6 +165,7 @@ rows=(
   "t_numufcs|exit|11"
   "t_numufcsneg|reject|"
   "t_numufcswide|exit|7"
+  "t_strviews|exit|244"
   "t_geninstfield|exit|44"
   "t_cseredef|exit|12"
   "t_hashiter|exit|15"
