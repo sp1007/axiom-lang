@@ -119,6 +119,38 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   address taken across a call that can realloc the source, or (d) is aliased.
   Validate `FLAG_ESCAPES_TO_HEAP` is set correctly on a corpus before any
   consumer trusts it.
+
+  **P2 activation attempt 2026-07-12 — NOT landed, reverted; two blockers found
+  (de-risks the next attempt):**
+
+  1. **Flag collision (solved).** `FLAG_ESCAPES_TO_HEAP = 128` (node-flag space)
+     is the SAME value as `SYM_FLAG_MOVED = 128` (sym-flag space). escape.ax's
+     original `sym.flags |= FLAG_ESCAPES_TO_HEAP` therefore sets `SYM_FLAG_MOVED`,
+     which `ownership.ax:79` reads and emits `E4001 use of moved value` on every
+     use — re-creating the 258-error flood. And its `decl_node.flags |=
+     FLAG_ESCAPES_TO_HEAP` drives air_builder's heap boxing (lower_var_decl ~3143 →
+     lower_ownership_aware ~2419: alloc + store). So **both** original flag writes
+     change behavior. Fix: a dedicated non-colliding `SYM_FLAG_ESCAPES = 4096`
+     (free in sym-flag space; no current consumer) that P3 reads instead. This part
+     works.
+
+  2. **Merely RUNNING the pass breaks the fixpoint (open — the real blocker).**
+     Fixing the guard (`node_idx == 0xffffffff` only) so `traverse_nodes` runs,
+     **even with the flag write fully disabled** (pass mutates NO shared state —
+     only builds/free's per-function ConnectionGraphs), makes A != B: a **period-2
+     oscillation** `8AF4B46C ⇄ A70D6243`. i.e. seed(no-op pass) and A(running pass)
+     compile the identical source to different binaries. `connection_graph.ax`
+     struct sizes are correct (CGNode = 20, CGEdge = 12 — verified against layout),
+     so it is NOT a hardcoded-size bug. The pass writes nothing the codegen reads,
+     so the most likely cause is a **latent allocation-order / address-dependent
+     non-determinism in codegen** that the extra alloc/free traffic of the escape
+     pass perturbs (or memory corruption in the never-run graph code at scale).
+     This must be isolated FIRST: run the pass on a single small function with a
+     dump, confirm determinism; bisect whether it is the alloc traffic (try a
+     pass that only allocs/frees a graph and touches nothing) vs the graph
+     traversal; audit for any codegen path that depends on a pointer value or
+     allocation order. Only after the pass runs deterministically (A==B) should the
+     `SYM_FLAG_ESCAPES` write + soundness validation proceed.
 - **P3 — CTGC free, whitelisted:** only after P2 is sound, inject `OP_DESTROY`
   for provably-non-escaping, non-aliased local aggregates — starting with a
   narrow whitelist (e.g. a single leaf module), measuring real regression blast
@@ -148,6 +180,11 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
 
 ## 8. Status
 
-Draft — problem framed, decisions enumerated, plan sequenced. No code activation.
-The guard-fix + RFC 0014 wiring experiment is fully reverted. Next concrete step
-is a decision on §4.1 (move semantics: no, recommended), then P1 scoping.
+P1 Implemented (mutability-only OwnershipChecker). **P2 attempted 2026-07-12 and
+reverted** — see the P2 sub-section in §5 for the two blockers found: (1) the
+128-value flag collision (solved via a new `SYM_FLAG_ESCAPES = 4096`), and (2) the
+open blocker — merely enabling the escape pass to run (no shared mutation) breaks
+the A==B fixpoint (period-2 oscillation), pointing to a latent allocation-order /
+address-dependent non-determinism in codegen exposed by the extra pass. Baseline
+restored (A==B `8AF4B46C`). Next concrete step: isolate the run-the-pass A!=B cause
+in a minimal harness BEFORE wiring `SYM_FLAG_ESCAPES` + soundness validation.
