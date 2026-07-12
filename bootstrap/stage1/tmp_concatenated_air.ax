@@ -7369,6 +7369,14 @@ pub fn match_is_confidently_partial(self: ptr[TypeChecker], match_idx: u32, scru
     let s_entry = self.types.entries.data[scrutinee_type as i64]
     if not (s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST or s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT):
         return false
+    // OPTION/RESULT (kind 11/12) are NOT backed by a `sumtypes` entry: their `.extra`
+    // is the INNER/ok TYPE id, not a sumtypes index. Feeding it to the sumtypes lookup
+    // below reads a garbage `variants` pointer -> crash (surfaces once a match scrutinee
+    // is actually typed OPTION, e.g. an element read from `[Option[T];N]`). Their
+    // exhaustiveness is not sumtypes-driven, so conservatively report "not confidently
+    // partial" (treated as total; never false-rejects a missing return).
+    if s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
+        return false
     mut sum_extra := s_entry.extra
     if s_entry.kind == TYPE_KIND_GENERIC_INST:
         mut resolved := false
@@ -8203,7 +8211,37 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let scrutinee_type = self.current_match_scrutinee
         if scrutinee_type != TYPE_UNKNOWN:
             let s_entry = self.types.entries.data[scrutinee_type]
-            if s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST or s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
+            if s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
+                // OPTION/RESULT (kind 11/12) have NO sumtypes entry -- `.extra` is the
+                // inner/ok TYPE id, not a sumtypes index -- so the SUM path below would
+                // read a garbage `variants` pointer and crash (surfaces when a match
+                // scrutinee is actually typed OPTION, e.g. `match arr[i]` on `[Option;N]`).
+                // Resolve the pattern payload DIRECTLY from the entry, mirroring
+                // air_builder's kind-11/12 local match lowering: Some(v)/Ok(v) bind the
+                // inner/ok type (`.extra`), Err(e) binds the err type (`.name_id`), None
+                // binds nothing, and a bare binding binds the whole Option/Result value.
+                if pattern != 0 as u32:
+                    let pat_node = self.tree.nodes.data[pattern]
+                    if pat_node.kind == NODE_VARIANT_PAT:
+                        let arg = pat_node.first_child
+                        if arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
+                            let arg_sym_idx = self.tree.nodes.data[arg].payload
+                            mut pl := s_entry.extra
+                            if s_entry.kind == TYPE_KIND_RESULT:
+                                let v_sym_idx = pat_node.payload
+                                if v_sym_idx != 0 as u32 and (v_sym_idx as i64) < self.symtable.symbols.len:
+                                    let vnm = self.intern.get(self.symtable.symbols.data[v_sym_idx].name_id)
+                                    if vnm == "Err":
+                                        pl = s_entry.name_id
+                            if arg_sym_idx != 0 as u32:
+                                self.symtable.symbols.data[arg_sym_idx].type_id = pl
+                                self.set_node_type(arg, pl)
+                    elif pat_node.kind == NODE_BINDING_PAT:
+                        let b_sym_idx = pat_node.payload
+                        if b_sym_idx != 0 as u32:
+                            self.symtable.symbols.data[b_sym_idx].type_id = scrutinee_type
+                            self.set_node_type(pattern, scrutinee_type)
+            elif s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST:
                 mut sum_extra := s_entry.extra
                 if s_entry.kind == TYPE_KIND_GENERIC_INST:
                     mut idx := 0 as i64
@@ -9108,6 +9146,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 // not Option[Token]) with no self-typed `unwrap` free fn â€”
                                 // keep them on the agnostic scan or self-host false-rejects.
                                 let is_opt_res_m = (mname == "unwrap" or mname == "unwrap_err" or mname == "is_some" or mname == "is_none" or mname == "is_ok" or mname == "is_err")
+                                // A receiver DIRECTLY typed Option/Result (kind 11/12)
+                                // calling one of these backend-intercepted methods is always
+                                // valid: air_builder lowers is_some/unwrap/... locally with no
+                                // free-fn symbol, so the name scan below finds nothing and
+                                // false-rejects (e.g. `arr[i].is_some()` on `[Option;N]`, where
+                                // arr[i] types to a real OPTION). Accept unconditionally.
+                                if is_opt_res_m and (rue3.kind == TYPE_KIND_OPTION or rue3.kind == TYPE_KIND_RESULT):
+                                    name_exists = true
                                 mut self_aware := false
                                 mut rec_base := "" as str
                                 if (rue3.kind == TYPE_KIND_STRUCT or rue3.kind == TYPE_KIND_SUM or rue3.kind == TYPE_KIND_GENERIC_INST) and not is_opt_res_m:
@@ -9738,6 +9784,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                                 member_exists = true
                                                 break
                                             mi = mi + 1 as i64
+                                    // The backend-intercepted Option/Result methods
+                                    // (is_some/unwrap/...) have no method symbol, so the
+                                    // scans above miss them -> false-reject on an OPTION/
+                                    // RESULT-typed receiver (e.g. `arr[i].is_some()` where the
+                                    // element types to a real OPTION). air_builder lowers them
+                                    // by name; leave result UNKNOWN and let the call proceed.
+                                    if not member_exists and (entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT) and (mnm == "unwrap" or mnm == "unwrap_err" or mnm == "is_some" or mnm == "is_none" or mnm == "is_ok" or mnm == "is_err"):
+                                        member_exists = true
                                     if not member_exists:
                                         let tnm = self.intern.get(entry.name_id)
                                         ax_printf_local("error: no field or method '%s' on type '%s'\n", get_str_ptr(mnm) as i64, get_str_ptr(tnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -10056,6 +10110,37 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         mut inner_type := TYPE_UNKNOWN
         if inner_node != 0 as u32:
             inner_type = self.infer_node(inner_node, TYPE_UNKNOWN)
+            // Builtin Option/Result are not user generic templates, so a
+            // NODE_GENERIC_TYPE element leaves inner_type UNKNOWN -> the array element
+            // falls back to a scalar and the 8-byte box pointer that the constructor
+            // stores (pointer-repr, register_option/result kind 11/12, size 16) is
+            // truncated on OP_STORE/OP_INDEX -> match/read segfaults. Resolve the real
+            // pointer-repr aggregate HERE so both the store stride and OP_INDEX load
+            // agree. Scoped to fixed-array ELEMENT position only: the compiler's own
+            // source uses no `[Option;N]`/`[Result;N]` arrays, so the self-host fixpoint
+            // is unaffected -- retyping Option/Result globally (annotations/ctors) instead
+            // shifts every EQ/COPY/MAKE_REF path (RFC 0012) and breaks self-compilation.
+            if inner_type == TYPE_UNKNOWN and self.tree.nodes.data[inner_node].kind == NODE_GENERIC_TYPE:
+                let ib = self.tree.nodes.data[inner_node].first_child
+                if ib != 0 as u32:
+                    let ibname = self.node_text(ib)
+                    if ibname == "Option":
+                        let a1 = self.tree.nodes.data[ib].next_sibling
+                        mut it := TYPE_UNKNOWN
+                        if a1 != 0 as u32:
+                            it = self.infer_node(a1, TYPE_UNKNOWN)
+                        inner_type = self.types.register_option(it)
+                    elif ibname == "Result":
+                        let a1 = self.tree.nodes.data[ib].next_sibling
+                        mut okt := TYPE_UNKNOWN
+                        mut ert := TYPE_UNKNOWN
+                        if a1 != 0 as u32:
+                            okt = self.infer_node(a1, TYPE_UNKNOWN)
+                            let a2 = self.tree.nodes.data[a1].next_sibling
+                            if a2 != 0 as u32:
+                                ert = self.infer_node(a2, TYPE_UNKNOWN)
+                        inner_type = self.types.register_result(okt, ert)
+                    safe_free_str(ibname)
         mut length := 1 as u32
         if inner_node != 0 as u32:
             let size_node = self.tree.nodes.data[inner_node].next_sibling

@@ -206,6 +206,10 @@ rows=(
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"
   "t_bracelit|reject|"
+  "t_optarray|exit|40"
+  "t_resultarray|exit|40"
+  "t_optarrayiter|exit|123"
+  "t_optarraymethod|exit|40"
 )
 
 for row in "${rows[@]}"; do
