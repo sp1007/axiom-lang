@@ -670,6 +670,18 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
         if sym.name_id == actual_name_id:
             is_resolved = true
             sym_idx = node.payload
+        else:
+            // RFC 0022 P3: a SYNTHESIZED tuple-destructure temp reference (`__td<n>`,
+            // built by parse_tuple_destructure) carries a placeholder token whose text is
+            // NOT the temp's name, so the name-match guard above misses even though the
+            // resolver correctly rewrote `payload` to the temp's symbol index. Trust the
+            // resolved payload when the symbol is such a synthetic temp. Real user idents
+            // always match the token above, so this never affects ordinary code.
+            let sname = self.mb.pool.get(sym.name_id)
+            if std.string.starts_with(sname, "__td"):
+                is_resolved = true
+                sym_idx = node.payload
+            safe_free_str(sname)
 
     @free(get_str_ptr(text))
 

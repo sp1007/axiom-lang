@@ -1,6 +1,6 @@
 # RFC 0022 — Tuple literal expressions
 
-- Status: Accepted (P1 + P2 implemented)
+- Status: Accepted (P1 + P2 + P3 implemented)
 - Author: autopilot
 - Date: 2026-07-12
 - Affects: lexer (none), parser, typechecker, AIR lowering
@@ -87,8 +87,23 @@ Two supporting mechanisms were required for these to be *correct* (not just pars
   convention: reject rather than silently miscompile); the fix is to annotate the
   local or pass the literal directly.
 
-**Still deferred:** tuple destructuring in `let`/`match` (the pattern side already
-has `NODE_TUPLE_PAT` but is not wired to expressions) and chained `.N.M` (below).
+**P3 (implemented):** tuple destructuring `let (a, b, ...) = EXPR` (and `mut (...)`).
+Desugared entirely in the parser (`parse_tuple_destructure`) into a temp evaluated
+ONCE plus one binding per element via ordinary tuple field access:
+`{ let __td<n> = EXPR ; let a = __td<n>._f0 ; let b = __td<n>._f1 ; ... }`. The
+desugar block's children are *spliced* into the enclosing statement list (a bare
+`NODE_BLOCK` is the only thing `parse_stmt` yields in statement position, so this is
+unambiguous), so the bindings live at the same lexical level as ordinary locals. `_`
+bindings are skipped; nested patterns are deferred. This reuses the resolver,
+typecheck, and lowering wholesale — with one required backend touch: `lower_ident`
+re-derives an identifier's name from its source **token** to guard against stale
+payloads, but a synthesized temp reference carries a placeholder token, so it now
+also trusts the resolver's payload when the resolved symbol is a `__td`-prefixed
+destructure temp (real user idents always match the token, so ordinary code is
+unaffected).
+
+**Still deferred:** tuple destructuring in `match`/params, nested destructuring
+patterns, and chained `.N.M` (below).
 
 **Known P1 limitation — chained `.N.M`:** the lexer tokenizes `t.0.0` as
 `IDENT DOT FLOAT_LIT(0.0)` because the `0.0` run lexes as a float, so *chained*

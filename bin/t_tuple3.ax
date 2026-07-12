@@ -1,0 +1,18 @@
+// Oracle (exit=50): RFC 0022 P3 tuple destructuring `let (a, b, ...) = EXPR`.
+// Desugars to a temp evaluated ONCE plus one binding per element (via tuple field
+// access), spliced into the enclosing scope. Exercises: destructure of a literal, of
+// a function return (single evaluation), a wildcard `_` binding, a `mut` destructure
+// with later mutation, and destructure of an annotated tuple variable.
+mut calls: i64 = 0
+fn mk() -> (i64, i64):
+    calls = calls + 1      // must run exactly once for `let (x,y) = mk()`
+    return (5, 7)
+fn main() -> i32:
+    let (a, b) = (10, 20)          // 30
+    let (x, y) = mk()              // 12 ; calls -> 1
+    mut (p, _, r) = (3, 99, 4)     // p=3, r=4 ; skip 99
+    p = p + 1                      // 4
+    let t: (i64, i64) = (6, 8)
+    let (u, v) = t                 // 14
+    // 30 + 12 + p(4) + r(4) + 14 + calls(1) - 15 = 50
+    return (a + b + x + y + p + r + u + v + calls - 15) as i32

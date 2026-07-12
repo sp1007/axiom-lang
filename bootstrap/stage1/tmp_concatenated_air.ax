@@ -2446,6 +2446,10 @@ pub fn parse_continue_stmt(mut self: ptr[Parser]) -> u32:
 
 pub fn parse_var_decl(mut self: ptr[Parser]) -> u32:
     let tok = self.consume() // let/mut
+    // RFC 0022 P3: tuple destructuring `let (a, b, ...) = EXPR`. A `(` right after
+    // `let`/`mut` (where a binding NAME is otherwise required) is unambiguous.
+    if self.check(TK_L_PAREN):
+        return self.parse_tuple_destructure(tok)
     let node = self.tree.add_node(NODE_VAR_DECL, self.token_idx(tok))
     if tok.kind == TK_MUT:
         self.set_flags(node, FLAG_IS_MUT as u16)
@@ -2472,6 +2476,83 @@ pub fn parse_var_decl(mut self: ptr[Parser]) -> u32:
             self.append_child(node, val)
     self.expect_newline()
     return node
+
+// RFC 0022 P3: desugar `let (a, b, ...) = EXPR` into a scope-transparent block:
+//   { let __td<n> = EXPR ; let a = __td<n>._f0 ; let b = __td<n>._f1 ; ... }
+// A bare NODE_BLOCK does not push a scope in the resolver, so the bindings land in
+// the ENCLOSING scope (visible after the destructure). The temp evaluates EXPR once;
+// each binding reads one tuple field through the ordinary tuple field-access path
+// (`_f<i>`). `_` bindings are skipped. Nested patterns are deferred (P3+): bindings
+// must be plain names or `_`.
+pub fn parse_tuple_destructure(mut self: ptr[Parser], kw_tok: Token) -> u32:
+    let is_mut = (kw_tok.kind == TK_MUT)
+    self.consume() // '('
+    mut names := new_u32_vec()   // interned binding name ids; 0 == wildcard `_`
+    while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
+        let prev_pos = self.pos
+        let nt = self.peek()
+        if nt.kind == TK_IDENT:
+            self.consume()
+            let ntext = self.token_text(nt)
+            if std.string.len(ntext) == 1 as i64 and ntext[0] == 95 as u8: // '_'
+                (&names).push(0 as u32)
+            else:
+                (&names).push(self.pool.intern(ntext))
+            @free(ntext as ptr[u8])
+        else:
+            self.errorf(nt, "tuple destructuring binding must be a name or `_`")
+            self.consume()
+        if not self.check(TK_R_PAREN):
+            self.expect(TK_COMMA)
+        if self.pos == prev_pos:
+            self.consume()
+    self.expect(TK_R_PAREN)
+    if self.check_raw(TK_EQ) or self.check_raw(TK_COLON_EQ):
+        self.consume()
+    else:
+        self.errorf(self.peek(), "tuple destructuring requires an initializer `= EXPR`")
+    let init = self.parse_expr_with_prec(BP_NONE)
+    self.expect_newline()
+
+    let block = self.tree.add_node(NODE_BLOCK, self.token_idx(kw_tok))
+    // Unique temp name from the block's own (unique) node index.
+    let uniq = std.string.to_str(block as i64)
+    let tmp_str = std.string.concat("__td", uniq)
+    safe_free_str(uniq)
+    let tmp_name_id = self.pool.intern(tmp_str)
+    safe_free_str(tmp_str)
+    let tmp_decl = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
+    self.set_payload(tmp_decl, tmp_name_id)
+    if init != 0 as u32:
+        self.append_child(tmp_decl, init)
+    self.append_child(block, tmp_decl)
+
+    mut i := 0 as i64
+    while i < names.len:
+        let nm = names.data[i]
+        if nm != 0 as u32:
+            let bind = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
+            if is_mut:
+                self.set_flags(bind, FLAG_IS_MUT as u16)
+            self.set_payload(bind, nm)
+            // field access: __td._f<i>
+            let obj = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
+            self.set_payload(obj, tmp_name_id)
+            let fld = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(kw_tok))
+            self.append_child(fld, obj)
+            let istr = std.string.to_str(i)
+            let fstr = std.string.concat("_f", istr)
+            safe_free_str(istr)
+            self.set_payload(fld, self.pool.intern(fstr))
+            safe_free_str(fstr)
+            let fid = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
+            self.append_child(fld, fid)
+            self.append_child(bind, fld)
+            self.append_child(block, bind)
+        i = i + 1 as i64
+    if names.data != null as ptr[u32]:
+        @free(names.data as ptr[u8])
+    return block
 
 pub fn parse_return_stmt(mut self: ptr[Parser]) -> u32:
     let tok = self.expect(TK_RETURN)
@@ -2686,7 +2767,17 @@ pub fn parse_block(mut self: ptr[Parser]) -> u32:
         let prev_pos = self.pos
         let stmt = self.parse_stmt()
         if stmt != 0 as u32:
-            self.append_child(node, stmt)
+            // RFC 0022 P3: `let (a,b) = e` desugars to a NODE_BLOCK holding a temp +
+            // per-binding decls. No other statement form yields a bare NODE_BLOCK here,
+            // so splice its (already-linked, 0-terminated) child chain directly into the
+            // enclosing statement list â€” the bindings then live at the SAME lexical level
+            // as ordinary locals (the proven flat form), not in a nested block.
+            if self.tree.nodes.data[stmt as i64].kind == NODE_BLOCK:
+                let fc = self.tree.nodes.data[stmt as i64].first_child
+                if fc != 0 as u32:
+                    self.append_child(node, fc)
+            else:
+                self.append_child(node, stmt)
         if self.pos == prev_pos:
             self.pos = self.pos + 1
     self.expect(TK_DEDENT)
@@ -12412,6 +12503,18 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
         if sym.name_id == actual_name_id:
             is_resolved = true
             sym_idx = node.payload
+        else:
+            // RFC 0022 P3: a SYNTHESIZED tuple-destructure temp reference (`__td<n>`,
+            // built by parse_tuple_destructure) carries a placeholder token whose text is
+            // NOT the temp's name, so the name-match guard above misses even though the
+            // resolver correctly rewrote `payload` to the temp's symbol index. Trust the
+            // resolved payload when the symbol is such a synthetic temp. Real user idents
+            // always match the token above, so this never affects ordinary code.
+            let sname = self.mb.pool.get(sym.name_id)
+            if std.string.starts_with(sname, "__td"):
+                is_resolved = true
+                sym_idx = node.payload
+            safe_free_str(sname)
 
     @free(get_str_ptr(text))
 
