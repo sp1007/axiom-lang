@@ -266,6 +266,28 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
     if tok.kind == TK_L_PAREN:
         self.consume() // '('
         let inner = self.parse_expr_with_prec(BP_NONE)
+        // RFC 0022: a `,` here promotes the group to a TUPLE literal. `(e)` (no
+        // comma) stays a grouping expression (unchanged). `(e,)` is a 1-tuple;
+        // `(a, b, ...)` an N-tuple; a trailing comma before `)` is allowed. A
+        // comma in this prefix position was previously a hard parse error, so
+        // this only accepts new syntax and cannot affect existing programs
+        // (self-host A==B preserved, cf. the array-literal NUD).
+        if self.check(TK_COMMA):
+            let node = self.tree.add_node(NODE_TUPLE_EXPR, self.token_idx(tok))
+            if inner != 0 as u32:
+                self.append_child(node, inner)
+            while self.check(TK_COMMA):
+                self.consume() // ','
+                if self.check(TK_R_PAREN):
+                    break // trailing comma
+                let prev_pos = self.pos
+                let e = self.parse_expr_with_prec(BP_NONE)
+                if e != 0 as u32:
+                    self.append_child(node, e)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_PAREN)
+            return node
         self.expect(TK_R_PAREN)
         return inner
     if tok.kind == TK_L_BRACKET:
@@ -376,6 +398,22 @@ pub fn parse_led(mut self: ptr[Parser], left: u32, op_tok: Token, bp: i32) -> u3
         return node
     if op_tok.kind == TK_DOT:
         let tok = self.peek()
+        // RFC 0022: `t.0` / `t.1` — an INT_LIT selector is tuple field access.
+        // Rewrite it to the synth field name `_f<N>` so it resolves against the
+        // tuple's anonymous struct fields via ordinary name-based resolution.
+        // `t.0` was previously a hard parse error, so this only adds syntax.
+        if self.check(TK_INT_LIT):
+            let field_tok = self.consume()
+            let itext = self.token_text(field_tok)
+            let fname = std.string.concat("_f", itext)
+            @free(itext as ptr[u8])
+            let node = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
+            self.append_child(node, left)
+            self.set_payload(node, self.pool.intern(fname))
+            @free(fname as ptr[u8])
+            let field_name = self.tree.add_node(NODE_IDENT, self.token_idx(field_tok))
+            self.append_child(node, field_name)
+            return node
         let field_tok = self.expect(TK_IDENT)
         let node = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
         self.append_child(node, left)

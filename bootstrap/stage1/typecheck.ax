@@ -3820,6 +3820,31 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             elem_type = TYPE_I32
         result_type = self.types.register_array(elem_type, count)
 
+    elif kind == NODE_TUPLE_EXPR:
+        // RFC 0022: a tuple literal `(e0, e1, ...)` is an anonymous struct with
+        // positional fields `_f0`, `_f1`, ... Infer each element type and register
+        // a synth struct so all struct machinery (layout, OP_SET_FIELD/OP_GET_FIELD,
+        // aggregate ABI) applies for free. Element types are inferred independently
+        // (integer-literal elements default like a bare NODE_INT_LIT); coercion by an
+        // expected tuple type is deferred (see RFC 0022 Scope). Registering per
+        // inference mirrors NODE_ARRAY_LIT — duplicate layout-identical entries across
+        // passes are harmless and deterministic.
+        mut synth_fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
+        mut child := self.tree.nodes.data[node_idx].first_child
+        mut fidx := 0 as i64
+        while child != 0 as u32:
+            let ft = self.infer_node(child, TYPE_UNKNOWN)
+            let fn_str = std.string.concat("_f", format_int(fidx))
+            let fname_id = self.intern.intern(fn_str)
+            safe_free_str(fn_str)
+            (&synth_fields).push(StructField(name_id: fname_id, type_id: ft))
+            child = self.tree.nodes.data[child].next_sibling
+            fidx = fidx + 1 as i64
+        let synth_nm = std.string.concat("__tup", format_int(fidx))
+        let synth_nm_id = self.intern.intern(synth_nm)
+        safe_free_str(synth_nm)
+        result_type = self.types.register_struct(synth_nm_id, synth_fields)
+
     elif kind == NODE_NIL_LIT:
         if expected != TYPE_UNKNOWN:
             result_type = expected

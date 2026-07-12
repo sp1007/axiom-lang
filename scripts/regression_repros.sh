@@ -265,6 +265,8 @@ rows=(
   "t_globarrstructstr|exit|20"
   "t_globarropt|exit|22"
   "t_globinitorder|exit|40"
+  # RFC 0022 — tuple literal expressions (anonymous struct + .N access)
+  "t_tuple|exit|66"
 )
 
 for row in "${rows[@]}"; do

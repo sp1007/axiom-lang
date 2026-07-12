@@ -1,0 +1,21 @@
+// Oracle (exit=66): RFC 0022 tuple literal expressions. A tuple `(e0, e1, ...)` is
+// an anonymous struct with positional fields `_f0.._fN`; `.N` reads field N. Exercises:
+// a 2-tuple with .0/.1, a mutable 3-tuple with cross-field reassignment (t.1 = 20),
+// a mixed-type tuple (i64,bool) whose bool field drives a branch, and a nested tuple
+// read through an intermediate binding (chained .N.M is a documented P1 limitation).
+// Plain grouping `(expr)` (no comma) must remain unchanged.
+fn main() -> i32:
+    let p = (10, 20)                 // .0=10 .1=20
+    mut t = (1, 2, 3)
+    t.1 = 20                         // mut tuple field write
+    let m = (4, true)
+    mut r: i64 = 0
+    if m.1:                          // bool field in a branch
+        r = m.0                      // 4
+    let nested = ((1, 2), (3, 4))
+    let a = nested.0                 // (1,2)
+    let b = nested.1                 // (3,4)
+    let g = (5 + 5) * 2              // grouping unchanged -> 20
+    // p: 10+20=30 ; t: 1+20+3=24 ; r=4 ; a.0+a.1=3 ; b.0+b.1=7 ; g=20
+    // 30 + 24 + 4 + 3 + 7 + 20 = 88 ; - 22 = 66
+    return (p.0 + p.1 + t.0 + t.1 + t.2 + r + a.0 + a.1 + b.0 + b.1 + g - 22) as i32

@@ -509,6 +509,8 @@ pub fn lower_expr(mut self: ptr[FuncLowering], idx: u32) -> u32:
         return self.lower_struct_lit(idx, node)
     if node.kind == NODE_ARRAY_LIT:
         return self.lower_array_lit(idx, node)
+    if node.kind == NODE_TUPLE_EXPR:
+        return self.lower_tuple_lit(idx, node)
     return 0 as u32
 
 pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
@@ -2258,6 +2260,40 @@ pub fn lower_struct_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
                 ))
             field_idx = field_idx + 1 as u32
         child = cn.next_sibling
+    return struct_reg
+
+pub fn lower_tuple_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
+    // RFC 0022: a tuple literal lowers exactly like a struct literal but with
+    // POSITIONAL children (each child is the field value directly, with no
+    // NODE_NAMED_ARG wrapper). typecheck registered an anonymous struct type
+    // (fields _f0.._fN) for this node, so OP_ALLOC + per-field OP_SET_FIELD
+    // build it and `.N` field access reads it through the ordinary struct path.
+    mut type_id := 0 as u32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        type_id = self.mb.node_types[idx as i64] as u32
+
+    let struct_reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(
+        opcode: OP_ALLOC,
+        type_id: type_id,
+        dest: struct_reg,
+        src1: 0 as u32,
+        src2: 0 as u32,
+    ))
+
+    mut child := node.first_child
+    mut field_idx := 0 as u32
+    while child != 0 as u32:
+        let val_reg = self.lower_expr(child)
+        self.fb.emit(AirInst(
+            opcode: OP_SET_FIELD,
+            type_id: type_id,
+            dest: val_reg,
+            src1: struct_reg,
+            src2: field_idx,
+        ))
+        field_idx = field_idx + 1 as u32
+        child = self.mb.tree.nodes.data[child as i64].next_sibling
     return struct_reg
 
 pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
