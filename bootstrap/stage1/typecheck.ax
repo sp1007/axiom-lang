@@ -1508,6 +1508,13 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
             builder_type_size_and_align(self.types, type_id2, &gsize, &galign)
             if gsize >= 1 as u32 and gsize <= 8 as u32:
                 supported = true
+            elif gsize == 16 as u32:
+                // RFC 0017 P2: `str`/`bytes` — a 16-byte INLINE primitive ({ptr,len}).
+                // NOT a by-address aggregate: the value's home holds all 16 bytes. The
+                // `.data` slot is 16 bytes; init is runtime (both halves stored inline,
+                // NOT a block copy from an address). See collect_global / OP_LOAD in the
+                // selector (16-byte inline load path, mirroring OP_GET_FIELD for str).
+                supported = true
         elif k == TYPE_KIND_STRUCT or k == TYPE_KIND_ARRAY or k == TYPE_KIND_TUPLE:
             supported = true
         elif type_is_pointer_repr(self.types, self.intern, type_id2):

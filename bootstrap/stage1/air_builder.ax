@@ -4230,9 +4230,13 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // store the pointer inline — NOT a 16-byte block copy of the box (which would overrun
     // the slot). It is runtime-init like an aggregate (init produces a heap box).
     let is_ptr_repr = type_is_pointer_repr(self.typetable, self.pool, type_id)
+    // RFC 0017 P2: a 16-byte INLINE primitive (`str`/`bytes`, {ptr,len}) — its value's
+    // home holds all 16 bytes (NOT by-address, NOT an 8-byte box pointer). The `.data`
+    // slot is the full 16 bytes; init is runtime (store both halves inline).
+    let is_inline16 = not is_agg and not is_ptr_repr and size == 16 as u32
     if is_ptr_repr:
         size = 8 as u32
-    elif not is_agg and size > 8 as u32:
+    elif not is_agg and not is_inline16 and size > 8 as u32:
         return
     mut init_expr := 0 as u32
     mut child := node.first_child
@@ -4249,7 +4253,7 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // aggregate, block-copied into the slot by lower_global_write's OP_STORE.
     mut bits := 0 as i64
     mut init_node := 0 as u32
-    if not is_agg and not is_ptr_repr and ax_global_init_is_const(self.tree, init_expr):
+    if not is_agg and not is_ptr_repr and not is_inline16 and ax_global_init_is_const(self.tree, init_expr):
         bits = self.builder_fold_global_init(init_expr, type_id)
     else:
         init_node = init_expr

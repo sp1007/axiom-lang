@@ -1,0 +1,10 @@
+// Oracle (exit=42): RFC 0017 P2 — a `str` (16-byte inline {ptr,len}) module-level global.
+// The `.data` slot is 16 bytes; the literal init is stored at program entry (both halves
+// inline). setname() reassigns the global (whole 16-byte store) cross-function; the read
+// loads both halves back and takes `.len`.
+mut g: str = "hi"
+fn setname():
+    g = "worldwide"          // len 9
+fn main() -> i32:
+    setname()
+    return (g.len + 33) as i32   // 42

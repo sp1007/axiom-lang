@@ -7311,6 +7311,13 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
             builder_type_size_and_align(self.types, type_id2, &gsize, &galign)
             if gsize >= 1 as u32 and gsize <= 8 as u32:
                 supported = true
+            elif gsize == 16 as u32:
+                // RFC 0017 P2: `str`/`bytes` â€” a 16-byte INLINE primitive ({ptr,len}).
+                // NOT a by-address aggregate: the value's home holds all 16 bytes. The
+                // `.data` slot is 16 bytes; init is runtime (both halves stored inline,
+                // NOT a block copy from an address). See collect_global / OP_LOAD in the
+                // selector (16-byte inline load path, mirroring OP_GET_FIELD for str).
+                supported = true
         elif k == TYPE_KIND_STRUCT or k == TYPE_KIND_ARRAY or k == TYPE_KIND_TUPLE:
             supported = true
         elif type_is_pointer_repr(self.types, self.intern, type_id2):
@@ -15766,9 +15773,13 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // store the pointer inline â€” NOT a 16-byte block copy of the box (which would overrun
     // the slot). It is runtime-init like an aggregate (init produces a heap box).
     let is_ptr_repr = type_is_pointer_repr(self.typetable, self.pool, type_id)
+    // RFC 0017 P2: a 16-byte INLINE primitive (`str`/`bytes`, {ptr,len}) â€” its value's
+    // home holds all 16 bytes (NOT by-address, NOT an 8-byte box pointer). The `.data`
+    // slot is the full 16 bytes; init is runtime (store both halves inline).
+    let is_inline16 = not is_agg and not is_ptr_repr and size == 16 as u32
     if is_ptr_repr:
         size = 8 as u32
-    elif not is_agg and size > 8 as u32:
+    elif not is_agg and not is_inline16 and size > 8 as u32:
         return
     mut init_expr := 0 as u32
     mut child := node.first_child
@@ -15785,7 +15796,7 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // aggregate, block-copied into the slot by lower_global_write's OP_STORE.
     mut bits := 0 as i64
     mut init_node := 0 as u32
-    if not is_agg and not is_ptr_repr and ax_global_init_is_const(self.tree, init_expr):
+    if not is_agg and not is_ptr_repr and not is_inline16 and ax_global_init_is_const(self.tree, init_expr):
         bits = self.builder_fold_global_init(init_expr, type_id)
     else:
         init_node = init_expr
@@ -21674,9 +21685,24 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         // by lower_global_read for a sum/Option/Result module-level global.
         if type_is_pointer_repr(sel.table, sel.pool, type_id):
             size = 8 as u32
-        out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
-            emit_load_extend(sel, inst.dest, size, type_id, out_insts)
+        if size == 16 as u32 and not type_is_aggregate(sel.table, type_id):
+            // RFC 0017 P2: a 16-byte INLINE primitive (`str`/`bytes`, {ptr,len}) â€” its
+            // dest's home holds all 16 bytes. A single 16-byte MACH_LOAD into a GP reg is
+            // invalid (max 8B), so copy both 8-byte halves from [src1] into the dest's
+            // home. Mirrors OP_GET_FIELD's size==16 str branch. Reached by
+            // lower_global_read for a `str` module-level global.
+            let tmp_dest_addr = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let tmp_v1 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_v1, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_v1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            let tmp_v2 = next_vreg(sel)
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_v2, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+            out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_v2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
+        else:
+            out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
+                emit_load_extend(sel, inst.dest, size, type_id, out_insts)
 
     elif op == OP_INDEX:
         // BUG#64: the index node's element type is often left unresolved (0) in a

@@ -257,6 +257,8 @@ rows=(
   "t_globopt|exit|42"
   "t_globresult|exit|42"
   "t_globsum|exit|42"
+  "t_globstr|exit|42"
+  "t_globstridx|exit|42"
 )
 
 for row in "${rows[@]}"; do
