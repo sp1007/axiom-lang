@@ -1,0 +1,9 @@
+// Oracle (exit=42): RFC 0017 P2 — whole-struct assign to a global in USER code (g = local); exercises the OP_STORE block-copy write path outside the init prologue.
+struct S:
+    a: i64
+    b: i64
+mut g: S = S(a: 1, b: 1)
+fn main() -> i32:
+    let local = S(a: 30, b: 12)
+    g = local
+    return (g.a + g.b) as i32   // 42

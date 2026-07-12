@@ -248,6 +248,12 @@ rows=(
   "t_globnoinit|exit|7"
   "t_globstructnoinit|exit|42"
   "t_globarrnoinit|exit|40"
+  # RFC 0017 P2 — aggregate-global write paths (user-code block-copy, not just init)
+  "t_globwholeassign|exit|42"
+  "t_globg2g|exit|42"
+  "t_globreturn|exit|42"
+  "t_globrmwloop|exit|20"
+  "t_globarrfn|exit|50"
 )
 
 for row in "${rows[@]}"; do
