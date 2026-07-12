@@ -736,6 +736,9 @@ pub fn lower_global_read(mut self: ptr[FuncLowering], sym_idx: u32, type_id: u32
         return addr
     self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: 4 as u32, dest: addr, src1: sym_idx, src2: 0 as u32))
     let val = self.fb.fresh_reg()
+    // A pointer-repr global (sum/Option/Result) stores an 8-byte box pointer; the OP_LOAD
+    // carries the pointer-repr type so the selector reads exactly 8 bytes (NOT the 16-byte
+    // box size) and keeps `val` typed as the sum/Option/Result so `match`/`.unwrap()` work.
     self.fb.emit(AirInst(opcode: OP_LOAD, type_id: type_id, dest: val, src1: addr, src2: 0 as u32))
     return val
 
@@ -4222,7 +4225,14 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     if (type_id as i64) < self.typetable.entries.len:
         let gk = self.typetable.entries.data[type_id as i64].kind
         is_agg = gk == TYPE_KIND_STRUCT or gk == TYPE_KIND_ARRAY or gk == TYPE_KIND_TUPLE
-    if not is_agg and size > 8 as u32:
+    // RFC 0017 P2: a pointer-repr global (sum/Option/Result) has entry.size 16 (the box)
+    // but its VALUE is an 8-byte tagged box pointer. Give the `.data` slot 8 bytes and
+    // store the pointer inline — NOT a 16-byte block copy of the box (which would overrun
+    // the slot). It is runtime-init like an aggregate (init produces a heap box).
+    let is_ptr_repr = type_is_pointer_repr(self.typetable, self.pool, type_id)
+    if is_ptr_repr:
+        size = 8 as u32
+    elif not is_agg and size > 8 as u32:
         return
     mut init_expr := 0 as u32
     mut child := node.first_child
@@ -4239,7 +4249,7 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // aggregate, block-copied into the slot by lower_global_write's OP_STORE.
     mut bits := 0 as i64
     mut init_node := 0 as u32
-    if not is_agg and ax_global_init_is_const(self.tree, init_expr):
+    if not is_agg and not is_ptr_repr and ax_global_init_is_const(self.tree, init_expr):
         bits = self.builder_fold_global_init(init_expr, type_id)
     else:
         init_node = init_expr

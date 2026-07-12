@@ -1732,6 +1732,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         type_size_and_align(sel.table, type_id, &size, &align)
         if size == 0 as u32:
             size = 8 as u32
+        // RFC 0017 P2 / BUG#78: a pointer-repr dest (sum/Option/Result) is an 8-byte box
+        // pointer even though type_size reports 16 (the box). Load exactly 8 bytes, else a
+        // 16-byte load overruns the pointer's home. Mirrors OP_GET_FIELD/OP_INDEX. Reached
+        // by lower_global_read for a sum/Option/Result module-level global.
+        if type_is_pointer_repr(sel.table, sel.pool, type_id):
+            size = 8 as u32
         out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
             emit_load_extend(sel, inst.dest, size, type_id, out_insts)
@@ -1897,7 +1903,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             else:
                 out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            if size > 8 as u32 or store_is_agg:
+            if store_is_ptr_sum:
+                // RFC 0017 P2 / BUG#78: pointer-repr value (sum/Option/Result) — store the
+                // 8-byte box pointer directly, NOT a 16-byte block copy of the box contents
+                // (which overruns the 8-byte slot). Reached by lower_global_write for a
+                // sum/Option/Result module-level global (dest = OP_GLOBAL_ADDR, no offset).
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif size > 8 as u32 or store_is_agg:
                 if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
                     let tmp_dest_addr = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))

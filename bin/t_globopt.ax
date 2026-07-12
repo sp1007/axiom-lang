@@ -1,0 +1,10 @@
+// Oracle (exit=42): RFC 0017 P2 — a pointer-repr (Option) module-level global.
+// `g`'s VALUE is an 8-byte tagged box pointer (Option box), stored inline in `.data`.
+// The initializer `Some(35)` heap-allocates the box at program entry and stores its
+// pointer; bump() does a cross-function read (unwrap) + write (Some(...)) of the global.
+mut g: Option[i64] = Some(35)
+fn bump():
+    g = Some(g.unwrap() + 7)      // 42
+fn main() -> i32:
+    bump()
+    return g.unwrap() as i32

@@ -7252,12 +7252,48 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
 
     // Separate the initializer from an optional type annotation.
     mut init_expr := 0 as u32
+    mut ann_node := 0 as u32
     mut child := self.tree.nodes.data[node_idx].first_child
     while child != 0 as u32:
         let cn = self.tree.nodes.data[child]
         if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_GENERIC_TYPE:
             init_expr = child
+        else:
+            ann_node = child
         child = cn.next_sibling
+
+    // RFC 0017 P2: an `Option[T]` / `Result[T,E]` annotation is deliberately left
+    // UNRESOLVED (type_id 0) by the general NODE_GENERIC_TYPE inference path, because
+    // retyping every such annotation to the kind-11/12 pointer-repr entry would shift
+    // the RFC 0012 str-box EQ/COPY/MAKE_REF paths and break self-compilation (see the
+    // array-element note in infer_node). Resolve it HERE â€” scoped to a MODULE-LEVEL
+    // global declaration only â€” and pin the symbol's type_id so collect_global and
+    // lower_global_read see the pointer-repr type. The compiler's own source has no
+    // module-level Option/Result globals, so the self-host fixpoint is unaffected.
+    mut type_id2 = type_id
+    if type_id2 == 0 as u32 and ann_node != 0 as u32 and self.tree.nodes.data[ann_node].kind == NODE_GENERIC_TYPE:
+        let ab = self.tree.nodes.data[ann_node].first_child
+        if ab != 0 as u32:
+            let abname = self.node_text(ab)
+            if abname == "Option":
+                let a1 = self.tree.nodes.data[ab].next_sibling
+                mut it := TYPE_UNKNOWN
+                if a1 != 0 as u32:
+                    it = self.infer_node(a1, TYPE_UNKNOWN)
+                type_id2 = self.types.register_option(it)
+            elif abname == "Result":
+                let a1 = self.tree.nodes.data[ab].next_sibling
+                mut okt := TYPE_UNKNOWN
+                mut ert := TYPE_UNKNOWN
+                if a1 != 0 as u32:
+                    okt = self.infer_node(a1, TYPE_UNKNOWN)
+                    let a2 = self.tree.nodes.data[a1].next_sibling
+                    if a2 != 0 as u32:
+                        ert = self.infer_node(a2, TYPE_UNKNOWN)
+                type_id2 = self.types.register_result(okt, ert)
+            safe_free_str(abname)
+            if type_id2 != 0 as u32:
+                self.symtable.symbols.data[sym_idx].type_id = type_id2
 
     // A global is supported if it is either a scalar (primitive/pointer/ref of size
     // 1..8, stored inline in `.data`) OR â€” RFC 0017 P2 â€” a by-address AGGREGATE:
@@ -7267,18 +7303,26 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
     // lower_global_read). Pointer-repr sum/Option/Result globals are still deferred
     // (they need the 8-byte box-pointer store path, not a block copy).
     mut supported := false
-    if type_id != 0 as u32 and (type_id as i64) < self.types.entries.len:
-        let k = self.types.entries.data[type_id as i64].kind
+    if type_id2 != 0 as u32 and (type_id2 as i64) < self.types.entries.len:
+        let k = self.types.entries.data[type_id2 as i64].kind
         if k == TYPE_KIND_PRIMITIVE or k == TYPE_KIND_POINTER or k == TYPE_KIND_REF:
             mut gsize := 0 as u32
             mut galign := 0 as u32
-            builder_type_size_and_align(self.types, type_id, &gsize, &galign)
+            builder_type_size_and_align(self.types, type_id2, &gsize, &galign)
             if gsize >= 1 as u32 and gsize <= 8 as u32:
                 supported = true
         elif k == TYPE_KIND_STRUCT or k == TYPE_KIND_ARRAY or k == TYPE_KIND_TUPLE:
             supported = true
+        elif type_is_pointer_repr(self.types, self.intern, type_id2):
+            // RFC 0017 P2: a sum/Option/Result global. Its VALUE is an 8-byte tagged
+            // box pointer (entry.size 16 = the heap box, NOT the slot). Stored inline
+            // as an 8-byte pointer in `.data`, runtime-initialized at program entry
+            // (the box is heap-allocated then its pointer stored). See collect_global /
+            // lower_global_read (both route pointer-repr through an 8-byte load/store,
+            // NOT a block copy).
+            supported = true
     if not supported:
-        ax_printf_local("error: module-level global '%s' must be a scalar, struct, fixed-array, or tuple type; pointer-repr (Option/Result/sum) globals are not yet supported\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error: module-level global '%s' must be a scalar, struct, fixed-array, tuple, or sum/Option/Result type\n", get_str_ptr(name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         self.diags_count = self.diags_count + 1 as i64
         return
 
@@ -12228,6 +12272,9 @@ pub fn lower_global_read(mut self: ptr[FuncLowering], sym_idx: u32, type_id: u32
         return addr
     self.fb.emit(AirInst(opcode: OP_GLOBAL_ADDR, type_id: 4 as u32, dest: addr, src1: sym_idx, src2: 0 as u32))
     let val = self.fb.fresh_reg()
+    // A pointer-repr global (sum/Option/Result) stores an 8-byte box pointer; the OP_LOAD
+    // carries the pointer-repr type so the selector reads exactly 8 bytes (NOT the 16-byte
+    // box size) and keeps `val` typed as the sum/Option/Result so `match`/`.unwrap()` work.
     self.fb.emit(AirInst(opcode: OP_LOAD, type_id: type_id, dest: val, src1: addr, src2: 0 as u32))
     return val
 
@@ -15714,7 +15761,14 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     if (type_id as i64) < self.typetable.entries.len:
         let gk = self.typetable.entries.data[type_id as i64].kind
         is_agg = gk == TYPE_KIND_STRUCT or gk == TYPE_KIND_ARRAY or gk == TYPE_KIND_TUPLE
-    if not is_agg and size > 8 as u32:
+    // RFC 0017 P2: a pointer-repr global (sum/Option/Result) has entry.size 16 (the box)
+    // but its VALUE is an 8-byte tagged box pointer. Give the `.data` slot 8 bytes and
+    // store the pointer inline â€” NOT a 16-byte block copy of the box (which would overrun
+    // the slot). It is runtime-init like an aggregate (init produces a heap box).
+    let is_ptr_repr = type_is_pointer_repr(self.typetable, self.pool, type_id)
+    if is_ptr_repr:
+        size = 8 as u32
+    elif not is_agg and size > 8 as u32:
         return
     mut init_expr := 0 as u32
     mut child := node.first_child
@@ -15731,7 +15785,7 @@ pub fn collect_global(self: ptr[AirModuleBuilder], node: AstNode):
     // aggregate, block-copied into the slot by lower_global_write's OP_STORE.
     mut bits := 0 as i64
     mut init_node := 0 as u32
-    if not is_agg and ax_global_init_is_const(self.tree, init_expr):
+    if not is_agg and not is_ptr_repr and ax_global_init_is_const(self.tree, init_expr):
         bits = self.builder_fold_global_init(init_expr, type_id)
     else:
         init_node = init_expr
@@ -21614,6 +21668,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         type_size_and_align(sel.table, type_id, &size, &align)
         if size == 0 as u32:
             size = 8 as u32
+        // RFC 0017 P2 / BUG#78: a pointer-repr dest (sum/Option/Result) is an 8-byte box
+        // pointer even though type_size reports 16 (the box). Load exactly 8 bytes, else a
+        // 16-byte load overruns the pointer's home. Mirrors OP_GET_FIELD/OP_INDEX. Reached
+        // by lower_global_read for a sum/Option/Result module-level global.
+        if type_is_pointer_repr(sel.table, sel.pool, type_id):
+            size = 8 as u32
         out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         if size == 1 as u32 or size == 2 as u32 or size == 4 as u32:
             emit_load_extend(sel, inst.dest, size, type_id, out_insts)
@@ -21779,7 +21839,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             else:
                 out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: size as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         else:
-            if size > 8 as u32 or store_is_agg:
+            if store_is_ptr_sum:
+                // RFC 0017 P2 / BUG#78: pointer-repr value (sum/Option/Result) â€” store the
+                // 8-byte box pointer directly, NOT a 16-byte block copy of the box contents
+                // (which overruns the 8-byte slot). Reached by lower_global_write for a
+                // sum/Option/Result module-level global (dest = OP_GLOBAL_ADDR, no offset).
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            elif size > 8 as u32 or store_is_agg:
                 if regalloc_is_16byte(inst.dest, sel.fn_ptr, sel.table, sel.symbols):
                     let tmp_dest_addr = next_vreg(sel)
                     out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: tmp_dest_addr, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))

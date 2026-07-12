@@ -254,6 +254,9 @@ rows=(
   "t_globreturn|exit|42"
   "t_globrmwloop|exit|20"
   "t_globarrfn|exit|50"
+  "t_globopt|exit|42"
+  "t_globresult|exit|42"
+  "t_globsum|exit|42"
 )
 
 for row in "${rows[@]}"; do

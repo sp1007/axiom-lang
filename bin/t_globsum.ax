@@ -1,0 +1,15 @@
+// Oracle (exit=42): RFC 0017 P2 — a pointer-repr user-sum module-level global.
+// A user sum value is an 8-byte by-address tagged box pointer (kind 6). The global's
+// `.data` slot holds that pointer, runtime-initialized at program entry; a whole-value
+// reassignment (write) and a cross-arm match (read) both round-trip through storage.
+type Shape = Circle(i64) | Square(i64)
+mut g: Shape = Circle(10)
+fn grow():
+    g = Square(42)
+fn main() -> i32:
+    grow()
+    match g:
+        Circle(r):
+            return r as i32
+        Square(s):
+            return s as i32          // 42

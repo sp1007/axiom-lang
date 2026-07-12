@@ -1,0 +1,9 @@
+// Oracle (exit=42): RFC 0017 P2 — a pointer-repr Result[T,E] module-level global.
+// The `.data` slot holds an 8-byte tagged box pointer; bump() does a cross-function
+// unwrap (read) + Ok(...) (write) round-trip on the global's static storage.
+mut g: Result[i64, i64] = Ok(30)
+fn bump():
+    g = Ok(g.unwrap() + 12)      // 42
+fn main() -> i32:
+    bump()
+    return g.unwrap() as i32
