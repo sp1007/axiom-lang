@@ -2097,6 +2097,29 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
 pub fn tc_is_numeric(t: u32) -> bool:
     return t == TYPE_I8 or t == TYPE_I16 or t == TYPE_I32 or t == TYPE_I64 or t == TYPE_U8 or t == TYPE_U16 or t == TYPE_U32 or t == TYPE_U64 or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_ISIZE or t == TYPE_USIZE
 
+// True iff `t` is an Option or Result value. Option[T]/Result[T,E] desugar to a
+// SUM (kind 6) whose mangled name base is "Option"/"Result" (e.g.
+// `_AX_std_Option__i64`), so that is the PRIMARY case; also accept the dedicated
+// OPTION/RESULT kinds (11/12) and a GENERIC_INST/STRUCT with the same base name.
+// Base-name matching cleanly EXCLUDES the explicit-generic-call `f[T](..)` result
+// mis-inference (a GENERIC_INST named after the fn, e.g. "hash_key", so
+// `hash_key[K](k) % cap` — really u64 — is NOT flagged). Used to reject arithmetic
+// on an un-unwrapped Option/Result (BUG#53 class: adding two box values = garbage).
+pub fn tc_is_opt_res(self: ptr[TypeChecker], t: u32) -> bool:
+    if (t as i64) >= self.types.entries.len:
+        return false
+    let e = self.types.entries.data[t as i64]
+    if e.kind == TYPE_KIND_OPTION or e.kind == TYPE_KIND_RESULT:
+        return true
+    if (e.kind == TYPE_KIND_SUM or e.kind == TYPE_KIND_GENERIC_INST or e.kind == TYPE_KIND_STRUCT) and e.name_id != 0 as u32:
+        let mn = self.intern.get(e.name_id)
+        let bn = extract_base_name(mn)
+        let r = (bn == "Option" or bn == "Result")
+        safe_free_str(mn)
+        safe_free_str(bn)
+        return r
+    return false
+
 // Shared generic-instantiation core: given a generic template symbol `sym_idx`
 // and a fully-collected `args` vector of concrete type-ids, produce the result
 // TypeID for that instantiation. TAKES OWNERSHIP of `args` (either handed to
@@ -2654,6 +2677,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     t2 = self.infer_node(rhs, t1)
                 elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
                     t1 = self.infer_node(lhs, t2)
+                // BUG#53 class: an arithmetic/bitwise operator on an un-unwrapped
+                // Option/Result operand silently lowers to OP_IADD/etc on the box value
+                // -> garbage (e.g. `v.get(0) + v.get(1)` forgetting `.unwrap()` adds two
+                // Option boxes). Reject it. Restricted to Option/Result (tc_is_opt_res,
+                // base-name matched) so numeric operands, str+str (concat), and the
+                // `hash_key[K]()%cap` generic-call mis-inference are unaffected; the
+                // self-host never does arithmetic on an Option/Result value, so A==B holds.
+                if self.tc_is_opt_res(t1) or self.tc_is_opt_res(t2):
+                    let bot = self.node_text(node_idx)
+                    ax_printf_local("error: operator '%s' is not defined for Option/Result operands (missing .unwrap()?)\n", get_str_ptr(bot) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    safe_free_str(bot)
+                    self.diags_count = self.diags_count + 1 as i64
                 // numeric promotion simple. RFC 0007: for a user-type lhs (operator
                 // overload, lowered to a method call by air_builder) the result is
                 // the lhs type — which the final `else` already yields.

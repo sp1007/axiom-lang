@@ -1,0 +1,9 @@
+// Oracle (reject): arithmetic on an un-unwrapped Option must be rejected, not
+// silently miscompiled to a box-pointer add (BUG#53 class). `v.get(i)` returns
+// Option[i64]; `+` without `.unwrap()` adds two Option boxes -> garbage. REJECT.
+import std.collections
+fn main() -> i64:
+    mut v = new_vec[i64]()
+    v.push(5 as i64)
+    v.push(7 as i64)
+    return v.get(0) + v.get(1)
