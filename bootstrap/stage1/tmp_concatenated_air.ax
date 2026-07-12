@@ -1453,6 +1453,10 @@ pub const NODE_CONTINUE_STMT: u8 = 68
 // expressions (positional). Lowered as an anonymous struct with fields _f0.._fN.
 pub const NODE_TUPLE_EXPR: u8 = 69
 
+// RFC 0022 P2: tuple TYPE annotation `(T0, T1, ...)`. Children are the element
+// type-expr nodes. Resolves to the same anonymous struct type as a tuple literal.
+pub const NODE_TUPLE_TYPE: u8 = 70
+
 
 // Flags constants (matching compiler/ast/node.go exactly)
 pub const FLAG_IS_PUB: u16 = 1
@@ -2757,6 +2761,32 @@ pub fn parse_type_expr(mut self: ptr[Parser]) -> u32:
                 self.append_child(node, ret)
                 self.set_flags(node, 1 as u16)
         return node
+    if tok.kind == TK_L_PAREN:
+        // RFC 0022 P2: tuple TYPE `(T0, T1, ...)`. A bare `(` in type position was
+        // always an error before (fn-types use `fn(...)`, never a bare paren), so
+        // this only ACCEPTS previously-rejected syntax -> self-host A==B preserved.
+        // A `,` makes it a tuple; `(T)` with no comma is a grouped type (returns
+        // inner). Trailing comma allowed.
+        self.consume() // '('
+        let first = self.parse_type_expr()
+        if self.check(TK_COMMA):
+            let node = self.tree.add_node(NODE_TUPLE_TYPE, self.token_idx(tok))
+            if first != 0 as u32:
+                self.append_child(node, first)
+            while self.check(TK_COMMA):
+                self.consume() // ','
+                if self.check(TK_R_PAREN):
+                    break // trailing comma
+                let prev_pos = self.pos
+                let t = self.parse_type_expr()
+                if t != 0 as u32:
+                    self.append_child(node, t)
+                if self.pos == prev_pos:
+                    self.consume()
+            self.expect(TK_R_PAREN)
+            return node
+        self.expect(TK_R_PAREN)
+        return first
 
     self.errorf(tok, "expected type expression")
     return 0 as u32
@@ -7935,7 +7965,68 @@ pub fn pre_infer_struct(mut self: ptr[TypeChecker], node_idx: u32):
 // never coerced to the declared element type (a `[i32;N]` value then flowed into a
 // `[i64;N]` slot -> wrong OP_INDEX stride -> silent miscompile). Centralize the test.
 pub fn is_type_annotation_node(k: u8) -> bool:
-    return k == NODE_TYPE_EXPR or k == NODE_GENERIC_TYPE or k == NODE_ARRAY_TYPE or k == NODE_SLICE_TYPE or k == NODE_PTR_TYPE or k == NODE_FUNC_TYPE
+    return k == NODE_TYPE_EXPR or k == NODE_GENERIC_TYPE or k == NODE_ARRAY_TYPE or k == NODE_SLICE_TYPE or k == NODE_PTR_TYPE or k == NODE_FUNC_TYPE or k == NODE_TUPLE_TYPE
+
+// RFC 0022: register the anonymous struct type backing a tuple. Shared by the tuple
+// LITERAL (NODE_TUPLE_EXPR) and the tuple TYPE annotation (NODE_TUPLE_TYPE) so both
+// produce the SAME struct type with positional fields `_f0.._fN`. `first` is the
+// node's first child (element expr or element type-expr respectively).
+//
+// Tuple types are CANONICALIZED (structural): two tuples with identical element types
+// resolve to the same type id, so a tuple literal and a matching `(T0,T1)` annotation
+// on a `let`/param/return/global are the SAME type â€” without this they were distinct
+// struct ids and the value crossed a broken copy/coercion boundary that dropped fields
+// (second element read as 0). The lookup is guarded to structs whose name begins with
+// `__tup`, so it never collides with RFC 0019's `__mfv_` variant-payload synth structs
+// (which also use `_f0..` field names). All element type ids are themselves canonical
+// (nested tuples canonicalize recursively via infer_node), so ordered type-id equality
+// is a sound structural test.
+pub fn register_tuple_type(mut self: ptr[TypeChecker], first: u32) -> u32:
+    mut elem_types := new_u32_vec()
+    mut child := first
+    while child != 0 as u32:
+        (&elem_types).push(self.infer_node(child, TYPE_UNKNOWN))
+        child = self.tree.nodes.data[child].next_sibling
+
+    // Canonical lookup: reuse an existing `__tup` struct with identical field types.
+    mut ti := 0 as i64
+    while ti < self.types.entries.len:
+        let e = self.types.entries.data[ti]
+        if e.kind == TYPE_KIND_STRUCT:
+            let nm = self.intern.get(e.name_id)
+            let is_tup = std.string.starts_with(nm, "__tup")
+            safe_free_str(nm)
+            if is_tup and (e.extra as i64) < self.types.structs.len:
+                let sinfo = self.types.structs.data[e.extra as i64]
+                if sinfo.fields.len == elem_types.len:
+                    mut all_match := true
+                    mut j := 0 as i64
+                    while j < elem_types.len:
+                        if sinfo.fields.data[j].type_id != elem_types.data[j]:
+                            all_match = false
+                            break
+                        j = j + 1 as i64
+                    if all_match:
+                        if elem_types.data != null as ptr[u32]:
+                            @free(elem_types.data as ptr[u8])
+                        return ti as u32
+        ti = ti + 1 as i64
+
+    // Not found: register a fresh `__tupN` struct with fields `_f0.._fN`.
+    mut synth_fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
+    mut fi := 0 as i64
+    while fi < elem_types.len:
+        let fn_str = std.string.concat("_f", format_int(fi))
+        let fname_id = self.intern.intern(fn_str)
+        safe_free_str(fn_str)
+        (&synth_fields).push(StructField(name_id: fname_id, type_id: elem_types.data[fi]))
+        fi = fi + 1 as i64
+    let synth_nm = std.string.concat("__tup", format_int(elem_types.len))
+    let synth_nm_id = self.intern.intern(synth_nm)
+    safe_free_str(synth_nm)
+    if elem_types.data != null as ptr[u32]:
+        @free(elem_types.data as ptr[u8])
+    return self.types.register_struct(synth_nm_id, synth_fields)
 
 pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
@@ -9367,15 +9458,39 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 while arg != 0 as u32:
                     mut pexp := TYPE_UNKNOWN
                     mut param_is_arr := false
+                    mut param_is_tup := false
                     if fp_data != null as ptr[u32] and apos < fp_len:
                         let cand = fp_data[apos]
-                        if cand != TYPE_UNKNOWN and (cand as i64) < self.types.entries.len and self.types.entries.data[cand as i64].kind == TYPE_KIND_ARRAY:
-                            pexp = cand
-                            param_is_arr = true
+                        if cand != TYPE_UNKNOWN and (cand as i64) < self.types.entries.len:
+                            let ck = self.types.entries.data[cand as i64].kind
+                            if ck == TYPE_KIND_ARRAY:
+                                pexp = cand
+                                param_is_arr = true
+                            elif ck == TYPE_KIND_STRUCT:
+                                // RFC 0022 P2: a tuple param â€” pass its type so a direct
+                                // `(a, b)` literal arg coerces its elements to the param's
+                                // field types (else int-literal elements default to i32 and
+                                // an {i32,i32} value is stored into an {i64,i64} slot).
+                                let cnm = self.intern.get(self.types.entries.data[cand as i64].name_id)
+                                if std.string.starts_with(cnm, "__tup"):
+                                    pexp = cand
+                                    param_is_tup = true
+                                safe_free_str(cnm)
                     let at = self.infer_node(arg, pexp)
                     if param_is_arr and at != pexp and at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and self.types.entries.data[at as i64].kind == TYPE_KIND_ARRAY:
                         ax_printf_local("error: array argument type mismatch: this argument is a different fixed-array type than the parameter (different element type or length); annotate the local `let x: [T;N] = ..` or cast the elements to match\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.diags_count = self.diags_count + 1 as i64
+                    // RFC 0022 P2 (BUG#53 convention): a tuple ARG whose type still differs
+                    // from the tuple PARAM after coercion (e.g. an unannotated `let t=(10,15)`
+                    // is {i32,i32} passed to an {i64,i64} param) would silently store the wrong
+                    // width -> reject with an actionable message instead of miscompiling.
+                    if param_is_tup and at != pexp and at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and self.types.entries.data[at as i64].kind == TYPE_KIND_STRUCT:
+                        let atnm = self.intern.get(self.types.entries.data[at as i64].name_id)
+                        let at_is_tup = std.string.starts_with(atnm, "__tup")
+                        safe_free_str(atnm)
+                        if at_is_tup:
+                            ax_printf_local("error: tuple argument type mismatch: this argument's element types differ from the parameter's; annotate the local `let x: (T0, T1) = ..` or pass the tuple literal directly so its elements coerce\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            self.diags_count = self.diags_count + 1 as i64
                     arg = self.tree.nodes.data[arg].next_sibling
                     apos = apos + 1 as i64
                 
@@ -9667,28 +9782,39 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
 
     elif kind == NODE_TUPLE_EXPR:
         // RFC 0022: a tuple literal `(e0, e1, ...)` is an anonymous struct with
-        // positional fields `_f0`, `_f1`, ... Infer each element type and register
-        // a synth struct so all struct machinery (layout, OP_SET_FIELD/OP_GET_FIELD,
-        // aggregate ABI) applies for free. Element types are inferred independently
-        // (integer-literal elements default like a bare NODE_INT_LIT); coercion by an
-        // expected tuple type is deferred (see RFC 0022 Scope). Registering per
-        // inference mirrors NODE_ARRAY_LIT â€” duplicate layout-identical entries across
-        // passes are harmless and deterministic.
-        mut synth_fields := StructFieldVec(data: null as ptr[StructField], len: 0, cap: 0)
-        mut child := self.tree.nodes.data[node_idx].first_child
-        mut fidx := 0 as i64
-        while child != 0 as u32:
-            let ft = self.infer_node(child, TYPE_UNKNOWN)
-            let fn_str = std.string.concat("_f", format_int(fidx))
-            let fname_id = self.intern.intern(fn_str)
-            safe_free_str(fn_str)
-            (&synth_fields).push(StructField(name_id: fname_id, type_id: ft))
-            child = self.tree.nodes.data[child].next_sibling
-            fidx = fidx + 1 as i64
-        let synth_nm = std.string.concat("__tup", format_int(fidx))
-        let synth_nm_id = self.intern.intern(synth_nm)
-        safe_free_str(synth_nm)
-        result_type = self.types.register_struct(synth_nm_id, synth_fields)
+        // positional fields `_f0`, `_f1`, ... Lowered/typed via the struct machinery.
+        //
+        // Element COERCION by an expected tuple type (RFC 0022 P2): when the context
+        // supplies an expected tuple type of the same arity (an annotated `let`, a
+        // param, a `-> (T..)` return, a tuple global init), infer each element with the
+        // matching field type as its hint and adopt that type. Without this, integer
+        // literals default to i32, so `let p:(i64,i64)=(10,20)` would store an 8-byte
+        // {i32,i32} into a 16-byte {i64,i64} slot and read the second field as garbage.
+        let first_child = self.tree.nodes.data[node_idx].first_child
+        mut used_expected := false
+        if expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
+            let ee = self.types.entries.data[expected as i64]
+            if ee.kind == TYPE_KIND_STRUCT and (ee.extra as i64) < self.types.structs.len:
+                let enm = self.intern.get(ee.name_id)
+                let exp_is_tup = std.string.starts_with(enm, "__tup")
+                safe_free_str(enm)
+                let einfo = self.types.structs.data[ee.extra as i64]
+                mut nchild := 0 as i64
+                mut cc := first_child
+                while cc != 0 as u32:
+                    nchild = nchild + 1 as i64
+                    cc = self.tree.nodes.data[cc].next_sibling
+                if exp_is_tup and einfo.fields.len == nchild:
+                    mut child2 := first_child
+                    mut j2 := 0 as i64
+                    while child2 != 0 as u32:
+                        self.infer_node(child2, einfo.fields.data[j2].type_id)
+                        child2 = self.tree.nodes.data[child2].next_sibling
+                        j2 = j2 + 1 as i64
+                    result_type = expected
+                    used_expected = true
+        if not used_expected:
+            result_type = self.register_tuple_type(first_child)
 
     elif kind == NODE_NIL_LIT:
         if expected != TYPE_UNKNOWN:
@@ -10237,6 +10363,12 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         if inner_node != 0 as u32:
             inner_type = self.infer_node(inner_node, TYPE_UNKNOWN)
         result_type = self.types.register_slice(inner_type)
+
+    elif kind == NODE_TUPLE_TYPE:
+        // RFC 0022 P2: a tuple TYPE annotation resolves to the same anonymous struct
+        // (fields _f0.._fN) as a tuple literal, so annotations, params, returns, and
+        // globals interoperate with tuple literals through identical struct layout.
+        result_type = self.register_tuple_type(self.tree.nodes.data[node_idx].first_child)
 
     elif kind == NODE_ARRAY_TYPE:
         let inner_node = self.tree.nodes.data[node_idx].first_child

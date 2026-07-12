@@ -1,0 +1,25 @@
+// Oracle (exit=84): RFC 0022 P2 tuple TYPE annotations. A tuple type `(T0, T1, ...)`
+// resolves to the same canonical anonymous struct as a tuple literal, so annotations,
+// params, returns, and globals interoperate. Element types coerce to the annotation
+// (int literals would otherwise default to i32 and store the wrong width). Exercises:
+// an annotated `let` (i64,i64), a `-> (i64,i64)` return, a tuple param via a direct
+// literal arg, a mixed-type (i64,bool) annotation, and a module-level tuple global.
+mut g: (i64, i64) = (10, 20)
+fn mk() -> (i64, i64):
+    return (5, 7)
+fn addp(p: (i64, i64)) -> i64:
+    return p.0 + p.1
+fn pick(m: (i64, bool)) -> i64:
+    if m.1:
+        return m.0
+    return 0
+fn tweak():
+    g.0 = g.0 + 2                 // 12
+fn main() -> i32:
+    let a: (i64, i64) = (3, 4)    // 7
+    let r = mk()                  // 12
+    let s = addp((10, 15))        // 25
+    let k = pick((6, true))       // 6
+    tweak()                       // g = (12, 20)
+    // 7 + 12 + 25 + 6 + (12+20) = 7+12+25+6+32 = 82 ; +2 = 84
+    return (a.0 + a.1 + r.0 + r.1 + s + k + g.0 + g.1 + 2) as i32

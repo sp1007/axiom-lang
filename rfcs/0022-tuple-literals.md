@@ -1,6 +1,6 @@
 # RFC 0022 — Tuple literal expressions
 
-- Status: Accepted (P1 implemented)
+- Status: Accepted (P1 + P2 implemented)
 - Author: autopilot
 - Date: 2026-07-12
 - Affects: lexer (none), parser, typechecker, AIR lowering
@@ -67,12 +67,28 @@ preserved by construction. This mirrors the array-literal NUD (RFC/BUG#70).
 plus everything that composes for free through the struct type (assignment,
 passing/returning as an aggregate, nesting in other aggregates).
 
-**Deferred:** tuple *type annotations* `let p: (i64, i64) = …` (needs
-`parse_type_expr` support for `(T0, T1)`), tuple destructuring in `let`/`match`
-(the pattern side already has `NODE_TUPLE_PAT` but is not wired to expressions),
-element coercion by an expected tuple type (P1 infers each element
-independently, so integer-literal elements default like a bare `NODE_INT_LIT`),
-and tuple *globals* (needs the annotation).
+**P2 (implemented):** tuple *type annotations* `(T0, T1, …)` in `parse_type_expr`
+(new `NODE_TUPLE_TYPE`, resolved to the tuple struct), which transitively enables
+annotated `let`, tuple **params**, `-> (T..)` **returns**, and tuple **globals**.
+Two supporting mechanisms were required for these to be *correct* (not just parse):
+
+- **Canonicalization.** Tuple types are structural: `register_tuple_type` reuses an
+  existing `__tup` struct with identical ordered element types instead of minting a
+  new one, so a literal and a matching annotation are the *same* type id. The lookup
+  is name-prefix-guarded to `__tup` so it never aliases RFC 0019's `__mfv_` variant
+  structs (which also use `_f0..` field names).
+- **Element coercion by expected tuple type.** When an expected tuple type of the
+  same arity is in scope, each element is inferred with the matching field type as
+  its hint. Without this, `(10, 20)` infers `{i32,i32}` (8 bytes) and would be stored
+  into an annotated `{i64,i64}` slot (16 bytes), reading the second field as garbage.
+  A tuple **argument** whose type still differs from a tuple **param** after coercion
+  (e.g. an unannotated `let t = (10,15)` — genuinely `{i32,i32}` — passed to an
+  `(i64,i64)` param) is **rejected** with an actionable diagnostic (BUG#53
+  convention: reject rather than silently miscompile); the fix is to annotate the
+  local or pass the literal directly.
+
+**Still deferred:** tuple destructuring in `let`/`match` (the pattern side already
+has `NODE_TUPLE_PAT` but is not wired to expressions) and chained `.N.M` (below).
 
 **Known P1 limitation — chained `.N.M`:** the lexer tokenizes `t.0.0` as
 `IDENT DOT FLOAT_LIT(0.0)` because the `0.0` run lexes as a float, so *chained*

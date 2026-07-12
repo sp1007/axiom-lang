@@ -267,6 +267,8 @@ rows=(
   "t_globinitorder|exit|40"
   # RFC 0022 — tuple literal expressions (anonymous struct + .N access)
   "t_tuple|exit|66"
+  # RFC 0022 P2 — tuple TYPE annotations: annotated let / return / param / global
+  "t_tuple2|exit|84"
 )
 
 for row in "${rows[@]}"; do
