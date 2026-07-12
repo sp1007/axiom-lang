@@ -237,6 +237,13 @@ rows=(
   "t_globarriter|exit|119"
   "t_globbig|exit|65"
   "t_globpass|exit|42"
+  # RFC 0017 P2 — aggregate-global interaction surface
+  "t_globarrstruct|exit|118"
+  "t_globmethod|exit|42"
+  "t_globgeneric|exit|42"
+  "t_globmixed|exit|40"
+  "t_globi32arr|exit|130"
+  "t_globstrfield|exit|10"
 )
 
 for row in "${rows[@]}"; do

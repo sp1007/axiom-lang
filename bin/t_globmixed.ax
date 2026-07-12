@@ -1,0 +1,11 @@
+// Oracle (exit=40): RFC 0017 P2 — mixed .data layout: two aggregate globals + a scalar global, cross-referenced.
+struct S:
+    a: i64
+    b: i64
+mut s1: S = S(a: 1, b: 2)
+mut k: i64 = 10
+mut arr: [i64; 2] = [3, 4]
+fn main() -> i32:
+    s1.a = s1.a + k         // 11
+    arr[0] = arr[0] + k     // 13
+    return (s1.a + s1.b + k + arr[0] + arr[1]) as i32  // 11+2+10+13+4 = 40
