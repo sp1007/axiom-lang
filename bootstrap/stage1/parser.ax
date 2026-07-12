@@ -535,7 +535,14 @@ pub fn parse_var_decl(mut self: ptr[Parser]) -> u32:
         let t = self.parse_type_expr()
         if t != 0 as u32:
             self.append_child(node, t)
-    if self.check(TK_EQ) or self.check(TK_COLON_EQ):
+    // The initializer `=`/`:=` is always on the SAME physical line as the declaration.
+    // Probe with check_raw (non-skipping): `check` calls the newline-skipping `peek`,
+    // which — on a declaration with NO initializer (`mut g: i64`) — would consume the
+    // terminating newline while looking for `=`, leaving `expect_newline` staring at the
+    // NEXT statement ("expected newline" desync). A raw probe leaves the newline intact
+    // so a no-initializer decl terminates cleanly (module globals then default to a
+    // zeroed `.data` slot; see collect_global).
+    if self.check_raw(TK_EQ) or self.check_raw(TK_COLON_EQ):
         self.consume()
         let val = self.parse_expr_with_prec(BP_NONE)
         if val != 0 as u32:

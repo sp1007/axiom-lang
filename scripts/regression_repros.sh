@@ -244,6 +244,10 @@ rows=(
   "t_globmixed|exit|40"
   "t_globi32arr|exit|130"
   "t_globstrfield|exit|10"
+  # RFC 0017 — no-initializer globals default to a zeroed .data slot (parser desync fix)
+  "t_globnoinit|exit|7"
+  "t_globstructnoinit|exit|42"
+  "t_globarrnoinit|exit|40"
 )
 
 for row in "${rows[@]}"; do
