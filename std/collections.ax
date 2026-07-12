@@ -205,6 +205,34 @@ pub fn get[K, V](self: HashMap[K, V], key: K) -> Option[V]:
             if current_dib >= self.cap:
                 return None
 
+/// Returns true iff `key` is present. The membership API for HashMap (mirrors
+/// Rust's `HashMap::contains_key`). Named `contains_key` — NOT `contains` — so it
+/// does not collide with `HashSet.contains` (method dispatch is by name + self
+/// base-type; a distinct name avoids any ambiguity). A direct bool probe (same
+/// Robin-Hood scan as `get`) so it never round-trips through Option.
+pub fn contains_key[K, V](self: HashMap[K, V], key: K) -> bool:
+    if self.cap == 0:
+        return false
+    let h = hash_key[K](key)
+    mut idx := (h % (self.cap as u64)) as i64
+    mut current_dib := 0 as i64
+    mut loop := true
+    while loop:
+        if not self.occupied[idx]:
+            return false
+        elif self.hashes[idx] == h and self.keys[idx] == key:
+            return true
+        else:
+            let resident_h = self.hashes[idx]
+            let resident_dib = (idx - (resident_h % (self.cap as u64)) as i64 + self.cap) % self.cap
+            if current_dib > resident_dib:
+                return false
+            idx = (idx + 1) % self.cap
+            current_dib = current_dib + 1
+            if current_dib >= self.cap:
+                return false
+    return false
+
 pub fn remove[K, V](mut self: HashMap[K, V], key: K) -> bool:
     if self.cap == 0:
         return false

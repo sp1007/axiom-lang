@@ -1114,6 +1114,45 @@ pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32
     safe_free_str(field_name)
     return result
 
+// BUG#93(b): self-type-aware method-existence test for the accept-then-miscompile
+// reject gate. Returns true iff some SYM_FUNC named `mname` has an already-inferred
+// first param whose unwrapped type is a NAMED aggregate (struct/sum/generic-inst/
+// option/result) whose BASE name matches the receiver base name `rec_base`. A
+// method that exists ONLY on a DIFFERENT type (e.g. `contains` on HashSet, absent
+// on HashMap) then does NOT suppress the reject, so `m.contains(k)` is rejected
+// cleanly instead of miscompiling to getfld + `call *garbage` (SIGSEGV). Base-name
+// (not exact type-id) match is cross-module safe. Only considers symbols with an
+// inferred signature — like method_ret_type, it NEVER forces pre_infer_func_
+// signature (that reads a foreign module's AST via self.tree and crashes).
+pub fn has_method_for_base(self: ptr[TypeChecker], mname: str, rec_base: str) -> bool:
+    mut si := 0 as i64
+    while si < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[si]
+        if sym.kind == SYM_FUNC and sym.type_id != TYPE_UNKNOWN and (sym.type_id as i64) < self.types.entries.len and self.intern.name_matches_method(sym.name_id, mname):
+            let fe = self.types.entries.data[sym.type_id as i64]
+            if fe.kind == TYPE_KIND_FUNC and (fe.extra as i64) < self.types.funcs.len:
+                let cfi = self.types.funcs.data[fe.extra as i64]
+                if cfi.params.len > 0 as i64:
+                    mut pp := cfi.params.data[0]
+                    while pp != TYPE_UNKNOWN and (pp as i64) < self.types.entries.len:
+                        let ppe = self.types.entries.data[pp as i64]
+                        if ppe.kind == TYPE_KIND_POINTER or ppe.kind == TYPE_KIND_REF:
+                            pp = ppe.extra
+                        else:
+                            break
+                    if pp != TYPE_UNKNOWN and (pp as i64) < self.types.entries.len:
+                        let ppe2 = self.types.entries.data[pp as i64]
+                        if (ppe2.kind == TYPE_KIND_STRUCT or ppe2.kind == TYPE_KIND_SUM or ppe2.kind == TYPE_KIND_GENERIC_INST or ppe2.kind == TYPE_KIND_OPTION or ppe2.kind == TYPE_KIND_RESULT) and ppe2.name_id != 0 as u32:
+                            let pmangled = self.intern.get(ppe2.name_id)
+                            let pbn = extract_base_name(pmangled)
+                            let matched = match_method_name(rec_base, pbn)
+                            safe_free_str(pmangled)
+                            safe_free_str(pbn)
+                            if matched:
+                                return true
+        si = si + 1 as i64
+    return false
+
 pub fn free_type_checker(mut self: ptr[TypeChecker]):
     @free(self.node_types as ptr[u8])
 
@@ -3222,13 +3261,44 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 if self.method_ret_type(self.tree.nodes.data[callee].payload, ruw) != 0 as u32:
                                     name_exists = true
                             else:
-                                mut si := 0 as i64
-                                while si < self.symtable.symbols.len:
-                                    let ssym = self.symtable.symbols.data[si]
-                                    if ssym.kind == SYM_FUNC and self.intern.name_matches_method(ssym.name_id, mname):
+                                // BUG#93(b): for a RELIABLY-NAMED concrete aggregate
+                                // receiver (struct/sum/generic-inst with a real name,
+                                // NOT Option/Result), be self-type-aware: only a method
+                                // whose self base-type matches the receiver counts.
+                                // Otherwise a method existing solely on a DIFFERENT type
+                                // (`contains` on HashSet, absent on HashMap) passed the
+                                // global name scan → no reject → getfld + call*garbage
+                                // SIGSEGV. Option/Result stay on the agnostic scan: their
+                                // unwrap/is_some/... are backend-intercepted with no self-
+                                // typed free fn, so a self-aware scan would false-reject.
+                                // The Option/Result methods are backend-intercepted
+                                // (bug90) and can appear on a receiver typed as the
+                                // PAYLOAD (e.g. `tok.unwrap()` where tok infers to Token,
+                                // not Option[Token]) with no self-typed `unwrap` free fn —
+                                // keep them on the agnostic scan or self-host false-rejects.
+                                let is_opt_res_m = (mname == "unwrap" or mname == "unwrap_err" or mname == "is_some" or mname == "is_none" or mname == "is_ok" or mname == "is_err")
+                                mut self_aware := false
+                                mut rec_base := "" as str
+                                if (rue3.kind == TYPE_KIND_STRUCT or rue3.kind == TYPE_KIND_SUM or rue3.kind == TYPE_KIND_GENERIC_INST) and not is_opt_res_m:
+                                    if rue3.name_id != 0 as u32:
+                                        let rmangled = self.intern.get(rue3.name_id)
+                                        rec_base = extract_base_name(rmangled)
+                                        safe_free_str(rmangled)
+                                        if not (rec_base == "Option" or rec_base == "Result"):
+                                            self_aware = true
+                                if self_aware:
+                                    if self.has_method_for_base(mname, rec_base):
                                         name_exists = true
-                                        break
-                                    si = si + 1 as i64
+                                else:
+                                    mut si := 0 as i64
+                                    while si < self.symtable.symbols.len:
+                                        let ssym = self.symtable.symbols.data[si]
+                                        if ssym.kind == SYM_FUNC and self.intern.name_matches_method(ssym.name_id, mname):
+                                            name_exists = true
+                                            break
+                                        si = si + 1 as i64
+                                if rue3.name_id != 0 as u32 and not is_opt_res_m and (rue3.kind == TYPE_KIND_STRUCT or rue3.kind == TYPE_KIND_SUM or rue3.kind == TYPE_KIND_GENERIC_INST):
+                                    safe_free_str(rec_base)
                             if not name_exists:
                                 // A builtin PRIMITIVE receiver (str/bytes/int/...) has an
                                 // empty type name_id, so print a type-less variant rather

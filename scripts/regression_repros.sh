@@ -169,6 +169,8 @@ rows=(
   "t_geninstfield|exit|44"
   "t_cseredef|exit|12"
   "t_hashiter|exit|15"
+  "t_hashcontainskey|exit|7"
+  "t_crosstypereject|reject|"
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"
   "t_ctorarrfield|exit|110"

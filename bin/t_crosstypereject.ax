@@ -1,0 +1,10 @@
+// Oracle (reject): a method that exists ONLY on a DIFFERENT type must be rejected
+// cleanly, not silently miscompiled to getfld + call*garbage (SIGSEGV, BUG#93b).
+// HashMap has no `contains` (only HashSet does) -> `m.contains(k)` must REJECT.
+import std.collections
+fn main() -> i64:
+    mut m = new_hashmap[i64, i64]()
+    m.insert(3 as i64, 30 as i64)
+    if m.contains(3 as i64):
+        return 1
+    return 0
