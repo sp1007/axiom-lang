@@ -1,0 +1,22 @@
+// Oracle (exit 42): Vec[Option[i64]] — push Some/None, iterate by index, nested
+// match (outer Option from Vec.get, inner the stored Option). 10+0+32 = 42.
+import std.collections
+fn main() -> i64:
+    mut v = new_vec[Option[i64]]()
+    v.push(Some(10 as i64))
+    v.push(None)
+    v.push(Some(32 as i64))
+    mut acc = 0 as i64
+    mut i = 0 as i64
+    while i < v.len:
+        match v.get(i):
+            Some(inner):
+                match inner:
+                    Some(x):
+                        acc = acc + x
+                    None:
+                        acc = acc + 0
+            None:
+                acc = acc + 0
+        i = i + 1
+    return acc
