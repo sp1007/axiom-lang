@@ -210,6 +210,12 @@ rows=(
   "t_resultarray|exit|40"
   "t_optarrayiter|exit|123"
   "t_optarraymethod|exit|40"
+  "t_structoptfield|exit|42"
+  "t_vecvec|exit|42"
+  "t_hashvecval|exit|42"
+  "t_optresult|exit|42"
+  "t_vecstructopt|exit|42"
+  "t_matchshadow|exit|42"
 )
 
 for row in "${rows[@]}"; do
