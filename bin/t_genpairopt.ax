@@ -1,0 +1,15 @@
+// Oracle (exit=77): generic struct Pair[A,B] whose A is a 16-byte aggregate,
+// wrapped in Option, unwrapped, and its nested fields read. Crosses generics
+// x Option payload x >=16B aggregate x nested field access.
+struct P16:
+    a: i64
+    b: i64
+struct Pair[A, B]:
+    first: A
+    second: B
+fn mk() -> Option[Pair[P16, i64]]:
+    return Some(Pair(first: P16(a: 30, b: 40), second: 7))
+fn main() -> i32:
+    let o = mk()
+    let p = o.unwrap()
+    return (p.first.a + p.first.b + p.second) as i32

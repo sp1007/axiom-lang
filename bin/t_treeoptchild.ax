@@ -1,0 +1,25 @@
+// Oracle (exit=15): a tree Node with Option[ptr[Node]] children; construct a
+// small tree on the heap and sum values reached through matched Some children.
+struct Node:
+    val: i64
+    left: Option[ptr[Node]]
+    right: Option[ptr[Node]]
+fn main() -> i32:
+    let ln = @alloc(32) as ptr[Node]
+    ln[0] = Node(val: 5, left: None, right: None)
+    let rn = @alloc(32) as ptr[Node]
+    rn[0] = Node(val: 10, left: None, right: None)
+    let root = @alloc(32) as ptr[Node]
+    root[0] = Node(val: 0, left: Some(ln), right: Some(rn))
+    mut t: i64 = root.val
+    match root.left:
+        Some(p):
+            t = t + p.val
+        None:
+            t = t + 0
+    match root.right:
+        Some(p):
+            t = t + p.val
+        None:
+            t = t + 0
+    return t as i32   // 0+5+10 = 15

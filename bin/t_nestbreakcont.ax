@@ -1,0 +1,13 @@
+// Oracle (exit=16): nested `for i in a..b` loops mixing `continue` (skip the
+// diagonal) and `break` (cut the inner row at j>3). Guards loop-var scoping
+// and CFG edges of break/continue across nesting.
+fn main() -> i32:
+    mut t: i64 = 0
+    for i in 0..5:
+        for j in 0..5:
+            if j == i:
+                continue
+            if j > 3:
+                break
+            t = t + 1
+    return t as i32   // 3+3+3+3+4 = 16

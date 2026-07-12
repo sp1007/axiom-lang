@@ -1,0 +1,14 @@
+// Oracle (exit=102): fixed array of a 16-byte struct; mutate a field of each
+// element via arr[i].field, then sum via for-in. Crosses fixed-array x >=16B
+// aggregate element x index-field write x for-in read.
+struct S:
+    a: i64
+    b: i64
+fn main() -> i32:
+    mut arr: [S; 3] = [S(a: 1, b: 2), S(a: 3, b: 4), S(a: 5, b: 6)]
+    for i in 0..3:
+        arr[i].a = arr[i].a * 10
+    mut t: i64 = 0
+    for s in arr:
+        t = t + s.a + s.b
+    return t as i32   // (10+2)+(30+4)+(50+6) = 102

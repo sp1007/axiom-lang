@@ -216,6 +216,20 @@ rows=(
   "t_optresult|exit|42"
   "t_vecstructopt|exit|42"
   "t_matchshadow|exit|42"
+  # feature-combo probe oracles (banked 2026-07-12, batch 7)
+  "t_genpairopt|exit|77"
+  "t_arrstructidx|exit|102"
+  "t_negdivmod|exit|25"
+  "t_scshortcirc|exit|12"
+  "t_genfnopt|exit|63"
+  "t_strfieldcat|exit|5"
+  "t_resstrmatch|exit|3"
+  "t_treeoptchild|exit|15"
+  "t_nestbreakcont|exit|16"
+  "t_hashstrkey|exit|30"
+  "t_u64cmp|exit|7"
+  "t_optveciter|exit|6"
+  "t_deepopt|exit|99"
 )
 
 for row in "${rows[@]}"; do

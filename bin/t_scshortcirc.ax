@@ -1,0 +1,16 @@
+// Oracle (exit=12): short-circuit `and`/`or` must NOT evaluate the right
+// operand when the left already decides the result. A global call-counter
+// observes the side effects.
+mut calls: i64 = 0
+fn t() -> bool:
+    calls = calls + 1
+    return true
+fn f() -> bool:
+    calls = calls + 1
+    return false
+fn main() -> i32:
+    if f() and t():       // t() skipped -> calls=1
+        calls = calls + 100
+    if t() or f():        // f() skipped -> calls=2 ; branch taken
+        calls = calls + 10
+    return calls as i32   // 1 + 1 + 10 = 12
