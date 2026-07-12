@@ -1,0 +1,8 @@
+// Oracle (exit=40): RFC 0017 — cross-global initializer dependency / INIT ORDER. A later
+// global's initializer reads an earlier global's value; program-entry init must run in
+// declaration order so `derived` observes the already-stored `base`. Confirms the runtime
+// .data init sequence is top-to-bottom (not zero/garbage for the referenced global).
+mut base: i64 = 10
+mut derived: i64 = base + 5      // must see base=10 -> 15
+fn main() -> i32:
+    return (base + derived + 15) as i32   // 10 + 15 + 15 = 40

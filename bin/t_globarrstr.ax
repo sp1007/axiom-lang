@@ -1,0 +1,13 @@
+// Oracle (exit=15): RFC 0017 P2 — module-level ARRAY of `str` (three 16-byte inline
+// {ptr,len} elements laid out in `.data`). Index-reassign one element (whole 16B store)
+// then iterate the global array summing byte-lengths. Exercises the str-inline element
+// stride inside an aggregate-global slot + for-in over a global str array.
+import std.string
+mut g: [str; 3] = ["aa", "bbb", "cccc"]
+fn main() -> i32:
+    g[1] = "zzzzz"
+    mut total: i64 = 0
+    for x in g:
+        total = total + x.len
+    // 2 + 5 + 4 = 11 ; +4 = 15
+    return (total + 4) as i32

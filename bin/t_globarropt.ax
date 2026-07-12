@@ -1,0 +1,17 @@
+// Oracle (exit=22): RFC 0017 P2 — module-level ARRAY of Option[i64] (three 8-byte
+// pointer-repr box slots in `.data`). Reassign one element to None cross-function, then
+// for-in + match each element summing the Some payloads. Exercises pointer-repr element
+// stride inside an aggregate-global slot + None store into a global array element.
+mut g: [Option[i64]; 3] = [Some(10), Some(20), Some(12)]
+fn drop1():
+    g[1] = None
+fn main() -> i32:
+    drop1()
+    mut s: i64 = 0
+    for e in g:
+        match e:
+            Some(v):
+                s = s + v
+            None:
+                s = s + 0
+    return s as i32   // 10 + 0 + 12 = 22

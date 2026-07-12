@@ -1,0 +1,18 @@
+// Oracle (exit=20): RFC 0017 P2 — module-level ARRAY of STRUCT where the struct itself
+// carries a `str` field. Deepest aggregate-global cross: [ {i64, str(16B)} ; 2 ] in `.data`.
+// Reassign a nested str field of one element and a scalar field of another, then for-in
+// the global array reading both fields. Exercises element-stride × mixed scalar+16B struct
+// layout × nested field write into a global slot.
+import std.string
+struct Item:
+    qty: i64
+    label: str
+mut g: [Item; 2] = [Item(qty: 1, label: "x"), Item(qty: 2, label: "yy")]
+fn main() -> i32:
+    g[0].label = "abcd"
+    g[1].qty = 10
+    mut s: i64 = 0
+    for it in g:
+        s = s + it.qty + it.label.len
+    // (1 + 4) + (10 + 2) = 5 + 12 = 17 ; +3 = 20
+    return (s + 3) as i32

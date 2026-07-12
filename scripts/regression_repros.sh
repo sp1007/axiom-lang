@@ -259,6 +259,12 @@ rows=(
   "t_globsum|exit|42"
   "t_globstr|exit|42"
   "t_globstridx|exit|42"
+  # RFC 0017 P2 — str/16B-inline & pointer-repr embedded inside aggregate globals (deep crosses)
+  "t_globarrstr|exit|15"
+  "t_globoptstr|exit|8"
+  "t_globarrstructstr|exit|20"
+  "t_globarropt|exit|22"
+  "t_globinitorder|exit|40"
 )
 
 for row in "${rows[@]}"; do

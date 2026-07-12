@@ -1,0 +1,16 @@
+// Oracle (exit=8): RFC 0017 P2 — pointer-repr module-level global whose payload is a
+// `str` (16-byte inline). `g`'s VALUE is an 8-byte tagged Option box pointer in `.data`;
+// the box holds a str payload. Reassign None -> Some("hello") cross-statement, then match
+// and read the payload's byte-length. Exercises pointer-repr global storage where the box
+// content is 16B (str) rather than a scalar.
+import std.string
+mut g: Option[str] = None
+fn main() -> i32:
+    g = Some("hello")
+    mut r: i64 = 0
+    match g:
+        Some(v):
+            r = v.len
+        None:
+            r = 99
+    return (r + 3) as i32   // 5 + 3 = 8
