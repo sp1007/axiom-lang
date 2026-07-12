@@ -1,6 +1,6 @@
 # RFC 0022 — Tuple literal expressions
 
-- Status: Accepted (P1 + P2 + P3 implemented)
+- Status: Accepted (P1 + P2 + P3 + P4 implemented)
 - Author: autopilot
 - Date: 2026-07-12
 - Affects: lexer (none), parser, typechecker, AIR lowering
@@ -102,15 +102,21 @@ also trusts the resolver's payload when the resolved symbol is a `__td`-prefixed
 destructure temp (real user idents always match the token, so ordinary code is
 unaffected).
 
-**Still deferred:** tuple destructuring in `match`/params, nested destructuring
-patterns, and chained `.N.M` (below).
+**P4 (implemented):** chained `.N.M` tuple field access. The lexer tokenizes the
+`0.1` run in `t.0.1` as a single FLOAT literal, so the `.` LED, on seeing a float in
+field-selector position, splits it on the dot into two nested tuple field accesses
+(`t._f0._f1`). Previously a hard parse error (identifier expected after `.`), so
+ACCEPT-only. A float with no dot (`1e5`) falls through to the normal error. Only the
+2-level case is handled directly; deeper chains (`t.0.1.2`) still relex ambiguously
+and need an intermediate binding.
 
-**Known P1 limitation — chained `.N.M`:** the lexer tokenizes `t.0.0` as
-`IDENT DOT FLOAT_LIT(0.0)` because the `0.0` run lexes as a float, so *chained*
-tuple field access does not parse. Single-level `.N` on a value is fine. The
-workaround is an intermediate binding (`let a = t.0` then `a.0`). A proper fix
-(splitting a `FLOAT_LIT` selector `0.1` into `._f0._f1`, mirroring how Rust
-resolved the same ambiguity) is deferred to a later phase.
+**Still deferred:** tuple destructuring in `match`/params and nested destructuring
+patterns (`let ((a, b), c) = …`).
+
+**Chained `.N.M`** was a P1 limitation (the lexer tokenizes `t.0.0` as
+`IDENT DOT FLOAT_LIT(0.0)`), resolved in P4 by splitting a float field-selector into
+`._f0._f1` — see the P4 note below. Deeper chains (`t.0.1.2`) still need an
+intermediate binding.
 
 ## Drawbacks / alternatives
 

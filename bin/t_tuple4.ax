@@ -1,0 +1,9 @@
+// Oracle (exit=10): RFC 0022 P4 chained tuple field access `t.N.M`. The lexer tokenizes
+// the `N.M` run as a FLOAT literal, so the `.` LED splits a float selector into two nested
+// tuple field accesses `._fN._fM`. Exercises a 2x2 nested tuple read via all four chained
+// paths plus a single `.N` access (which must still work).
+fn main() -> i32:
+    let t = ((1, 2), (3, 4))
+    let s = t.0.1 + t.1.0 + t.0.0 + t.1.1   // 2+3+1+4 = 10
+    let inner = t.1                          // (3,4)
+    return (s + inner.0 - 3) as i32          // 10 + 3 - 3 = 10

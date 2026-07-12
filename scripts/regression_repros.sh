@@ -271,6 +271,8 @@ rows=(
   "t_tuple2|exit|84"
   # RFC 0022 P3 — tuple destructuring `let (a, b) = EXPR` (single-eval + wildcard + mut)
   "t_tuple3|exit|50"
+  # RFC 0022 P4 — chained tuple field access `t.N.M` (float-selector split)
+  "t_tuple4|exit|10"
 )
 
 for row in "${rows[@]}"; do

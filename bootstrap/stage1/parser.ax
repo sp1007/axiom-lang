@@ -414,6 +414,46 @@ pub fn parse_led(mut self: ptr[Parser], left: u32, op_tok: Token, bp: i32) -> u3
             let field_name = self.tree.add_node(NODE_IDENT, self.token_idx(field_tok))
             self.append_child(node, field_name)
             return node
+        // RFC 0022 P4: chained tuple field access `t.0.1`. The lexer tokenizes the
+        // `0.1` run as a FLOAT literal, so a float in field-selector position is really
+        // two indices `.0` then `.1`. Split on the dot into nested tuple field accesses
+        // `t._f0._f1`. Previously a hard parse error (expect IDENT on a float), so this
+        // only ACCEPTS new syntax. A float with no `.` (e.g. `1e5`) can't be a chained
+        // index and falls through to the normal identifier-expected error.
+        if self.check(TK_FLOAT_LIT):
+            let ftok = self.peek()
+            let ftext = self.token_text(ftok)
+            let flen = std.string.len(ftext)
+            mut dot := 0 as i64 - 1 as i64
+            mut si := 0 as i64
+            while si < flen:
+                if ftext[si] as u8 == 46 as u8: // '.'
+                    dot = si
+                    break
+                si = si + 1 as i64
+            if dot >= 0 as i64:
+                self.consume() // the float selector
+                let lstr = std.string.slice(ftext, 0 as i64, dot)
+                let rstr = std.string.slice(ftext, dot + 1 as i64, flen)
+                @free(ftext as ptr[u8])
+                let lname = std.string.concat("_f", lstr)
+                safe_free_str(lstr)
+                let rname = std.string.concat("_f", rstr)
+                safe_free_str(rstr)
+                let inner = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
+                self.append_child(inner, left)
+                self.set_payload(inner, self.pool.intern(lname))
+                @free(lname as ptr[u8])
+                let lid = self.tree.add_node(NODE_IDENT, self.token_idx(ftok))
+                self.append_child(inner, lid)
+                let outer = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
+                self.append_child(outer, inner)
+                self.set_payload(outer, self.pool.intern(rname))
+                @free(rname as ptr[u8])
+                let rid = self.tree.add_node(NODE_IDENT, self.token_idx(ftok))
+                self.append_child(outer, rid)
+                return outer
+            @free(ftext as ptr[u8])
         let field_tok = self.expect(TK_IDENT)
         let node = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(tok))
         self.append_child(node, left)
