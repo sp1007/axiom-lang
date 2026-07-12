@@ -1,10 +1,12 @@
 # RFC 0020 — String Type System (UTF-8 `str` + `bytes` + `rune`, with room for other encodings)
 
-Status: Accepted — P1 (`rune`, `bytes`, views) + P2 (`for b in bytes`, `for c in str`) SHIPPED; P3 (`ascii`, `utf16`/`utf32`) next
+Status: **RESOLVED** — core string type family complete (`str`/`bytes`/`rune` +
+iteration + slicing + byte/codepoint view methods). `ascii` and `utf16`/`utf32`
+transcoding split out to a future encodings/FFI follow-up (see §9, with rationale).
 Author: autopilot
 Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-utf8-default]]
 
-## Implementation status (2026-07-10)
+## Implementation status (RESOLVED 2026-07-12)
 - ✅ **P1a `rune`** (`edf515a`) — Unicode scalar, alias of u32.
 - ✅ **P1b `bytes`** (`14114fe`) — distinct `TYPE_BYTES=22`, shares str's {ptr,len}
   16B repr; `.len`/`b[i]`→u8; zero-cost `s as bytes` / `b as str` reinterpret cast
@@ -18,10 +20,21 @@ Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-u
   by the variable width via a new `loop_incr_steps` stack (honored by the body-tail
   increment and `continue`). Verified: "AΩ"=2 codepoints, "日本語"=3 (not 9 bytes),
   ASCII "ABC" sum=198.
-- ⏳ **P3** — `ascii` type + `utf16`/`utf32` interop; grapheme segmentation later.
-  Also: `str.chars()`/`str.bytes()`/`char_indices()` view methods; `str[a..b]` slice
-  boundary policy. NB [[bug93-qualified-str-call-segfault]] blocks ergonomic direct
-  `std.string.*` calls with str args.
+- ✅ **P3 slice `s[a..b]`** (`7fbb1ce`) — byte-indexed substring (Rust model): `str[a..b]`
+  →str, `bytes[a..b]`→bytes, via a bounds-safe `std.string.slice` value-ABI call. See §3.4.
+- ✅ **P3 str/bytes UFCS method-form** (`a382f31`) — `s.trim()`/`s.contains(x)`/chaining
+  dispatch to `std.string` free fns whose param[0] is str/bytes.
+- ✅ **P3 view methods** (`240e696`) — `s.as_bytes()` (byte view → `bytes`),
+  `s.chars()` (codepoint view → runs `for c` as `rune`), `s.char_at(n)` (O(n) codepoint
+  random access → `rune`). Pure stdlib, dispatched via the P3 UFCS path + the existing
+  byte/codepoint for-in (which lowers the full iteree EXPRESSION, so `for b in
+  s.as_bytes()` works). Named `as_bytes` (Rust's `str::as_bytes`): a bare `bytes()`
+  method is impossible — `bytes` is a TYPE, so `s.bytes()`/`bytes(x)` parse as a
+  conversion. Oracle `t_strviews` (exit 244).
+- ⛔ **`ascii` type, `utf16`/`utf32` transcoding, `char_indices()`** — **deferred out of
+  this RFC** to a future encodings/FFI follow-up. Rationale in §9. These are additive
+  (no migration cost) and no current use case is blocked, so RFC 0020 closes with the
+  core UTF-8 `str` + raw `bytes` + `rune` family complete.
 
 ## 1. Motivation
 
@@ -169,12 +182,38 @@ UTF-8 decode loop for `str`), reusing the RFC 0018 P2 field-load+index machinery
   + full regression; backend touches (P2 decode) require the B==C gate per the
   fixpoint-async rule.
 
-## 9. Open questions (for the author/user)
+## 9. Open questions — RESOLVED (2026-07-12)
 
-- **`rune` vs `char`:** keep `char8` as the byte type and add `rune` for codepoints,
-  or rename toward `char = rune` + `byte = u8`? (This RFC proposes `rune` + keep
-  `char8`, least disruptive.)
-- **`ascii` in P1 or defer to P3?** (Proposed: type reserved in P1, ops in P3.)
-- **Invalid-UTF-8 policy for `str[a..b]` on a non-boundary:** `Result` vs panic.
-- Which "other string types" beyond `bytes`/`ascii` are priorities (`utf16` for
-  Windows FFI? `utf32`?).
+- **`rune` vs `char`:** ✅ RESOLVED — keep `char8` (the single-byte character) and
+  `rune` (the codepoint). No rename. `rune` unambiguously names a Unicode scalar and
+  does not disturb the byte-oriented `char8`/`u8` the lexer/parser rely on. A `char`
+  alias for `rune` may be added later if desired; not needed now.
+- **`ascii` in P1 or defer?** ✅ RESOLVED — **deferred (unscheduled).** `bytes` already
+  provides raw `u8` access plus a zero-cost `s as bytes` / `s.as_bytes()` view, so an
+  `ascii` type would add a validation invariant + a `char8` element that largely
+  duplicates `bytes` iteration for marginal value, and it costs new parser/typecheck
+  builtin-type surface. No current use case is blocked. If a concrete ASCII-fast-path
+  need arises it is purely additive → a small follow-up RFC. Not part of RFC 0020.
+- **Invalid-UTF-8 policy for `str[a..b]` on a non-boundary:** ✅ RESOLVED — **byte-indexed
+  with clamp (Rust model), no boundary check** (shipped `7fbb1ce`). `s[i]` and `s[a..b]`
+  are documented **raw byte** operations (§3.4); the slice is bounds-safe (never OOB) but
+  may split a codepoint if misused — the same trade-off Rust/Go accept for O(1) byte
+  indexing. A checked codepoint-boundary slice returning `Result` is a possible additive
+  future helper (`str.slice_chars` / `char_indices`) but is **not** required for the core
+  and is not blocking; deferred with the `char_indices()` iterator work below.
+- **Other string types (`utf16`/`utf32`):** ✅ RESOLVED — **deferred to a future
+  encodings/FFI RFC.** These are not mere type tags: they require real transcoding
+  routines (UTF-8 ↔ UTF-16/UTF-32) and, for `utf16`, Windows wide-char FFI conventions —
+  a distinct subsystem from this type family. A user can already hold raw UTF-16/32 in
+  `bytes` and transcode via FFI today; typed, safe transcoding is the follow-up. Priority
+  when scheduled: `utf16` (Windows FFI) first, then `utf32`.
+- **`char_indices()` / iterator views:** ✅ RESOLVED — **deferred.** A `(byte_offset, rune)`
+  pair-yielding iterator needs a tuple-in-`for` / iterator-protocol design the language
+  does not yet have. `char_at(n)` (O(n) codepoint access) + byte-indexed slicing cover the
+  practical need now; the richer iterator surface belongs with a future iterator-protocol RFC.
+
+**Conclusion:** RFC 0020 is **RESOLVED**. The coherent core — UTF-8 `str` (byte index,
+codepoint iteration), raw `bytes`, `rune`, slicing, and `.as_bytes()`/`.chars()`/
+`.char_at()` views — is shipped and gated (A==B). The deferred items (`ascii`, `utf16`/
+`utf32` transcoding, `char_indices` iterator) are additive and carry no migration cost, so
+they are cleanly split into a future encodings/iterator follow-up rather than blocking closure.
