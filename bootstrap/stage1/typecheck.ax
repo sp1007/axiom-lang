@@ -2738,26 +2738,55 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         if anchor == TYPE_UNKNOWN and last != 0 as u32:
             anchor = self.infer_node(last, TYPE_UNKNOWN)
             else_done = true
-        // Infer conds as bool and value branches against the anchor. Reject a branch
-        // whose concrete type disagrees with the anchor (would miscompile the shared
-        // result slot) — the BUG#53 accept-then-miscompile convention.
+        // Anchor storage width (bytes). A value branch whose storage width differs
+        // from the anchor would miscompile the shared result slot (the value diamond
+        // writes one fixed-width vreg on every path) -> reject (BUG#53 convention).
+        // Width — not exact type_id — is the safety criterion: `if c: Some(x) else:
+        // None` has two different type_ids but both are 8-byte pointer-repr and is
+        // valid; `if c: 42 else: "no"` (8 vs 16) is the dangerous case caught here.
+        mut anchor_size := 0 as u32
+        if anchor != TYPE_UNKNOWN and (anchor as i64) < self.types.entries.len:
+            mut aalign := 0 as u32
+            builder_type_size_and_align(self.types, anchor, &anchor_size, &aalign)
         mut idx := 0 as i64
         c = first
         while c != 0 as u32:
             let nxt = self.tree.nodes.data[c].next_sibling
+            mut bt := TYPE_UNKNOWN
+            mut is_value := true
             if c == last:
-                if not else_done:
-                    let et = self.infer_node(c, anchor)
-                    if anchor != TYPE_UNKNOWN and et != TYPE_UNKNOWN and et != anchor:
-                        ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                        self.diags_count = self.diags_count + 1 as i64
+                if else_done:
+                    is_value = false
+                else:
+                    bt = self.infer_node(c, anchor)
             elif idx % 2 as i64 == 0 as i64:
                 self.infer_node(c, TYPE_BOOL)
+                is_value = false
             else:
-                let bt = self.infer_node(c, anchor)
-                if anchor != TYPE_UNKNOWN and bt != TYPE_UNKNOWN and bt != anchor:
-                    ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                bt = self.infer_node(c, anchor)
+            if is_value and bt != TYPE_UNKNOWN and (bt as i64) < self.types.entries.len:
+                let bkind = self.types.entries.data[bt as i64].kind
+                let akind = self.types.entries.data[anchor as i64].kind
+                let b_optres = self.tc_is_opt_res(bt)
+                let a_optres = self.tc_is_opt_res(anchor)
+                // A user-defined SUM value branch (`Circle(7)` vs `Empty`) is not yet
+                // lowered correctly by the value diamond — the branch box does not
+                // round-trip through the shared result slot (Option/Result DO, via
+                // their dedicated box lowering). Reject rather than miscompile
+                // (BUG#53 convention); the workaround is a mut + statement-`if`.
+                if (bkind == TYPE_KIND_SUM and not b_optres) or (akind == TYPE_KIND_SUM and not a_optres):
+                    ax_printf_local("error: if-expression does not yet support user-defined sum/enum types as branch values (use a mut + statement `if`)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+                elif anchor_size != 0 as u32 and not a_optres and not b_optres and bkind != TYPE_KIND_OPTION and bkind != TYPE_KIND_RESULT and bkind != TYPE_KIND_GENERIC_INST and akind != TYPE_KIND_OPTION and akind != TYPE_KIND_RESULT and akind != TYPE_KIND_GENERIC_INST:
+                    // Plain primitive/str/struct branches: the shared result slot has a
+                    // fixed width, so a branch of a different storage width would
+                    // miscompile (`if c: 42 else: "no"` is 8 vs 16). Reject.
+                    mut bsize := 0 as u32
+                    mut balign := 0 as u32
+                    builder_type_size_and_align(self.types, bt, &bsize, &balign)
+                    if bsize != 0 as u32 and bsize != anchor_size:
+                        ax_printf_local("error: if-expression branches have incompatible types (different storage widths)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
             idx = idx + 1 as i64
             c = nxt
         result_type = anchor

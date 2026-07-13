@@ -325,8 +325,10 @@ rows=(
   "t_ifexprstr|exit|3"
   "t_ifexprstruct|exit|42"
   "t_ifexprlambda|exit|42"
+  "t_ifexproptnone|exit|42"
   "t_ifexprnoelse|reject|"
   "t_ifexprmismatch|reject|"
+  "t_ifexprusersum|reject|"
 )
 
 for row in "${rows[@]}"; do
