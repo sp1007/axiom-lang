@@ -301,6 +301,9 @@ rows=(
   # closure zero-capture scan no longer flags global variant constructors
   "t_lambdaflatmap|exit|42"
   "t_lambdavariant|exit|7"
+  # Result combinators with inline lambdas (3 type params)
+  "t_resmap|exit|42"
+  "t_resmaperr|exit|42"
 )
 
 for row in "${rows[@]}"; do
