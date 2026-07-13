@@ -147,6 +147,19 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
                         node.payload = target_name_id
                         if kind == NODE_TYPE_EXPR or kind == NODE_IDENT:
                             node.flags = node.flags | FLAG_IS_SUBSTITUTED
+                            // Tuple synth-structs (`__tupN`) are registered in the type
+                            // table but have NO resolvable symbol, and every N-tuple
+                            // shares the name `__tupN` regardless of element types. So the
+                            // name-based substitution above (payload = name_id) cannot be
+                            // resolved back to the exact type by the type-checker (it maps
+                            // to UNKNOWN → a scalar `t0` param → wrong field offsets, e.g.
+                            // `.1` reads `.0`). Stash the EXACT concrete type_id in
+                            // extra_idx so the resolver can recover it directly. Guarded to
+                            // `__tup` so every other (name-resolvable) substitution is
+                            // byte-identical to before.
+                            let sub_nm = self.pool.get(entry.name_id)
+                            if std.string.starts_with(sub_nm, "__tup"):
+                                node.extra_idx = type_id
                 else:
                     mut is_local := false
                     mut is_global_sym := false
@@ -239,7 +252,22 @@ pub fn get_type_name_recursive(self: ptr[Monomorphizer], type_id: u32) -> str:
         return "unknown"
     let entry = self.typetable.entries.data[type_id]
     if entry.name_id != 0 as u32:
-        return self.pool.get(entry.name_id)
+        // Tuple synth-structs all share the bare name `__tupN` regardless of their
+        // element types, so two distinct tuple type arguments (e.g. (i32,i32) vs
+        // (i64,i64)) would mangle to the SAME instance name and the second generic
+        // call would wrongly reuse the first instance. Encode the element types so
+        // each distinct tuple shape gets a distinct mangled name.
+        let tnm = self.pool.get(entry.name_id)
+        if entry.kind == 1 as u8 and std.string.starts_with(tnm, "__tup") and (entry.extra as i64) < self.typetable.structs.len:
+            let sinfo = self.typetable.structs.data[entry.extra as i64]
+            mut acc := std.string.concat("", tnm)
+            mut fi := 0 as i64
+            while fi < sinfo.fields.len:
+                acc = std.string.concat(acc, "_")
+                acc = std.string.concat(acc, self.get_type_name_recursive(sinfo.fields.data[fi].type_id))
+                fi = fi + 1 as i64
+            return acc
+        return tnm
 
     // Prepopulated primitive types fallback
     if type_id == 0 as u32:

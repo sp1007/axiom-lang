@@ -1,0 +1,17 @@
+// Oracle (exit=42): a tuple type flowing through a generic function parameter.
+// Regression for the monomorphizer bug where a `__tupN` synth-struct passed as a
+// generic type argument (`id[T]` with T=(i64,i64)) lost its layout: the name-based
+// type substitution wrote the ambiguous name `__tupN` (which has no resolvable
+// symbol), so the mono'd param resolved to UNKNOWN/scalar and field `.1` aliased
+// `.0`. The fix stashes the exact concrete type_id in the substituted node's
+// extra_idx. Exercises both a literal-inferred tuple and an annotated (i64,i64),
+// each requiring `.1` to be DISTINCT from `.0`.
+fn id[T](v: T) -> T:
+    return v
+
+fn main() -> i32:
+    let t = id((20, 22))              // t.0=20 t.1=22 -> 42 (needs .1 != .0)
+    let s: (i64, i64) = (100, 58)
+    let u = id(s)                     // u.0=100 u.1=58 -> 42
+    // 42 + 42 - 42 = 42 ; a bug that aliases .1 to .0 gives a wrong value.
+    return (t.0 + t.1 + u.0 - u.1 - 42) as i32

@@ -3832,7 +3832,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             elif text == "usize":
                 result_type = 16 as u32
             safe_free_str(text)
-            
+        // Fallback for a substituted tuple type param (see NODE_TYPE_EXPR below):
+        // `__tupN` has no resolvable symbol; recover the type_id the monomorphizer
+        // stashed in extra_idx.
+        if result_type == TYPE_UNKNOWN and is_substituted:
+            let sub_tid = self.tree.nodes.data[node_idx].extra_idx
+            if sub_tid != 0 as u32:
+                result_type = sub_tid as u32
+
     elif kind == NODE_TYPE_EXPR:
         let sym_idx = self.tree.nodes.data[node_idx].payload
         let is_substituted := ((self.tree.nodes.data[node_idx].flags & FLAG_IS_SUBSTITUTED) != 0 as u16)
@@ -3926,7 +3933,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             elif text == "usize":
                 result_type = 16 as u32
             safe_free_str(text)
-                
+        // Fallback for a substituted tuple type param: `__tupN` has no resolvable
+        // symbol, so the name-based resolution above yields UNKNOWN. The monomorphizer
+        // stashed the exact concrete type_id in extra_idx — recover it directly.
+        if result_type == TYPE_UNKNOWN and is_substituted:
+            let sub_tid = self.tree.nodes.data[node_idx].extra_idx
+            if sub_tid != 0 as u32:
+                result_type = sub_tid as u32
+
     elif kind == NODE_GENERIC_TYPE:
         let base_idx = self.tree.nodes.data[node_idx].first_child
         if base_idx != 0 as u32:

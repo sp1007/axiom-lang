@@ -343,6 +343,8 @@ rows=(
   "t_mutualrecur|exit|42"
   # generic free-fn called with explicit type-args (enclosing type param): f[T]()
   "t_genfnexpltypearg|exit|42"
+  # tuple type flowing through a generic fn param (mono substitution + name mangling)
+  "t_gentuple|exit|42"
   # Vec accessor methods (is_empty / extend)
   "t_vecisempty|exit|42"
   "t_vecextend|exit|42"
