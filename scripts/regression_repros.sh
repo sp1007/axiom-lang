@@ -287,6 +287,8 @@ rows=(
   # inline lambda -> generic fn/method (infer U from lambda return type)
   "t_lambdagen|exit|42"
   "t_lambdamap|exit|42"
+  "t_lambdamap2|exit|1"
+  "t_lambdazip|exit|42"
 )
 
 for row in "${rows[@]}"; do
