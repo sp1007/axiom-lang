@@ -277,6 +277,13 @@ rows=(
   "t_tupfield|exit|33"
   # assert() builtin now works on the native path (symbol map + msg-arg synthesis)
   "t_assert|exit|7"
+  # RFC 0022 — tuple cross-feature coverage (probe-banked 2026-07-13)
+  "t_tupret|exit|117"
+  "t_tupstr|exit|12"
+  "t_tupnest|exit|5"
+  "t_tupmethod|exit|42"
+  "t_tuparr|exit|9"
+  "t_tupcall|exit|66"
 )
 
 for row in "${rows[@]}"; do
