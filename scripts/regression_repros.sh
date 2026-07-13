@@ -341,6 +341,8 @@ rows=(
   # recursion returning a struct accumulator (by-ref aggregate) + mutual recursion
   "t_recurstruct|exit|42"
   "t_mutualrecur|exit|42"
+  # generic free-fn called with explicit type-args (enclosing type param): f[T]()
+  "t_genfnexpltypearg|exit|42"
 )
 
 for row in "${rows[@]}"; do

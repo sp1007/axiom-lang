@@ -10468,6 +10468,25 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
 
                 if has_generic_arg:
                     result_type = self.types.register_generic_inst(sym.name_id, args)
+                    // `f[T]` where `f` is a generic FUNCTION (not a type) and `T` is
+                    // an enclosing type param is a function reference with explicit
+                    // type args, NOT a type instantiation. Its type is the function's
+                    // RETURN type (still symbolic pre-mono), not a generic-inst named
+                    // after the fn. Without this override, `make[T]()` inside a generic
+                    // body typed the result as GENERIC_INST("make") and `r.push(..)`
+                    // failed with "no method 'push' on type 'make'". (register_generic_inst
+                    // above already consumed `args`; we only reinterpret result_type.)
+                    if sym.kind == SYM_FUNC:
+                        mut fnty := sym.type_id
+                        if fnty == TYPE_UNKNOWN and sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32:
+                            self.pre_infer_func_signature(sym.decl_node)
+                            fnty = self.symtable.symbols.data[sym_idx as i64].type_id
+                        if fnty != TYPE_UNKNOWN and (fnty as i64) < self.types.entries.len:
+                            let fe = self.types.entries.data[fnty as i64]
+                            if fe.kind == TYPE_KIND_FUNC:
+                                let fret = self.types.funcs.data[fe.extra].ret
+                                if fret != TYPE_UNKNOWN and fret != 0 as u32:
+                                    result_type = fret
                 else:
                     mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
                     let mangled_name = mono.mangle_name_ov(sym_idx, self.intern.get(sym.name_id), args)
