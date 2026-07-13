@@ -343,6 +343,12 @@ rows=(
   "t_mutualrecur|exit|42"
   # generic free-fn called with explicit type-args (enclosing type param): f[T]()
   "t_genfnexpltypearg|exit|42"
+  # RFC 0024 block strings """...""" (len/multi-line/escapes/byte/embedded-quotes)
+  "t_blockstr|exit|5"
+  "t_blockstrml|exit|5"
+  "t_blockstresc|exit|42"
+  "t_blockstrbyte|exit|65"
+  "t_blockstrquote|exit|11"
 )
 
 for row in "${rows[@]}"; do

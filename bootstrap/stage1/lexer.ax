@@ -284,6 +284,28 @@ pub fn scan_number(mut self: ptr[Lexer]):
 
 pub fn scan_string(mut self: ptr[Lexer]):
     let start = self.pos
+    // RFC 0024: a block string `"""..."""` opens with three double-quotes. Unlike a
+    // normal string it SPANS newlines and terminates only at the next unescaped
+    // `"""`. Escape sequences (`\n`, `\"`, ...) are still recognized so an escaped
+    // quote does not prematurely close the literal; unescape_string_literal /
+    // strip_quotes strip the 3-char delimiters and process the escapes.
+    if self.pos + 2 < self.len and self.src[self.pos] as u8 == 34 as u8 and self.src[self.pos + 1] as u8 == 34 as u8 and self.src[self.pos + 2] as u8 == 34 as u8:
+        self.pos = self.pos + 3 // skip opening """
+        while self.pos < self.len:
+            let bb = self.src[self.pos] as u8
+            if bb == 92 as u8: // '\' — skip the escape so \" cannot end the block
+                self.pos = self.pos + 1
+                if self.pos < self.len:
+                    self.pos = self.pos + 1
+                continue
+            if bb == 34 as u8 and self.pos + 2 < self.len and self.src[self.pos + 1] as u8 == 34 as u8 and self.src[self.pos + 2] as u8 == 34 as u8:
+                self.pos = self.pos + 3 // skip closing """
+                self.emit(TK_STRING_LIT, start, self.pos - start)
+                return
+            self.pos = self.pos + 1
+        // Unterminated block string — emit what we have (parser reports downstream).
+        self.emit(TK_STRING_LIT, start, self.pos - start)
+        return
     self.pos = self.pos + 1 // skip opening '"'
     while self.pos < self.len:
         let b = self.src[self.pos] as u8
