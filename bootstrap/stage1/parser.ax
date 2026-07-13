@@ -360,6 +360,41 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
         else:
             return self.tree.add_node(NODE_ERROR, self.token_idx(hash_tok))
 
+    // RFC 0023: if-EXPRESSION `if C0: V0 (elif Ci: Vi)* else: VE` in prefix
+    // (expression) position. Statement-`if` is dispatched separately in parse_stmt
+    // and is unaffected. Each branch body is a single inline expression (NOT a
+    // block); `else` is mandatory (an expression must produce a value). Children:
+    // flat `cond0, then0, [condi, theni, ...], else_expr`.
+    if tok.kind == TK_IF:
+        self.consume() // 'if'
+        let node = self.tree.add_node(NODE_IF_EXPR, self.token_idx(tok))
+        let c0 = self.parse_expr_with_prec(BP_NONE)
+        if c0 != 0 as u32:
+            self.append_child(node, c0)
+        self.expect(TK_COLON)
+        let v0 = self.parse_expr_with_prec(BP_NONE)
+        if v0 != 0 as u32:
+            self.append_child(node, v0)
+        while self.check(TK_ELIF):
+            self.consume() // 'elif'
+            let ci = self.parse_expr_with_prec(BP_NONE)
+            if ci != 0 as u32:
+                self.append_child(node, ci)
+            self.expect(TK_COLON)
+            let vi = self.parse_expr_with_prec(BP_NONE)
+            if vi != 0 as u32:
+                self.append_child(node, vi)
+        if not self.check(TK_ELSE):
+            let p = self.peek()
+            self.errorf(p, "if-expression requires an else branch (it must produce a value)")
+            return node
+        self.consume() // 'else'
+        self.expect(TK_COLON)
+        let ve = self.parse_expr_with_prec(BP_NONE)
+        if ve != 0 as u32:
+            self.append_child(node, ve)
+        return node
+
     self.errorf(tok, "expected expression nud")
     self.consume()
     return 0 as u32

@@ -318,6 +318,15 @@ rows=(
   # Result combinators with inline lambdas (3 type params)
   "t_resmap|exit|42"
   "t_resmaperr|exit|42"
+  # RFC 0023 if-expressions (scalar/elif/nested/str/struct + lambda body; rejects)
+  "t_ifexpr|exit|42"
+  "t_ifexprelif|exit|42"
+  "t_ifexprnest|exit|42"
+  "t_ifexprstr|exit|3"
+  "t_ifexprstruct|exit|42"
+  "t_ifexprlambda|exit|42"
+  "t_ifexprnoelse|reject|"
+  "t_ifexprmismatch|reject|"
 )
 
 for row in "${rows[@]}"; do

@@ -1457,6 +1457,13 @@ pub const NODE_TUPLE_EXPR: u8 = 69
 // type-expr nodes. Resolves to the same anonymous struct type as a tuple literal.
 pub const NODE_TUPLE_TYPE: u8 = 70
 
+// RFC 0023: if-EXPRESSION `if C0: V0 elif C1: V1 else: VE`. Children are a flat
+// list `cond0, then0, [cond1, then1, ...], else_expr` (each an expression). The
+// trailing child is the mandatory else value. Distinct from NODE_IF_STMT (which
+// holds blocks + an optional else). Typecheck unifies branch types; AIR lowers to
+// a value-producing diamond.
+pub const NODE_IF_EXPR: u8 = 71
+
 
 // Flags constants (matching compiler/ast/node.go exactly)
 pub const FLAG_IS_PUB: u16 = 1
@@ -2244,6 +2251,41 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
             return comptime_node
         else:
             return self.tree.add_node(NODE_ERROR, self.token_idx(hash_tok))
+
+    // RFC 0023: if-EXPRESSION `if C0: V0 (elif Ci: Vi)* else: VE` in prefix
+    // (expression) position. Statement-`if` is dispatched separately in parse_stmt
+    // and is unaffected. Each branch body is a single inline expression (NOT a
+    // block); `else` is mandatory (an expression must produce a value). Children:
+    // flat `cond0, then0, [condi, theni, ...], else_expr`.
+    if tok.kind == TK_IF:
+        self.consume() // 'if'
+        let node = self.tree.add_node(NODE_IF_EXPR, self.token_idx(tok))
+        let c0 = self.parse_expr_with_prec(BP_NONE)
+        if c0 != 0 as u32:
+            self.append_child(node, c0)
+        self.expect(TK_COLON)
+        let v0 = self.parse_expr_with_prec(BP_NONE)
+        if v0 != 0 as u32:
+            self.append_child(node, v0)
+        while self.check(TK_ELIF):
+            self.consume() // 'elif'
+            let ci = self.parse_expr_with_prec(BP_NONE)
+            if ci != 0 as u32:
+                self.append_child(node, ci)
+            self.expect(TK_COLON)
+            let vi = self.parse_expr_with_prec(BP_NONE)
+            if vi != 0 as u32:
+                self.append_child(node, vi)
+        if not self.check(TK_ELSE):
+            let p = self.peek()
+            self.errorf(p, "if-expression requires an else branch (it must produce a value)")
+            return node
+        self.consume() // 'else'
+        self.expect(TK_COLON)
+        let ve = self.parse_expr_with_prec(BP_NONE)
+        if ve != 0 as u32:
+            self.append_child(node, ve)
+        return node
 
     self.errorf(tok, "expected expression nud")
     self.consume()
@@ -8744,7 +8786,49 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let body = self.tree.nodes.data[node_idx].first_child
         if body != 0 as u32:
             result_type = self.infer_node(body, expected)
-            
+
+    elif kind == NODE_IF_EXPR:
+        // RFC 0023: children are `cond0, then0, [condi, theni, ...], else` (flat).
+        // Conds are the even-indexed children except the final one; the LAST child
+        // is always the mandatory else value; odd-indexed children are then-values.
+        let first = self.tree.nodes.data[node_idx].first_child
+        // Locate the last child (the else value).
+        mut last := first
+        mut c := first
+        while c != 0 as u32:
+            last = c
+            c = self.tree.nodes.data[c].next_sibling
+        // Anchor result type: the caller's expected type if concrete, else infer the
+        // else branch to anchor on it. Int literals coerce to the anchor via `expected`.
+        mut anchor := expected
+        mut else_done := false
+        if anchor == TYPE_UNKNOWN and last != 0 as u32:
+            anchor = self.infer_node(last, TYPE_UNKNOWN)
+            else_done = true
+        // Infer conds as bool and value branches against the anchor. Reject a branch
+        // whose concrete type disagrees with the anchor (would miscompile the shared
+        // result slot) â€” the BUG#53 accept-then-miscompile convention.
+        mut idx := 0 as i64
+        c = first
+        while c != 0 as u32:
+            let nxt = self.tree.nodes.data[c].next_sibling
+            if c == last:
+                if not else_done:
+                    let et = self.infer_node(c, anchor)
+                    if anchor != TYPE_UNKNOWN and et != TYPE_UNKNOWN and et != anchor:
+                        ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
+            elif idx % 2 as i64 == 0 as i64:
+                self.infer_node(c, TYPE_BOOL)
+            else:
+                let bt = self.infer_node(c, anchor)
+                if anchor != TYPE_UNKNOWN and bt != TYPE_UNKNOWN and bt != anchor:
+                    ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
+            idx = idx + 1 as i64
+            c = nxt
+        result_type = anchor
+
     elif kind == NODE_WHILE_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
         if cond != 0 as u32:
@@ -12462,6 +12546,8 @@ pub fn lower_expr(mut self: ptr[FuncLowering], idx: u32) -> u32:
         return self.lower_array_lit(idx, node)
     if node.kind == NODE_TUPLE_EXPR:
         return self.lower_tuple_lit(idx, node)
+    if node.kind == NODE_IF_EXPR:
+        return self.lower_if_expr(idx, node)
     return 0 as u32
 
 pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
@@ -12754,6 +12840,57 @@ pub fn lower_short_circuit(mut self: ptr[FuncLowering], lhs_idx: u32, rhs_idx: u
     self.fb.switch_to(merge_block)
     self.terminated = false
     return sc_res
+
+// RFC 0023: lower an if-EXPRESSION `if C0: V0 (elif Ci: Vi)* else: VE` to a
+// value-producing diamond, generalizing the short-circuit lowering above to N
+// branches. Children are flat: cond0, then0, cond1, then1, ..., else. One result
+// vreg `r` is written on every path and read at the merge block; correct because
+// compute_liveness is CFG-aware (RFC 0016 P2') â€” `r`'s interval covers the diamond.
+pub fn lower_if_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
+    mut result_type := 3 as u32 // fallback i32
+    if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
+        result_type = self.mb.node_types[idx as i64] as u32
+
+    let r = self.fb.fresh_reg()
+    let merge_block = self.fb.new_block()
+
+    mut child := node.first_child
+    while child != 0 as u32:
+        let then_child = self.mb.tree.nodes.data[child as i64].next_sibling
+        if then_child == 0 as u32:
+            // `child` is the unpaired trailing else value.
+            let else_reg = self.lower_expr(child)
+            self.fb.emit(AirInst(opcode: OP_COPY, type_id: result_type, dest: r, src1: else_reg, src2: 0 as u32))
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), merge_block)
+            child = 0 as u32
+        else:
+            // (cond, then) pair. cond in the current block; branch to then or the
+            // next test/else block.
+            let cond_reg = self.lower_expr(child)
+            let then_block = self.fb.new_block()
+            let next_block = self.fb.new_block()
+            let entry_block = self.fb.current_block()
+            // OP_BRANCH: dest = false-target, src1 = cond, src2 = true-target.
+            self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: next_block, src1: cond_reg, src2: then_block))
+            self.fb.add_edge(entry_block, then_block)
+            self.fb.add_edge(entry_block, next_block)
+            // then block: eval then-value into r, jump to merge.
+            self.fb.switch_to(then_block)
+            self.terminated = false
+            let then_reg = self.lower_expr(then_child)
+            self.fb.emit(AirInst(opcode: OP_COPY, type_id: result_type, dest: r, src1: then_reg, src2: 0 as u32))
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), merge_block)
+            // continue testing the next cond / else in next_block.
+            self.fb.switch_to(next_block)
+            self.terminated = false
+            child = self.mb.tree.nodes.data[then_child as i64].next_sibling
+
+    // Merge: r holds the selected branch value.
+    self.fb.switch_to(merge_block)
+    self.terminated = false
+    return r
 
 pub fn lower_binary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child

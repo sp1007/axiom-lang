@@ -2719,7 +2719,49 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let body = self.tree.nodes.data[node_idx].first_child
         if body != 0 as u32:
             result_type = self.infer_node(body, expected)
-            
+
+    elif kind == NODE_IF_EXPR:
+        // RFC 0023: children are `cond0, then0, [condi, theni, ...], else` (flat).
+        // Conds are the even-indexed children except the final one; the LAST child
+        // is always the mandatory else value; odd-indexed children are then-values.
+        let first = self.tree.nodes.data[node_idx].first_child
+        // Locate the last child (the else value).
+        mut last := first
+        mut c := first
+        while c != 0 as u32:
+            last = c
+            c = self.tree.nodes.data[c].next_sibling
+        // Anchor result type: the caller's expected type if concrete, else infer the
+        // else branch to anchor on it. Int literals coerce to the anchor via `expected`.
+        mut anchor := expected
+        mut else_done := false
+        if anchor == TYPE_UNKNOWN and last != 0 as u32:
+            anchor = self.infer_node(last, TYPE_UNKNOWN)
+            else_done = true
+        // Infer conds as bool and value branches against the anchor. Reject a branch
+        // whose concrete type disagrees with the anchor (would miscompile the shared
+        // result slot) — the BUG#53 accept-then-miscompile convention.
+        mut idx := 0 as i64
+        c = first
+        while c != 0 as u32:
+            let nxt = self.tree.nodes.data[c].next_sibling
+            if c == last:
+                if not else_done:
+                    let et = self.infer_node(c, anchor)
+                    if anchor != TYPE_UNKNOWN and et != TYPE_UNKNOWN and et != anchor:
+                        ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
+            elif idx % 2 as i64 == 0 as i64:
+                self.infer_node(c, TYPE_BOOL)
+            else:
+                let bt = self.infer_node(c, anchor)
+                if anchor != TYPE_UNKNOWN and bt != TYPE_UNKNOWN and bt != anchor:
+                    ax_printf_local("error: if-expression branches have incompatible types\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
+            idx = idx + 1 as i64
+            c = nxt
+        result_type = anchor
+
     elif kind == NODE_WHILE_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
         if cond != 0 as u32:
