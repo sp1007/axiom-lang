@@ -284,6 +284,9 @@ rows=(
   "t_tupmethod|exit|42"
   "t_tuparr|exit|9"
   "t_tupcall|exit|66"
+  # inline lambda -> generic fn/method (infer U from lambda return type)
+  "t_lambdagen|exit|42"
+  "t_lambdamap|exit|42"
 )
 
 for row in "${rows[@]}"; do

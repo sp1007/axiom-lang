@@ -658,6 +658,39 @@ pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u3
             if entry.kind == TYPE_KIND_SLICE:
                 let inner_arg_type = entry.extra
                 self.infer_generic_type_args(inner_node_idx, inner_arg_type, gen_params, inferred, src_tree)
+    elif kind == NODE_FUNC_TYPE:
+        // A fn-typed parameter `fn(T) -> U`: infer T/U structurally from the
+        // argument's concrete function type (e.g. an inline lambda typed fn(i64)->i64
+        // by the NODE_CLOSURE_EXPR branch of infer_node). Without this, U (inferable
+        // only from the fn param's return) stays UNKNOWN, is i32-defaulted, and the
+        // template may fail to instantiate. NODE_FUNC_TYPE children = param type
+        // nodes, then (when flags&1) the return type node last.
+        mut fnorm_arg := arg_type
+        mut fentry = self.types.entries.data[fnorm_arg as i64]
+        while fentry.kind == TYPE_KIND_POINTER or fentry.kind == TYPE_KIND_REF:
+            fnorm_arg = fentry.extra
+            fentry = self.types.entries.data[fnorm_arg as i64]
+        if fentry.kind == TYPE_KIND_FUNC:
+            let fi = self.types.funcs.data[fentry.extra as i64]
+            let ftnode = src_tree.nodes.data[tn_idx]
+            let f_has_ret = (ftnode.flags & 1 as u16) != 0 as u16
+            mut f_nchildren := 0 as i64
+            mut f_cc := ftnode.first_child
+            while f_cc != 0 as u32:
+                f_nchildren = f_nchildren + 1 as i64
+                f_cc = src_tree.nodes.data[f_cc].next_sibling
+            mut f_nparams := f_nchildren
+            if f_has_ret:
+                f_nparams = f_nchildren - 1 as i64
+            mut f_cn := ftnode.first_child
+            mut f_pi := 0 as i64
+            while f_cn != 0 as u32 and f_pi < f_nparams:
+                if f_pi < fi.params.len:
+                    self.infer_generic_type_args(f_cn, fi.params.data[f_pi], gen_params, inferred, src_tree)
+                f_cn = src_tree.nodes.data[f_cn].next_sibling
+                f_pi = f_pi + 1 as i64
+            if f_has_ret and f_cn != 0 as u32:
+                self.infer_generic_type_args(f_cn, fi.ret, gen_params, inferred, src_tree)
 
 pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u32) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
@@ -2420,6 +2453,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             fname = self.intern.get(nid)
                     ax_printf_local("error: function '%s' can reach the end of its body without returning a value; add an explicit `return` (AXIOM has no implicit last-expression return)\n", get_str_ptr(fname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+
+    elif kind == NODE_CLOSURE_EXPR:
+        // RFC 0008: a lambda-lifted closure reference — its payload is the resolved
+        // symbol index of the synthesized top-level function (set by the resolver).
+        // That function's signature was already registered by the
+        // pre_infer_func_signature pre-pass, so report its concrete fn type here.
+        // Without this, an inline lambda argument inferred as UNKNOWN and a generic
+        // callee (e.g. `Option.map` / `apply[T,U](x, f: fn(T)->U)`) failed to
+        // monomorphize (unresolved external). Pairs with the NODE_FUNC_TYPE branch
+        // in infer_generic_type_args, which reads this fn type to resolve T/U.
+        let cl_sym = self.tree.nodes.data[node_idx].payload
+        if cl_sym != 0 as u32 and (cl_sym as i64) < self.symtable.symbols.len:
+            result_type = self.symtable.symbols.data[cl_sym as i64].type_id
 
     elif kind == NODE_STRUCT_DECL:
         let sym_idx = self.tree.nodes.data[node_idx].payload
