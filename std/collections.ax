@@ -87,6 +87,34 @@ pub fn fold[T, U](self: Vec[T], init: U, f: fn(U, T) -> U) -> U:
         i = i + 1
     return acc
 
+// any: true if `pred` holds for at least one element.
+pub fn any[T](self: Vec[T], pred: fn(T) -> bool) -> bool:
+    mut i := 0 as i64
+    while i < self.len:
+        if pred(self.data[i]):
+            return true
+        i = i + 1
+    return false
+
+// all: true if `pred` holds for every element (vacuously true when empty).
+pub fn all[T](self: Vec[T], pred: fn(T) -> bool) -> bool:
+    mut i := 0 as i64
+    while i < self.len:
+        if not pred(self.data[i]):
+            return false
+        i = i + 1
+    return true
+
+// find: the first element for which `pred` holds, else None.
+pub fn find[T](self: Vec[T], pred: fn(T) -> bool) -> Option[T]:
+    mut i := 0 as i64
+    while i < self.len:
+        let item = self.data[i]
+        if pred(item):
+            return Some(item)
+        i = i + 1
+    return None
+
 // Hash helper supporting all types generically by FNV-1a hashing their bytes.
 // Specialized for 'str' key types by checking size == 16 (since strings contain a ptr + len).
 fn hash_key[K](key: K) -> u64:

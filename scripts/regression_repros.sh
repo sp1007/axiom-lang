@@ -295,6 +295,9 @@ rows=(
   "t_vecfold|exit|42"
   "t_vecmapbool|exit|2"
   "t_vecchain|exit|50"
+  "t_vecany|exit|1"
+  "t_vecall|exit|42"
+  "t_vecfind|exit|42"
 )
 
 for row in "${rows[@]}"; do
