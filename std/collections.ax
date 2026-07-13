@@ -170,6 +170,23 @@ pub fn reverse[T](self: Vec[T]) -> Vec[T]:
         i = i - 1
     return result
 
+// is_empty: true when the Vec has no elements.
+pub fn is_empty[T](self: Vec[T]) -> bool:
+    return self.len == 0 as i64
+
+// extend: append every element of `other` (a copy of each element).
+pub fn extend[T](mut self: Vec[T], other: Vec[T]):
+    mut i := 0 as i64
+    while i < other.len:
+        self.push(other.data[i])
+        i = i + 1
+
+// NOTE: deliberately NOT adding `first`/`last` here. In the native bundled-stdlib
+// model every stdlib fn name is globally visible, so a common method name shadows a
+// user free function of the same name (BUG#80 class) — e.g. a user `fn first(a, b)`
+// mis-resolves to `Vec.first` and miscompiles. `v.get(0)` / `v.get(v.len - 1)` cover
+// these safely until the free-fn-vs-method overload resolution is hardened.
+
 // Hash helper supporting all types generically by FNV-1a hashing their bytes.
 // Specialized for 'str' key types by checking size == 16 (since strings contain a ptr + len).
 fn hash_key[K](key: K) -> u64:
