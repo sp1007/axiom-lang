@@ -335,6 +335,9 @@ rows=(
   "t_ifexprmismatch|reject|"
   # aggregate Vec element + field access inside a fold lambda
   "t_vecstructfold|exit|42"
+  # if-expr result as a match scrutinee (Some/None) + 3-level nesting
+  "t_ifexprmatchscrut|exit|42"
+  "t_ifexprdeepnest|exit|42"
 )
 
 for row in "${rows[@]}"; do
