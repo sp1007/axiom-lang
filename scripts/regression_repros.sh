@@ -310,6 +310,11 @@ rows=(
   # lambda body may read a field / call a method on its own parameter
   "t_lambdafield|exit|24"
   "t_lambdamethod|exit|42"
+  # lambda/HOF chaining coverage (free-fn call, Option chain, nested Vec, map->bool)
+  "t_lambdafreefn|exit|42"
+  "t_optfindmap|exit|42"
+  "t_vecnestedfold|exit|42"
+  "t_vecmapall|exit|42"
   # Result combinators with inline lambdas (3 type params)
   "t_resmap|exit|42"
   "t_resmaperr|exit|42"
