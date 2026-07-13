@@ -338,6 +338,9 @@ rows=(
   # if-expr result as a match scrutinee (Some/None) + 3-level nesting
   "t_ifexprmatchscrut|exit|42"
   "t_ifexprdeepnest|exit|42"
+  # recursion returning a struct accumulator (by-ref aggregate) + mutual recursion
+  "t_recurstruct|exit|42"
+  "t_mutualrecur|exit|42"
 )
 
 for row in "${rows[@]}"; do
