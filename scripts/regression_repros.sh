@@ -307,6 +307,9 @@ rows=(
   # closure zero-capture scan no longer flags global variant constructors
   "t_lambdaflatmap|exit|42"
   "t_lambdavariant|exit|7"
+  # lambda body may read a field / call a method on its own parameter
+  "t_lambdafield|exit|24"
+  "t_lambdamethod|exit|42"
   # Result combinators with inline lambdas (3 type params)
   "t_resmap|exit|42"
   "t_resmaperr|exit|42"

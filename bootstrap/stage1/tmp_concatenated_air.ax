@@ -3528,7 +3528,12 @@ fn scan_closure_free_vars(tree: ptr[AstTree], pool: ptr[InternPool], node_idx: u
         return 0 as i64
     let node = tree.nodes.data[node_idx as i64]
     mut count := 0 as i64
-    if node.kind == NODE_IDENT:
+    // A NODE_IDENT with payload 0 is a structural placeholder, not a variable
+    // reference: e.g. the field-name child of a NODE_FIELD_EXPR (`p.y`) carries
+    // the field name in the FIELD_EXPR's own payload and leaves this child's
+    // payload unset. Scanning it would spuriously report "closure captures ''"
+    // and reject any `param.field` / `param.method()` inside a lambda body.
+    if node.kind == NODE_IDENT and node.payload != 0 as u32:
         let name_id = node.payload
         mut known := false
         mut i := 0 as i64

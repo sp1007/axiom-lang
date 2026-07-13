@@ -1,0 +1,14 @@
+// A lambda body may read a field of its own parameter (`p.y`). This used to be
+// rejected as "closure captures ''" because the FIELD_EXPR field-name node is an
+// empty-payload placeholder ident. map -> struct, then fold over a field.
+struct P:
+    x: i64
+    y: i64
+fn main() -> i64:
+    let v = Vec[i64].new()
+    v.push(3)
+    v.push(4)
+    v.push(5)
+    let ps = v.map(|n: i64| -> P P(x: n, y: n * 2))
+    let s = ps.fold(0 as i64, |acc: i64, p: P| -> i64 acc + p.y)
+    return s

@@ -1,0 +1,11 @@
+// A lambda body may call a method on its own parameter (`n.to_str()`, `s.len`).
+// Same fix as t_lambdafield: the method/field name node has an empty payload and
+// must not be scanned as a capture.
+fn main() -> i64:
+    let v = Vec[i64].new()
+    v.push(1)
+    v.push(22)
+    v.push(333)
+    let strs = v.map(|n: i64| -> str n.to_str())
+    let c = strs.count(|s: str| -> bool s.len >= 2)
+    return c * 21
