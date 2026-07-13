@@ -289,6 +289,12 @@ rows=(
   "t_lambdamap|exit|42"
   "t_lambdamap2|exit|1"
   "t_lambdazip|exit|42"
+  # Vec higher-order methods (map/filter/fold) with inline lambdas
+  "t_vecmap|exit|45"
+  "t_vecfilter|exit|42"
+  "t_vecfold|exit|42"
+  "t_vecmapbool|exit|2"
+  "t_vecchain|exit|50"
 )
 
 for row in "${rows[@]}"; do

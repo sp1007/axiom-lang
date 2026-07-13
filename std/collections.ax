@@ -54,6 +54,39 @@ pub fn destroy[T](mut self: Vec[T]):
     self.len = 0
     self.cap = 0
 
+// Higher-order methods. These accept an inline lambda (or a named fn / fn-ptr):
+// generic type-arg inference from a fn-typed parameter was enabled by the
+// NODE_CLOSURE_EXPR + NODE_FUNC_TYPE inference work in typecheck (commit 2cc67ed).
+
+// map: build a new Vec[U] by applying `f` to every element.
+pub fn map[T, U](self: Vec[T], f: fn(T) -> U) -> Vec[U]:
+    mut result := Vec[U](data: null as ptr[U], len: 0 as i64, cap: 0 as i64)
+    mut i := 0 as i64
+    while i < self.len:
+        result.push(f(self.data[i]))
+        i = i + 1
+    return result
+
+// filter: build a new Vec[T] with the elements for which `pred` is true.
+pub fn filter[T](self: Vec[T], pred: fn(T) -> bool) -> Vec[T]:
+    mut result := Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
+    mut i := 0 as i64
+    while i < self.len:
+        let item = self.data[i]
+        if pred(item):
+            result.push(item)
+        i = i + 1
+    return result
+
+// fold: left-fold the elements into an accumulator starting from `init`.
+pub fn fold[T, U](self: Vec[T], init: U, f: fn(U, T) -> U) -> U:
+    mut acc := init
+    mut i := 0 as i64
+    while i < self.len:
+        acc = f(acc, self.data[i])
+        i = i + 1
+    return acc
+
 // Hash helper supporting all types generically by FNV-1a hashing their bytes.
 // Specialized for 'str' key types by checking size == 16 (since strings contain a ptr + len).
 fn hash_key[K](key: K) -> u64:
