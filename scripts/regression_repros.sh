@@ -298,6 +298,9 @@ rows=(
   "t_vecany|exit|1"
   "t_vecall|exit|42"
   "t_vecfind|exit|42"
+  # closure zero-capture scan no longer flags global variant constructors
+  "t_lambdaflatmap|exit|42"
+  "t_lambdavariant|exit|7"
 )
 
 for row in "${rows[@]}"; do

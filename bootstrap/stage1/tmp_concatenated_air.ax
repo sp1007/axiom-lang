@@ -3584,6 +3584,20 @@ pub fn lift_closures(tree: ptr[AstTree], pool: ptr[InternPool]) -> i64:
             globals.push(gcn.payload)
         gc = gcn.next_sibling
 
+    // Variant constructors are globals too, not captures: the builtin
+    // Some/None/Ok/Err plus every user-defined sum variant (NODE_VARIANT_DECL,
+    // wherever it sits under a type-alias/enum decl). Without these, a closure
+    // body like `|x| Some(x+1)` wrongly tripped the zero-capture check.
+    globals.push(pool.intern("Some"))
+    globals.push(pool.intern("None"))
+    globals.push(pool.intern("Ok"))
+    globals.push(pool.intern("Err"))
+    mut vscan := 1 as i64
+    while vscan < orig_len:
+        if tree.nodes.data[vscan].kind == NODE_VARIANT_DECL:
+            globals.push(tree.nodes.data[vscan].payload)
+        vscan = vscan + 1 as i64
+
     mut errors := 0 as i64
     mut ci := 1 as i64
     while ci < orig_len:
