@@ -333,6 +333,8 @@ rows=(
   "t_ifexprret|exit|42"
   "t_ifexprnoelse|reject|"
   "t_ifexprmismatch|reject|"
+  # aggregate Vec element + field access inside a fold lambda
+  "t_vecstructfold|exit|42"
 )
 
 for row in "${rows[@]}"; do
