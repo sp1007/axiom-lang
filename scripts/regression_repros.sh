@@ -327,6 +327,10 @@ rows=(
   "t_ifexprlambda|exit|42"
   "t_ifexproptnone|exit|42"
   "t_ifexprusersum|exit|42"
+  "t_ifexprfield|exit|42"
+  "t_ifexprvecpush|exit|42"
+  "t_ifexpridx|exit|42"
+  "t_ifexprret|exit|42"
   "t_ifexprnoelse|reject|"
   "t_ifexprmismatch|reject|"
 )
