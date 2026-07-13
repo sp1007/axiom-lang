@@ -1,9 +1,19 @@
-type Shape = Circle(i64) | Empty
-fn area(s: Shape) -> i64:
-    match s:
-        Circle(r): return r * r
-        Empty: return 0
+// RFC 0023: a user-defined sum/enum works as an if-expression branch value (the
+// value diamond round-trips the sum box, same as Option/Result). Uses indented
+// match arms (inline `Pat: stmt` arms are a separate unsupported form).
+enum Color:
+    Red(i64)
+    Blue(i64)
+fn val(c: Color) -> i64:
+    match c:
+        Red(n):
+            return n
+        Blue(n):
+            return n * 100
 fn main() -> i64:
-    let big = true
-    let s = if big: Circle(7) else: Empty
-    return area(s) - 7
+    let pick = false
+    let c = if pick: Red(1) else: Blue(42)
+    let v = val(c)
+    if v == 4200:
+        return 42
+    return 0

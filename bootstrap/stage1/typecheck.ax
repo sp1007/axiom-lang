@@ -2769,15 +2769,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 let akind = self.types.entries.data[anchor as i64].kind
                 let b_optres = self.tc_is_opt_res(bt)
                 let a_optres = self.tc_is_opt_res(anchor)
-                // A user-defined SUM value branch (`Circle(7)` vs `Empty`) is not yet
-                // lowered correctly by the value diamond — the branch box does not
-                // round-trip through the shared result slot (Option/Result DO, via
-                // their dedicated box lowering). Reject rather than miscompile
-                // (BUG#53 convention); the workaround is a mut + statement-`if`.
-                if (bkind == TYPE_KIND_SUM and not b_optres) or (akind == TYPE_KIND_SUM and not a_optres):
-                    ax_printf_local("error: if-expression does not yet support user-defined sum/enum types as branch values (use a mut + statement `if`)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    self.diags_count = self.diags_count + 1 as i64
-                elif anchor_size != 0 as u32 and not a_optres and not b_optres and bkind != TYPE_KIND_OPTION and bkind != TYPE_KIND_RESULT and bkind != TYPE_KIND_GENERIC_INST and akind != TYPE_KIND_OPTION and akind != TYPE_KIND_RESULT and akind != TYPE_KIND_GENERIC_INST:
+                // Box-repr types (Option/Result/user-sum/generic-inst) skip the width
+                // check: their box lowering round-trips through the shared result slot
+                // (a nullary variant and a payload variant report inconsistent sizes
+                // through inference but are the same box value). Only plain
+                // primitive/str/struct branches get the width-mismatch reject.
+                let b_boxy = b_optres or bkind == TYPE_KIND_SUM or bkind == TYPE_KIND_OPTION or bkind == TYPE_KIND_RESULT or bkind == TYPE_KIND_GENERIC_INST
+                let a_boxy = a_optres or akind == TYPE_KIND_SUM or akind == TYPE_KIND_OPTION or akind == TYPE_KIND_RESULT or akind == TYPE_KIND_GENERIC_INST
+                if anchor_size != 0 as u32 and not a_boxy and not b_boxy:
                     // Plain primitive/str/struct branches: the shared result slot has a
                     // fixed width, so a branch of a different storage width would
                     // miscompile (`if c: 42 else: "no"` is 8 vs 16). Reject.
