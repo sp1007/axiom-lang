@@ -275,6 +275,8 @@ rows=(
   "t_tuple4|exit|10"
   # RFC 0022 — tuple-typed struct field (ctor-field element coercion)
   "t_tupfield|exit|33"
+  # assert() builtin now works on the native path (symbol map + msg-arg synthesis)
+  "t_assert|exit|7"
 )
 
 for row in "${rows[@]}"; do

@@ -1,0 +1,12 @@
+// Oracle (exit=7): the `assert(cond)` builtin now works on the NATIVE path. Previously it
+// lowered to an unresolved `ax_assert` symbol (self-link failure); the C backend mapped it
+// to the runtime `ax_assert_axiom(cond,msg)` but the native path did not. Fix: map the
+// symbol (x86_resolve_sym_name) AND synthesize the `msg` arg ("assertion failed") in
+// air_builder's call lowering. A passing assert is a no-op; a failing one aborts nonzero.
+fn main() -> i32:
+    assert(1 == 1)
+    assert(2 + 2 == 4)
+    assert(10 > 3)
+    let x = 5
+    assert(x * 2 == 10)
+    return 7

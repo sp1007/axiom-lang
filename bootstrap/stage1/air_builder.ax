@@ -1837,6 +1837,25 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         temp_count = temp_count + 1 as u32
         arg = self.mb.tree.nodes.data[arg as i64].next_sibling
 
+    // The `assert(cond)` builtin lowers to the runtime `ax_assert_axiom(cond, msg)`
+    // (symbol mapped in x86_resolve_sym_name). The surface form passes only `cond`, so
+    // synthesize the second `msg` argument — a "assertion failed" string constant, mirroring
+    // the C backend (cgen.ax). Guarded to a non-method call of the `assert` builtin with
+    // exactly one arg; the compiler's own source uses no `assert`, so this is dormant for
+    // self-compilation (fixpoint-safe). (`child` is the stable callee node index; re-read it
+    // because lowering args above may have reallocated the node array — BUG#51.)
+    if not is_method_call and temp_count == 1 as u32:
+        let cn_fresh = self.mb.tree.nodes.data[child as i64]
+        if cn_fresh.kind == NODE_IDENT and cn_fresh.payload != 0 as u32 and (cn_fresh.payload as i64) < self.mb.symbols.symbols.len:
+            let cnm = self.mb.pool.get(self.mb.symbols.symbols.data[cn_fresh.payload as i64].name_id)
+            if cnm == "assert":
+                let msg_reg = self.fb.fresh_reg()
+                let msg_id = self.mb.pool.intern("assertion failed")
+                self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 12 as u32, dest: msg_reg, src1: msg_id, src2: 0 as u32))
+                temp_args[temp_count as i64] = msg_reg
+                temp_count = temp_count + 1 as u32
+            safe_free_str(cnm)
+
     let arg_start = self.fb.emit_extra(temp_count)
     mut i := 0 as u32
     while i < temp_count:

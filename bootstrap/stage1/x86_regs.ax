@@ -207,6 +207,15 @@ pub fn x86_resolve_sym_name(sym_idx: u32, symbols: ptr[SymbolTable], pool: ptr[I
     
     if fn_name == "main" or fn_name == "_AX_main_main_v_v":
         return fn_name
+
+    // The `assert` builtin maps to the runtime `ax_assert_axiom(cond, msg)` — the
+    // native default mangle would emit `ax_assert` (unresolved external -> self-link
+    // fails), so map it here exactly as the C backend does (cgen.ax). `assert(cond)`
+    // passes only `cond`; the unused `msg` arg is harmless for a passing assert (the
+    // runtime reads it only on failure). The compiler's own source uses no `assert`,
+    // so this is dormant for self-compilation (fixpoint-safe).
+    if fn_name == "assert":
+        return "ax_assert_axiom"
         
     if fn_name == "memcpy" or fn_name == "memset" or fn_name == "memmove" or fn_name == "realloc":
         return fn_name
