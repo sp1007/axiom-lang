@@ -115,6 +115,61 @@ pub fn find[T](self: Vec[T], pred: fn(T) -> bool) -> Option[T]:
         i = i + 1
     return None
 
+// count: number of elements for which `pred` holds.
+pub fn count[T](self: Vec[T], pred: fn(T) -> bool) -> i64:
+    mut n := 0 as i64
+    mut i := 0 as i64
+    while i < self.len:
+        if pred(self.data[i]):
+            n = n + 1
+        i = i + 1
+    return n
+
+// position: index of the first element for which `pred` holds, else None.
+pub fn position[T](self: Vec[T], pred: fn(T) -> bool) -> Option[i64]:
+    mut i := 0 as i64
+    while i < self.len:
+        if pred(self.data[i]):
+            return Some(i)
+        i = i + 1
+    return None
+
+// take_while: a new Vec[T] of the leading run of elements for which `pred` holds.
+pub fn take_while[T](self: Vec[T], pred: fn(T) -> bool) -> Vec[T]:
+    mut result := Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
+    mut i := 0 as i64
+    while i < self.len:
+        let item = self.data[i]
+        if not pred(item):
+            return result
+        result.push(item)
+        i = i + 1
+    return result
+
+// skip_while: a new Vec[T] dropping the leading run for which `pred` holds.
+pub fn skip_while[T](self: Vec[T], pred: fn(T) -> bool) -> Vec[T]:
+    mut result := Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
+    mut i := 0 as i64
+    mut skipping := true
+    while i < self.len:
+        let item = self.data[i]
+        if skipping and pred(item):
+            i = i + 1
+        else:
+            skipping = false
+            result.push(item)
+            i = i + 1
+    return result
+
+// reverse: a new Vec[T] with the elements in reverse order.
+pub fn reverse[T](self: Vec[T]) -> Vec[T]:
+    mut result := Vec[T](data: null as ptr[T], len: 0 as i64, cap: 0 as i64)
+    mut i := self.len - 1
+    while i >= 0:
+        result.push(self.data[i])
+        i = i - 1
+    return result
+
 // Hash helper supporting all types generically by FNV-1a hashing their bytes.
 // Specialized for 'str' key types by checking size == 16 (since strings contain a ptr + len).
 fn hash_key[K](key: K) -> u64:

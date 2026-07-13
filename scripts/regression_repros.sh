@@ -298,6 +298,12 @@ rows=(
   "t_vecany|exit|1"
   "t_vecall|exit|42"
   "t_vecfind|exit|42"
+  # Vec predicate/order combinators (count/position/take_while/skip_while/reverse)
+  "t_veccount|exit|42"
+  "t_vecposition|exit|42"
+  "t_vectakewhile|exit|12"
+  "t_vecskipwhile|exit|25"
+  "t_vecreverse|exit|42"
   # closure zero-capture scan no longer flags global variant constructors
   "t_lambdaflatmap|exit|42"
   "t_lambdavariant|exit|7"
