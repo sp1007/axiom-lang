@@ -1,0 +1,26 @@
+// Oracle (exit=60): a tuple LITERAL used as the payload of a variant/Option/Result
+// constructor is now coerced to the expected element type instead of defaulting to
+// `{i32,i32}`. Before the fix, `Some((20,22))` for an `Option[(i64,i64)]` built an
+// 8-byte {i32,i32} tuple; the box stored a pointer to it and `.1` (offset 8) read
+// past the 8 bytes -> 0 (or a segfault). The fix threads the expected payload type
+// down to the ctor arg (so the NODE_TUPLE_EXPR element-coercion fires) and makes the
+// coercion STICKY against a later hint-less re-visit. Exercises Some/unwrap, Ok/unwrap
+// and a match-bound tuple payload — each requires `.1` to be DISTINCT from `.0`.
+fn mkopt() -> Option[(i64, i64)]:
+    return Some((20, 22))
+
+fn mkres() -> Result[(i64, i64), i64]:
+    return Ok((3, 4))
+
+fn main() -> i32:
+    let a = mkopt().unwrap()          // a.0=20 a.1=22
+    let b = mkres().unwrap()          // b.0=3  b.1=4
+    mut m := 0
+    let o: Option[(i64, i64)] = Some((5, 6))
+    match o:
+        Some(pr):
+            m = pr.0 + pr.1           // 11 (needs pr.1 != pr.0)
+        None:
+            m = 0
+    // 42 + 7 + 11 = 60 ; a dropped second element lowers this.
+    return (a.0 + a.1 + b.0 + b.1 + m) as i32

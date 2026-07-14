@@ -6454,7 +6454,7 @@ pub fn get_generic_args_from_mangled(self: ptr[TypeChecker], type_id: u32) -> U3
 // way. Params we can't bind from this call (e.g. E when calling Ok(x) on a
 // Result[T,E]) stay TYPE_UNKNOWN -- unresolved, not wrong; this call alone
 // cannot know them, same limit as any partial generic inference.
-pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum_type_id: u32) -> u32:
+pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum_type_id: u32, expected: u32) -> u32:
     if self.tree.nodes.data[callee].kind != NODE_IDENT:
         return sum_type_id
     let vsym_idx = self.tree.nodes.data[callee].payload
@@ -6521,6 +6521,17 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
         args.push(TYPE_UNKNOWN)
         ai = ai + 1
 
+    // Expected-type coercion hint (tuple-literal payload fix): when the caller
+    // supplies a concrete instantiation of this same alias as the expected type
+    // (`Some((10,20))` where the context wants `Option[(i64,i64)]`), its generic
+    // args are ordered identically to the alias's generic params. Passing the
+    // matching arg as the payload's expected-type hint lets the NODE_TUPLE_EXPR
+    // coercion (and int/float-literal widening) fire, so `(10,20)` builds a
+    // `{i64,i64}` (16B) tuple instead of the default `{i32,i32}` (8B) that then
+    // read its second field as garbage. Empty/mismatched expected â†’ no hint,
+    // identical to the prior behaviour.
+    mut exp_args := self.get_generic_args(expected)
+
     mut bound_any := false
     mut payload_node := variant_tree.nodes.data[vsym.decl_node].first_child
     mut call_arg := first_call_arg
@@ -6531,7 +6542,10 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
         mut gi := 0 as i64
         while gi < gp_name_ids.len:
             if gp_name_ids.data[gi] == payload_name_id:
-                let concrete = self.infer_node(call_arg, TYPE_UNKNOWN)
+                mut exp_hint := TYPE_UNKNOWN
+                if gi < exp_args.len and exp_args.data[gi] != TYPE_UNKNOWN and not self.is_generic(exp_args.data[gi]):
+                    exp_hint = exp_args.data[gi]
+                let concrete = self.infer_node(call_arg, exp_hint)
                 if concrete != TYPE_UNKNOWN and not self.is_generic(concrete):
                     args.data[gi] = concrete
                     bound_any = true
@@ -6540,6 +6554,8 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
         payload_node = variant_tree.nodes.data[payload_node].next_sibling
         call_arg = self.tree.nodes.data[call_arg].next_sibling
 
+    if exp_args.data != null as ptr[u32]:
+        @free(exp_args.data as ptr[u8])
     if gp_name_ids.data != null as ptr[u32]:
         @free(gp_name_ids.data as ptr[u8])
 
@@ -9534,7 +9550,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // explicit type args, monomorphize it from the field values.
                     result_type = self.try_instantiate_struct_ctor(callee, callee_type)
                 elif entry.kind == TYPE_KIND_SUM:
-                    result_type = self.try_instantiate_variant_call(callee, callee_type)
+                    result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
                 elif self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR:
@@ -10187,7 +10203,32 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         // {i32,i32} into a 16-byte {i64,i64} slot and read the second field as garbage.
         let first_child = self.tree.nodes.data[node_idx].first_child
         mut used_expected := false
-        if expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
+        // Sticky coercion: an enclosing context may infer this tuple TWICE â€” once with
+        // a concrete expected `__tup` (e.g. the payload of `Some((10,20))` for an
+        // `Option[(i64,i64)]` return) and again later with UNKNOWN (a generic arg-type
+        // re-visit). Without this guard the second, hint-less visit re-registers the
+        // default `{i32,i32}` and â€” because that write lands last â€” the element stores
+        // narrow to 4 bytes and the 2nd field reads garbage. If a prior visit already
+        // pinned this node to a concrete `__tup`, keep it and leave the already-coerced
+        // element node-types intact.
+        if expected == TYPE_UNKNOWN and (node_idx as i64) < self.node_types_cap:
+            let prior = self.node_types[node_idx as i64]
+            if prior != TYPE_UNKNOWN and (prior as i64) < self.types.entries.len:
+                let pe = self.types.entries.data[prior as i64]
+                if pe.kind == TYPE_KIND_STRUCT:
+                    let pnm = self.intern.get(pe.name_id)
+                    let prior_is_tup = std.string.starts_with(pnm, "__tup")
+                    safe_free_str(pnm)
+                    if prior_is_tup:
+                        result_type = prior
+                        used_expected = true
+        // Element COERCION by an expected tuple type (RFC 0022 P2): when the context
+        // supplies an expected tuple type of the same arity (an annotated `let`, a
+        // param, a `-> (T..)` return, a tuple global init), infer each element with the
+        // matching field type as its hint and adopt that type. Without this, integer
+        // literals default to i32, so `let p:(i64,i64)=(10,20)` would store an 8-byte
+        // {i32,i32} into a 16-byte {i64,i64} slot and read the second field as garbage.
+        if not used_expected and expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
             let ee = self.types.entries.data[expected as i64]
             if ee.kind == TYPE_KIND_STRUCT and (ee.extra as i64) < self.types.structs.len:
                 let enm = self.intern.get(ee.name_id)
