@@ -16,6 +16,9 @@ Purpose: run the AXIOM compiler project the way the user wants — **auto-decide
 - Prefer language ergonomics the user values (inference/sugar over boilerplate) when a design choice is open.
 
 ## Phase 0 — Context check (start of every run)
+0. **Arm the continuous-supervision heartbeat FIRST (every new session).** Check running tasks; if NO persistent autopilot `Monitor` is armed, arm exactly ONE now:
+   `Monitor(persistent:true, command:'while true; do sleep 300; echo "[autopilot-tick] $(date -u +%H:%M:%S)"; done')`.
+   It emits a heartbeat line every 5 minutes. Each `[autopilot-tick]` — and any moment you would otherwise finish a turn and go idle — re-runs Phase 0 → Phase 1 and executes the next task WITHOUT asking. **Never idle-hibernate.** Only `TaskStop` the monitor when the user explicitly says to stop. (A SessionStart hook at `.claude/hooks/autopilot-session-start.sh` surfaces this same reminder; if the hook is installed the reminder arrives automatically, but arming the monitor is still THIS step's job — the hook cannot call tools.) See CLAUDE.md §24 "Continuous supervision".
 1. Read `CLAUDE.md` (operating manual) and `MEMORY.md` + the handoff memory (the entry marked "ĐỌC ĐẦU TIÊN" / newest `session-handoff-*`). This is the live state: current fixpoint hash, baseline test count, OPEN items.
 2. `git status` + `git log --oneline -5`. Determine: clean tree? uncommitted in-flight work? on `main` or a branch?
 3. If there is uncommitted in-flight work from a prior session, resume it (gate → commit) before starting anything new.
