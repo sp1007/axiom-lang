@@ -10928,6 +10928,25 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             child = next
         result_type = self.types.register_function(param_types, ret_type)
 
+    elif kind == NODE_ASSIGN_STMT:
+        // children: [lhs, rhs]. RFC 0022: a tuple-literal RHS assigned to a tuple-typed
+        // lvalue (`g = (30, 12)` where `g: (i64,i64)`) must coerce its int-literal
+        // elements to the lvalue's tuple field types â€” otherwise they default to i32,
+        // building an 8-byte {i32,i32} into a 16-byte slot and losing the 2nd field.
+        // The VAR_DECL *init* path already threads the annotated type as `expected`; an
+        // assignment had no infer_node branch and fell to the default (rhs inferred with
+        // UNKNOWN). Mirror the init coercion, scoped to a tuple RHS so every other
+        // assignment keeps the prior UNKNOWN behavior (frontend ACCEPT-only â†’ A==B).
+        let lhs_a = self.tree.nodes.data[node_idx].first_child
+        if lhs_a != 0 as u32:
+            let lhs_ty = self.infer_node(lhs_a, TYPE_UNKNOWN)
+            let rhs_a = self.tree.nodes.data[lhs_a].next_sibling
+            if rhs_a != 0 as u32:
+                if self.tree.nodes.data[rhs_a].kind == NODE_TUPLE_EXPR and lhs_ty != TYPE_UNKNOWN:
+                    self.infer_node(rhs_a, lhs_ty)
+                else:
+                    self.infer_node(rhs_a, TYPE_UNKNOWN)
+
     else:
         // Default traversal
         mut child := self.tree.nodes.data[node_idx].first_child

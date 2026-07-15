@@ -348,6 +348,8 @@ rows=(
   "t_tupctor|exit|60"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))
   "t_vectup|exit|42"
+  # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
+  "t_tupassign|exit|42"
   # Vec accessor methods (is_empty / extend)
   "t_vecisempty|exit|42"
   "t_vecextend|exit|42"
