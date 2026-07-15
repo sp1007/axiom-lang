@@ -360,6 +360,8 @@ rows=(
   "t_vecpartition|exit|62"
   # Vec.zip stdlib HOF: element-wise pairs Vec[(T,U)] (free-fn-shadow overload hole fixed)
   "t_veczip|exit|62"
+  # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
+  "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)

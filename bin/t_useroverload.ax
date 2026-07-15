@@ -1,0 +1,12 @@
+// two same-name free-fn overloads: generic-first-param vs concrete. Ensure the
+// call with a concrete arg dispatches correctly (over-match risk from the fix).
+fn pick(x: i64) -> i64:
+    return x + 1
+
+fn pick[T](x: T, y: i64) -> i64:
+    return y + 10
+
+fn main() -> i64:
+    let a = pick(30)        // 1-arg concrete -> pick(i64) = 31
+    let b = pick(5, 1)      // 2-arg generic  -> pick[T] = 11
+    return a + b            // 31 + 11 = 42
