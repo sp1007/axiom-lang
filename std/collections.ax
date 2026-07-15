@@ -194,6 +194,15 @@ pub fn partition[T](self: Vec[T], pred: fn(T) -> bool) -> (Vec[T], Vec[T]):
         i = i + 1
     return (yes, no)
 
+// NOTE: `zip[T,U](self, other) -> Vec[(T,U)]` was tried and REVERTED — it works
+// standalone (probe 62) but adding it to the bundled stdlib SEGFAULTS the t_lambdazip
+// oracle's user `fn zip[A,B,C](a,b,f)` (a BARE-name call `zip(20,22,f)` → NODE_IDENT).
+// This is the free-fn-SHADOW overload hole (BUG#80 class, distinct from the
+// module-qualified path fixed in a9cfd91): resolve_free_call_overload should pick the
+// user's 3-arg zip over the stdlib 2-arg Vec.zip by arity but mis-resolves → segfault.
+// Defer until free-fn-vs-method overload resolution is hardened.
+// [[bug-freefn-stdlib-collision-noarg]]
+
 // is_empty: true when the Vec has no elements.
 pub fn is_empty[T](self: Vec[T]) -> bool:
     return self.len == 0 as i64
