@@ -358,6 +358,8 @@ rows=(
   "t_vecenumerate|exit|63"
   # Vec.partition stdlib HOF: (matching, non-matching) tuple-of-Vecs return
   "t_vecpartition|exit|62"
+  # Vec.zip stdlib HOF: element-wise pairs Vec[(T,U)] (free-fn-shadow overload hole fixed)
+  "t_veczip|exit|62"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)

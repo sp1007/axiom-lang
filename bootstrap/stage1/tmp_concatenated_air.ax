@@ -7104,7 +7104,18 @@ pub fn is_method_compatible(self: ptr[TypeChecker], sym_idx: u32, rec_type: u32)
         
     let rec_entry = self.types.entries.data[unwrapped_rec]
     let param_entry = self.types.entries.data[unwrapped_param]
-    
+
+    // A BARE generic type-param first arg (`fn f[T](x: T, ...)`, first param kind =
+    // TYPE_KIND_GENERIC) accepts ANY argument type â€” it is compatible with every receiver.
+    // Without this, the kinds_match logic below (which only unifies same-kind or both-
+    // structured types) returns FALSE for a generic first param against a concrete arg, so
+    // resolve_free_call_overload fails to pick a same-arity user overload whose first param
+    // is generic (e.g. user `zip[A,B,C](a,b,f)` shadowed by the bundled `Vec.zip[T,U]
+    // (self, other)`) and falls through to the wrong head â†’ segfault/miscompile (BUG#80
+    // free-fn-shadow hole). [[bug-freefn-stdlib-collision-noarg]]
+    if param_entry.kind == TYPE_KIND_GENERIC:
+        return true
+
     if not self.is_sym_generic(sym_idx):
         return unwrapped_param == unwrapped_rec
         
