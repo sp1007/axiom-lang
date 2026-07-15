@@ -9446,6 +9446,48 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if inferred.data != null as ptr[u32]:
                         @free(inferred.data as ptr[u8])
                 else:
+                    // RFC 0022 tupleÃ—generic: a tuple LITERAL passed as a generic
+                    // fn/method arg (`Vec[(i64,i64)].push((10,20))`) was inferred with
+                    // UNKNOWN during arg_types collection, so its int-literal elements
+                    // defaulted to i32 â†’ an 8-byte {i32,i32} stored into a 16-byte element
+                    // slot, reading the 2nd field as garbage. Now that `inferred[]` is
+                    // final and concrete, re-infer any bare-generic-typed tuple arg with
+                    // its monomorphized `__tup` element type as the expected hint: the
+                    // NODE_TUPLE_EXPR coercion branch widens the elements and PINS the node
+                    // to the `__tup` struct, and the sticky guard preserves it against a
+                    // later UNKNOWN re-visit. Mirrors the variant-ctor fix (1aff7ca).
+                    mut cp := src_tree.nodes.data[decl_node].first_child
+                    // For a method call, param 0 is the receiver `self` (its arg node is
+                    // callee.first_child, not in the sibling chain), so skip it; explicit
+                    // args start at callee.next_sibling and align with the remaining params.
+                    mut ap := self.tree.nodes.data[callee].next_sibling
+                    mut skip_self := callee_node.kind == NODE_FIELD_EXPR
+                    while cp != 0 as u32:
+                        let cpn = src_tree.nodes.data[cp]
+                        if cpn.kind == NODE_PARAM_DECL:
+                            if skip_self:
+                                skip_self = false
+                            elif ap != 0 as u32:
+                                let arg_n = self.tree.nodes.data[ap]
+                                let tnode = cpn.first_child
+                                if arg_n.kind == NODE_TUPLE_EXPR and tnode != 0 as u32 and src_tree.nodes.data[tnode].kind == NODE_TYPE_EXPR:
+                                    let tname = self.node_text_in_tree(src_tree, tnode)
+                                    let tname_id = self.intern.intern(tname)
+                                    safe_free_str(tname)
+                                    mut gk := 0 as i64
+                                    while gk < gen_params.len:
+                                        if gen_params.data[gk] == tname_id:
+                                            let et = inferred.data[gk]
+                                            if (et as i64) < self.types.entries.len and self.types.entries.data[et as i64].kind == TYPE_KIND_STRUCT:
+                                                let enm2 = self.intern.get(self.types.entries.data[et as i64].name_id)
+                                                let is_tup2 = std.string.starts_with(enm2, "__tup")
+                                                safe_free_str(enm2)
+                                                if is_tup2:
+                                                    self.infer_node(ap, et)
+                                            break
+                                        gk = gk + 1 as i64
+                                ap = self.tree.nodes.data[ap].next_sibling
+                        cp = cpn.next_sibling
                     mut mono := new_monomorphizer(self.tree, self.intern, self.symtable, self.types)
                     let mangled_name = mono.mangle_name_ov(template_sym_idx, self.intern.get(self.symtable.symbols.data[template_sym_idx].name_id), inferred)
                     let mangled_id = self.intern.intern(mangled_name)
