@@ -354,6 +354,12 @@ rows=(
   "t_arrassign|exit|42"
   # variant-ctor RHS (Some(tuple)) coerced on ASSIGNMENT to an Option[tuple] lvalue
   "t_optassign|exit|42"
+  # tuple as a HashMap VALUE: insert + get().unwrap() + read both fields
+  "t_hmtupval|exit|42"
+  # chained Vec HOF: map (double) then fold (sum)
+  "t_hofchain|exit|28"
+  # value-if producing a tuple, bound via let-destructure
+  "t_ifexprtupdestr|exit|42"
   # Vec accessor methods (is_empty / extend)
   "t_vecisempty|exit|42"
   "t_vecextend|exit|42"
