@@ -1,0 +1,14 @@
+// NESTED tuple generic element: Vec[(i64, (i64, T))] in a generic fn
+fn build[T](x: T) -> Vec[(i64, (i64, T))]:
+    mut out: Vec[(i64, (i64, T))] = Vec.new()
+    out.push((1, (2, x)))
+    out.push((3, (4, x)))
+    return out
+
+fn main() -> i64:
+    let v = build(10 as i64)
+    let a = v.get(0).unwrap()   // (1, (2, 10))
+    let b = v.get(1).unwrap()   // (3, (4, 10))
+    let ai = a.1                // (2, 10)
+    let bi = b.1                // (4, 10)
+    return a.0 + ai.0 + ai.1 + b.0 + bi.0 + bi.1   // 1+2+10+3+4+10 = 30

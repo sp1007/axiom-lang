@@ -354,6 +354,8 @@ rows=(
   "t_vecenum|exit|63"
   # guard: concrete-tuple Vec inside a generic body (must stay working)
   "t_vecconctup|exit|1"
+  # doubly-nested generic tuple element: Vec[(i64,(i64,T))] in a generic fn (is_generic __tup recursion)
+  "t_nestedgentup|exit|30"
   # Vec.enumerate stdlib HOF: yields (index, element) tuples (unblocked by aa419a2)
   "t_vecenumerate|exit|63"
   # Vec.partition stdlib HOF: (matching, non-matching) tuple-of-Vecs return
