@@ -356,6 +356,8 @@ rows=(
   "t_vecconctup|exit|1"
   # Vec.enumerate stdlib HOF: yields (index, element) tuples (unblocked by aa419a2)
   "t_vecenumerate|exit|63"
+  # Vec.partition stdlib HOF: (matching, non-matching) tuple-of-Vecs return
+  "t_vecpartition|exit|62"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)

@@ -1631,7 +1631,19 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
 
             if not resolved:
                 receiver_node_idx = callee_node.first_child
-                if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32]:
+                // The match-by-name UFCS dispatch below is a REPAIR for calls the resolver
+                // could NOT bind — it is receiver-type-agnostic and picks the FIRST same-named
+                // SYM_FUNC by symbol order. When the callee FIELD_EXPR is ALREADY resolved
+                // (flag 2048) it must NOT run: a real method call is already handled by the
+                // flag-2048 branch above (sets is_method_call there), and a module-qualified
+                // free call (`lib_b.close(...)`) carries the EXACT resolved payload — re-running
+                // UFCS would override it with the first same-named fn (e.g. lib_a.close for a
+                // lib_b.close call when two modules define `close`), mis-linking cross-module
+                // same-name calls (t_modcollide 101→2 once an unrelated stdlib symbol shifts
+                // indices enough to make the loop match). See
+                // [[bug-crossmodule-resolution-fragility-open]].
+                let callee_resolved = (callee_node.flags & 2048 as u16) != 0 as u16
+                if receiver_node_idx != 0 as u32 and self.mb.node_types != null as ptr[u32] and not callee_resolved:
                     mut rec_type := self.mb.node_types[receiver_node_idx as i64]
                     if rec_type != 0 as u32 and (rec_type as i64) < self.mb.typetable.entries.len:
                         mut entry = self.mb.typetable.entries.data[rec_type as i64]

@@ -1,0 +1,34 @@
+// Probe: a generic fn returning a TUPLE of two Vecs (what partition needs).
+fn split[T](src: Vec[T], threshold: T) -> (Vec[T], Vec[T]):
+    mut lo: Vec[T] = Vec.new()
+    mut hi: Vec[T] = Vec.new()
+    mut i := 0 as i64
+    while i < src.len:
+        let x = src.data[i]
+        if x < threshold:
+            lo.push(x)
+        else:
+            hi.push(x)
+        i = i + 1
+    return (lo, hi)
+
+fn main() -> i64:
+    mut v: Vec[i64] = Vec.new()
+    v.push(5)
+    v.push(30)
+    v.push(3)
+    v.push(20)
+    let parts = split(v, 10 as i64)
+    let lo = parts.0
+    let hi = parts.1
+    // lo = [5,3] sum 8 ; hi = [30,20] sum 50 ; lo.len=2 hi.len=2
+    mut acc := 0 as i64
+    mut j := 0 as i64
+    while j < lo.len:
+        acc = acc + lo.data[j]
+        j = j + 1
+    mut k := 0 as i64
+    while k < hi.len:
+        acc = acc + hi.data[k]
+        k = k + 1
+    return acc + lo.len + hi.len   // 8 + 50 + 2 + 2 = 62
