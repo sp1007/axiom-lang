@@ -170,6 +170,17 @@ pub fn reverse[T](self: Vec[T]) -> Vec[T]:
         i = i - 1
     return result
 
+// enumerate: build a new Vec of `(index, element)` tuples. Unblocked by aa419a2
+// (is_generic recursing into __tup fields), which lets a `Vec[(i64, T)]` — a Vec
+// whose element is a tuple containing the generic param T — monomorphize correctly.
+pub fn enumerate[T](self: Vec[T]) -> Vec[(i64, T)]:
+    mut result: Vec[(i64, T)] = Vec.new()
+    mut i := 0 as i64
+    while i < self.len:
+        result.push((i, self.data[i]))
+        i = i + 1
+    return result
+
 // is_empty: true when the Vec has no elements.
 pub fn is_empty[T](self: Vec[T]) -> bool:
     return self.len == 0 as i64

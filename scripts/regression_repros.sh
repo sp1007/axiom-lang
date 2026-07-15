@@ -354,6 +354,8 @@ rows=(
   "t_vecenum|exit|63"
   # guard: concrete-tuple Vec inside a generic body (must stay working)
   "t_vecconctup|exit|1"
+  # Vec.enumerate stdlib HOF: yields (index, element) tuples (unblocked by aa419a2)
+  "t_vecenumerate|exit|63"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)
