@@ -1,0 +1,24 @@
+// Generic probe: does Vec[(i64, T)] construct/return/read work when T is a
+// generic type param? This is exactly what a stdlib `enumerate[T]` would do.
+fn enumerate_probe[T](src: Vec[T]) -> Vec[(i64, T)]:
+    mut out: Vec[(i64, T)] = Vec.new()
+    mut i := 0 as i64
+    while i < src.len:
+        out.push((i, src.data[i]))
+        i = i + 1
+    return out
+
+fn main() -> i64:
+    mut v: Vec[i64] = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    let pairs = enumerate_probe(v)
+    // [(0,10),(1,20),(2,30)] -> (0+10)+(1+20)+(2+30) = 63
+    mut acc := 0 as i64
+    mut j := 0 as i64
+    while j < pairs.len:
+        let p = pairs.get(j).unwrap()
+        acc = acc + p.0 + p.1
+        j = j + 1
+    return acc

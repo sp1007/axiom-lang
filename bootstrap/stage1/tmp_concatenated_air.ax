@@ -6259,6 +6259,28 @@ pub fn is_generic(self: ptr[TypeChecker], type_id: u32) -> bool:
         if args.data != null as ptr[u32]:
             @free(args.data as ptr[u8])
         return has_gen
+    // A tuple synth-struct `__tupN` has no name-resolvable identity, so its element
+    // types are its only signature. A `__tup` whose field is still a generic param
+    // (e.g. `(i64, T)` = `__tup{i64, T}` in a generic body) is itself GENERIC â€” but the
+    // generic struct-instantiation / method-dispatch paths only see it as a plain STRUCT
+    // and would treat it as concrete, baking a `Vec[generic __tup]` instance and binding
+    // `T â†’ __tup{i64,T}` (a param bound to a tuple containing itself). That bogus concrete
+    // instance leaves the receiver generic, so a method call on it (`out.push`) is never
+    // bound and the backend degrades to an indirect `getfld+call` â†’ SIGSEGV. Recursing
+    // into `__tup` fields here makes such a tuple correctly report generic, so those paths
+    // DEFER until the element is truly concrete. Scoped to `__tup` (structural, no symbol)
+    // so ordinary named structs are unaffected.
+    if entry.kind == TYPE_KIND_STRUCT and (entry.extra as i64) < self.types.structs.len:
+        let nm = self.intern.get(entry.name_id)
+        let is_tup = std.string.starts_with(nm, "__tup")
+        safe_free_str(nm)
+        if is_tup:
+            let sinfo = self.types.structs.data[entry.extra as i64]
+            mut fi := 0 as i64
+            while fi < sinfo.fields.len:
+                if self.is_generic(sinfo.fields.data[fi].type_id):
+                    return true
+                fi = fi + 1 as i64
     return false
 
 pub fn parse_type_from_name(self: ptr[TypeChecker], name: str) -> u32:

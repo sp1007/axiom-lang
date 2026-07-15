@@ -1,0 +1,10 @@
+// B: same tuple element type but T fully generic, pushed into a Vec inside the
+// generic body — but read length only (avoid tuple field read) to isolate the crash.
+fn mk[T](x: T) -> Vec[(i64, T)]:
+    mut out: Vec[(i64, T)] = Vec.new()
+    out.push((99 as i64, x))
+    return out
+
+fn main() -> i64:
+    let v = mk(7 as i64)
+    return v.len     // want 1 — does construction/return alone crash?

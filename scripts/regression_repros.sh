@@ -348,6 +348,12 @@ rows=(
   "t_tupctor|exit|60"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))
   "t_vectup|exit|42"
+  # Vec whose element is a tuple containing a generic param: Vec[(i64,T)] in a generic fn
+  "t_vecgentup|exit|1"
+  # generic enumerate end-to-end: Vec[T] -> Vec[(i64,T)], push (i,elem), read .0/.1
+  "t_vecenum|exit|63"
+  # guard: concrete-tuple Vec inside a generic body (must stay working)
+  "t_vecconctup|exit|1"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)
