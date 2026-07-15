@@ -185,11 +185,11 @@ pub fn enumerate[T](self: Vec[T]) -> Vec[(i64, T)]:
 // adding it broke t_modcollide (module-qualified `lib_a.close`/`lib_b.close` both
 // resolved to lib_a → 2 instead of 101). The tuple-of-Vecs return itself works
 // (probe passed 62 at O0/O1). Root is NOT registration/resolution (both verified
-// correct via trace: distinct symbols 1619/1622, resolve_field returns each
-// correctly) — it is a codegen SYMBOL-EMISSION bug: the __m uniquing
-// (x86_resolve_sym_name) is BYPASSED for these `close` symbols in the self-link
-// path, so they emit bare `ax_close` and link-collide. See
-// [[bug-crossmodule-resolution-fragility-open]]. Defer to a codegen-emission session.
+// correct via trace: distinct symbols 1619/1622, resolve_field returns each) — it
+// is a codegen SYMBOL-EMISSION bug: the MODDUP `__m` uniquing is not applied to
+// these `close` symbols in the self-link path so they emit bare `ax_close` and
+// link-collide. See [[bug-crossmodule-resolution-fragility-open]] for the full
+// (multi-layer) trace trail. Defer to a dedicated codegen-emission (B==C) session.
 
 // is_empty: true when the Vec has no elements.
 pub fn is_empty[T](self: Vec[T]) -> bool:
