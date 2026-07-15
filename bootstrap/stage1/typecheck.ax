@@ -4806,26 +4806,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         result_type = self.types.register_function(param_types, ret_type)
 
     elif kind == NODE_ASSIGN_STMT:
-        // children: [lhs, rhs]. RFC 0022 / array element coercion: a positional
-        // aggregate LITERAL RHS assigned to an aggregate-typed lvalue must coerce its
-        // int-literal elements to the lvalue's element/field types. `g = (30, 12)` for
-        // `g: (i64,i64)` builds an 8-byte {i32,i32} into a 16-byte slot (loses field 2);
-        // `a = [10,15,17]` for `a: [i64;3]` builds i32 elements at a 4-byte stride into
-        // an i64 array. The VAR_DECL *init* path already threads the annotated type as
-        // `expected` (tuple coercion + array coercion `c103b9f`); an assignment had no
-        // infer_node branch and fell to the default (rhs inferred with UNKNOWN). Mirror
-        // the init coercion, scoped to the two positional-aggregate literal forms so every
-        // other assignment keeps the prior UNKNOWN behavior (frontend ACCEPT-only → A==B).
+        // children: [lhs, rhs]. An assignment must thread the lvalue's type down to the
+        // RHS as `expected`, exactly like the VAR_DECL *init* path does — otherwise the
+        // RHS is inferred with UNKNOWN and any expected-type coercion is skipped:
+        //   `g = (30,12)` for `g:(i64,i64)` -> {i32,i32} 8B into a 16B slot (loses .1);
+        //   `a = [10,15,17]` for `a:[i64;3]` -> i32 elems at 4B stride into an i64 array;
+        //   `o = Some((30,12))` for `o:Option[(i64,i64)]` -> the variant-ctor payload
+        //   tuple stays {i32,i32} (1aff7ca coercion needs the expected Option threaded).
+        // NODE_ASSIGN_STMT had no infer_node branch and fell to the default traversal
+        // (rhs = UNKNOWN). Mirror VAR_DECL: infer the LHS, then infer the RHS with the
+        // lvalue type as expected. Frontend ACCEPT-only; the A==B fixpoint gate confirms
+        // this does not change the self-host codegen.
         let lhs_a = self.tree.nodes.data[node_idx].first_child
         if lhs_a != 0 as u32:
             let lhs_ty = self.infer_node(lhs_a, TYPE_UNKNOWN)
             let rhs_a = self.tree.nodes.data[lhs_a].next_sibling
             if rhs_a != 0 as u32:
-                let rhs_kind = self.tree.nodes.data[rhs_a].kind
-                if (rhs_kind == NODE_TUPLE_EXPR or rhs_kind == NODE_ARRAY_LIT) and lhs_ty != TYPE_UNKNOWN:
-                    self.infer_node(rhs_a, lhs_ty)
-                else:
-                    self.infer_node(rhs_a, TYPE_UNKNOWN)
+                self.infer_node(rhs_a, lhs_ty)
 
     else:
         // Default traversal

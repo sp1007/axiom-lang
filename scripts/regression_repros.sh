@@ -352,6 +352,8 @@ rows=(
   "t_tupassign|exit|42"
   # array-literal RHS coerced on ASSIGNMENT to an [i64;N] lvalue (element width)
   "t_arrassign|exit|42"
+  # variant-ctor RHS (Some(tuple)) coerced on ASSIGNMENT to an Option[tuple] lvalue
+  "t_optassign|exit|42"
   # Vec accessor methods (is_empty / extend)
   "t_vecisempty|exit|42"
   "t_vecextend|exit|42"
