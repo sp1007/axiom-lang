@@ -1473,30 +1473,40 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             arg_count = sel.fn_ptr.extras.data[arg_start]
 
         if arg_count > 0 as u32:
-            // Load syscall number (first argument) into RAX
-            let sys_num_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32]
-            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: sys_num_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-            
-            // Map other arguments to AMD64 syscall registers
-            mut i := 1 as u32
-            while i < arg_count:
-                let arg_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32 + i]
-                mut sys_phys := 0 as u8
-                if i == 1 as u32:
-                    sys_phys = REG_RDI
-                elif i == 2 as u32:
-                    sys_phys = REG_RSI
-                elif i == 3 as u32:
-                    sys_phys = REG_RDX
-                elif i == 4 as u32:
-                    sys_phys = REG_R10
-                elif i == 5 as u32:
-                    sys_phys = REG_R8
-                elif i == 6 as u32:
-                    sys_phys = REG_R9
-                if sys_phys != 0 as u8:
-                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: sys_phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: arg_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                i = i + 1 as u32
+            // Move the argument vregs into the fixed syscall registers (num->RAX, then
+            // a1->RDI a2->RSI a3->RDX a4->R10 a5->R8 a6->R9). Moving each vreg DIRECTLY into
+            // its target clobbered args whose regalloc home happened to be a *later* target
+            // register (e.g. `syscall(9,0,size,3,0x22,-1,0)` where `size`/`fd` sat in RDI/RSI):
+            // the first MOV overwrote a register a subsequent MOV still needed to read, so
+            // mmap saw garbage flags/fd and failed — the sole blocker for the Linux heap.
+            // Fix: spill every arg to the SysV red zone (128 bytes below RSP, untouched by the
+            // `syscall` instruction) FIRST, then load the fixed registers from the red zone.
+            // Store-then-load breaks all register dependencies; no RSP adjustment (so spilled
+            // arg vregs still resolve). 7 args * 8 = 56 bytes < 128.
+            mut si := 0 as u32
+            while si < arg_count:
+                let a_reg = sel.fn_ptr.extras.data[arg_start + 1 as u32 + si]
+                let slot_off = (0 as i64) - (8 as i64 * (si as i64 + 1 as i64))
+                out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: a_reg, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: slot_off)))
+                si = si + 1 as u32
+            mut li := 0 as u32
+            while li < arg_count:
+                mut ld_phys := REG_RAX
+                if li == 1 as u32:
+                    ld_phys = REG_RDI
+                elif li == 2 as u32:
+                    ld_phys = REG_RSI
+                elif li == 3 as u32:
+                    ld_phys = REG_RDX
+                elif li == 4 as u32:
+                    ld_phys = REG_R10
+                elif li == 5 as u32:
+                    ld_phys = REG_R8
+                elif li == 6 as u32:
+                    ld_phys = REG_R9
+                let ld_off = (0 as i64) - (8 as i64 * (li as i64 + 1 as i64))
+                out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_PHYS, phys: ld_phys, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: ld_off)))
+                li = li + 1 as u32
 
         out_insts.push(MachInst(op: MACH_SYSCALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         if inst.dest != 0 as u32:

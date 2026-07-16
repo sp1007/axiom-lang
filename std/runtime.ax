@@ -51,7 +51,11 @@ pub fn __ax_runtime_init():
     ax_segment_manager_init()
     let p_global_heap = (state as i64 + 40 as i64) as ptr[ptr[ActorHeap]]
     p_global_heap.* = ax_actor_heap_create(1 as u64)
-    ax_actor_system_init()
+    // The actor system + M:N scheduler (thread spawning) are not yet ported to Linux and
+    // are not needed for plain heap allocation (Vec/String/HashMap). Init them on Windows
+    // only for now; the segment allocator + global heap above are enough for @alloc.
+    if @compiler_intrinsic("is_windows"):
+        ax_actor_system_init()
     p_is_rt_initialized.* = true
 
 pub fn __ax_runtime_shutdown():

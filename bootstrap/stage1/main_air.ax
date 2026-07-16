@@ -870,6 +870,14 @@ pub fn main() -> i32:
                 let src_nl = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl, raw_panic_rt)
                 @free(get_str_ptr(src_nl))
+            // The freestanding allocator (std/runtime.ax malloc → __ax_runtime_init →
+            // ax_os_alloc) uses sys_mmap/sys_munmap/sys_exit from bootstrap/runtime/syscall.ax,
+            // which the import graph does NOT pull in. Bundle it so those resolve on Linux.
+            let raw_syscall_rt = read_file_content("bootstrap/runtime/syscall.ax")
+            if std.string.len(raw_syscall_rt) > 0:
+                let src_nl2 = std.string.concat(src, "\n")
+                src = std.string.concat(src_nl2, raw_syscall_rt)
+                @free(get_str_ptr(src_nl2))
         src = concatenate_stdlib(src)
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 

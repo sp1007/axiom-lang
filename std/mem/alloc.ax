@@ -146,6 +146,13 @@ pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
     if p_g_slab.* == null as ptr[Segment]:
         if @compiler_intrinsic("is_windows"):
             p_g_slab.* = VirtualAlloc(null as ptr[void], 196608 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+        else:
+            // Linux: the slab-metadata region had NO allocation path, so
+            // ax_segment_manager_init's `@memset(slab, 0, 196608)` hit a NULL pointer and
+            // crashed inside libc — the sole blocker for heap use (Vec/String/HashMap) on
+            // the ELF target. mmap it (PROT_READ|WRITE=3, MAP_PRIVATE|MAP_ANONYMOUS=0x22, fd=-1).
+            let res = syscall(9 as u64, 0 as u64, 196608 as u64, 3 as u64, 0x22 as u64, 0xFFFFFFFFFFFFFFFF as u64, 0 as u64)
+            p_g_slab.* = res as ptr[Segment]
     return p_g_slab.*
 
 // --------------------------------------------------------------------------
@@ -289,8 +296,13 @@ pub fn ax_os_alloc(size: i64) -> ptr[void]:
             ax_os_alloc_report_error(GetLastError())
         return res
     else:
-        // POSIX: PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22
-        return mmap(null as ptr[void], size as u64, 3 as i32, 0x22 as i32, -1 as i32, 0 as i64)
+        // POSIX: PROT_READ|PROT_WRITE = 3, MAP_PRIVATE|MAP_ANONYMOUS = 0x22.
+        // Inline the mmap syscall directly (the `mmap` param-wrapper's arg shuffle into the
+        // syscall registers miscompiles on the ELF path); check the negative-errno return.
+        let res = syscall(9 as u64, 0 as u64, size as u64, 3 as u64, 0x22 as u64, 0xFFFFFFFFFFFFFFFF as u64, 0 as u64)
+        if res < 0 as i64:
+            return null as ptr[void]
+        return res as ptr[void]
 
 pub fn ax_os_free(ptr: ptr[void], size: i64):
     if ptr == null as ptr[void]:
