@@ -224,6 +224,17 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
      use of the whole local, should propagate escape. This is a sound, targeted refinement
      but couples with ctor-detection and the free consumer — hence P3 is best built and
      validated as ONE unit, not a chain of individually-inert substrate commits.
+     *Implementation path (investigated 2026-07-16):* the escape pass needs the resolved
+     result type of each field/index read, which lives in `TypeChecker.node_types`
+     (`ptr[u32]`, node-indexed type_ids; note it can be `0`/unresolved for some nodes,
+     e.g. calls — treat unresolved conservatively as aggregate/escaping). Thread
+     `checker.node_types` into `new_escape_analyser` (single caller, `main_air.ax` ~992,
+     created after typecheck so it is available), then in `analyze_expr` special-case
+     `NODE_FIELD_EXPR`/`NODE_INDEX_EXPR`: if `typetable.entries[node_types[idx]].kind ==
+     TYPE_KIND_PRIMITIVE` the read yields a scalar copy → do NOT recurse the base into
+     `flow_dest`; otherwise (aggregate or unresolved) propagate as today. The bundled
+     native path is a single tree, so the main `node_types` covers everything the pass
+     traverses; per-module lazy trees carry their own `node_types` if ever needed.
 
   **Remaining for P3 (dedicated session — build + validate as one unit):** (a) ownership-
   origin: classify ctor-calls as owning (finding 3); (b) flow refinement: scalar field/
