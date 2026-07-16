@@ -17177,6 +17177,11 @@ pub fn has_side_effect(op: u16) -> bool:
         return true
     if op == OP_CALL or op == OP_SPAWN or op == OP_SEND:
         return true
+    // A raw syscall (write/mmap/exit/...) performs I/O or memory effects the optimizer
+    // cannot see. Without this, a result-discarding `syscall(1,1,buf,len,..)` (e.g. the
+    // freestanding Linux print runtime) was deleted as a pure dead value.
+    if op == OP_SYSCALL:
+        return true
     if op == OP_RETURN or op == OP_JUMP or op == OP_BRANCH:
         return true
     if op == OP_SET_FIELD:
@@ -17547,12 +17552,14 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                 inst.src1 = curr
                 changed = true
 
-        if inst.opcode == OP_CALL:
+        // OP_SYSCALL carries its argument vregs in `extras` exactly like OP_CALL
+        // (count at extras[src2], args following), so copy-propagate them the same way.
+        if inst.opcode == OP_CALL or inst.opcode == OP_SYSCALL:
             let arg_start = inst.src2
             mut arg_count := 0 as u32
             if arg_start < f.extras.len as u32:
                 arg_count = f.extras.data[arg_start]
-            
+
             mut idx := 0 as u32
             while idx < arg_count:
                 let arg_reg_idx = arg_start + 1 as u32 + idx
@@ -17566,7 +17573,7 @@ pub fn copy_prop_func(f: ptr[AirFunc]) -> bool:
                             break
                         curr = parent
                         depth = depth + 1
-                    
+
                     if curr != arg_reg:
                         f.extras.data[arg_reg_idx] = curr
                         changed = true
@@ -17653,12 +17660,16 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
             i = i + 1 as i64
             continue
 
-        if inst.opcode == OP_CALL:
+        // OP_SYSCALL shares OP_CALL's extras-based argument list; its arg vregs are
+        // real uses. Without counting them, DCE deletes the instructions that compute
+        // the syscall number / fd / buffer / length, so the inlined `syscall(...)`
+        // executes with garbage registers (e.g. write(2) wrote nothing on Linux).
+        if inst.opcode == OP_CALL or inst.opcode == OP_SYSCALL:
             let arg_start = inst.src2
             mut arg_count := 0 as u32
             if arg_start < f.extras.len as u32:
                 arg_count = f.extras.data[arg_start]
-            
+
             mut idx := 0 as u32
             while idx < arg_count:
                 let arg_reg = f.extras.data[arg_start + 1 as u32 + idx]
@@ -17670,7 +17681,9 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
             // a real use â€” without counting it, DCE sees the OP_FUNC_ADDR def as
             // dead (no side effect) and deletes it, leaving the call target as
             // garbage -> crash at -O1. Direct calls have src1==0 (no-op here).
-            if inst.src1 != 0 as u32:
+            // OP_SYSCALL's src1 is the dead `syscall` callee address â€” intentionally
+            // NOT counted, so it stays eliminated (and never becomes an import).
+            if inst.opcode == OP_CALL and inst.src1 != 0 as u32:
                 use_count[inst.src1] = use_count[inst.src1] + 1 as u32
             i = i + 1 as i64
             continue

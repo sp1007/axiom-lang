@@ -100,3 +100,47 @@ pub fn ax_compiler_intrinsic(name: ptr[u8], p1: ptr[void], p2: ptr[void], p3: pt
             return 1
         return 0
     return 0
+
+// --------------------------------------------------------------------------
+// RFC 0009 P3 Linux: freestanding stdout print runtime (twins of the C-runtime
+// ax_print_*/ax_println_* provided by ax_runtime.dll on Windows). Bundled only
+// for `--target linux`; the ELF linker binds the bare `ax_print_str` etc. calls
+// to these `ax_`-mangled twins. All output goes through write(2) — no libc.
+// --------------------------------------------------------------------------
+
+fn ax_lx_write1(c: u8):
+    mut cc := c
+    syscall(1 as u64, 1 as u64, &cc as u64, 1 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+fn ax_lx_write_u64(v: u64):
+    if v >= 10 as u64:
+        ax_lx_write_u64(v / 10 as u64)
+    ax_lx_write1(('0' as u8) + (v % 10 as u64) as u8)
+
+pub fn ax_print_str(s: str):
+    syscall(1 as u64, 1 as u64, s.ptr as u64, s.len as u64, 0 as u64, 0 as u64, 0 as u64)
+
+pub fn ax_println_str(s: str):
+    syscall(1 as u64, 1 as u64, s.ptr as u64, s.len as u64, 0 as u64, 0 as u64, 0 as u64)
+    ax_lx_write1('\n' as u8)
+
+pub fn ax_print_i64(value: i64):
+    mut v := value
+    if v < 0 as i64:
+        ax_lx_write1('-' as u8)
+        v = 0 as i64 - v
+    ax_lx_write_u64(v as u64)
+
+pub fn ax_println_i64(value: i64):
+    ax_print_i64(value)
+    ax_lx_write1('\n' as u8)
+
+pub fn ax_print_bool(value: bool):
+    if value:
+        syscall(1 as u64, 1 as u64, "true".ptr as u64, 4 as u64, 0 as u64, 0 as u64, 0 as u64)
+    else:
+        syscall(1 as u64, 1 as u64, "false".ptr as u64, 5 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+pub fn ax_println_bool(value: bool):
+    ax_print_bool(value)
+    ax_lx_write1('\n' as u8)
