@@ -1,11 +1,13 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** P1 + P2 + P3 Implemented — OwnershipChecker live as a mutability-only
+- **Status:** P1 + P2 Implemented; **P3 partial (drop-typed free only; general free
+  deferred as unsound on the self-host)** — OwnershipChecker live as a mutability-only
   checker (E4002); EscapeAnalyser ACTIVE with ctor-detection + scalar-field flow
-  refinement marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free ACTIVE behind
-  the opt-in `-ctgc-free` flag (2026-07-16, flag-off A==B `AD550CE4`, 329/329, flag-on
-  validated on a corpus + self-compilation). Move-checking removed by design (no move
-  semantics). Remaining niche: return-path frees (needs a return-value-temp transform)
+  refinement marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free behind the opt-in
+  `-ctgc-free` flag but scoped to `drop`-typed locals (RFC 0014 drop-glue). Move-checking
+  removed by design. Flag-off A==B `901475EB`, 330/330. See §8 for the correction: the
+  general free was inert (a reg-lookup bug), and making it real exposed self-host
+  aliasing UAFs — so it is deferred behind a sound escape analysis.
 - **Author:** self-host team
 - **Tracking:** BUG#69 (discovered 2026-07-06 while investigating why RFC 0014
   drop-glue never fired)
@@ -277,9 +279,22 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   transitive escape to the escape node, and marks escaping locals with the new
   non-colliding `SYM_FLAG_ESCAPES = 4096`. No consumer reads that flag yet, so the
   activation is fixpoint-neutral. Oracle `bin/t_escape.ax` (exit 41).
-- **P3 Implemented** (2026-07-16) — CTGC free ACTIVE behind the opt-in `-ctgc-free`
-  flag (OFF by default, so the self-host build stays byte-identical: flag-off A==B
-  `AD550CE4`, 329/329). Built as one unit: (1) ctor-call ownership detection (a
+- **P3 Partially implemented / general free DEFERRED** (corrected 2026-07-16) — CTGC
+  free is ACTIVE behind the opt-in `-ctgc-free` flag but is currently scoped to
+  `drop`-typed locals only (see RFC 0014). **Correction:** the earlier claim that P3
+  freed *all* non-escaping owned locals was wrong on two counts. (1) A `lower_destroy`
+  reg-lookup bug (`local_map_get(sym.name_id)` vs the sym_idx key) silently discarded
+  every CTGC `OP_DESTROY`, so `038c2ea` actually froze **nothing** (its "validation"
+  passed because nothing was freed). (2) Fixing that made freeing real and immediately
+  exposed that the general free is **unsound on the self-host** — a `-ctgc-free`
+  self-build UAF-segfaults because the escape analysis still misses some of the
+  compiler's pervasive aliasing (RFC 0010 §9; closing the global-assign hole helped but
+  more remain). So general free stays DEFERRED behind a sound escape analysis (gate:
+  a `-ctgc-free` self-build must reproduce the fixpoint). Free is emitted only for
+  `drop`-typed locals, which are user-declared/simple and sound to free (the compiler
+  declares none, so its `-ctgc-free` self-build is byte-identical). Flag-off A==B
+  `901475EB`, 330/330 + `ctgc_free_check.sh` CTGC_FREE_OK.
+  Historical note (the old, over-claimed text): Built as one unit: (1) ctor-call ownership detection (a
   `CALL_EXPR` whose callee resolves to `SYM_STRUCT` owns fresh memory); (2) a
   conservative scalar-field/index flow refinement (a `FIELD_EXPR`/`INDEX_EXPR` whose
   `node_types` result is `TYPE_KIND_PRIMITIVE` on a plain-ident base is a value copy

@@ -11504,6 +11504,15 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
                     let lhs_cg_idx = self.curr_cg.node_of_sym(sym_idx)
                     if lhs_cg_idx != 0xffffffff as u32:
                         self.analyze_expr(rhs_idx, lhs_cg_idx)
+                    else:
+                        // RFC 0015 P3 soundness: the LHS ident is NOT a tracked local
+                        // (a module global, or a binding outside this function's graph),
+                        // which outlives the function -- so the RHS ESCAPES. Without this
+                        // `g = x` let `x` look non-escaping and CTGC would free memory the
+                        // global still points at (UAF).
+                        self.analyze_expr(rhs_idx, self.escape_node_idx)
+                else:
+                    self.analyze_expr(rhs_idx, self.escape_node_idx)
             else:
                 // non-ident LHS means struct field or indexing, RHS escapes to heap
                 self.analyze_expr(rhs_idx, self.escape_node_idx)
@@ -13445,6 +13454,29 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
                                     rhs_ok = true
                         if rhs_ok:
                             return i as u32
+        i = i + 1 as i64
+    return 0 as u32
+
+// RFC 0014 (drop-glue): find a `<Type>.drop(self)` method for `rec_type`, or 0.
+// Mirrors resolve_op_method (same mangled-name substring match so an INLINE method
+// declaration resolves -- BUG#68 lesson) but requires EXACTLY one param (`self`),
+// so a stray `drop(self, x)` never matches. Called from lower_destroy: when CTGC
+// injects an OP_DESTROY for a non-escaping owned local (RFC 0015 P3, `-ctgc-free`),
+// the drop method runs on that instance right before its block is freed.
+pub fn resolve_drop_method(self: ptr[FuncLowering], rec_type: u32) -> u32:
+    let method_id = self.mb.pool.intern("drop")
+    let unwrapped = self.op_unwrap_type(rec_type)
+    mut i := 0 as i64
+    while i < self.mb.symbols.symbols.len:
+        let sym = self.mb.symbols.symbols.data[i]
+        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+            let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
+            if t_entry.kind == TYPE_KIND_FUNC:
+                let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
+                if fi.params.len == 1 as i64:
+                    let fp = self.op_unwrap_type(fi.params.data[0] as u32)
+                    if fp == unwrapped:
+                        return i as u32
         i = i + 1 as i64
     return 0 as u32
 
@@ -16499,15 +16531,46 @@ pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let sym_id = node.payload
         if sym_id != 0 as u32 and (sym_id as i64) < self.mb.symbols.symbols.len:
             let sym = self.mb.symbols.symbols.data[sym_id as i64]
-            let reg = self.locals.local_map_get(sym.name_id)
+            // local_map is keyed by the VAR_DECL's node.payload (= sym_idx), see
+            // lower_var_decl -- NOT by sym.name_id. The old `local_map_get(sym.name_id)`
+            // never matched (name intern id != sym index), so every CTGC OP_DESTROY was
+            // silently dropped (reg=0) and nothing was ever freed. (BUG#87 class.)
+            let reg = self.locals.local_map_get(sym_id)
             if reg != 0 as u32:
-                self.fb.emit(AirInst(
-                    opcode: OP_DESTROY,
-                    type_id: 0 as u32,
-                    dest: 0 as u32,
-                    src1: reg,
-                    src2: 0 as u32,
-                ))
+                // RFC 0014 (drop-glue): free is emitted ONLY for a local whose type
+                // declares `drop(self)`. We call drop(self) first (so it can read the
+                // fields it owns) THEN OP_DESTROY frees the block.
+                //
+                // Why gate the free on `drop`: RFC 0015's GENERAL free of every
+                // non-escaping owned local is not yet SOUND on the self-host compiler
+                // (RFC 0010 Â§9: the compiler pervasively aliases into buffers it later
+                // reuses; the escape analysis still misses some of those, so freeing a
+                // compiler local UAF-crashes a `-ctgc-free` self-build). `drop`-typed
+                // types are user-declared and simple, so freeing exactly them is sound
+                // (validated on a corpus). The compiler declares no `drop`, so nothing
+                // is freed there -> `-ctgc-free` self-build is byte-identical/safe.
+                // General free stays deferred (RFC 0015 Â§5) behind sound escape analysis.
+                // Non-escaping guarantee (escape analysis) means a moved/returned drop
+                // instance is never reached here -> no double-drop / no early free.
+                let drop_sym = self.resolve_drop_method(sym.type_id)
+                if drop_sym != 0 as u32:
+                    let arg_start = self.fb.emit_extra(1 as u32)
+                    self.fb.emit_extra(reg)
+                    let dreg = self.fb.fresh_reg()
+                    self.fb.emit(AirInst(
+                        opcode: OP_CALL,
+                        type_id: drop_sym,
+                        dest: dreg,
+                        src1: 0 as u32,
+                        src2: arg_start,
+                    ))
+                    self.fb.emit(AirInst(
+                        opcode: OP_DESTROY,
+                        type_id: 0 as u32,
+                        dest: 0 as u32,
+                        src1: reg,
+                        src2: 0 as u32,
+                    ))
 
 // RFC 0006 (#38.4): a `defer expr` registers the expression to run at scope
 // exit instead of executing it now (the old stub ran it immediately, which was

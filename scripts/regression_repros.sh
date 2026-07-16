@@ -385,6 +385,9 @@ rows=(
   "t_escapeloop|exit|42"
   # RFC 0015 P3 — compile-time free oracle (also run under -ctgc-free by ctgc_free_check.sh)
   "t_ctgcfree|exit|42"
+  # RFC 0014 — drop-glue oracle: no drop without the flag (0); drop fires 42x under
+  # -ctgc-free (see ctgc_free_check.sh)
+  "t_drop|exit|0"
   # RFC 0024 block strings """...""" (len/multi-line/escapes/byte/embedded-quotes)
   "t_blockstr|exit|5"
   "t_blockstrml|exit|5"

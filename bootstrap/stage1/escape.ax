@@ -177,6 +177,15 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
                     let lhs_cg_idx = self.curr_cg.node_of_sym(sym_idx)
                     if lhs_cg_idx != 0xffffffff as u32:
                         self.analyze_expr(rhs_idx, lhs_cg_idx)
+                    else:
+                        // RFC 0015 P3 soundness: the LHS ident is NOT a tracked local
+                        // (a module global, or a binding outside this function's graph),
+                        // which outlives the function -- so the RHS ESCAPES. Without this
+                        // `g = x` let `x` look non-escaping and CTGC would free memory the
+                        // global still points at (UAF).
+                        self.analyze_expr(rhs_idx, self.escape_node_idx)
+                else:
+                    self.analyze_expr(rhs_idx, self.escape_node_idx)
             else:
                 // non-ident LHS means struct field or indexing, RHS escapes to heap
                 self.analyze_expr(rhs_idx, self.escape_node_idx)

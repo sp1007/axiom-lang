@@ -1,31 +1,33 @@
-// Oracle for RFC 0014 (drop(self) hook). A struct with `drop` should have it
-// called exactly once, right before CTGC's own-block free, for a plain local
-// that dies at scope exit -- and NOT called when the value escapes (returned).
-// Observed via a raw pointer "marker" cell that outlives every Res instance
-// (avoids relying on top-level mutable globals, which no existing test uses).
+// RFC 0014 (drop-glue) oracle. Built WITH -ctgc-free (see ctgc_free_check.sh).
+// Each `Res` in work() is an owned, non-escaping struct-ctor local in a loop-body
+// block that falls through, so CTGC injects OP_DESTROY and drop-glue calls
+// Res.drop(self) before the free -> drop increments a global (observable via exit).
+// `keep()` returns its Res (escapes) and main binds a call result (also treated as
+// escaping) -> neither is dropped, proving drop does NOT fire on escaping values
+// (no over-drop). Without -ctgc-free no destroy is injected, so drop_count stays 0.
+
+mut drop_count: i64 = 0
+
 struct Res:
-    tag: i32
-    marker: ptr[i32]
+    id: i64
+
     fn drop(self):
-        self.marker[0] = self.marker[0] + self.tag
+        drop_count = drop_count + 1
 
-fn make_and_drop_local(tag: i32, marker: ptr[i32]):
-    let r = Res(tag: tag, marker: marker)
-    // r dies at the end of this function -> drop should fire once.
+fn keep() -> Res:
+    let e = Res(id: 0)   // returned -> escapes -> NOT dropped
+    return e
 
-fn make_and_return(tag: i32, marker: ptr[i32]) -> Res:
-    let r = Res(tag: tag, marker: marker)
-    return r
-    // r escapes (moved out via return) -> drop must NOT fire here.
+fn work():
+    mut i = 0
+    while i < 42:
+        let r = Res(id: i)   // owned, scalar read only, fall-through -> dropped each iter
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
 
-fn main() -> i32:
-    mut marker := @alloc(4) as ptr[i32]
-    marker[0] = 0 as i32
-    make_and_drop_local(5 as i32, marker)
-    if marker[0] != 5 as i32:
-        return 1
-    let escaped = make_and_return(100 as i32, marker)
-    if marker[0] != 5 as i32:
-        return 2
-    // escaped now dies at end of main -> drop fires once more (+100 = 105).
-    return marker[0]
+fn main() -> i64:
+    let kept = keep()        // call result -> escaping -> not dropped
+    work()                   // 42 fall-through drops
+    return drop_count        // 42 with -ctgc-free, 0 without
