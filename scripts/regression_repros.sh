@@ -402,6 +402,7 @@ rows=(
   "t_blockstrbyte|exit|65"
   "t_blockstrquote|exit|11"
   "elfglob|exit|55"
+  "t_parse|exit|40"
 )
 
 for row in "${rows[@]}"; do

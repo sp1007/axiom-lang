@@ -570,13 +570,74 @@ pub fn replace(s: str, old: str, new: str) -> str:
     buf[total] = 0 as u8
     return buf as str
 
-extern "C" fn ax_str_parse_i64(s: str, out_val: ptr[i64]) -> bool
-extern "C" fn ax_str_parse_f64(s: str, out_val: ptr[f64]) -> bool
+// Pure-AXIOM integer/float parsing (value ABI). Previously these called the C-runtime
+// `ax_str_parse_i64`/`f64` (extern "C"); that path was broken on the native COFF build —
+// the str-arg + out-ptr C-ABI marshalling returned false for valid input, so `to_i64("42")`
+// panicked on unwrap (same class as BUG#29). Implementing them in-language fixes Windows and
+// works freestanding on Linux too (no C-runtime dependency).
+fn str_parse_i64_impl(s: str, out_val: ptr[i64]) -> bool:
+    if s.len == 0 as i64:
+        return false
+    mut i := 0 as i64
+    mut neg := false
+    if s[0] == '-' as u8:
+        neg = true
+        i = 1 as i64
+    if i >= s.len:
+        return false
+    mut val := 0 as i64
+    while i < s.len:
+        let c = s[i]
+        if c < '0' as u8 or c > '9' as u8:
+            return false
+        val = val * 10 as i64 + (c - '0' as u8) as i64
+        i = i + 1 as i64
+    if neg:
+        val = 0 as i64 - val
+    out_val.* = val
+    return true
+
+fn str_parse_f64_impl(s: str, out_val: ptr[f64]) -> bool:
+    if s.len == 0 as i64:
+        return false
+    mut i := 0 as i64
+    mut neg := false
+    if s[0] == '-' as u8:
+        neg = true
+        i = 1 as i64
+    if i >= s.len:
+        return false
+    mut val := 0.0 as f64
+    mut saw_digit := false
+    while i < s.len and s[i] != '.' as u8:
+        let c = s[i]
+        if c < '0' as u8 or c > '9' as u8:
+            return false
+        val = val * 10.0 as f64 + (c - '0' as u8) as i64 as f64
+        saw_digit = true
+        i = i + 1 as i64
+    if i < s.len and s[i] == '.' as u8:
+        i = i + 1 as i64
+        mut scale := 0.1 as f64
+        while i < s.len:
+            let c = s[i]
+            if c < '0' as u8 or c > '9' as u8:
+                return false
+            val = val + (c - '0' as u8) as i64 as f64 * scale
+            scale = scale * 0.1 as f64
+            saw_digit = true
+            i = i + 1 as i64
+    if not saw_digit:
+        return false
+    if neg:
+        val = 0.0 as f64 - val
+    out_val.* = val
+    return true
 
 /// Parses string as i64.
 pub fn to_i64(s: str) -> Result[i64, str]:
     mut val := 0 as i64
-    if ax_str_parse_i64(s, &val):
+    if str_parse_i64_impl(s, &val):
         return Ok(val)
     else:
         return Err("Invalid integer format")
@@ -584,7 +645,7 @@ pub fn to_i64(s: str) -> Result[i64, str]:
 /// Parses string as f64.
 pub fn to_f64(s: str) -> Result[f64, str]:
     mut val := 0.0
-    if ax_str_parse_f64(s, &val):
+    if str_parse_f64_impl(s, &val):
         return Ok(val)
     else:
         return Err("Invalid float format")
