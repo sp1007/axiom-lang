@@ -181,3 +181,66 @@ pub fn ax_str_eq(a: str, b: str) -> bool:
             return false
         i = i + 1
     return true
+
+// Freestanding string->number parsing (twins of ax_runtime.dll ax_str_parse_i64/f64,
+// used by std.string.to_i64/to_f64). Out-param bool-returning; bundled only for
+// --target linux. i64: optional sign + decimal digits. f64: sign + int part + optional
+// '.' fraction (no exponent — rare; add later if needed). Reject on any non-digit.
+pub fn ax_str_parse_i64(s: str, out_val: ptr[i64]) -> bool:
+    if s.len == 0 as i64:
+        return false
+    mut i := 0 as i64
+    mut neg := false
+    if ((s.ptr as i64) as ptr[u8]).* == '-' as u8:
+        neg = true
+        i = 1 as i64
+    if i >= s.len:
+        return false
+    mut val := 0 as i64
+    while i < s.len:
+        let c = ((s.ptr as i64 + i) as ptr[u8]).*
+        if c < '0' as u8 or c > '9' as u8:
+            return false
+        val = val * 10 as i64 + (c - '0' as u8) as i64
+        i = i + 1 as i64
+    if neg:
+        val = 0 as i64 - val
+    out_val.* = val
+    return true
+
+pub fn ax_str_parse_f64(s: str, out_val: ptr[f64]) -> bool:
+    if s.len == 0 as i64:
+        return false
+    mut i := 0 as i64
+    mut neg := false
+    if ((s.ptr as i64) as ptr[u8]).* == '-' as u8:
+        neg = true
+        i = 1 as i64
+    if i >= s.len:
+        return false
+    mut val := 0.0 as f64
+    mut saw_digit := false
+    while i < s.len and ((s.ptr as i64 + i) as ptr[u8]).* != '.' as u8:
+        let c = ((s.ptr as i64 + i) as ptr[u8]).*
+        if c < '0' as u8 or c > '9' as u8:
+            return false
+        val = val * 10.0 as f64 + (c - '0' as u8) as i64 as f64
+        saw_digit = true
+        i = i + 1 as i64
+    if i < s.len and ((s.ptr as i64 + i) as ptr[u8]).* == '.' as u8:
+        i = i + 1 as i64
+        mut scale := 0.1 as f64
+        while i < s.len:
+            let c = ((s.ptr as i64 + i) as ptr[u8]).*
+            if c < '0' as u8 or c > '9' as u8:
+                return false
+            val = val + (c - '0' as u8) as i64 as f64 * scale
+            scale = scale * 0.1 as f64
+            saw_digit = true
+            i = i + 1 as i64
+    if not saw_digit:
+        return false
+    if neg:
+        val = 0.0 as f64 - val
+    out_val.* = val
+    return true

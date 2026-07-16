@@ -10,7 +10,7 @@ ROOT_WSL="/mnt/d/projects/compiler/Axiom"
 pass=0; fail=0; failed=""
 build() { rm -f "bin/t_$1.elf"; "$AXC" build "bin/$1.ax" -o "bin/t_$1.elf" --target linux -self-link -O1 > "/tmp/elfchk_$1.log" 2>&1; }
 # exit-code oracles: name|expected
-for row in "elf42|42" "elfloop|7" "elfglob|55" "elfvec|42" "elfmap|42" "elfsmap|42"; do
+for row in "elf42|42" "elfloop|7" "elfglob|55" "elfvec|42" "elfmap|42" "elfsmap|42" "elfparse|40"; do
   name="${row%%|*}"; exp="${row##*|}"; build "$name"
   if [ ! -f "bin/t_$name.elf" ]; then echo "FAIL $name (build)"; fail=$((fail+1)); failed="$failed $name"; continue; fi
   wsl "$ROOT_WSL/bin/t_$name.elf"; got=$?
