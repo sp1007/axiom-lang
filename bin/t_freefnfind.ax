@@ -10,13 +10,19 @@ fn find(a: i64, b: i64) -> i64:
 fn get(x: i64) -> i64:
     return x * 2
 
+// u64 first param (type 8) — must widen too, not just i64.
+fn count(a: u64, b: u64) -> u64:
+    return a + b
+
 fn main() -> i64:
     // find(40,2) must call the USER find (=42), NOT the stdlib generic Vec.find.
     let f = find(40, 2)
     // get(3) must call the USER get (=6), NOT the stdlib generic Vec.get/HashMap.get.
     let g = get(3)
+    // count(4,2) must call the USER count (=6, u64), NOT the stdlib generic Vec.count.
+    let c = count(4, 2) as i64
     // Real generic Vec.get must still dispatch correctly (not over-picked): =6.
     mut v: Vec[i64] = new_vec[i64]()
     v.push(6)
     let real = v.get(0).unwrap()
-    return f + g - real   // 42 + 6 - 6 = 42
+    return f + g + c - real - real   // 42 + 6 + 6 - 6 - 6 = 42
