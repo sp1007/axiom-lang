@@ -169,3 +169,15 @@ pub fn ax_print_f64(value: f64):
 pub fn ax_println_f64(value: f64):
     ax_print_f64(value)
     ax_lx_write1('\n' as u8)
+
+// Freestanding string equality (twin of the ax_runtime.dll ax_str_eq used by `str == str`
+// and str-keyed HashMap). Byte-wise compare; bundled only for --target linux.
+pub fn ax_str_eq(a: str, b: str) -> bool:
+    if a.len != b.len:
+        return false
+    mut i := 0 as i64
+    while i < a.len:
+        if ((a.ptr as i64 + i) as ptr[u8]).* != ((b.ptr as i64 + i) as ptr[u8]).*:
+            return false
+        i = i + 1
+    return true
