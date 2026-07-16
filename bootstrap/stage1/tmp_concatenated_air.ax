@@ -11448,6 +11448,17 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
             let cg_idx = self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
             let init_idx = node.first_child
             if init_idx != 0 as u32:
+                // RFC 0015 P2 (ownership-origin soundness, prerequisite for P3 free):
+                // a local only OWNS fresh, single-owner memory when it is initialised
+                // by a direct aggregate construction (struct/array literal). Any other
+                // initialiser makes it BORROW/ALIAS longer-lived memory that CTGC must
+                // never free: an ident aliases another binding, INDEX/FIELD borrows into
+                // a longer-lived aggregate (RFC 0010 Â§9), and a call may return a borrow
+                // (no interprocedural analysis yet). Conservatively flow such locals to
+                // the escape node so escapes()=true -> P3 will refuse to free them.
+                let init_kind = self.tree.nodes.data[init_idx].kind
+                if init_kind != NODE_STRUCT_LIT and init_kind != NODE_ARRAY_LIT:
+                    self.curr_cg.add_edge(cg_idx, self.escape_node_idx, EDGE_FLOWS_TO)
                 self.analyze_expr(init_idx, cg_idx)
 
     elif kind == NODE_ASSIGN_STMT:

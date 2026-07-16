@@ -174,15 +174,25 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   result/generic-inst type whose `SYM_FLAG_ESCAPES` bit is clear — but the self-host
   compiler is full of **borrow** locals like `let node = tree.nodes.data[i]` that,
   under alias semantics (RFC 0010 §9), point *into* a longer-lived vector rather than
-  owning fresh memory. The current EscapeAnalyser models assignment/return/call-arg
-  flow but does **not** mark a local that borrows from an indexed/field access of a
-  longer-lived aggregate, so CTGC would free a slot inside `tree.nodes.data` → corrupt
-  the AST → catastrophic UAF. P3 therefore requires (a) a *borrow* edge in the
-  ConnectionGraph for `INDEX_EXPR`/`FIELD_EXPR` inits (mark the local as borrowing,
-  never freeable), plus (b) the module/function whitelist, before any `OP_DESTROY` is
-  emitted. `ctgc.ax`'s own `node_idx == 0` guard is also still a no-op and must be
-  fixed as part of P3, and its `FLAG_ESCAPES_TO_HEAP (128)` read retargeted to
-  `SYM_FLAG_ESCAPES (4096)`.
+  owning fresh memory. Freeing one corrupts the AST → catastrophic UAF.
+
+  **Ownership-origin soundness substrate landed 2026-07-16 (`1A220D0B`, A==B, 327/327).**
+  `analyze_stmt` now treats a local as OWNING fresh, single-owner memory **only** when
+  its initialiser is a direct aggregate construction (`NODE_STRUCT_LIT`/`NODE_ARRAY_LIT`);
+  any other init (an ident = alias, `INDEX_EXPR`/`FIELD_EXPR` = borrow, or a call = may
+  return a borrow, no interprocedural analysis yet) flows the local to the escape node,
+  so `escapes()=true` and P3 will refuse to free it. Combined with the existing
+  return/call-arg/field-store flow this also transitively covers `let y = x` aliasing
+  (y is escape-marked as an ident-init, and x→y flow propagates). Verified by a
+  temporary per-function dump over the whole bundled compiler: the freeable set is
+  small and conservative (e.g. a 19-local function yields 1 freeable, a 22-local one
+  yields 0). Still inert (no consumer) → fixpoint-neutral.
+
+  **Remaining for P3:** (a) a module/function **whitelist** to bound blast radius
+  (start with one leaf module) before emitting any `OP_DESTROY`; (b) fix `ctgc.ax`'s
+  own `node_idx == 0` no-op guard so it runs; (c) retarget its `FLAG_ESCAPES_TO_HEAP
+  (128)` read to `SYM_FLAG_ESCAPES (4096)`; (d) validate no new UAF via the native
+  allocator's deterministic-fail on the full regression corpus. Dedicated session.
 
 ## 6. Alternatives
 
