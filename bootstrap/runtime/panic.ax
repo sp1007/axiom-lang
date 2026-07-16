@@ -144,3 +144,28 @@ pub fn ax_print_bool(value: bool):
 pub fn ax_println_bool(value: bool):
     ax_print_bool(value)
     ax_lx_write1('\n' as u8)
+
+// f64 print (freestanding, 6 fractional digits, round-half via +5e-7). Handles sign,
+// integer part, and a fixed 6-digit fraction — enough for readable output; a full
+// shortest-round-trip formatter is a later refinement.
+pub fn ax_print_f64(value: f64):
+    mut v := value
+    if v < 0.0 as f64:
+        ax_lx_write1('-' as u8)
+        v = 0.0 as f64 - v
+    v = v + 0.0000005 as f64
+    let ip: i64 = v as i64
+    ax_lx_write_u64(ip as u64)
+    ax_lx_write1('.' as u8)
+    mut frac: f64 = v - (ip as f64)
+    mut i := 0 as i64
+    while i < 6 as i64:
+        frac = frac * 10.0 as f64
+        let d: i64 = frac as i64
+        ax_lx_write1(('0' as u8) + d as u8)
+        frac = frac - (d as f64)
+        i = i + 1 as i64
+
+pub fn ax_println_f64(value: f64):
+    ax_print_f64(value)
+    ax_lx_write1('\n' as u8)

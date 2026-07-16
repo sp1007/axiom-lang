@@ -23,6 +23,16 @@ if [ -f bin/t_elfhello.elf ]; then
   got=$(wsl "$ROOT_WSL/bin/t_elfhello.elf" 2>/dev/null)
   if [ "$got" = "$expected" ]; then echo "PASS elfhello (stdout)"; pass=$((pass+1)); else echo "FAIL elfhello (stdout)"; echo "--- got ---"; echo "$got"; fail=$((fail+1)); failed="$failed elfhello"; fi
 else echo "FAIL elfhello (build)"; fail=$((fail+1)); failed="$failed elfhello"; fi
+# stdout oracle: elffloat (f64 print)
+build elffloat
+expf=$'3.141590
+0.500000
+42.000000
+0.285714'
+if [ -f bin/t_elffloat.elf ]; then
+  gotf=$(wsl "$ROOT_WSL/bin/t_elffloat.elf" 2>/dev/null)
+  if [ "$gotf" = "$expf" ]; then echo "PASS elffloat (stdout)"; pass=$((pass+1)); else echo "FAIL elffloat (stdout)"; echo "--- got ---"; echo "$gotf"; fail=$((fail+1)); failed="$failed elffloat"; fi
+else echo "FAIL elffloat (build)"; fail=$((fail+1)); failed="$failed elffloat"; fi
 echo "=== ELF linux: $pass passed, $fail failed ==="
 [ "$fail" -gt 0 ] && { echo "FAILED:$failed"; exit 1; }
 echo "ELF_LINUX_OK"
