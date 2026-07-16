@@ -4194,8 +4194,21 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             result_type = TYPE_I32
             
     elif kind == NODE_FLOAT_LIT:
-        result_type = TYPE_F64
-        
+        // Coerce a float literal to the expected float type, mirroring the integer
+        // literal path above. Without this a literal in an f32 context (`let v: f32
+        // = 42.0`, an f32 param/return) stayed TYPE_F64, so air_builder materialized
+        // it as a DOUBLE (OP_FCONST 64-bit, movq) — consistent for LOCAL use (every
+        // op treated it as f64) but WRONG at a function boundary, where the f32 ABI
+        // reads XMM0 as single (movss) -> the low 32 bits of the double -> garbage/0
+        // (silent miscompile, BUG#53 class). Typing the literal f32 makes air narrow
+        // it to single (movd, 32-bit) so the value is genuinely single-precision
+        // everywhere. Only f32-expected changes; f64 keeps TYPE_F64 (fixpoint-safe —
+        // the compiler source has no f32 literals). [[bug-f32-boundary-abi-open]]
+        if expected == TYPE_F32:
+            result_type = TYPE_F32
+        else:
+            result_type = TYPE_F64
+
     elif kind == NODE_STRING_LIT:
         result_type = TYPE_STRING
         

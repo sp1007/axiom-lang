@@ -1,0 +1,22 @@
+// Oracle: f32 crossing function boundaries. Before the fix, a float literal in an
+// f32 context (`let v: f32 = 42.0`, an f32 param/return) stayed TYPE_F64, so it was
+// materialized as a DOUBLE — consistent for local use but WRONG at the ABI boundary
+// (f32 return/param read as single via movss -> low 32 bits of the double -> 0).
+// Typing the literal f32 makes it genuinely single-precision everywhere.
+// [[bug-f32-boundary-abi-open]]
+
+// f32 return value (was 0).
+fn mkf() -> f32:
+    return 40.0
+
+// f32 param arriving (was 0) + f32 return roundtrip.
+fn addf(x: f32, y: f32) -> f32:
+    return x + y
+
+fn main() -> i64:
+    let r = mkf()          // 40.0 (f32)
+    let a: f32 = 1.0
+    let b: f32 = 1.0
+    let s = addf(a, b)     // 2.0 (f32 params in, f32 return out)
+    let total: f32 = r + s // 42.0
+    return total as i64    // 42
