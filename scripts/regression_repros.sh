@@ -221,6 +221,7 @@ rows=(
   "t_f32boundary|exit|42"
   "t_f32aggregate|exit|42"
   "t_f32generic|exit|42"
+  "t_f32argcoerce|exit|42"
   # feature-combo probe oracles (banked 2026-07-12, batch 7)
   "t_genpairopt|exit|77"
   "t_arrstructidx|exit|102"

@@ -860,6 +860,7 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
         return true
     mut ci_first_generic := false
     mut ci_arg0_widen := false
+    mut ci_arg0_float := false
     let ci_sym = self.symtable.symbols.data[ci]
     if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
         let ce = self.types.entries.data[ci_sym.type_id]
@@ -871,7 +872,21 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
                 let fp0 = cfi.params.data[0]
                 if tc_is_numeric(fp0) and fp0 != TYPE_F32 and fp0 != TYPE_F64 and tc_is_numeric(arg0_type) and arg0_type != TYPE_F32 and arg0_type != TYPE_F64:
                     ci_arg0_widen = true
-    if ci_first_generic or ci_arg0_widen:
+                // HOLE#6 (float f32<->f64 arg widening): a user free fn with a
+                // concrete float first param shadowed by a bundled GENERIC method,
+                // called with the OTHER float width (e.g. `fn map(x: f64)` called
+                // with an f32 arg). The exact-match gate skipped the user overload
+                // (f64 != f32) so the call fell through to the generic Vec.map head
+                // -> monomorphized on a float arg treated as a Vec receiver ->
+                // SIGSEGV (the residual foreseen at the end of HOLE#4/#5). Accepting
+                // it here gates BOTH the user (concrete float param) and the generic
+                // head, so the HOLE#5 full-signature tie-break (param_arg_match's
+                // float<->float rule) then out-scores the generic and binds the user
+                // fn. The actual f32->f64 value convert is emitted at the call site
+                // (air_builder coerce_float_arg). [[bug-freefn-stdlib-collision-noarg]]
+                if (fp0 == TYPE_F32 or fp0 == TYPE_F64) and (arg0_type == TYPE_F32 or arg0_type == TYPE_F64):
+                    ci_arg0_float = true
+    if ci_first_generic or ci_arg0_widen or ci_arg0_float:
         return true
     return self.is_method_compatible(ci, arg0_type)
 
@@ -977,7 +992,18 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
                         let f2 = self.types.funcs.data[e2.extra]
                         mut pi := 0 as i64
                         while pi < f2.params.len and pi < arg_types.len:
-                            if self.param_arg_match(f2.params.data[pi], arg_types.data[pi]):
+                            let pv = f2.params.data[pi]
+                            let av = arg_types.data[pi]
+                            // An EXACT type match outscores a coercion-compatible match, so
+                            // an exact overload wins over one needing integer widening or an
+                            // f32<->f64 cross-width convert (the standard "exact preferred
+                            // over promotion" rule). Without this, adding the float overload
+                            // to the gate created a tie that head-first resolved WRONG:
+                            // `pick(f32)`+`pick(f64)` called with an f64 literal picked the
+                            // (head) f32 overload. An un-inferrable (UNKNOWN) arg stays neutral.
+                            if av != TYPE_UNKNOWN and pv == av:
+                                sc = sc + 2 as i64
+                            elif self.param_arg_match(pv, av):
                                 sc = sc + 1 as i64
                             pi = pi + 1 as i64
                 if sc > best_score:

@@ -6990,6 +6990,7 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
         return true
     mut ci_first_generic := false
     mut ci_arg0_widen := false
+    mut ci_arg0_float := false
     let ci_sym = self.symtable.symbols.data[ci]
     if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
         let ce = self.types.entries.data[ci_sym.type_id]
@@ -7001,7 +7002,21 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
                 let fp0 = cfi.params.data[0]
                 if tc_is_numeric(fp0) and fp0 != TYPE_F32 and fp0 != TYPE_F64 and tc_is_numeric(arg0_type) and arg0_type != TYPE_F32 and arg0_type != TYPE_F64:
                     ci_arg0_widen = true
-    if ci_first_generic or ci_arg0_widen:
+                // HOLE#6 (float f32<->f64 arg widening): a user free fn with a
+                // concrete float first param shadowed by a bundled GENERIC method,
+                // called with the OTHER float width (e.g. `fn map(x: f64)` called
+                // with an f32 arg). The exact-match gate skipped the user overload
+                // (f64 != f32) so the call fell through to the generic Vec.map head
+                // -> monomorphized on a float arg treated as a Vec receiver ->
+                // SIGSEGV (the residual foreseen at the end of HOLE#4/#5). Accepting
+                // it here gates BOTH the user (concrete float param) and the generic
+                // head, so the HOLE#5 full-signature tie-break (param_arg_match's
+                // float<->float rule) then out-scores the generic and binds the user
+                // fn. The actual f32->f64 value convert is emitted at the call site
+                // (air_builder coerce_float_arg). [[bug-freefn-stdlib-collision-noarg]]
+                if (fp0 == TYPE_F32 or fp0 == TYPE_F64) and (arg0_type == TYPE_F32 or arg0_type == TYPE_F64):
+                    ci_arg0_float = true
+    if ci_first_generic or ci_arg0_widen or ci_arg0_float:
         return true
     return self.is_method_compatible(ci, arg0_type)
 
@@ -7107,7 +7122,18 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
                         let f2 = self.types.funcs.data[e2.extra]
                         mut pi := 0 as i64
                         while pi < f2.params.len and pi < arg_types.len:
-                            if self.param_arg_match(f2.params.data[pi], arg_types.data[pi]):
+                            let pv = f2.params.data[pi]
+                            let av = arg_types.data[pi]
+                            // An EXACT type match outscores a coercion-compatible match, so
+                            // an exact overload wins over one needing integer widening or an
+                            // f32<->f64 cross-width convert (the standard "exact preferred
+                            // over promotion" rule). Without this, adding the float overload
+                            // to the gate created a tie that head-first resolved WRONG:
+                            // `pick(f32)`+`pick(f64)` called with an f64 literal picked the
+                            // (head) f32 overload. An un-inferrable (UNKNOWN) arg stays neutral.
+                            if av != TYPE_UNKNOWN and pv == av:
+                                sc = sc + 2 as i64
+                            elif self.param_arg_match(pv, av):
                                 sc = sc + 1 as i64
                             pi = pi + 1 as i64
                 if sc > best_score:
@@ -13968,6 +13994,41 @@ fn match_mangled_method_name(sym_name: str, method_name: str) -> bool:
     @free(get_str_ptr(full_prefix))
     return starts
 
+// f32<->f64 implicit argument coercion. A call argument whose static type is one
+// float width, passed to a parameter of the OTHER float width, needs a real convert
+// (cvtss2sd / cvtsd2ss). Without it the callee reads the raw bits at the wrong width:
+// an f32 variable into an f64 param read 0, and a user free fn with a concrete float
+// param shadowing a generic method (Vec.map) segfaulted (accept-then-miscompile,
+// the residual HOLE at the end of [[bug-freefn-stdlib-collision-noarg]]). Reuses the
+// existing OP_CAST float-pair lowering (x86_selector -> MACH_CVTSS2SD/CVTSD2SS).
+// Returns the original reg when no coercion applies. Guarded to a resolved FUNC
+// symbol whose parameter at `param_idx` is a concrete f32/f64, so integer/aggregate
+// args and the compiler's own f64-only float code are untouched (dormant for
+// self-compilation -> fixpoint-safe).
+pub fn coerce_float_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
+    if fn_sym == 0 as u32 or (fn_sym as i64) >= self.mb.symbols.symbols.len:
+        return arg_reg
+    if self.mb.node_types == null as ptr[u32]:
+        return arg_reg
+    let sym = self.mb.symbols.symbols.data[fn_sym as i64]
+    if sym.kind != SYM_FUNC or sym.type_id == 0 as u32 or (sym.type_id as i64) >= self.mb.typetable.entries.len:
+        return arg_reg
+    let e = self.mb.typetable.entries.data[sym.type_id as i64]
+    if e.kind != TYPE_KIND_FUNC:
+        return arg_reg
+    let fi = self.mb.typetable.funcs.data[e.extra as i64]
+    if (param_idx as i64) >= fi.params.len:
+        return arg_reg
+    let pt = fi.params.data[param_idx as i64]
+    if pt != 9 as u32 and pt != 10 as u32:
+        return arg_reg
+    let at = self.mb.node_types[arg_node as i64]
+    if (at != 9 as u32 and at != 10 as u32) or at == pt:
+        return arg_reg
+    let cr = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_CAST, type_id: pt, dest: cr, src1: arg_reg, src2: 0 as u32))
+    return cr
+
 pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
     if child == 0 as u32:
@@ -14424,6 +14485,17 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
     let temp_args = @alloc(128 * 4) as ptr[u32]
     mut temp_count := 0 as u32
 
+    // Resolved callee FUNC symbol, for f32<->f64 implicit argument coercion below.
+    // Free call: the IDENT payload. Method call: the resolved method symbol (its
+    // param 0 is `self`, so an explicit arg's param index == temp_count, which
+    // already counts the receiver). Other callees (generic-inst, variant ctor) leave
+    // this 0 -> no coercion.
+    mut cfn_sym := 0 as u32
+    if is_method_call:
+        cfn_sym = method_sym_idx
+    elif callee_node.kind == NODE_IDENT:
+        cfn_sym = callee_node.payload
+
     if is_method_call:
         // A static-form call `Type.method(args)` names a TYPE as the "receiver",
         // and `self` is passed explicitly as the first argument. In that case we
@@ -14445,7 +14517,8 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
 
     mut arg := callee_node.next_sibling
     while arg != 0 as u32:
-        let arg_reg = self.lower_expr(arg)
+        mut arg_reg := self.lower_expr(arg)
+        arg_reg = self.coerce_float_arg(cfn_sym, temp_count, arg, arg_reg)
         temp_args[temp_count as i64] = arg_reg
         temp_count = temp_count + 1 as u32
         arg = self.mb.tree.nodes.data[arg as i64].next_sibling

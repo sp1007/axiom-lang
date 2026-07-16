@@ -1,0 +1,25 @@
+// Oracle HOLE#6 (float f32->f64 implicit argument coercion + collision). A user free
+// fn with a concrete float first param shadowing a bundled GENERIC method (Vec.map)
+// called with an f32 arg previously fell through to the generic head -> monomorphized
+// on the float treated as a Vec receiver -> SIGSEGV (the residual foreseen in the
+// free-fn/stdlib collision cluster). Two-part fix: resolve_free_call_overload gates
+// the concrete-float overload (free_call_gate float rule) so the full-signature
+// tie-break binds the user fn, and air_builder emits a real cvtss2sd at the call site
+// (coerce_float_arg -> OP_CAST). The real Vec.map must still dispatch.
+// NOTE: kept to a SINGLE width-converting float call — two consecutive width-cvt
+// calls hit a separate PRE-EXISTING xmm-regalloc bug (affects explicit `as` casts
+// too, see [[bug-consecutive-float-cvt-call-regalloc]]).
+fn map(x: f64) -> i64:
+    return (x + 0.5) as i64
+
+fn main() -> i64:
+    // collision: user map(f64) called with an f32 arg -> 37 (was SIGSEGV).
+    let c: f32 = 37.0
+    let m = map(c)
+    // real generic Vec.map must still dispatch: double each element.
+    mut v: Vec[i64] = new_vec[i64]()
+    v.push(1)
+    v.push(2)
+    let d = v.map(|e: i64| -> i64 e * 2)
+    let s = d.get(0).unwrap() + d.get(1).unwrap()   // 2 + 4 = 6
+    return m + s - 1   // 37 + 6 - 1 = 42
