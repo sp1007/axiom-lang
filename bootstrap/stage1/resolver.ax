@@ -40,6 +40,13 @@ pub const SYM_FLAG_GENERIC: u16 = 1024
 // BUG#50: same-named fn from a DIFFERENT module tree chained as overload;
 // manglers must emit a distinct symbol name ("__m<sym_idx>" suffix).
 pub const SYM_FLAG_MODDUP: u16 = 2048
+// RFC 0015 P2: set by EscapeAnalyser on a local symbol that escapes its function
+// (returned, passed to a call, or stored into a longer-lived aggregate). Kept in
+// the SYM-flag space at 4096 to avoid the historical 128 collision with
+// SYM_FLAG_MOVED (which ownership.ax reads -> would re-trigger the E4001 flood).
+// Consumed by CTGC (RFC 0015 P3) to decide which locals are safe to free; no
+// consumer is wired yet, so setting it is behaviourally inert (fixpoint A==B).
+pub const SYM_FLAG_ESCAPES: u16 = 4096
 
 // ScopeKind constants
 pub const SCOPE_GLOBAL: u8 = 0

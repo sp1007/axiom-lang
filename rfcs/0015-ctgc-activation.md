@@ -1,7 +1,9 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** P1 Implemented (2026-07-06) — OwnershipChecker live as a
-  mutability-only checker (E4002); move-checking + escape + CTGC-free deferred (P2/P3)
+- **Status:** P1 + P2 Implemented — OwnershipChecker live as a mutability-only
+  checker (E4002); EscapeAnalyser now ACTIVE and marking escaping locals with
+  `SYM_FLAG_ESCAPES` (2026-07-16, A==B `184E35B4`); move-checking removed by design
+  (no move semantics); CTGC-free (P3) still deferred (needs borrow/alias analysis)
 - **Author:** self-host team
 - **Tracking:** BUG#69 (discovered 2026-07-06 while investigating why RFC 0014
   drop-glue never fired)
@@ -134,28 +136,53 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
      (free in sym-flag space; no current consumer) that P3 reads instead. This part
      works.
 
-  2. **Merely RUNNING the pass breaks the fixpoint (open — the real blocker).**
-     Fixing the guard (`node_idx == 0xffffffff` only) so `traverse_nodes` runs,
-     **even with the flag write fully disabled** (pass mutates NO shared state —
-     only builds/free's per-function ConnectionGraphs), makes A != B: a **period-2
-     oscillation** `8AF4B46C ⇄ A70D6243`. i.e. seed(no-op pass) and A(running pass)
-     compile the identical source to different binaries. `connection_graph.ax`
-     struct sizes are correct (CGNode = 20, CGEdge = 12 — verified against layout),
-     so it is NOT a hardcoded-size bug. The pass writes nothing the codegen reads,
-     so the most likely cause is a **latent allocation-order / address-dependent
-     non-determinism in codegen** that the extra alloc/free traffic of the escape
-     pass perturbs (or memory corruption in the never-run graph code at scale).
-     This must be isolated FIRST: run the pass on a single small function with a
-     dump, confirm determinism; bisect whether it is the alloc traffic (try a
-     pass that only allocs/frees a graph and touches nothing) vs the graph
-     traversal; audit for any codegen path that depends on a pointer value or
-     allocation order. Only after the pass runs deterministically (A==B) should the
-     `SYM_FLAG_ESCAPES` write + soundness validation proceed.
-- **P3 — CTGC free, whitelisted:** only after P2 is sound, inject `OP_DESTROY`
-  for provably-non-escaping, non-aliased local aggregates — starting with a
-  narrow whitelist (e.g. a single leaf module), measuring real regression blast
-  radius, expanding gradually. This is the prerequisite RFC 0014 (`drop(self)`)
-  actually needs.
+  2. **~~Merely RUNNING the pass breaks the fixpoint~~ — RESOLVED 2026-07-16: it
+     was a CRASH, not non-determinism.** The 2026-07-12 conclusion ("latent
+     allocation-order / address-dependent codegen non-determinism", "period-2
+     oscillation `8AF4B46C ⇄ A70D6243`") was **wrong** — a *stale-artifact phantom*.
+     When enabled, the escape pass **segfaults** (exit 139) in `run()`. The fixpoint
+     script's hop-2 (`A build src -o axc_fpB`) therefore never writes `axc_fpB.exe`,
+     leaving the *previous* run's binary in place; the reported "B" hash was whatever
+     stale file survived, so it appeared to flip-flop between the last two builds — a
+     fake 2-cycle. Confirmed by (a) the hop-2 log ending abruptly at "Running Escape
+     Analyser...", (b) `axc_fpB.exe`'s mtime never advancing, (c) a direct run on a
+     2-function toy segfaulting identically. **Crash root cause:** `traverse_nodes`'
+     per-function `let old_cg = self.curr_cg; self.curr_cg = new_connection_graph();
+     … ; self.curr_cg = old_cg` save/restore was written for value-copy semantics,
+     but AXIOM aggregates **alias** (RFC 0010). `old_cg` aliases the `curr_cg` field
+     instead of snapshotting it, so after the last function frees its graph and does
+     `self.curr_cg = old_cg` (a self-aliasing no-op), `curr_cg` holds **dangling**
+     buffer pointers; `run()`'s final `free_connection_graph(self.curr_cg)` iterates
+     the dangling `adj_out`/`adj_in` arrays and `@free`s garbage → wild free → SIGSEGV.
+     **Fix (escape.ax):** functions are never nested, so the save/restore is both
+     pointless and broken — dropped it; each `NODE_FUNC_DECL` builds a fresh graph,
+     frees it, and resets `curr_cg` to a valid empty graph, so neither the next
+     function nor `run()`'s final free ever sees dangling buffers. With the crash
+     fixed and the flag write disabled, the pass runs over the *entire self-host
+     compiler* and **A==B holds** (`F100027D`) — there was never any codegen
+     non-determinism. **P2 landed 2026-07-16** (`184E35B4`, 327/327): the escaping
+     marking is now written to `SYM_FLAG_ESCAPES = 4096` (SYM-flag space, no 128
+     collision), consumed by nothing yet, so it stays fixpoint-neutral. Oracle
+     `t_escape` (exit 41). Remaining: P3 must add borrow/alias tracking (see below)
+     before any CTGC consumer trusts the flag.
+- **P3 — CTGC free, whitelisted (OPEN, high-risk):** only after P2 is sound, inject
+  `OP_DESTROY` for provably-non-escaping, non-aliased local aggregates — starting with
+  a narrow whitelist (e.g. a single leaf module), measuring real regression blast
+  radius, expanding gradually. This is the prerequisite RFC 0014 (`drop(self)`) needs.
+  **Concrete blocker identified 2026-07-16:** activating CTGC free *unconditionally*
+  will UAF-crash the self-host. `ctgc.ax` frees every block-local of struct/sum/opt/
+  result/generic-inst type whose `SYM_FLAG_ESCAPES` bit is clear — but the self-host
+  compiler is full of **borrow** locals like `let node = tree.nodes.data[i]` that,
+  under alias semantics (RFC 0010 §9), point *into* a longer-lived vector rather than
+  owning fresh memory. The current EscapeAnalyser models assignment/return/call-arg
+  flow but does **not** mark a local that borrows from an indexed/field access of a
+  longer-lived aggregate, so CTGC would free a slot inside `tree.nodes.data` → corrupt
+  the AST → catastrophic UAF. P3 therefore requires (a) a *borrow* edge in the
+  ConnectionGraph for `INDEX_EXPR`/`FIELD_EXPR` inits (mark the local as borrowing,
+  never freeable), plus (b) the module/function whitelist, before any `OP_DESTROY` is
+  emitted. `ctgc.ax`'s own `node_idx == 0` guard is also still a no-op and must be
+  fixed as part of P3, and its `FLAG_ESCAPES_TO_HEAP (128)` read retargeted to
+  `SYM_FLAG_ESCAPES (4096)`.
 
 ## 6. Alternatives
 
@@ -180,11 +207,15 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
 
 ## 8. Status
 
-P1 Implemented (mutability-only OwnershipChecker). **P2 attempted 2026-07-12 and
-reverted** — see the P2 sub-section in §5 for the two blockers found: (1) the
-128-value flag collision (solved via a new `SYM_FLAG_ESCAPES = 4096`), and (2) the
-open blocker — merely enabling the escape pass to run (no shared mutation) breaks
-the A==B fixpoint (period-2 oscillation), pointing to a latent allocation-order /
-address-dependent non-determinism in codegen exposed by the extra pass. Baseline
-restored (A==B `8AF4B46C`). Next concrete step: isolate the run-the-pass A!=B cause
-in a minimal harness BEFORE wiring `SYM_FLAG_ESCAPES` + soundness validation.
+- **P1 Implemented** (2026-07-06) — mutability-only OwnershipChecker (E4002).
+- **P2 Implemented** (2026-07-16, `184E35B4`, 327/327 regression, A==B). The escape
+  pass is now **active** (previously it segfaulted the moment it was enabled — the
+  2026-07-12 "period-2 non-determinism" was a stale-artifact phantom; see §5 P2.2 for
+  the crash root cause and fix). It builds a per-function ConnectionGraph, computes
+  transitive escape to the escape node, and marks escaping locals with the new
+  non-colliding `SYM_FLAG_ESCAPES = 4096`. No consumer reads that flag yet, so the
+  activation is fixpoint-neutral. Oracle `bin/t_escape.ax` (exit 41).
+- **P3 Open (high-risk)** — CTGC free. Blocked on adding borrow/alias tracking to the
+  escape analysis + a whitelist (see §5 P3): unconditional activation UAF-crashes the
+  self-host because it would free borrow-locals aliasing the AST vectors. Needs a
+  dedicated session. Unblocks RFC 0014 (drop-glue).

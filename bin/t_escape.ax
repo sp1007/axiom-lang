@@ -1,0 +1,19 @@
+// RFC 0015 P2 oracle: exercises the now-active EscapeAnalyser.
+// `b` escapes its function (returned); `tmp` does not (local, consumed in-fn).
+// The pass must run over both without crashing and must not perturb codegen.
+
+struct Box:
+    v: i64
+
+fn make_escaping(n: i64) -> Box:
+    let b = Box(v: n)      // escapes: returned to caller
+    return b
+
+fn use_local(n: i64) -> i64:
+    let tmp = Box(v: n * 2)  // does NOT escape: only read locally
+    return tmp.v + 1
+
+fn main() -> i64:
+    let a = make_escaping(20)   // a.v = 20
+    let c = use_local(10)       // 10*2 + 1 = 21
+    return a.v + c              // 41

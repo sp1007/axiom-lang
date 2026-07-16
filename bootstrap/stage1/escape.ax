@@ -28,22 +28,27 @@ pub fn run(mut self: ptr[EscapeAnalyser]):
     self.curr_cg = new_connection_graph()
     self.escape_node_idx = 0 as u32
     self.traverse_nodes(0 as u32)
+    // curr_cg is a valid (empty) graph here: every NODE_FUNC_DECL frees its own
+    // per-function graph and resets curr_cg back to an empty one, so this final
+    // free never touches dangling buffers.
     free_connection_graph(self.curr_cg)
 
 pub fn traverse_nodes(mut self: ptr[EscapeAnalyser], node_idx: u32):
-    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
-    // which is the real NODE_PROGRAM root, but this guard returns immediately, so
-    // FLAG_ESCAPES_TO_HEAP is never set (its readers always see false). Making it
-    // run requires a sound escape analysis first -- see RFC 0015 P2. Inert until then.
-    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+    // RFC 0015 P2: guard fixed to allow traversal of the real root (node 0).
+    // Recursive descent already filters `!= 0` at every call site, so only the
+    // 0xffffffff sentinel is needed here (node 0 is the real NODE_PROGRAM root).
+    if node_idx == 0xffffffff as u32:
         return
 
     let node = self.tree.nodes.data[node_idx]
     let kind = node.kind
 
     if kind == NODE_FUNC_DECL:
-        // Build new connection graph for each function
-        let old_cg = self.curr_cg
+        // Build a fresh connection graph for this function. Functions are never
+        // nested in AXIOM, so there is no outer graph to save/restore -- the old
+        // `let old_cg = self.curr_cg; ...; self.curr_cg = old_cg` dance was written
+        // for value-copy semantics, but AXIOM aggregates ALIAS (RFC 0010), so it
+        // left curr_cg pointing at just-freed buffers and crashed the final free.
         self.curr_cg = new_connection_graph()
         self.escape_node_idx = self.curr_cg.add_value_node(0 as u32, 0 as u32, 0 as u32)
 
@@ -74,15 +79,19 @@ pub fn traverse_nodes(mut self: ptr[EscapeAnalyser], node_idx: u32):
                 let sym_idx = cg_node.sym_id
                 let is_escaping = self.curr_cg.escapes(cg_node.id)
                 if is_escaping:
-                    // Tag symbol and AST decl node
-                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | (FLAG_ESCAPES_TO_HEAP as u16)
-                    let decl_node = self.symtable.symbols.data[sym_idx].decl_node
-                    if decl_node != 0 as u32:
-                        self.tree.nodes.data[decl_node].flags = self.tree.nodes.data[decl_node].flags | (FLAG_ESCAPES_TO_HEAP as u16)
+                    // RFC 0015 P2: mark the escaping local in the SYM-flag space at
+                    // SYM_FLAG_ESCAPES (4096), NOT the node-space FLAG_ESCAPES_TO_HEAP
+                    // (128) -- that value collides with SYM_FLAG_MOVED and would make
+                    // ownership.ax emit E4001 on every use. This flag has no consumer
+                    // yet (CTGC free = P3), so setting it stays fixpoint-neutral (A==B);
+                    // it is the substrate the P3 whitelist will read.
+                    self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_ESCAPES
             idx = idx + 1
 
+        // Free this function's graph and reset curr_cg to a valid empty graph so
+        // the next function (and run()'s final free) never see dangling buffers.
         free_connection_graph(self.curr_cg)
-        self.curr_cg = old_cg
+        self.curr_cg = new_connection_graph()
 
     else:
         mut child_idx := node.first_child
