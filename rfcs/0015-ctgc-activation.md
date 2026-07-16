@@ -188,11 +188,36 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   small and conservative (e.g. a 19-local function yields 1 freeable, a 22-local one
   yields 0). Still inert (no consumer) → fixpoint-neutral.
 
-  **Remaining for P3:** (a) a module/function **whitelist** to bound blast radius
-  (start with one leaf module) before emitting any `OP_DESTROY`; (b) fix `ctgc.ax`'s
-  own `node_idx == 0` no-op guard so it runs; (c) retarget its `FLAG_ESCAPES_TO_HEAP
-  (128)` read to `SYM_FLAG_ESCAPES (4096)`; (d) validate no new UAF via the native
-  allocator's deterministic-fail on the full regression corpus. Dedicated session.
+  **P3 activation prototyped + reverted 2026-07-16 (findings, not shipped).** A
+  flag-gated (`-ctgc-free`, OFF by default) activation was built and tested end-to-end,
+  then reverted. What it established:
+  1. **The free machinery works.** With the flag on, `ctgc.ax` (guard fixed, reading
+     `SYM_FLAG_ESCAPES`) injects `NODE_DESTROY_STMT` → `lower_destroy` → `OP_DESTROY` →
+     `ax_free`, and test programs compile and run correctly. The flag-off path is
+     byte-identical (fixpoint A==B `3E099646`), so the mechanism is self-host-safe.
+  2. **Before-return destroy injection is a UAF and was removed.** `ctgc.ax` originally
+     inserted destroys *before* a `return`, but the return value is often computed from
+     an otherwise-freeable local (`return tmp.v + 1`) → free-then-read. The sound rule:
+     free only at block **fall-through**; a local live on a return path simply leaks
+     (safe), never UAFs. Freeing on return paths needs the return value materialised into
+     a temp first (destroy after it is computed) — deferred AST transform.
+  3. **The blocker that makes P3 free *nothing* useful yet: struct construction is a
+     `CALL_EXPR`, not `NODE_STRUCT_LIT`.** `Name(field: val)` parses as a call
+     (`NODE_STRUCT_LIT` is effectively unused). So the P2.1 "owns iff STRUCT_LIT/ARRAY_LIT"
+     rule conservatively marks **every** struct construction as a borrow/escape → across
+     the whole bundled compiler, 709/709 var-decls came out escaping, 0 freeable. Sound
+     (over-approximates escaping) but inert. **P3's real prerequisite is therefore:
+     recognise a constructor call — a `CALL_EXPR` whose callee ident resolves to a struct
+     TYPE symbol — as OWNING fresh memory (freeable), while a call to an ordinary function
+     stays conservatively escaping (may return a borrow; no interprocedural analysis).**
+     This must be done carefully: a single mis-classified borrow-returning call = UAF.
+
+  **Remaining for P3 (dedicated session):** (a) ownership-origin: classify ctor-calls as
+  owning (see finding 3); (b) the return-value-temp transform so return paths free too
+  (finding 2); (c) opt-in flag or module whitelist to bound blast radius; (d) fix
+  `ctgc.ax`'s `node_idx == 0` guard + retarget its flag read to `SYM_FLAG_ESCAPES`;
+  (e) validate no new UAF via the native allocator's deterministic-fail on the full
+  regression corpus. The `OP_DESTROY` backend path needs no work — it is verified ready.
 
 ## 6. Alternatives
 
