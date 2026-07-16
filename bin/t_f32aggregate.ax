@@ -1,0 +1,23 @@
+// Oracle: f32 literals in struct-field and function-arg positions. Like the f32
+// boundary bug, a float literal in an f32 CONTEXT stayed TYPE_F64 and was stored as a
+// DOUBLE — for a struct f32 field (4 bytes) that both overflows the slot and reads
+// back wrong; for an f32 param it arrives wrong. Typing the literal f32 (via the
+// field/param expected type) materializes it single. [[bug-f32-boundary-abi-open]]
+struct Pt:
+    x: f32
+    y: f32
+
+// f32 struct field constructed from literals + returned across a boundary.
+fn origin() -> Pt:
+    return Pt(x: 30.0, y: 8.0)
+
+// f32 scalar params from literal args.
+fn addf(a: f32, b: f32) -> f32:
+    return a + b
+
+fn main() -> i64:
+    let p = origin()
+    let s = addf(p.x, p.y)   // 38.0 (f32 field reads + f32 params)
+    let extra = addf(3.0, 1.0)  // 4.0 (literal f32 args)
+    let total: f32 = s + extra  // 42.0
+    return total as i64

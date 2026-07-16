@@ -3852,6 +3852,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 let fk = self.types.entries.data[fty as i64].kind
                                 if fk == TYPE_KIND_ARRAY:
                                     vexp = fty
+                                elif fty == TYPE_F32:
+                                    // An f32 scalar field: pass f32 as expected so a float
+                                    // literal (`P(x: 40.0)`) is typed f32 and materialized as
+                                    // single (movd, 4B) instead of a DOUBLE (8B) that overflows
+                                    // the 4-byte field slot / reads back wrong via single-
+                                    // precision loads -> 0 (silent miscompile, same class as the
+                                    // f32-boundary literal bug). Scoped to F32 only, so int/i64
+                                    // scalar fields keep their prior UNKNOWN inference and the
+                                    // self-host fixpoint is unaffected. [[bug-f32-boundary-abi-open]]
+                                    vexp = fty
                                 elif fk == TYPE_KIND_STRUCT:
                                     // RFC 0022: a TUPLE-typed field — pass its declared type so a
                                     // `(a, b)` literal coerces its elements to the field's element
@@ -3900,6 +3910,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             if ck == TYPE_KIND_ARRAY:
                                 pexp = cand
                                 param_is_arr = true
+                            elif cand == TYPE_F32:
+                                // An f32 scalar param: pass f32 as expected so a float
+                                // literal arg (`takef(40.0)`) is typed f32 and materialized
+                                // as single instead of a DOUBLE -> read back wrong at the
+                                // f32 param slot -> 0 (same class as the f32-boundary literal
+                                // bug). Scoped to F32, so int scalar params keep prior UNKNOWN
+                                // inference; fixpoint-safe. [[bug-f32-boundary-abi-open]]
+                                pexp = cand
                             elif ck == TYPE_KIND_STRUCT:
                                 // RFC 0022 P2: a tuple param — pass its type so a direct
                                 // `(a, b)` literal arg coerces its elements to the param's
