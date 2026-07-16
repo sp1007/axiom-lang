@@ -211,13 +211,27 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
      TYPE symbol — as OWNING fresh memory (freeable), while a call to an ordinary function
      stays conservatively escaping (may return a borrow; no interprocedural analysis).**
      This must be done carefully: a single mis-classified borrow-returning call = UAF.
+  4. **Even with ctor-detection, the coarse flow neutralises it — a second refinement is
+     needed (prototyped 2026-07-16, reverted).** Adding ctor-call ownership (finding 3) was
+     built and dump-verified, but freed almost nothing extra: the flow analysis marks a
+     local as escaping on *any* use that reaches the escape node, INCLUDING a **scalar**
+     field read that feeds a returned value. E.g. `let owned = Box(v: 10); return owned.v`
+     — `owned.v` is an i64 *copy*, so `owned` itself does not escape and is safe to free,
+     yet `analyze_expr` flows `owned` → escape node and marks it escaping (freeable=0).
+     So P3 also needs: when a `FIELD_EXPR`/`INDEX_EXPR` reads a **scalar** (non-aggregate)
+     field/element of a local, do NOT flow the *base* local to the destination (only the
+     scalar value leaves; the aggregate stays). Only an aggregate-typed field read, or a
+     use of the whole local, should propagate escape. This is a sound, targeted refinement
+     but couples with ctor-detection and the free consumer — hence P3 is best built and
+     validated as ONE unit, not a chain of individually-inert substrate commits.
 
-  **Remaining for P3 (dedicated session):** (a) ownership-origin: classify ctor-calls as
-  owning (see finding 3); (b) the return-value-temp transform so return paths free too
-  (finding 2); (c) opt-in flag or module whitelist to bound blast radius; (d) fix
-  `ctgc.ax`'s `node_idx == 0` guard + retarget its flag read to `SYM_FLAG_ESCAPES`;
-  (e) validate no new UAF via the native allocator's deterministic-fail on the full
-  regression corpus. The `OP_DESTROY` backend path needs no work — it is verified ready.
+  **Remaining for P3 (dedicated session — build + validate as one unit):** (a) ownership-
+  origin: classify ctor-calls as owning (finding 3); (b) flow refinement: scalar field/
+  index reads don't escape the base aggregate (finding 4); (c) the return-value-temp
+  transform so return paths free too (finding 2); (d) opt-in flag or module whitelist to
+  bound blast radius; (e) fix `ctgc.ax`'s `node_idx == 0` guard + retarget its flag read to
+  `SYM_FLAG_ESCAPES`; (f) validate no new UAF via the native allocator's deterministic-fail
+  on the full regression corpus. The `OP_DESTROY` backend path needs no work — verified ready.
 
 ## 6. Alternatives
 
