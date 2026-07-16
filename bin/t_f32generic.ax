@@ -1,0 +1,14 @@
+// Oracle: f32 literal passed as a GENERIC call argument. `Vec[f32].push(40.0)` —
+// push[T](self: Vec[T], item: T) with T resolved to f32 from the receiver. The arg
+// literal was inferred UNKNOWN during type-arg collection (-> f64) and never re-typed
+// after T resolved, so it stored a DOUBLE into the 4-byte f32 element slot -> read
+// back 0. Now the generic-call path re-infers the arg with the resolved f32 param type
+// (guarded by a sticky node-type pin against a later UNKNOWN re-visit).
+// [[bug-f32-boundary-abi-open]]
+fn main() -> i64:
+    mut v: Vec[f32] = new_vec[f32]()
+    v.push(40.0)
+    v.push(1.5)
+    v.push(0.5)
+    let s: f32 = v.get(0).unwrap() + v.get(1).unwrap() + v.get(2).unwrap()
+    return s as i64   // 42

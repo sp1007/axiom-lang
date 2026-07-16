@@ -9595,7 +9595,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             elif ap != 0 as u32:
                                 let arg_n = self.tree.nodes.data[ap]
                                 let tnode = cpn.first_child
-                                if arg_n.kind == NODE_TUPLE_EXPR and tnode != 0 as u32 and src_tree.nodes.data[tnode].kind == NODE_TYPE_EXPR:
+                                if tnode != 0 as u32 and src_tree.nodes.data[tnode].kind == NODE_TYPE_EXPR:
                                     let tname = self.node_text_in_tree(src_tree, tnode)
                                     let tname_id = self.intern.intern(tname)
                                     safe_free_str(tname)
@@ -9603,12 +9603,24 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     while gk < gen_params.len:
                                         if gen_params.data[gk] == tname_id:
                                             let et = inferred.data[gk]
-                                            if (et as i64) < self.types.entries.len and self.types.entries.data[et as i64].kind == TYPE_KIND_STRUCT:
+                                            // RFC 0022 tupleÃ—generic: a `(a, b)` literal for a
+                                            // bare-generic param resolved to a `__tup` struct.
+                                            if arg_n.kind == NODE_TUPLE_EXPR and (et as i64) < self.types.entries.len and self.types.entries.data[et as i64].kind == TYPE_KIND_STRUCT:
                                                 let enm2 = self.intern.get(self.types.entries.data[et as i64].name_id)
                                                 let is_tup2 = std.string.starts_with(enm2, "__tup")
                                                 safe_free_str(enm2)
                                                 if is_tup2:
                                                     self.infer_node(ap, et)
+                                            // f32: a bare-generic param resolved to f32 (e.g.
+                                            // `Vec[f32].push(40.0)`, item: T=f32). Re-infer the
+                                            // arg with f32 expected so a float literal narrows to
+                                            // single instead of storing a DOUBLE into the 4-byte
+                                            // f32 element slot -> read back 0 (same class as the
+                                            // f32 literal boundary/aggregate bugs). The compiler
+                                            // instantiates no generic with f32, so fixpoint-safe.
+                                            // [[bug-f32-boundary-abi-open]]
+                                            elif et == TYPE_F32:
+                                                self.infer_node(ap, et)
                                             break
                                         gk = gk + 1 as i64
                                 ap = self.tree.nodes.data[ap].next_sibling
@@ -10353,6 +10365,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         // everywhere. Only f32-expected changes; f64 keeps TYPE_F64 (fixpoint-safe â€”
         // the compiler source has no f32 literals). [[bug-f32-boundary-abi-open]]
         if expected == TYPE_F32:
+            result_type = TYPE_F32
+        elif expected == TYPE_UNKNOWN and (node_idx as i64) < self.node_types_cap and self.node_types[node_idx as i64] == TYPE_F32:
+            // Sticky guard (mirrors the tuple coercion below): an enclosing context may
+            // infer this literal TWICE â€” once with expected f32 (a generic arg re-inferred
+            // to its resolved f32 param type, `Vec[f32].push(40.0)`) and again later with
+            // UNKNOWN. Without this, the hint-less re-visit reverts it to f64 and air
+            // materializes a DOUBLE again -> the f32 slot reads 0. Keep a prior f32 pin.
             result_type = TYPE_F32
         else:
             result_type = TYPE_F64
