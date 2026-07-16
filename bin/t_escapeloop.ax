@@ -1,0 +1,21 @@
+// RFC 0015 P2 coverage: exercises the now-active EscapeAnalyser on a non-escaping
+// aggregate local (`rec`) declared inside a loop body, where one path returns a
+// scalar field (early-return) and the fall-through path drops it. Guards that the
+// escape pass processes per-iteration aggregate lifetimes without miscompiling.
+
+struct Rec:
+    key: i64
+    val: i64
+
+fn lookup(target: i64) -> i64:
+    mut i = 0
+    while i < 10:
+        let rec = Rec(key: i, val: i * 10)
+        if rec.key == target:
+            return rec.val
+        i = i + 1
+    return -1
+
+fn main() -> i64:
+    let r = lookup(4)   // rec.val for key==4 is 40
+    return r + 2        // 42
