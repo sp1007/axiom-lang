@@ -12670,6 +12670,12 @@ pub struct AirModuleBuilder:
     pub pool: ptr[InternPool]
     pub module: AirModule
     pub node_types: ptr[u32]
+    // RFC 0009 P3 / Linux target: the OS the emitted binary targets. Drives the
+    // compile-time `@compiler_intrinsic("is_windows"/"is_linux"/"os_name")` fold so the
+    // bundled platform runtime (syscall.ax, axalloc.ax) selects the right code path.
+    // Default true (Windows/COFF) so the self-host build stays byte-identical; the driver
+    // flips it to false only under `--target linux`.
+    pub target_is_windows: bool
 
 pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typetable: ptr[TypeTable], pool: ptr[InternPool], node_types: ptr[u32]) -> ptr[AirModuleBuilder]:
     let amb = @alloc(@compiler_intrinsic("size_of")[AirModuleBuilder]()) as ptr[AirModuleBuilder]
@@ -12679,6 +12685,7 @@ pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typ
     amb.pool = pool
     amb.module = AirModule(funcs: new_air_func_vec(), globals: new_air_global_vec())
     amb.node_types = node_types
+    amb.target_is_windows = true
     return amb
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
@@ -14141,11 +14148,17 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         if arg_text == "\"is_windows\"" or arg_text == "'is_windows'" or arg_text == "is_windows":
                             lower_to_const = true
                             const_type = 11 as u32
-                            const_val = 1 as u32
+                            if self.mb.target_is_windows:
+                                const_val = 1 as u32
+                            else:
+                                const_val = 0 as u32
                         elif arg_text == "\"is_linux\"" or arg_text == "'is_linux'" or arg_text == "is_linux":
                             lower_to_const = true
                             const_type = 11 as u32
-                            const_val = 0 as u32
+                            if self.mb.target_is_windows:
+                                const_val = 0 as u32
+                            else:
+                                const_val = 1 as u32
                         elif arg_text == "\"is_macos\"" or arg_text == "'is_macos'" or arg_text == "is_macos":
                             lower_to_const = true
                             const_type = 11 as u32
@@ -14153,7 +14166,10 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         elif arg_text == "\"os_name\"" or arg_text == "'os_name'" or arg_text == "os_name":
                             lower_to_const = true
                             const_type = 12 as u32
-                            const_val = self.mb.pool.intern("\"windows\"")
+                            if self.mb.target_is_windows:
+                                const_val = self.mb.pool.intern("\"windows\"")
+                            else:
+                                const_val = self.mb.pool.intern("\"linux\"")
                         elif arg_text == "\"arch_name\"" or arg_text == "'arch_name'" or arg_text == "arch_name":
                             lower_to_const = true
                             const_type = 12 as u32
@@ -14161,7 +14177,10 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         elif arg_text == "\"path_separator\"" or arg_text == "'path_separator'" or arg_text == "path_separator":
                             lower_to_const = true
                             const_type = 12 as u32
-                            const_val = self.mb.pool.intern("\"\\\\\"")
+                            if self.mb.target_is_windows:
+                                const_val = self.mb.pool.intern("\"\\\\\"")
+                            else:
+                                const_val = self.mb.pool.intern("\"/\"")
                         
                         if lower_to_const:
                             @free(get_str_ptr(arg_text))
@@ -14621,7 +14640,7 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             let name = self.mb.pool.get(name_id)
             if (name == "syscall0" or name == "syscall1" or name == "syscall2" or
                 name == "syscall3" or name == "syscall4" or name == "syscall5" or
-                name == "syscall6"):
+                name == "syscall6" or name == "syscall"):
                 opcode = OP_SYSCALL
 
     let reg = self.fb.fresh_reg()
@@ -22635,7 +22654,12 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                     out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                     out_insts.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
 
-            out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -5 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            // RFC 0009 P3 Linux: the -5 shutdown drains the scheduler + destroys the
+            // actor heap â€” skipped on SysV in lockstep with the -4 init gate above (an
+            // exit(2) syscall terminates the process anyway). The RAX save/reload dance
+            // that brackets it is likewise win64-only.
+            if sel.abi_name == "win64":
+                out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -5 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
             if sel.abi_name == "win64":
                 if inst.src1 != 0 as u32:
@@ -22647,7 +22671,24 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 if inst.src1 != 0 as u32:
                     out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 8 as i64)))
                     out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 16 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_RET, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                // Linux/sysv: `main` IS the ELF entry point (`e_entry` -> main; there is no
+                // C runtime frame to `ret` into â€” the kernel places argc/argv on the stack,
+                // not a return address). Convert main's return into an exit(2) syscall:
+                // exit code (RAX after the reload above) -> RDI, RAX = 60 (SYS_exit), syscall.
+                // The trailing MACH_RET is skipped for main so control never falls through.
+                if inst.src1 != 0 as u32:
+                    out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RDI, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                else:
+                    out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RDI, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                // NB: an immediate MUST use MACH_MOV_IMM â€” MACH_MOV resolves its source
+                // through a register table and silently emits nothing for an OPND_IMM.
+                out_insts.push(MachInst(op: MACH_MOV_IMM, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 60 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                out_insts.push(MachInst(op: MACH_SYSCALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        mut emit_final_ret := true
+        if fn_name_ret == "main" and sel.abi_name == "sysv":
+            emit_final_ret = false
+        if emit_final_ret:
+            out_insts.push(MachInst(op: MACH_RET, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_JUMP:
         out_insts.push(MachInst(op: MACH_JMP, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: inst.src1, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
@@ -23490,12 +23531,15 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
             let bb = &f.blocks.data[bi]
             result.push(MachInst(op: MACH_LABEL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_LABEL, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: bb.id, imm: 0 as i64), src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
             
-            if is_main and bi == 0 as i64:
-                if abi == "win64":
-                    result.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            // RFC 0009 P3 Linux (minimal freestanding): the eager __ax_runtime_init
+            // (-4) brings up the actor heap + M:N scheduler, which are not yet ported to
+            // Linux (they crash on first mmap). For the SysV target we skip it so pure-
+            // compute programs run; the allocator inits lazily on first use. Windows keeps
+            // the eager init. Enabling the full runtime on Linux is a follow-up.
+            if is_main and bi == 0 as i64 and abi == "win64":
+                result.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 result.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -4 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-                if abi == "win64":
-                    result.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                result.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
             if bi == 0 as i64:
                 emit_param_prologue(&sel, &result)
@@ -27375,6 +27419,7 @@ pub const SHT_SYMTAB:    u32 = 2
 pub const SHT_STRTAB:    u32 = 3
 pub const SHT_RELA:      u32 = 4
 
+pub const SHF_WRITE:     u64 = 0x01
 pub const SHF_ALLOC:     u64 = 0x02
 pub const SHF_EXECINSTR: u64 = 0x04
 
@@ -27414,21 +27459,31 @@ pub fn push_elf64_sym(mut self: ptr[ELF64SymVec], s: ELF64Sym):
     self.data[self.len] = s
     self.len = self.len + 1
 
-pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
+pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
+    // Fixed 7-section layout whose PROGBITS indices match the linker's canonical COFF
+    // convention (1=.text, 2=.rodata/.rdata, 3=.data), so symbol `section` values flow
+    // through emitter -> object -> linker with no translation:
+    //   0 NULL | 1 .text | 2 .rodata | 3 .data | 4 .symtab | 5 .strtab | 6 .rela.text
+    // .rodata carries string literals; .data carries RFC 0017 module globals. Sections
+    // may be zero-sized; emitting all seven unconditionally keeps the layout deterministic.
     // 1. Build string table
     mut strtab := new_byte_vec()
     push_byte(&strtab, 0 as u8) // first byte is NULL
-    
-    // Add standard section names
-    let sec_names = @alloc(4 * 8) as ptr[str]
+
+    // NB: `str` is a 16-byte {ptr,len} value, so a 6-element ptr[str] array needs 6*16
+    // bytes â€” the original 4*8 under-allocated by half and overflowed the heap (this
+    // writer had never been exercised: is_windows was hardcoded).
+    let sec_names = @alloc(6 * @compiler_intrinsic("size_of")[str]()) as ptr[str]
     sec_names[0] = ".text"
-    sec_names[1] = ".symtab"
-    sec_names[2] = ".strtab"
-    sec_names[3] = ".rela.text"
-    
-    let sec_offsets = @alloc(4 * 4) as ptr[u32]
+    sec_names[1] = ".rodata"
+    sec_names[2] = ".data"
+    sec_names[3] = ".symtab"
+    sec_names[4] = ".strtab"
+    sec_names[5] = ".rela.text"
+
+    let sec_offsets = @alloc(6 * 4) as ptr[u32]
     mut i := 0 as i64
-    while i < 4:
+    while i < 6:
         sec_offsets[i] = strtab.len as u32
         let s = sec_names[i]
         let s_len = std.string.len(s)
@@ -27439,7 +27494,7 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
             char_i = char_i + 1
         push_byte(&strtab, 0 as u8)
         i = i + 1
-        
+
     // Add symbol names
     let sym_offsets = @alloc(symbols.len * 4) as ptr[u32]
     mut si := 0 as i64
@@ -27454,42 +27509,45 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
             char_i = char_i + 1
         push_byte(&strtab, 0 as u8)
         si = si + 1
-        
-    // 2. Lay out ELF64 sections
-    mut num_sections := 4 as u16
-    if relocs.len > 0 as i64:
-        num_sections = 5 as u16
-        
+
+    // 2. Lay out the file
+    let num_sections = 7 as u16
     let ehdr_size = 64 as i64
     let shdr_size = 64 as i64
-    let shdr_table_size = num_sections as i64 * shdr_size
-    
+
     let text_off = ehdr_size
     let text_size = code.len
-    
-    mut symtab_off = text_off + text_size
+
+    mut rodata_off := text_off + text_size
+    if (rodata_off % 8 as i64) != 0 as i64:
+        rodata_off = rodata_off + (8 as i64 - (rodata_off % 8 as i64))
+    let rodata_size = rdata.len
+
+    mut data_off := rodata_off + rodata_size
+    if (data_off % 8 as i64) != 0 as i64:
+        data_off = data_off + (8 as i64 - (data_off % 8 as i64))
+    let data_size = data.len
+
+    mut symtab_off := data_off + data_size
     if (symtab_off % 8 as i64) != 0 as i64:
         symtab_off = symtab_off + (8 as i64 - (symtab_off % 8 as i64))
-        
     let sym_ent_size = 24 as i64
     let sym_count = 1 as i64 + symbols.len // first NULL entry
     let symtab_size = sym_count * sym_ent_size
-    
+
     let strtab_off = symtab_off + symtab_size
     let strtab_size = strtab.len
-    
-    mut rela_off = strtab_off + strtab_size
+
+    mut rela_off := strtab_off + strtab_size
+    if (rela_off % 8 as i64) != 0 as i64:
+        rela_off = rela_off + (8 as i64 - (rela_off % 8 as i64))
     let rela_ent_size = 24 as i64
-    mut rela_size := 0 as i64
-    if relocs.len > 0 as i64:
-        rela_size = relocs.len * rela_ent_size
-        
-    mut shdr_off = rela_off + rela_size
-    if relocs.len == 0 as i64:
-        shdr_off = strtab_off + strtab_size
+    let rela_size = relocs.len * rela_ent_size
+
+    mut shdr_off := rela_off + rela_size
     if (shdr_off % 8 as i64) != 0 as i64:
         shdr_off = shdr_off + (8 as i64 - (shdr_off % 8 as i64))
-        
+
     // 3. Write ELF64 Header
     push_byte(out_bytes, 0x7F as u8)
     push_byte(out_bytes, 'E' as u8)
@@ -27498,13 +27556,13 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
     push_byte(out_bytes, ELF_CLASS64)
     push_byte(out_bytes, ELF_DATA2LSB)
     push_byte(out_bytes, EV_CURRENT)
-    
+
     // pad out to 16 bytes
     mut pad_i := 0 as i64
     while pad_i < 9:
         push_byte(out_bytes, 0 as u8)
         pad_i = pad_i + 1
-        
+
     push_u16_le(out_bytes, ET_REL)
     push_u16_le(out_bytes, EM_X86_64)
     push_u32_le(out_bytes, EV_CURRENT as u32)
@@ -27517,22 +27575,28 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
     push_u16_le(out_bytes, 0 as u16) // e_phnum
     push_u16_le(out_bytes, shdr_size as u16)
     push_u16_le(out_bytes, num_sections)
-    push_u16_le(out_bytes, 3 as u16) // e_shstrndx = 3 (.strtab)
-    
-    // 4. Write .text section data
+    push_u16_le(out_bytes, 5 as u16) // e_shstrndx = 5 (.strtab)
+
+    // 4. Section contents: .text, .rodata, .data
     push_bytes(out_bytes, code.data, text_size)
-    
-    // Padding to symtab
+    if rodata_size > 0 as i64:
+        while out_bytes.len < rodata_off:
+            push_byte(out_bytes, 0 as u8)
+        push_bytes(out_bytes, rdata.data, rodata_size)
+    if data_size > 0 as i64:
+        while out_bytes.len < data_off:
+            push_byte(out_bytes, 0 as u8)
+        push_bytes(out_bytes, data.data, data_size)
     while out_bytes.len < symtab_off:
         push_byte(out_bytes, 0 as u8)
-        
+
     // 5. Write Symbol Table
     // NULL symbol (24 bytes)
     mut sym_pad := 0 as i64
     while sym_pad < 24:
         push_byte(out_bytes, 0 as u8)
         sym_pad = sym_pad + 1
-        
+
     si = 0
     while si < symbols.len:
         let sym = &symbols.data[si]
@@ -27544,17 +27608,19 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
         push_u64_le(out_bytes, sym.value)
         push_u64_le(out_bytes, sym.size)
         si = si + 1
-        
+
     // 6. Write String Table
     push_bytes(out_bytes, strtab.data, strtab_size)
-    
+
     // 7. Write Relocations
     if relocs.len > 0 as i64:
+        while out_bytes.len < rela_off:
+            push_byte(out_bytes, 0 as u8)
         mut ri := 0 as i64
         while ri < relocs.len:
             let r = relocs.data[ri]
             push_u64_le(out_bytes, r.offset as u64)
-            
+
             mut r_type := 1 as u32 // R_X86_64_64
             if r.kind == RELOC_PC32:
                 r_type = 2 as u32 // R_X86_64_PC32
@@ -27562,23 +27628,23 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
                 r_type = 4 as u32 // R_X86_64_PLT32
             elif r.kind == RELOC_ABS64:
                 r_type = 1 as u32 // R_X86_64_64
-                
+
             let r_info = (r_type as u64) | ((r.sym_name as u64) << 32 as u64)
             push_u64_le(out_bytes, r_info)
             push_u64_le(out_bytes, r.addend as u64)
             ri = ri + 1
-            
+
     // Padding to section headers
     while out_bytes.len < shdr_off:
         push_byte(out_bytes, 0 as u8)
-        
+
     // 8. Write Section Headers
     // Section 0: SHT_NULL
     mut sh_pad := 0 as i64
     while sh_pad < 64:
         push_byte(out_bytes, 0 as u8)
         sh_pad = sh_pad + 1
-        
+
     // Section 1: .text
     push_u32_le(out_bytes, sec_offsets[0])
     push_u32_le(out_bytes, SHT_PROGBITS)
@@ -27590,21 +27656,45 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
     push_u32_le(out_bytes, 0 as u32) // sh_info = 0
     push_u64_le(out_bytes, 16 as u64) // sh_addralign = 16
     push_u64_le(out_bytes, 0 as u64) // sh_entsize = 0
-    
-    // Section 2: .symtab
+
+    // Section 2: .rodata (string literals; may be zero-sized)
     push_u32_le(out_bytes, sec_offsets[1])
+    push_u32_le(out_bytes, SHT_PROGBITS)
+    push_u64_le(out_bytes, SHF_ALLOC)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, rodata_off as u64)
+    push_u64_le(out_bytes, rodata_size as u64)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u64_le(out_bytes, 8 as u64)
+    push_u64_le(out_bytes, 0 as u64)
+
+    // Section 3: .data (RFC 0017 module globals; may be zero-sized)
+    push_u32_le(out_bytes, sec_offsets[2])
+    push_u32_le(out_bytes, SHT_PROGBITS)
+    push_u64_le(out_bytes, SHF_ALLOC | SHF_WRITE)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, data_off as u64)
+    push_u64_le(out_bytes, data_size as u64)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u64_le(out_bytes, 8 as u64)
+    push_u64_le(out_bytes, 0 as u64)
+
+    // Section 4: .symtab
+    push_u32_le(out_bytes, sec_offsets[3])
     push_u32_le(out_bytes, SHT_SYMTAB)
     push_u64_le(out_bytes, 0 as u64) // sh_flags = 0
     push_u64_le(out_bytes, 0 as u64) // sh_addr = 0
     push_u64_le(out_bytes, symtab_off as u64)
     push_u64_le(out_bytes, symtab_size as u64)
-    push_u32_le(out_bytes, 3 as u32) // sh_link -> .strtab (section 3)
+    push_u32_le(out_bytes, 5 as u32) // sh_link -> .strtab (section 5)
     push_u32_le(out_bytes, 1 as u32) // sh_info -> first global symbol
     push_u64_le(out_bytes, 8 as u64) // sh_addralign = 8
     push_u64_le(out_bytes, sym_ent_size as u64)
-    
-    // Section 3: .strtab
-    push_u32_le(out_bytes, sec_offsets[2])
+
+    // Section 5: .strtab
+    push_u32_le(out_bytes, sec_offsets[4])
     push_u32_le(out_bytes, SHT_STRTAB)
     push_u64_le(out_bytes, 0 as u64)
     push_u64_le(out_bytes, 0 as u64)
@@ -27614,20 +27704,19 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
     push_u32_le(out_bytes, 0 as u32)
     push_u64_le(out_bytes, 1 as u64)
     push_u64_le(out_bytes, 0 as u64)
-    
-    // Section 4: .rela.text (optional)
-    if relocs.len > 0 as i64:
-        push_u32_le(out_bytes, sec_offsets[3])
-        push_u32_le(out_bytes, SHT_RELA)
-        push_u64_le(out_bytes, 0 as u64)
-        push_u64_le(out_bytes, 0 as u64)
-        push_u64_le(out_bytes, rela_off as u64)
-        push_u64_le(out_bytes, rela_size as u64)
-        push_u32_le(out_bytes, 2 as u32) // sh_link -> .symtab (section 2)
-        push_u32_le(out_bytes, 1 as u32) // sh_info -> .text (section 1)
-        push_u64_le(out_bytes, 8 as u64)
-        push_u64_le(out_bytes, rela_ent_size as u64)
-        
+
+    // Section 6: .rela.text (may be zero-sized)
+    push_u32_le(out_bytes, sec_offsets[5])
+    push_u32_le(out_bytes, SHT_RELA)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, 0 as u64)
+    push_u64_le(out_bytes, rela_off as u64)
+    push_u64_le(out_bytes, rela_size as u64)
+    push_u32_le(out_bytes, 4 as u32) // sh_link -> .symtab (section 4)
+    push_u32_le(out_bytes, 1 as u32) // sh_info -> .text (section 1)
+    push_u64_le(out_bytes, 8 as u64)
+    push_u64_le(out_bytes, rela_ent_size as u64)
+
     // Free resources
     @free(sec_names as ptr[u8])
     @free(sec_offsets as ptr[u8])
@@ -27635,9 +27724,9 @@ pub fn elf64_serialize(code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: 
     if strtab.data != null as ptr[u8]:
         @free(strtab.data)
 
-pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
+pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
     mut out_bytes := new_byte_vec()
-    elf64_serialize(code, relocs, symbols, &out_bytes)
+    elf64_serialize(code, rdata, data, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
     let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
@@ -28334,29 +28423,30 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         i = i + 1
         
     // RFC 0017 / BUG#82: emit module-level global storage into a writable .data section
-    // (COFF section 3). Each global's constant-folded init bytes go into `data_buf` at a
-    // naturally-aligned offset; a section-3 STATIC symbol (named via the same
-    // x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through) is registered here,
-    // BEFORE the sym-map pre-pass, so the reloc binds to this defined data symbol. Only
-    // for COFF (the win64 self-host target); ELF globals are Phase 2 (RFC 0017 Â§4).
+    // (COFF section 3 / ELF section header index 3 â€” the layouts agree by design). Each global's constant-folded init
+    // bytes go into `data_buf` at a naturally-aligned offset; a defined data symbol
+    // (named via the same x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through)
+    // is registered here, BEFORE the sym-map pre-pass, so the reloc binds to it.
     mut data_buf := new_byte_vec()
-    if not is_elf64:
-        mut gi := 0 as i64
-        while gi < mod.globals.len:
-            let g = mod.globals.data[gi]
-            mut gsize := g.size as i64
-            if gsize < 1 as i64:
-                gsize = 1 as i64
-            while (data_buf.len % gsize) != 0 as i64:
-                push_byte(&data_buf, 0 as u8)
-            let goff = data_buf.len as u32
-            mut b := 0 as i64
-            while b < gsize:
-                push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
-                b = b + 1
-            let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
+    mut gi := 0 as i64
+    while gi < mod.globals.len:
+        let g = mod.globals.data[gi]
+        mut gsize := g.size as i64
+        if gsize < 1 as i64:
+            gsize = 1 as i64
+        while (data_buf.len % gsize) != 0 as i64:
+            push_byte(&data_buf, 0 as u8)
+        let goff = data_buf.len as u32
+        mut b := 0 as i64
+        while b < gsize:
+            push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
+            b = b + 1
+        let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
+        if is_elf64:
+            push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: goff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 3 as u16))
+        else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: goff, section_num: 3 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
-            gi = gi + 1
+        gi = gi + 1
 
     ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
         all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -28386,7 +28476,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         let sn = elf_syms.data[pre_i].name_str
         let sid = pool.intern_string(sn)
         if (sid as i64) < sym_map_size:
-            elf_sym_map[sid as i64] = pre_i as i32
+            // ELF .symtab has a NULL entry at index 0, so elf_syms[i] lands at symtab
+            // index i+1. Relocations carry SYMTAB indices â€” store the +1 form (the
+            // on-demand path below already does). Storing the raw i made every reloc
+            // to a defined symbol resolve one symbol off (latent: never exercised).
+            elf_sym_map[sid as i64] = pre_i as i32 + 1 as i32
         pre_i = pre_i + 1
 
     mut total_relocs := 0 as i64
@@ -28463,7 +28557,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     mut success := false
     if is_elf64:
-        success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
+        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &coff_relocs, &coff_syms)
 
@@ -28689,29 +28783,51 @@ pub fn push_parsed_object_ptr(mut self: ptr[ParsedObjectPtrVec], p: ptr[ParsedOb
 pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     let shoff = read_u64_le(data, 40) as i64
     let shnum = read_u16_le(data, 60) as i64
-    
+
     mut text_off := 0 as i64
     mut text_size := 0 as i64
-    
+
+    // RFC 0017 ELF globals: .rodata (string literals) and writable .data (module
+    // globals) are SHT_PROGBITS too â€” route by sh_flags (EXECINSTR -> .text,
+    // WRITE -> .data, neither -> .rodata) instead of "last PROGBITS wins".
+    mut rodata_off := 0 as i64
+    mut rodata_size := 0 as i64
+    mut gdata_off := 0 as i64
+    mut gdata_size := 0 as i64
+    mut text_hdr_idx := -1 as i64
+    mut rodata_hdr_idx := -1 as i64
+    mut gdata_hdr_idx := -1 as i64
+
     mut symtab_off := 0 as i64
     mut symtab_size := 0 as i64
-    
+
     mut strtab_off := 0 as i64
     mut strtab_size := 0 as i64
-    
+
     mut rela_off := 0 as i64
     mut rela_size := 0 as i64
-    
+
     mut i := 0 as i64
     while i < shnum:
         let off = shoff + i * 64
         let sh_type = read_u32_le(data, off + 4)
+        let sh_flags = read_u64_le(data, off + 8)
         let sh_offset = read_u64_le(data, off + 24) as i64
         let sh_size = read_u64_le(data, off + 32) as i64
-        
+
         if sh_type == 1 as u32: // SHT_PROGBITS
-            text_off = sh_offset
-            text_size = sh_size
+            if (sh_flags & 4 as u64) != 0 as u64: // SHF_EXECINSTR -> .text
+                text_off = sh_offset
+                text_size = sh_size
+                text_hdr_idx = i
+            elif (sh_flags & 1 as u64) != 0 as u64: // SHF_WRITE -> .data (globals)
+                gdata_off = sh_offset
+                gdata_size = sh_size
+                gdata_hdr_idx = i
+            else: // read-only, non-exec -> .rodata (string literals)
+                rodata_off = sh_offset
+                rodata_size = sh_size
+                rodata_hdr_idx = i
         elif sh_type == 2 as u32: // SHT_SYMTAB
             symtab_off = sh_offset
             symtab_size = sh_size
@@ -28751,13 +28867,25 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             let sec_idx = read_u16_le(data, off + 6)
             let val64 = read_u64_le(data, off + 8)
             let size = read_u64_le(data, off + 16)
-            
+
             let name = sym_names.data[sym_i]
             let is_defined = sec_idx != 0 as u16
-            
+
+            // Normalize ELF section-header indices to the linker's canonical scheme
+            // (1=.text, 2=.rodata/.rdata, 3=.data) so all downstream `section == N`
+            // logic is format-agnostic. (The AXIOM ELF writer emits exactly this
+            // layout already; the remap keeps foreign objects working too.)
+            mut mapped_sec := sec_idx as i64
+            if sec_idx as i64 == text_hdr_idx:
+                mapped_sec = 1 as i64
+            elif sec_idx as i64 == rodata_hdr_idx:
+                mapped_sec = 2 as i64
+            elif sec_idx as i64 == gdata_hdr_idx:
+                mapped_sec = 3 as i64
+
             push_linker_symbol(&symbols, LinkerSymbol(
                 name: name,
-                section: sec_idx as i64,
+                section: mapped_sec,
                 offset: val64,
                 size: size,
                 defined: is_defined
@@ -28789,15 +28917,26 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     mut text_vec := new_byte_vec()
     if text_size > 0:
         push_bytes(&text_vec, (data as i64 + text_off) as ptr[u8], text_size)
-        
+
+    // .rodata rides along exactly like COFF .rdata: the merge appends it right after
+    // .text, and section-2 symbols resolve at text.len + offset.
+    mut rodata_vec := new_byte_vec()
+    if rodata_size > 0:
+        push_bytes(&rodata_vec, (data as i64 + rodata_off) as ptr[u8], rodata_size)
+
+    // RFC 0017 ELF globals: writable .data content; placed by the ELF exe emitter.
+    mut gdata_vec := new_byte_vec()
+    if gdata_size > 0:
+        push_bytes(&gdata_vec, (data as i64 + gdata_off) as ptr[u8], gdata_size)
+
     let obj = @alloc(@compiler_intrinsic("size_of")[ParsedObject]()) as ptr[ParsedObject]
     obj.text = text_vec
-    obj.rdata = new_byte_vec()
+    obj.rdata = rodata_vec
     obj.symbols = symbols
     obj.sym_names = sym_names
     obj.relocs = relocs
     obj.va = 0 as u64
-    obj.data = new_byte_vec()
+    obj.data = gdata_vec
     obj.data_va = 0 as u64
     return obj
 
@@ -29397,7 +29536,10 @@ pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va:
         
         // 7. Program Header Table (1 entry: PT_LOAD segment)
         push_u32_le(out, 1 as u32) // p_type: PT_LOAD
-        push_u32_le(out, 5 as u32) // p_flags: PF_R | PF_X
+        // PF_R | PF_W | PF_X: the RFC 0017 globals region (writable .data) lives inside
+        // this single LOAD segment, so it must be writable. (Splitting into separate
+        // RX/RW segments is a follow-up refinement; the dynamic case below is RWX too.)
+        push_u32_le(out, 7 as u32) // p_flags: PF_R | PF_W | PF_X
         push_u64_le(out, 0 as u64) // p_offset: starts at beginning of file
         push_u64_le(out, 0x400000 as u64) // p_vaddr
         push_u64_le(out, 0x400000 as u64) // p_paddr
@@ -30438,6 +30580,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             r_i = r_i + 1
         i = i + 1
         
+    // RFC 0009 P3 Linux: the kernel32 bucket (dead code behind folded is_windows
+    // branches) and the ax_runtime.dll bucket (freestanding AXIOM twins are bundled
+    // in-program and bound by the ax_-twin fallback in the resolve pass) must NOT become
+    // ELF dynamic imports â€” the PLT here has no lazy-resolver stub, so .dynamic carries
+    // DT_BIND_NOW and ld.so would abort the load on any unresolvable name. Only the
+    // libc bucket (ucrtbase on Windows) is a real DT_NEEDED dependency on Linux.
+    if format == "elf64":
+        kernel32_imports.len = 0
+        ax_runtime_imports.len = 0
+
     mut thunk_count := kernel32_imports.len + ax_runtime_imports.len + ucrtbase_imports.len
     // RFC 0009: user-DLL imports also get thunks + IAT slots
     mut user_total_imports := 0 as i64
@@ -30962,6 +31114,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut dyn_buf := new_byte_vec()
     mut offset_dynamic := 0 as i64
     mut size_dynamic := 0 as i64
+    // Code-start-relative offset where dyn_buf is placed in the image (align16 of the
+    // thunks end). The emit path needs it to compute PT_DYNAMIC's FILE offset â€” the
+    // original `512 + offset_dynamic` forgot the code in between, pointing PT_DYNAMIC
+    // into .text (ld.so read machine code as dynamic tags and crashed).
+    mut dyn_file_off := 0 as i64
     if format == "elf64" and thunk_count > 0:
         dyn_sym_rvas = @alloc(thunk_count * 4) as ptr[u32]
         
@@ -31084,10 +31241,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         let size_rela_plt = dyn_imports.len * 24
         
         offset_dynamic = (offset_rela_plt + size_rela_plt + 7) & ~7
-        size_dynamic = (dyn_libs.len + 14) * 16
+        size_dynamic = (dyn_libs.len + 15) * 16 // 15 fixed tags (incl. DT_JMPREL) + one DT_NEEDED per lib
         
         // 6. Compute virtual addresses
         let dyn_offset = (thunks_offset + thunks_size + 15) & ~15
+        dyn_file_off = dyn_offset
         let dyn_base_va = base_addr + dyn_offset as u64
         
         let dynstr_va = dyn_base_va + offset_dynstr as u64
@@ -31149,9 +31307,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         push_u64_le(&dynamic_buf, 9 as u64) // DT_RELAENT
         push_u64_le(&dynamic_buf, 24 as u64)
         
+        // DT_JMPREL: VA of the PLT relocation table. glibc pairs DT_PLTRELSZ/DT_PLTREL
+        // with this tag; leaving it out while PLTRELSZ != 0 made ld.so walk a NULL
+        // Elf64_Rela array during BIND_NOW relocation processing (segfault at 8 = the
+        // r_info field of entry 0).
+        push_u64_le(&dynamic_buf, 23 as u64) // DT_JMPREL
+        push_u64_le(&dynamic_buf, rela_plt_va)
+
         push_u64_le(&dynamic_buf, 24 as u64) // DT_BIND_NOW
         push_u64_le(&dynamic_buf, 1 as u64)
-        
+
         push_u64_le(&dynamic_buf, 30 as u64) // DT_FLAGS
         push_u64_le(&dynamic_buf, 8 as u64) // DF_BIND_NOW
         
@@ -31250,7 +31415,12 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             
             thunk_i = thunk_i + 1
             u_j = u_j + 1
-            
+
+        // Pad merged_code to dyn_offset so dyn_buf lands in the file exactly at the
+        // VA (base_addr + dyn_offset) all the DT_* pointers above were computed with.
+        while merged_code.len < dyn_offset:
+            push_byte(&merged_code, 0 as u8)
+
         // Clean up temporary buffers
         if dynstr_buf.data != null as ptr[u8]:
             @free(dynstr_buf.data)
@@ -31268,6 +31438,40 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         @free(sym_str_offsets as ptr[u8])
         @free(dyn_imports.data as ptr[u8])
         @free(dyn_libs.data as ptr[u8])
+
+    // RFC 0017 ELF globals: lay out each object's writable .data block in a region that
+    // follows merged_code + dyn_buf in the emitted image (code-start-relative offsets, so
+    // the standard `target_va = base_addr + offset` resolution below applies unchanged).
+    // Mirrors the COFF path, which appends globals to the end of .idata. Registered into
+    // func_names/func_offsets BEFORE relocation resolution so OP_GLOBAL_ADDR relocs bind.
+    mut elf_data_buf := new_byte_vec()
+    if format == "elf64":
+        let elf_data_base = merged_code.len + dyn_buf.len
+        // 8-align the region base within the image.
+        mut edb_pad := (8 as i64 - (elf_data_base % 8 as i64)) % 8 as i64
+        while edb_pad > 0:
+            push_byte(&elf_data_buf, 0 as u8)
+            edb_pad = edb_pad - 1
+        mut gobj_e := 0 as i64
+        while gobj_e < objects.len:
+            let gobj = objects.data[gobj_e]
+            if gobj.data.len > 0:
+                while ((elf_data_base + elf_data_buf.len) % 8 as i64) != 0 as i64:
+                    push_byte(&elf_data_buf, 0 as u8)
+                let region_off = elf_data_base + elf_data_buf.len
+                gobj.data_va = base_addr + region_off as u64
+                mut edb := 0 as i64
+                while edb < gobj.data.len:
+                    push_byte(&elf_data_buf, gobj.data.data[edb])
+                    edb = edb + 1
+                mut gsym_e := 0 as i64
+                while gsym_e < gobj.symbols.len:
+                    let gsym = &gobj.symbols.data[gsym_e]
+                    if gsym.defined and gsym.section == 3 as i64:
+                        push_linker_str(&func_names, gsym.name)
+                        push_parsed_reloc(&func_offsets, ParsedReloc(offset: (region_off as u64 + gsym.offset) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
+                    gsym_e = gsym_e + 1
+            gobj_e = gobj_e + 1
 
     // 3. Resolve & Apply Relocations
     mut has_reloc_error := false
@@ -31300,6 +31504,21 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         break
                     search_ax = search_ax + 1
 
+            // RFC 0009 P3 Linux: an unresolved C-ABI runtime name X (extern decl or a
+            // DLL redirect like ax_panic / ax_get_global_state_internal) binds to its
+            // bundled AXIOM twin `ax_X` (the mangled symbol of `pub fn X`). Generalizes
+            // the syscall -> ax_syscall mapping above. ELF-only: on COFF these names
+            // are genuine ax_runtime.dll imports and must stay dynamic.
+            if target_offset == -1 as i64 and format == "elf64":
+                let twin_name = std.string.concat("ax_", target_name)
+                mut search_tw := 0 as i64
+                while search_tw < func_names.len:
+                    if func_names.data[search_tw] == twin_name:
+                        target_offset = func_offsets.data[search_tw].offset
+                        break
+                    search_tw = search_tw + 1
+                @free(get_str_ptr(twin_name))
+
             if target_offset != -1 as i64:
                 target_va = base_addr + target_offset as u64
             else:
@@ -31314,9 +31533,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                     dyn_search = dyn_search + 1
                     
                 if not found_dyn:
-                    ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    has_reloc_error = true
-                    target_va = 0 as u64
+                    // RFC 0009 P3 Linux: Windows-API / ax_runtime.dll names with no
+                    // bundled twin sit in dead code (their is_windows branches folded
+                    // away, but whole-function DCE does not exist yet, so the emitted-
+                    // but-unreachable bodies still carry the relocs). Patch 0 with a
+                    // warning instead of failing the link. Everything else stays a
+                    // hard error on both formats.
+                    mut dead_win_import := false
+                    if format == "elf64":
+                        let dll_home = get_dll_for_symbol(target_name)
+                        if dll_home == "kernel32.dll" or is_valid_runtime_dll_symbol(target_name):
+                            dead_win_import = true
+                    if dead_win_import:
+                        ax_printf_local("Linker Warning (elf64): dead Windows/runtime import '%s' patched to 0\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        target_va = 0 as u64
+                    else:
+                        ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        has_reloc_error = true
+                        target_va = 0 as u64
                 
             let rel_offset = (obj.va - base_addr) as i64 + r.offset
             if rel_offset + 4 as i64 > merged_code.len:
@@ -31421,16 +31655,21 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut dynamic_offset := 0 as u32
         mut dynamic_size := 0 as u32
         if dyn_buf.len > 0:
-            dynamic_offset = 512 as u32 + offset_dynamic as u32
+            // File offset of the .dynamic array = headers(512) + code up to dyn_buf
+            // (dyn_file_off) + offset of .dynamic inside dyn_buf.
+            dynamic_offset = (512 as i64 + dyn_file_off + offset_dynamic) as u32
             dynamic_size = size_dynamic as u32
             
-        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
-        
+        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
+
         fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
         fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
         if dyn_buf.len > 0:
             fwrite(dyn_buf.data as ptr[void], 1, dyn_buf.len, file)
-            
+        // RFC 0017 ELF globals: writable data region (offsets registered pre-relocation).
+        if elf_data_buf.len > 0:
+            fwrite(elf_data_buf.data as ptr[void], 1, elf_data_buf.len, file)
+
         @free(elf_headers.data)
         
     fclose(file)
@@ -31442,6 +31681,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         @free(idata_buf.data)
     if dyn_buf.data != null as ptr[u8]:
         @free(dyn_buf.data)
+    if elf_data_buf.data != null as ptr[u8]:
+        @free(elf_data_buf.data)
         
     if dyn_sym_rvas != null as ptr[u32]:
         @free(dyn_sym_rvas as ptr[u8])
@@ -32761,6 +33002,9 @@ pub fn main() -> i32:
     mut file_arg_idx := 1
     mut output_file := ""
     mut target_wasm32 := false
+    // RFC 0009 P3 / Linux target: `--target linux` (or x86_64-linux) emits an ELF64
+    // executable using the SysV ABI + inline syscalls instead of Windows COFF/PE.
+    mut target_linux := false
     mut self_link := false
     mut optimize := false
     mut opt_level := 1 as u8
@@ -32824,6 +33068,8 @@ pub fn main() -> i32:
                 let target_triple = args[opt_idx as i64 + 1 as i64]
                 if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
                     target_wasm32 = true
+                elif target_triple == "linux" or target_triple == "x86_64-linux" or target_triple == "x86_64-unknown-linux" or target_triple == "x86_64-linux-gnu":
+                    target_linux = true
                 opt_idx = opt_idx + 1
             else:
                 ax_puts_local("Error: missing value for --target option")
@@ -32887,6 +33133,16 @@ pub fn main() -> i32:
 
     mut t_mark := clock()  // --time running marker (inert unless show_time)
     if self_link and not no_stdlib:
+        // RFC 0009 P3 Linux: bundle the freestanding runtime shims (syscall-based
+        // ax_get_global_state_internal / ax_panic / ax_compiler_intrinsic) so the
+        // program needs no libax_runtime.so â€” the ELF linker binds the raw C-ABI
+        // names to these bundled `ax_`-mangled twins. Windows keeps ax_runtime.dll.
+        if target_linux:
+            let raw_panic_rt = read_file_content("bootstrap/runtime/panic.ax")
+            if std.string.len(raw_panic_rt) > 0:
+                let src_nl = std.string.concat(src, "\n")
+                src = std.string.concat(src_nl, raw_panic_rt)
+                @free(get_str_ptr(src_nl))
         src = concatenate_stdlib(src)
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 
@@ -33046,6 +33302,9 @@ pub fn main() -> i32:
     // 6. Build AIR
     checker.ensure_capacity(parser.tree.nodes.len)
     mut air_builder := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
+    // Linux target: drive the compile-time `is_windows`/`is_linux`/`os_name` fold so the
+    // bundled platform runtime picks the syscall path. Set BEFORE build_module().
+    air_builder.target_is_windows = not target_linux
     air_builder.build_module()
     
     // Build AIR for all lazy loaded modules and append their functions
@@ -33055,6 +33314,7 @@ pub fn main() -> i32:
             let mod = lazy.modules.data[mod_idx]
             if mod != null as ptr[ModuleInfo] and mod.status == MODULE_LOADED and mod.ast_tree != null as ptr[AstTree] and mod.node_types != null as ptr[void]:
                 mut mod_air_builder := new_air_module_builder(mod.ast_tree, resolver.symtable, typetable, parser.pool, mod.node_types as ptr[u32])
+                mod_air_builder.target_is_windows = not target_linux
                 mod_air_builder.build_module()
                 
                 // Append functions to main air_builder.module
@@ -33142,7 +33402,12 @@ pub fn main() -> i32:
         if self_link:
             let temp_obj = "axiom_temp.obj"
             ax_puts_local("[Debug] Stage 3: Starting native code generation...")
-            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr("coff"), self_link)
+            // Linux target emits an ELF object; the self-linker auto-detects the format
+            // from the object magic and produces an ELF64 executable. Default is COFF/PE.
+            mut obj_format := "coff"
+            if target_linux:
+                obj_format = "elf"
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link)
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1

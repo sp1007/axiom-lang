@@ -680,29 +680,30 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         i = i + 1
         
     // RFC 0017 / BUG#82: emit module-level global storage into a writable .data section
-    // (COFF section 3). Each global's constant-folded init bytes go into `data_buf` at a
-    // naturally-aligned offset; a section-3 STATIC symbol (named via the same
-    // x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through) is registered here,
-    // BEFORE the sym-map pre-pass, so the reloc binds to this defined data symbol. Only
-    // for COFF (the win64 self-host target); ELF globals are Phase 2 (RFC 0017 §4).
+    // (COFF section 3 / ELF section header index 3 — the layouts agree by design). Each global's constant-folded init
+    // bytes go into `data_buf` at a naturally-aligned offset; a defined data symbol
+    // (named via the same x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through)
+    // is registered here, BEFORE the sym-map pre-pass, so the reloc binds to it.
     mut data_buf := new_byte_vec()
-    if not is_elf64:
-        mut gi := 0 as i64
-        while gi < mod.globals.len:
-            let g = mod.globals.data[gi]
-            mut gsize := g.size as i64
-            if gsize < 1 as i64:
-                gsize = 1 as i64
-            while (data_buf.len % gsize) != 0 as i64:
-                push_byte(&data_buf, 0 as u8)
-            let goff = data_buf.len as u32
-            mut b := 0 as i64
-            while b < gsize:
-                push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
-                b = b + 1
-            let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
+    mut gi := 0 as i64
+    while gi < mod.globals.len:
+        let g = mod.globals.data[gi]
+        mut gsize := g.size as i64
+        if gsize < 1 as i64:
+            gsize = 1 as i64
+        while (data_buf.len % gsize) != 0 as i64:
+            push_byte(&data_buf, 0 as u8)
+        let goff = data_buf.len as u32
+        mut b := 0 as i64
+        while b < gsize:
+            push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
+            b = b + 1
+        let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
+        if is_elf64:
+            push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: goff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 3 as u16))
+        else:
             push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: goff, section_num: 3 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
-            gi = gi + 1
+        gi = gi + 1
 
     ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
         all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -732,7 +733,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         let sn = elf_syms.data[pre_i].name_str
         let sid = pool.intern_string(sn)
         if (sid as i64) < sym_map_size:
-            elf_sym_map[sid as i64] = pre_i as i32
+            // ELF .symtab has a NULL entry at index 0, so elf_syms[i] lands at symtab
+            // index i+1. Relocations carry SYMTAB indices — store the +1 form (the
+            // on-demand path below already does). Storing the raw i made every reloc
+            // to a defined symbol resolve one symbol off (latent: never exercised).
+            elf_sym_map[sid as i64] = pre_i as i32 + 1 as i32
         pre_i = pre_i + 1
 
     mut total_relocs := 0 as i64
@@ -809,7 +814,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     mut success := false
     if is_elf64:
-        success = elf64_write_object_file(output_obj_file, &all_code, &elf_relocs, &elf_syms)
+        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &coff_relocs, &coff_syms)
 

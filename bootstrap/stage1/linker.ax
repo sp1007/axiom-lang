@@ -189,29 +189,51 @@ pub fn push_parsed_object_ptr(mut self: ptr[ParsedObjectPtrVec], p: ptr[ParsedOb
 pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     let shoff = read_u64_le(data, 40) as i64
     let shnum = read_u16_le(data, 60) as i64
-    
+
     mut text_off := 0 as i64
     mut text_size := 0 as i64
-    
+
+    // RFC 0017 ELF globals: .rodata (string literals) and writable .data (module
+    // globals) are SHT_PROGBITS too — route by sh_flags (EXECINSTR -> .text,
+    // WRITE -> .data, neither -> .rodata) instead of "last PROGBITS wins".
+    mut rodata_off := 0 as i64
+    mut rodata_size := 0 as i64
+    mut gdata_off := 0 as i64
+    mut gdata_size := 0 as i64
+    mut text_hdr_idx := -1 as i64
+    mut rodata_hdr_idx := -1 as i64
+    mut gdata_hdr_idx := -1 as i64
+
     mut symtab_off := 0 as i64
     mut symtab_size := 0 as i64
-    
+
     mut strtab_off := 0 as i64
     mut strtab_size := 0 as i64
-    
+
     mut rela_off := 0 as i64
     mut rela_size := 0 as i64
-    
+
     mut i := 0 as i64
     while i < shnum:
         let off = shoff + i * 64
         let sh_type = read_u32_le(data, off + 4)
+        let sh_flags = read_u64_le(data, off + 8)
         let sh_offset = read_u64_le(data, off + 24) as i64
         let sh_size = read_u64_le(data, off + 32) as i64
-        
+
         if sh_type == 1 as u32: // SHT_PROGBITS
-            text_off = sh_offset
-            text_size = sh_size
+            if (sh_flags & 4 as u64) != 0 as u64: // SHF_EXECINSTR -> .text
+                text_off = sh_offset
+                text_size = sh_size
+                text_hdr_idx = i
+            elif (sh_flags & 1 as u64) != 0 as u64: // SHF_WRITE -> .data (globals)
+                gdata_off = sh_offset
+                gdata_size = sh_size
+                gdata_hdr_idx = i
+            else: // read-only, non-exec -> .rodata (string literals)
+                rodata_off = sh_offset
+                rodata_size = sh_size
+                rodata_hdr_idx = i
         elif sh_type == 2 as u32: // SHT_SYMTAB
             symtab_off = sh_offset
             symtab_size = sh_size
@@ -251,13 +273,25 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
             let sec_idx = read_u16_le(data, off + 6)
             let val64 = read_u64_le(data, off + 8)
             let size = read_u64_le(data, off + 16)
-            
+
             let name = sym_names.data[sym_i]
             let is_defined = sec_idx != 0 as u16
-            
+
+            // Normalize ELF section-header indices to the linker's canonical scheme
+            // (1=.text, 2=.rodata/.rdata, 3=.data) so all downstream `section == N`
+            // logic is format-agnostic. (The AXIOM ELF writer emits exactly this
+            // layout already; the remap keeps foreign objects working too.)
+            mut mapped_sec := sec_idx as i64
+            if sec_idx as i64 == text_hdr_idx:
+                mapped_sec = 1 as i64
+            elif sec_idx as i64 == rodata_hdr_idx:
+                mapped_sec = 2 as i64
+            elif sec_idx as i64 == gdata_hdr_idx:
+                mapped_sec = 3 as i64
+
             push_linker_symbol(&symbols, LinkerSymbol(
                 name: name,
-                section: sec_idx as i64,
+                section: mapped_sec,
                 offset: val64,
                 size: size,
                 defined: is_defined
@@ -289,15 +323,26 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     mut text_vec := new_byte_vec()
     if text_size > 0:
         push_bytes(&text_vec, (data as i64 + text_off) as ptr[u8], text_size)
-        
+
+    // .rodata rides along exactly like COFF .rdata: the merge appends it right after
+    // .text, and section-2 symbols resolve at text.len + offset.
+    mut rodata_vec := new_byte_vec()
+    if rodata_size > 0:
+        push_bytes(&rodata_vec, (data as i64 + rodata_off) as ptr[u8], rodata_size)
+
+    // RFC 0017 ELF globals: writable .data content; placed by the ELF exe emitter.
+    mut gdata_vec := new_byte_vec()
+    if gdata_size > 0:
+        push_bytes(&gdata_vec, (data as i64 + gdata_off) as ptr[u8], gdata_size)
+
     let obj = @alloc(@compiler_intrinsic("size_of")[ParsedObject]()) as ptr[ParsedObject]
     obj.text = text_vec
-    obj.rdata = new_byte_vec()
+    obj.rdata = rodata_vec
     obj.symbols = symbols
     obj.sym_names = sym_names
     obj.relocs = relocs
     obj.va = 0 as u64
-    obj.data = new_byte_vec()
+    obj.data = gdata_vec
     obj.data_va = 0 as u64
     return obj
 
@@ -897,7 +942,10 @@ pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va:
         
         // 7. Program Header Table (1 entry: PT_LOAD segment)
         push_u32_le(out, 1 as u32) // p_type: PT_LOAD
-        push_u32_le(out, 5 as u32) // p_flags: PF_R | PF_X
+        // PF_R | PF_W | PF_X: the RFC 0017 globals region (writable .data) lives inside
+        // this single LOAD segment, so it must be writable. (Splitting into separate
+        // RX/RW segments is a follow-up refinement; the dynamic case below is RWX too.)
+        push_u32_le(out, 7 as u32) // p_flags: PF_R | PF_W | PF_X
         push_u64_le(out, 0 as u64) // p_offset: starts at beginning of file
         push_u64_le(out, 0x400000 as u64) // p_vaddr
         push_u64_le(out, 0x400000 as u64) // p_paddr
@@ -1938,6 +1986,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             r_i = r_i + 1
         i = i + 1
         
+    // RFC 0009 P3 Linux: the kernel32 bucket (dead code behind folded is_windows
+    // branches) and the ax_runtime.dll bucket (freestanding AXIOM twins are bundled
+    // in-program and bound by the ax_-twin fallback in the resolve pass) must NOT become
+    // ELF dynamic imports — the PLT here has no lazy-resolver stub, so .dynamic carries
+    // DT_BIND_NOW and ld.so would abort the load on any unresolvable name. Only the
+    // libc bucket (ucrtbase on Windows) is a real DT_NEEDED dependency on Linux.
+    if format == "elf64":
+        kernel32_imports.len = 0
+        ax_runtime_imports.len = 0
+
     mut thunk_count := kernel32_imports.len + ax_runtime_imports.len + ucrtbase_imports.len
     // RFC 0009: user-DLL imports also get thunks + IAT slots
     mut user_total_imports := 0 as i64
@@ -2462,6 +2520,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut dyn_buf := new_byte_vec()
     mut offset_dynamic := 0 as i64
     mut size_dynamic := 0 as i64
+    // Code-start-relative offset where dyn_buf is placed in the image (align16 of the
+    // thunks end). The emit path needs it to compute PT_DYNAMIC's FILE offset — the
+    // original `512 + offset_dynamic` forgot the code in between, pointing PT_DYNAMIC
+    // into .text (ld.so read machine code as dynamic tags and crashed).
+    mut dyn_file_off := 0 as i64
     if format == "elf64" and thunk_count > 0:
         dyn_sym_rvas = @alloc(thunk_count * 4) as ptr[u32]
         
@@ -2584,10 +2647,11 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         let size_rela_plt = dyn_imports.len * 24
         
         offset_dynamic = (offset_rela_plt + size_rela_plt + 7) & ~7
-        size_dynamic = (dyn_libs.len + 14) * 16
+        size_dynamic = (dyn_libs.len + 15) * 16 // 15 fixed tags (incl. DT_JMPREL) + one DT_NEEDED per lib
         
         // 6. Compute virtual addresses
         let dyn_offset = (thunks_offset + thunks_size + 15) & ~15
+        dyn_file_off = dyn_offset
         let dyn_base_va = base_addr + dyn_offset as u64
         
         let dynstr_va = dyn_base_va + offset_dynstr as u64
@@ -2649,9 +2713,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         push_u64_le(&dynamic_buf, 9 as u64) // DT_RELAENT
         push_u64_le(&dynamic_buf, 24 as u64)
         
+        // DT_JMPREL: VA of the PLT relocation table. glibc pairs DT_PLTRELSZ/DT_PLTREL
+        // with this tag; leaving it out while PLTRELSZ != 0 made ld.so walk a NULL
+        // Elf64_Rela array during BIND_NOW relocation processing (segfault at 8 = the
+        // r_info field of entry 0).
+        push_u64_le(&dynamic_buf, 23 as u64) // DT_JMPREL
+        push_u64_le(&dynamic_buf, rela_plt_va)
+
         push_u64_le(&dynamic_buf, 24 as u64) // DT_BIND_NOW
         push_u64_le(&dynamic_buf, 1 as u64)
-        
+
         push_u64_le(&dynamic_buf, 30 as u64) // DT_FLAGS
         push_u64_le(&dynamic_buf, 8 as u64) // DF_BIND_NOW
         
@@ -2750,7 +2821,12 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             
             thunk_i = thunk_i + 1
             u_j = u_j + 1
-            
+
+        // Pad merged_code to dyn_offset so dyn_buf lands in the file exactly at the
+        // VA (base_addr + dyn_offset) all the DT_* pointers above were computed with.
+        while merged_code.len < dyn_offset:
+            push_byte(&merged_code, 0 as u8)
+
         // Clean up temporary buffers
         if dynstr_buf.data != null as ptr[u8]:
             @free(dynstr_buf.data)
@@ -2768,6 +2844,40 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         @free(sym_str_offsets as ptr[u8])
         @free(dyn_imports.data as ptr[u8])
         @free(dyn_libs.data as ptr[u8])
+
+    // RFC 0017 ELF globals: lay out each object's writable .data block in a region that
+    // follows merged_code + dyn_buf in the emitted image (code-start-relative offsets, so
+    // the standard `target_va = base_addr + offset` resolution below applies unchanged).
+    // Mirrors the COFF path, which appends globals to the end of .idata. Registered into
+    // func_names/func_offsets BEFORE relocation resolution so OP_GLOBAL_ADDR relocs bind.
+    mut elf_data_buf := new_byte_vec()
+    if format == "elf64":
+        let elf_data_base = merged_code.len + dyn_buf.len
+        // 8-align the region base within the image.
+        mut edb_pad := (8 as i64 - (elf_data_base % 8 as i64)) % 8 as i64
+        while edb_pad > 0:
+            push_byte(&elf_data_buf, 0 as u8)
+            edb_pad = edb_pad - 1
+        mut gobj_e := 0 as i64
+        while gobj_e < objects.len:
+            let gobj = objects.data[gobj_e]
+            if gobj.data.len > 0:
+                while ((elf_data_base + elf_data_buf.len) % 8 as i64) != 0 as i64:
+                    push_byte(&elf_data_buf, 0 as u8)
+                let region_off = elf_data_base + elf_data_buf.len
+                gobj.data_va = base_addr + region_off as u64
+                mut edb := 0 as i64
+                while edb < gobj.data.len:
+                    push_byte(&elf_data_buf, gobj.data.data[edb])
+                    edb = edb + 1
+                mut gsym_e := 0 as i64
+                while gsym_e < gobj.symbols.len:
+                    let gsym = &gobj.symbols.data[gsym_e]
+                    if gsym.defined and gsym.section == 3 as i64:
+                        push_linker_str(&func_names, gsym.name)
+                        push_parsed_reloc(&func_offsets, ParsedReloc(offset: (region_off as u64 + gsym.offset) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
+                    gsym_e = gsym_e + 1
+            gobj_e = gobj_e + 1
 
     // 3. Resolve & Apply Relocations
     mut has_reloc_error := false
@@ -2800,6 +2910,21 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         break
                     search_ax = search_ax + 1
 
+            // RFC 0009 P3 Linux: an unresolved C-ABI runtime name X (extern decl or a
+            // DLL redirect like ax_panic / ax_get_global_state_internal) binds to its
+            // bundled AXIOM twin `ax_X` (the mangled symbol of `pub fn X`). Generalizes
+            // the syscall -> ax_syscall mapping above. ELF-only: on COFF these names
+            // are genuine ax_runtime.dll imports and must stay dynamic.
+            if target_offset == -1 as i64 and format == "elf64":
+                let twin_name = std.string.concat("ax_", target_name)
+                mut search_tw := 0 as i64
+                while search_tw < func_names.len:
+                    if func_names.data[search_tw] == twin_name:
+                        target_offset = func_offsets.data[search_tw].offset
+                        break
+                    search_tw = search_tw + 1
+                @free(get_str_ptr(twin_name))
+
             if target_offset != -1 as i64:
                 target_va = base_addr + target_offset as u64
             else:
@@ -2814,9 +2939,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                     dyn_search = dyn_search + 1
                     
                 if not found_dyn:
-                    ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                    has_reloc_error = true
-                    target_va = 0 as u64
+                    // RFC 0009 P3 Linux: Windows-API / ax_runtime.dll names with no
+                    // bundled twin sit in dead code (their is_windows branches folded
+                    // away, but whole-function DCE does not exist yet, so the emitted-
+                    // but-unreachable bodies still carry the relocs). Patch 0 with a
+                    // warning instead of failing the link. Everything else stays a
+                    // hard error on both formats.
+                    mut dead_win_import := false
+                    if format == "elf64":
+                        let dll_home = get_dll_for_symbol(target_name)
+                        if dll_home == "kernel32.dll" or is_valid_runtime_dll_symbol(target_name):
+                            dead_win_import = true
+                    if dead_win_import:
+                        ax_printf_local("Linker Warning (elf64): dead Windows/runtime import '%s' patched to 0\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        target_va = 0 as u64
+                    else:
+                        ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        has_reloc_error = true
+                        target_va = 0 as u64
                 
             let rel_offset = (obj.va - base_addr) as i64 + r.offset
             if rel_offset + 4 as i64 > merged_code.len:
@@ -2921,16 +3061,21 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut dynamic_offset := 0 as u32
         mut dynamic_size := 0 as u32
         if dyn_buf.len > 0:
-            dynamic_offset = 512 as u32 + offset_dynamic as u32
+            // File offset of the .dynamic array = headers(512) + code up to dyn_buf
+            // (dyn_file_off) + offset of .dynamic inside dyn_buf.
+            dynamic_offset = (512 as i64 + dyn_file_off + offset_dynamic) as u32
             dynamic_size = size_dynamic as u32
             
-        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
-        
+        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
+
         fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
         fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
         if dyn_buf.len > 0:
             fwrite(dyn_buf.data as ptr[void], 1, dyn_buf.len, file)
-            
+        // RFC 0017 ELF globals: writable data region (offsets registered pre-relocation).
+        if elf_data_buf.len > 0:
+            fwrite(elf_data_buf.data as ptr[void], 1, elf_data_buf.len, file)
+
         @free(elf_headers.data)
         
     fclose(file)
@@ -2942,6 +3087,8 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         @free(idata_buf.data)
     if dyn_buf.data != null as ptr[u8]:
         @free(dyn_buf.data)
+    if elf_data_buf.data != null as ptr[u8]:
+        @free(elf_data_buf.data)
         
     if dyn_sym_rvas != null as ptr[u32]:
         @free(dyn_sym_rvas as ptr[u8])

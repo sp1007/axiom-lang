@@ -729,6 +729,9 @@ pub fn main() -> i32:
     mut file_arg_idx := 1
     mut output_file := ""
     mut target_wasm32 := false
+    // RFC 0009 P3 / Linux target: `--target linux` (or x86_64-linux) emits an ELF64
+    // executable using the SysV ABI + inline syscalls instead of Windows COFF/PE.
+    mut target_linux := false
     mut self_link := false
     mut optimize := false
     mut opt_level := 1 as u8
@@ -792,6 +795,8 @@ pub fn main() -> i32:
                 let target_triple = args[opt_idx as i64 + 1 as i64]
                 if target_triple == "wasm32" or target_triple == "wasm32-unknown-unknown" or target_triple == "wasm":
                     target_wasm32 = true
+                elif target_triple == "linux" or target_triple == "x86_64-linux" or target_triple == "x86_64-unknown-linux" or target_triple == "x86_64-linux-gnu":
+                    target_linux = true
                 opt_idx = opt_idx + 1
             else:
                 ax_puts_local("Error: missing value for --target option")
@@ -855,6 +860,16 @@ pub fn main() -> i32:
 
     mut t_mark := clock()  // --time running marker (inert unless show_time)
     if self_link and not no_stdlib:
+        // RFC 0009 P3 Linux: bundle the freestanding runtime shims (syscall-based
+        // ax_get_global_state_internal / ax_panic / ax_compiler_intrinsic) so the
+        // program needs no libax_runtime.so — the ELF linker binds the raw C-ABI
+        // names to these bundled `ax_`-mangled twins. Windows keeps ax_runtime.dll.
+        if target_linux:
+            let raw_panic_rt = read_file_content("bootstrap/runtime/panic.ax")
+            if std.string.len(raw_panic_rt) > 0:
+                let src_nl = std.string.concat(src, "\n")
+                src = std.string.concat(src_nl, raw_panic_rt)
+                @free(get_str_ptr(src_nl))
         src = concatenate_stdlib(src)
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 
@@ -1014,6 +1029,9 @@ pub fn main() -> i32:
     // 6. Build AIR
     checker.ensure_capacity(parser.tree.nodes.len)
     mut air_builder := new_air_module_builder(parser.tree, resolver.symtable, typetable, parser.pool, checker.node_types)
+    // Linux target: drive the compile-time `is_windows`/`is_linux`/`os_name` fold so the
+    // bundled platform runtime picks the syscall path. Set BEFORE build_module().
+    air_builder.target_is_windows = not target_linux
     air_builder.build_module()
     
     // Build AIR for all lazy loaded modules and append their functions
@@ -1023,6 +1041,7 @@ pub fn main() -> i32:
             let mod = lazy.modules.data[mod_idx]
             if mod != null as ptr[ModuleInfo] and mod.status == MODULE_LOADED and mod.ast_tree != null as ptr[AstTree] and mod.node_types != null as ptr[void]:
                 mut mod_air_builder := new_air_module_builder(mod.ast_tree, resolver.symtable, typetable, parser.pool, mod.node_types as ptr[u32])
+                mod_air_builder.target_is_windows = not target_linux
                 mod_air_builder.build_module()
                 
                 // Append functions to main air_builder.module
@@ -1110,7 +1129,12 @@ pub fn main() -> i32:
         if self_link:
             let temp_obj = "axiom_temp.obj"
             ax_puts_local("[Debug] Stage 3: Starting native code generation...")
-            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr("coff"), self_link)
+            // Linux target emits an ELF object; the self-linker auto-detects the format
+            // from the object magic and produces an ELF64 executable. Default is COFF/PE.
+            mut obj_format := "coff"
+            if target_linux:
+                obj_format = "elf"
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link)
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1

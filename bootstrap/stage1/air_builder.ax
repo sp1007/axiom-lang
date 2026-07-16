@@ -103,6 +103,12 @@ pub struct AirModuleBuilder:
     pub pool: ptr[InternPool]
     pub module: AirModule
     pub node_types: ptr[u32]
+    // RFC 0009 P3 / Linux target: the OS the emitted binary targets. Drives the
+    // compile-time `@compiler_intrinsic("is_windows"/"is_linux"/"os_name")` fold so the
+    // bundled platform runtime (syscall.ax, axalloc.ax) selects the right code path.
+    // Default true (Windows/COFF) so the self-host build stays byte-identical; the driver
+    // flips it to false only under `--target linux`.
+    pub target_is_windows: bool
 
 pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typetable: ptr[TypeTable], pool: ptr[InternPool], node_types: ptr[u32]) -> ptr[AirModuleBuilder]:
     let amb = @alloc(@compiler_intrinsic("size_of")[AirModuleBuilder]()) as ptr[AirModuleBuilder]
@@ -112,6 +118,7 @@ pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typ
     amb.pool = pool
     amb.module = AirModule(funcs: new_air_func_vec(), globals: new_air_global_vec())
     amb.node_types = node_types
+    amb.target_is_windows = true
     return amb
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
@@ -1574,11 +1581,17 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         if arg_text == "\"is_windows\"" or arg_text == "'is_windows'" or arg_text == "is_windows":
                             lower_to_const = true
                             const_type = 11 as u32
-                            const_val = 1 as u32
+                            if self.mb.target_is_windows:
+                                const_val = 1 as u32
+                            else:
+                                const_val = 0 as u32
                         elif arg_text == "\"is_linux\"" or arg_text == "'is_linux'" or arg_text == "is_linux":
                             lower_to_const = true
                             const_type = 11 as u32
-                            const_val = 0 as u32
+                            if self.mb.target_is_windows:
+                                const_val = 0 as u32
+                            else:
+                                const_val = 1 as u32
                         elif arg_text == "\"is_macos\"" or arg_text == "'is_macos'" or arg_text == "is_macos":
                             lower_to_const = true
                             const_type = 11 as u32
@@ -1586,7 +1599,10 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         elif arg_text == "\"os_name\"" or arg_text == "'os_name'" or arg_text == "os_name":
                             lower_to_const = true
                             const_type = 12 as u32
-                            const_val = self.mb.pool.intern("\"windows\"")
+                            if self.mb.target_is_windows:
+                                const_val = self.mb.pool.intern("\"windows\"")
+                            else:
+                                const_val = self.mb.pool.intern("\"linux\"")
                         elif arg_text == "\"arch_name\"" or arg_text == "'arch_name'" or arg_text == "arch_name":
                             lower_to_const = true
                             const_type = 12 as u32
@@ -1594,7 +1610,10 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         elif arg_text == "\"path_separator\"" or arg_text == "'path_separator'" or arg_text == "path_separator":
                             lower_to_const = true
                             const_type = 12 as u32
-                            const_val = self.mb.pool.intern("\"\\\\\"")
+                            if self.mb.target_is_windows:
+                                const_val = self.mb.pool.intern("\"\\\\\"")
+                            else:
+                                const_val = self.mb.pool.intern("\"/\"")
                         
                         if lower_to_const:
                             @free(get_str_ptr(arg_text))
@@ -2054,7 +2073,7 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             let name = self.mb.pool.get(name_id)
             if (name == "syscall0" or name == "syscall1" or name == "syscall2" or
                 name == "syscall3" or name == "syscall4" or name == "syscall5" or
-                name == "syscall6"):
+                name == "syscall6" or name == "syscall"):
                 opcode = OP_SYSCALL
 
     let reg = self.fb.fresh_reg()
