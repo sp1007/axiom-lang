@@ -895,6 +895,22 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
             // 2-param generic over a same-name 1-param concrete for a 1-arg call.
             // [[bug-freefn-stdlib-collision-noarg]]
             mut ci_first_generic := false
+            // Numeric UFCS-style widening for overload disambiguation: an integer
+            // literal defaults to i32 (type 3), so `fn find(a: i64, b: i64)` called
+            // as `find(40, 2)` produced arg0_type == i32 which FAILED the exact
+            // is_method_compatible i64(4)==i32(3) test. The user overload was skipped
+            // and the call fell through to a bundled generic stdlib head of the same
+            // name (Vec.get / Vec.find / HashMap.get / HashSet.contains — all bare
+            // `find[T](self: Vec[T], ...)`), whose generic-call path monomorphized on
+            // the i64 arg treated as a Vec receiver -> SIGSEGV, with no diagnostic
+            // (accept-then-miscompile, BUG#80 free-fn-shadow class). Widen a narrower
+            // integer arg0 (i8/i16/i32/u8/u16/u32 = 1,2,3,5,6,7) to an i64 (4) FIRST
+            // param, exactly like the air_builder UFCS dispatch (~1726) and the
+            // typecheck method-widening gate. Only a CONCRETE i64 first param widens;
+            // a generic `Vec[T]` receiver (GENERIC_INST, not 4) is untouched, so this
+            // never over-picks a stdlib method. No cast is emitted here (this only
+            // selects the symbol; call lowering coerces the argument).
+            mut ci_arg0_widen := false
             let ci_sym = self.symtable.symbols.data[ci]
             if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
                 let ce = self.types.entries.data[ci_sym.type_id]
@@ -903,7 +919,9 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
                     if cfi.params.len > 0 as i64 and (cfi.params.data[0] as i64) < self.types.entries.len:
                         if self.types.entries.data[cfi.params.data[0]].kind == TYPE_KIND_GENERIC:
                             ci_first_generic = true
-            if arg0_type == TYPE_UNKNOWN or ci_first_generic or self.is_method_compatible(ci, arg0_type):
+                        if cfi.params.data[0] == 4 as u32 and (arg0_type == 1 as u32 or arg0_type == 2 as u32 or arg0_type == 3 as u32 or arg0_type == 5 as u32 or arg0_type == 6 as u32 or arg0_type == 7 as u32):
+                            ci_arg0_widen = true
+            if arg0_type == TYPE_UNKNOWN or ci_first_generic or ci_arg0_widen or self.is_method_compatible(ci, arg0_type):
                 return ci
         ci = self.symtable.symbols.data[ci].next_overload
     if arg0_type == TYPE_UNKNOWN:

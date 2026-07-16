@@ -1,0 +1,22 @@
+// Oracle: a user free fn whose name collides with a bundled GENERIC stdlib method
+// (Vec.find / Vec.get, first param `Vec[T]`). Integer literals default to i32, so the
+// i64-param user overload previously failed the exact i64==i32 compatibility test in
+// resolve_free_call_overload, was skipped, and the call fell through to the generic
+// stdlib head -> monomorphized on a garbage Vec receiver -> SIGSEGV (accept-then-
+// miscompile, BUG#80 free-fn-shadow class). Numeric widening now binds the user fn.
+fn find(a: i64, b: i64) -> i64:
+    return a + b
+
+fn get(x: i64) -> i64:
+    return x * 2
+
+fn main() -> i64:
+    // find(40,2) must call the USER find (=42), NOT the stdlib generic Vec.find.
+    let f = find(40, 2)
+    // get(3) must call the USER get (=6), NOT the stdlib generic Vec.get/HashMap.get.
+    let g = get(3)
+    // Real generic Vec.get must still dispatch correctly (not over-picked): =6.
+    mut v: Vec[i64] = new_vec[i64]()
+    v.push(6)
+    let real = v.get(0).unwrap()
+    return f + g - real   // 42 + 6 - 6 = 42
