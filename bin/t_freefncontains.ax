@@ -1,0 +1,20 @@
+// Oracle HOLE#5: a user free fn whose name AND arg0 type collide with a NON-generic
+// bundled stdlib fn. `fn contains(s: str, n: i64)` vs `std.string.contains(s: str,
+// sub: str)` — both arity 2, both arg0 == str. arg0 alone cannot disambiguate; the
+// old head-first overload loop returned the stdlib `contains`, so `contains("hi", 2)`
+// passed the i64 `2` where a str `sub` was expected -> read as a pointer -> SIGSEGV.
+// The full-signature tie-break (param1: i64 matches the `2` arg; str does not) now
+// binds the user fn. Real `str.contains(str)` must still dispatch to the stdlib fn.
+fn contains(s: str, n: i64) -> i64:
+    return n + 40
+
+fn main() -> i64:
+    // Must call the USER contains (=42), NOT stdlib string.contains.
+    let u = contains("hi", 2)
+    // Real stdlib string.contains must still work: "hello".contains("ell") == true.
+    mut r = 0
+    if "hello".contains("ell"):
+        r = 0
+    else:
+        r = 100
+    return u + r   // 42 + 0 = 42

@@ -217,6 +217,7 @@ rows=(
   "t_vecstructopt|exit|42"
   "t_matchshadow|exit|42"
   "t_freefnfind|exit|42"
+  "t_freefncontains|exit|42"
   # feature-combo probe oracles (banked 2026-07-12, batch 7)
   "t_genpairopt|exit|77"
   "t_arrstructidx|exit|102"

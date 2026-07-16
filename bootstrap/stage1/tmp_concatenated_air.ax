@@ -6978,6 +6978,51 @@ pub fn free_fn_bare_mangles(self: ptr[TypeChecker], sym_idx: u32) -> bool:
                     return false
     return true
 
+// Gate for a free-call overload candidate `ci` (already known to match the call
+// ARITY) given the inferred arg0 type: true iff `ci` is a plausible target.
+// Mirrors the accept condition previously inlined in resolve_free_call_overload:
+// arg0 unknown (cannot disqualify), a bare-generic first param (`zip[A,B,C]`),
+// integer<->integer widening (the find/get/... free-fn-shadow repair), or an
+// exact/structured is_method_compatible match. Extracted so the two-pass HOLE#5
+// tie-break scores EXACTLY the candidate set it accepts. [[bug-freefn-stdlib-collision-noarg]]
+pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
+    if arg0_type == TYPE_UNKNOWN:
+        return true
+    mut ci_first_generic := false
+    mut ci_arg0_widen := false
+    let ci_sym = self.symtable.symbols.data[ci]
+    if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
+        let ce = self.types.entries.data[ci_sym.type_id]
+        if ce.kind == TYPE_KIND_FUNC:
+            let cfi = self.types.funcs.data[ce.extra]
+            if cfi.params.len > 0 as i64 and (cfi.params.data[0] as i64) < self.types.entries.len:
+                if self.types.entries.data[cfi.params.data[0]].kind == TYPE_KIND_GENERIC:
+                    ci_first_generic = true
+                let fp0 = cfi.params.data[0]
+                if tc_is_numeric(fp0) and fp0 != TYPE_F32 and fp0 != TYPE_F64 and tc_is_numeric(arg0_type) and arg0_type != TYPE_F32 and arg0_type != TYPE_F64:
+                    ci_arg0_widen = true
+    if ci_first_generic or ci_arg0_widen:
+        return true
+    return self.is_method_compatible(ci, arg0_type)
+
+// Per-parameter compatibility for the HOLE#5 full-signature tie-break score. An
+// un-inferrable arg (UNKNOWN) is neutral (matches any param, so it never breaks a
+// tie the wrong way); otherwise a param matches on exact type id, integer<->integer
+// (any width/sign, floats excluded), or float<->float. Non-primitive params only
+// match on exact type id (a bare-generic `T` param scores 0 against a concrete arg,
+// so a concrete overload out-scores a generic one for a concrete call â€” the intended
+// preference). Only used to rank already-gated same-arity candidates.
+pub fn param_arg_match(self: ptr[TypeChecker], pt: u32, at: u32) -> bool:
+    if at == TYPE_UNKNOWN:
+        return true
+    if pt == at:
+        return true
+    if tc_is_numeric(pt) and pt != TYPE_F32 and pt != TYPE_F64 and tc_is_numeric(at) and at != TYPE_F32 and at != TYPE_F64:
+        return true
+    if (pt == TYPE_F32 or pt == TYPE_F64) and (at == TYPE_F32 or at == TYPE_F64):
+        return true
+    return false
+
 pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, first_arg_node: u32, call_argc: i64) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
         return sym_idx
@@ -7013,51 +7058,63 @@ pub fn resolve_free_call_overload(mut self: ptr[TypeChecker], sym_idx: u32, firs
     // the call to the user's symbol so codegen targets the right (uniquely-mangled) body
     // [[bug-freefn-stdlib-collision-noarg]]. Preserves BUG#80 (equal-arity collisions still
     // disambiguate by arg0 type; a wrong-type head is skipped) and head-first order.
+    // Pass 1: count the overloads that match the call ARITY and pass the arg0 gate
+    // (free_call_gate: bare-generic first param `zip[A,B,C]`, integer<->integer
+    // widening for the find/get/... free-fn-shadow, or is_method_compatible). The
+    // gate is the same accept condition used historically; the head-first `first_gated`
+    // preserves prior ordering. [[bug-freefn-stdlib-collision-noarg]]
     mut ci := sym_idx
+    mut n_gated := 0 as i64
+    mut first_gated := 0 as u32
     while ci != 0 as u32:
-        if self.sym_decl_param_count(ci) == call_argc:
-            // Accept an ARITY-matching overload whose FIRST param is a bare generic type
-            // param (`fn zip[A,B,C](a,b,f)`): is_method_compatible's kinds_match returns
-            // FALSE for a TYPE_KIND_GENERIC first param vs a concrete arg, which would
-            // otherwise skip a same-arity user overload that shadows a bundled stdlib fn
-            // (BUG#80 free-fn-shadow hole, e.g. user `zip` vs `Vec.zip`) and fall through
-            // to the wrong head. Gated by the arity match above so it does NOT over-pick a
-            // 2-param generic over a same-name 1-param concrete for a 1-arg call.
-            // [[bug-freefn-stdlib-collision-noarg]]
-            mut ci_first_generic := false
-            // Integer-to-integer widening for overload disambiguation: an integer
-            // literal defaults to i32, so `fn find(a: i64, b: i64)` called as
-            // `find(40, 2)` produced arg0_type == i32 which FAILED the exact
-            // is_method_compatible i64==i32 test. The user overload was skipped and the
-            // call fell through to a bundled generic stdlib head of the same name
-            // (Vec.get / Vec.find / HashMap.get / HashSet.contains â€” all
-            // `find[T](self: Vec[T], ...)`), whose generic-call path monomorphized on
-            // the integer arg treated as a Vec receiver -> SIGSEGV, no diagnostic
-            // (accept-then-miscompile, BUG#80 free-fn-shadow class). When BOTH arg0 and
-            // the candidate's FIRST param are concrete INTEGER types (any width/sign:
-            // i8..i64/u8..u64/isize/usize â€” NOT float, which needs a real cvt and where
-            // f64 literals already match exactly), treat them as compatible for symbol
-            // SELECTION. This binds the user's concrete-integer overload; a generic
-            // `Vec[T]` receiver (GENERIC_INST, not a numeric primitive) can never match,
-            // so a stdlib method is never over-picked. Mirrors the air_builder UFCS
-            // dispatch (~1726) and the typecheck method-widening gate, generalized to
-            // all integer widths. No cast is emitted here (this only selects the symbol;
-            // call lowering coerces the argument).
-            mut ci_arg0_widen := false
-            let ci_sym = self.symtable.symbols.data[ci]
-            if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
-                let ce = self.types.entries.data[ci_sym.type_id]
-                if ce.kind == TYPE_KIND_FUNC:
-                    let cfi = self.types.funcs.data[ce.extra]
-                    if cfi.params.len > 0 as i64 and (cfi.params.data[0] as i64) < self.types.entries.len:
-                        if self.types.entries.data[cfi.params.data[0]].kind == TYPE_KIND_GENERIC:
-                            ci_first_generic = true
-                        let fp0 = cfi.params.data[0]
-                        if tc_is_numeric(fp0) and fp0 != TYPE_F32 and fp0 != TYPE_F64 and tc_is_numeric(arg0_type) and arg0_type != TYPE_F32 and arg0_type != TYPE_F64:
-                            ci_arg0_widen = true
-            if arg0_type == TYPE_UNKNOWN or ci_first_generic or ci_arg0_widen or self.is_method_compatible(ci, arg0_type):
-                return ci
+        if self.sym_decl_param_count(ci) == call_argc and self.free_call_gate(ci, arg0_type):
+            n_gated = n_gated + 1 as i64
+            if first_gated == 0 as u32:
+                first_gated = ci
         ci = self.symtable.symbols.data[ci].next_overload
+    // arg0 unknown (cannot score) or a single gated candidate: bind the head-first
+    // match exactly as before (the common free-fn-shadow repair, e.g. user `find`
+    // over a bundled generic Vec.find).
+    if n_gated >= 1 as i64 and (arg0_type == TYPE_UNKNOWN or n_gated == 1 as i64):
+        return first_gated
+    // HOLE#5: two-or-more candidates tie on arity AND arg0 type â€” e.g. user
+    // `contains(str, i64)` vs the NON-generic bundled `string.contains(str, str)`
+    // (both arity 2, both arg0 == str). arg0 alone cannot disambiguate, and the old
+    // head-first loop returned the WRONG (stdlib) one, so the call passed (str, i64)
+    // to string.contains which read the i64 as a str pointer -> SIGSEGV, no
+    // diagnostic (accept-then-miscompile). Break the tie by scoring the FULL
+    // parameter list against the actual argument types (param_arg_match: exact |
+    // integer<->integer | float<->float; an un-inferrable arg is neutral). Highest
+    // score wins; a tie keeps head-first order (best_score starts at -1 so the
+    // head-first `first_gated` is the initial best). Only reached for genuinely
+    // ambiguous overloaded names, so the extra per-arg inference is rare.
+    if n_gated >= 2 as i64:
+        mut arg_types := new_u32_vec()
+        mut an := first_arg_node
+        while an != 0 as u32:
+            arg_types.push(self.infer_node(an, TYPE_UNKNOWN))
+            an = self.tree.nodes.data[an].next_sibling
+        mut best_ci := first_gated
+        mut best_score := 0 as i64 - 1 as i64
+        ci = sym_idx
+        while ci != 0 as u32:
+            if self.sym_decl_param_count(ci) == call_argc and self.free_call_gate(ci, arg0_type):
+                mut sc := 0 as i64
+                let s2 = self.symtable.symbols.data[ci]
+                if s2.type_id != 0 as u32 and (s2.type_id as i64) < self.types.entries.len:
+                    let e2 = self.types.entries.data[s2.type_id]
+                    if e2.kind == TYPE_KIND_FUNC:
+                        let f2 = self.types.funcs.data[e2.extra]
+                        mut pi := 0 as i64
+                        while pi < f2.params.len and pi < arg_types.len:
+                            if self.param_arg_match(f2.params.data[pi], arg_types.data[pi]):
+                                sc = sc + 1 as i64
+                            pi = pi + 1 as i64
+                if sc > best_score:
+                    best_score = sc
+                    best_ci = ci
+            ci = self.symtable.symbols.data[ci].next_overload
+        return best_ci
     if arg0_type == TYPE_UNKNOWN:
         return sym_idx
     let picked = self.resolve_method_overload(sym_idx, arg0_type)
