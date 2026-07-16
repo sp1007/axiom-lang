@@ -383,6 +383,8 @@ rows=(
   "t_escape|exit|41"
   # RFC 0015 P2 — non-escaping aggregate local in a loop with an early-return path
   "t_escapeloop|exit|42"
+  # RFC 0015 P3 — compile-time free oracle (also run under -ctgc-free by ctgc_free_check.sh)
+  "t_ctgcfree|exit|42"
   # RFC 0024 block strings """...""" (len/multi-line/escapes/byte/embedded-quotes)
   "t_blockstr|exit|5"
   "t_blockstrml|exit|5"

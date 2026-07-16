@@ -1,9 +1,11 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** P1 + P2 Implemented — OwnershipChecker live as a mutability-only
-  checker (E4002); EscapeAnalyser now ACTIVE and marking escaping locals with
-  `SYM_FLAG_ESCAPES` (2026-07-16, A==B `184E35B4`); move-checking removed by design
-  (no move semantics); CTGC-free (P3) still deferred (needs borrow/alias analysis)
+- **Status:** P1 + P2 + P3 Implemented — OwnershipChecker live as a mutability-only
+  checker (E4002); EscapeAnalyser ACTIVE with ctor-detection + scalar-field flow
+  refinement marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free ACTIVE behind
+  the opt-in `-ctgc-free` flag (2026-07-16, flag-off A==B `AD550CE4`, 329/329, flag-on
+  validated on a corpus + self-compilation). Move-checking removed by design (no move
+  semantics). Remaining niche: return-path frees (needs a return-value-temp transform)
 - **Author:** self-host team
 - **Tracking:** BUG#69 (discovered 2026-07-06 while investigating why RFC 0014
   drop-glue never fired)
@@ -275,7 +277,22 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   transitive escape to the escape node, and marks escaping locals with the new
   non-colliding `SYM_FLAG_ESCAPES = 4096`. No consumer reads that flag yet, so the
   activation is fixpoint-neutral. Oracle `bin/t_escape.ax` (exit 41).
-- **P3 Open (high-risk)** — CTGC free. Blocked on adding borrow/alias tracking to the
-  escape analysis + a whitelist (see §5 P3): unconditional activation UAF-crashes the
-  self-host because it would free borrow-locals aliasing the AST vectors. Needs a
-  dedicated session. Unblocks RFC 0014 (drop-glue).
+- **P3 Implemented** (2026-07-16) — CTGC free ACTIVE behind the opt-in `-ctgc-free`
+  flag (OFF by default, so the self-host build stays byte-identical: flag-off A==B
+  `AD550CE4`, 329/329). Built as one unit: (1) ctor-call ownership detection (a
+  `CALL_EXPR` whose callee resolves to `SYM_STRUCT` owns fresh memory); (2) a
+  conservative scalar-field/index flow refinement (a `FIELD_EXPR`/`INDEX_EXPR` whose
+  `node_types` result is `TYPE_KIND_PRIMITIVE` on a plain-ident base is a value copy
+  that does NOT escape the base — unresolved/aggregate/complex-base falls through to
+  conservative propagation, so the analysis only ever frees LESS, never UAFs); (3)
+  `ctgc.ax` injects `OP_DESTROY` for non-escaping heap locals at block **fall-through
+  only** (never before a `return` — that was a UAF); (4) the `-ctgc-free` flag threads
+  `free_enabled` so the whole pass is inert when off. **Validation:** flag-on == flag-off
+  results on a 13-program corpus (loops, aliasing, escape-via-return/call, nested blocks,
+  aggregate-field reads, Option/Result, methods, arrays), destroys verified firing, and —
+  the decisive test — the compiler compiles ITSELF with `-ctgc-free` (6 self-frees in the
+  most alias-heavy program there is) and the resulting binary works correctly. Repeatable
+  gate: `scripts/ctgc_free_check.sh` (`CTGC_FREE_OK`). **Remaining (niche):** return-path
+  frees leak (safe) pending a return-value-temp transform; Option/Result-ctor locals are
+  conservatively never freed (only `SYM_STRUCT` ctors are recognised as owning). This
+  unblocks RFC 0014 (drop-glue), which can now build on the live CTGC free path.

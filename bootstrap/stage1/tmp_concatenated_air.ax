@@ -11340,8 +11340,13 @@ pub struct EscapeAnalyser:
     pub typetable: ptr[TypeTable]
     pub curr_cg: ConnectionGraph
     pub escape_node_idx: u32
+    // RFC 0015 P3: per-node resolved result types (from TypeChecker.node_types), used
+    // to tell a scalar field/index read (value copy, base does not escape) from an
+    // aggregate read (aliases the base). node_types_cap bounds the array.
+    pub node_types: ptr[u32]
+    pub node_types_cap: i64
 
-pub fn new_escape_analyser(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[EscapeAnalyser]:
+pub fn new_escape_analyser(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable], node_types: ptr[u32], node_types_cap: i64) -> ptr[EscapeAnalyser]:
     let ea = @alloc(@compiler_intrinsic("size_of")[EscapeAnalyser]()) as ptr[EscapeAnalyser]
     ea.tree = tree
     ea.pool = pool
@@ -11349,7 +11354,21 @@ pub fn new_escape_analyser(tree: ptr[AstTree], pool: ptr[InternPool], symtable: 
     ea.typetable = typetable
     ea.curr_cg = new_connection_graph()
     ea.escape_node_idx = 0 as u32
+    ea.node_types = node_types
+    ea.node_types_cap = node_types_cap
     return ea
+
+// RFC 0015 P3: true iff `expr_idx`'s resolved result type is a scalar PRIMITIVE.
+// Unresolved (0 / out of range) => false (treat conservatively as aggregate).
+pub fn ea_result_is_scalar(self: ptr[EscapeAnalyser], expr_idx: u32) -> bool:
+    if self.node_types == null as ptr[u32]:
+        return false
+    if (expr_idx as i64) >= self.node_types_cap:
+        return false
+    let rt = self.node_types[expr_idx as i64]
+    if rt == 0 as u32 or (rt as i64) >= self.typetable.entries.len:
+        return false
+    return self.typetable.entries.data[rt].kind == TYPE_KIND_PRIMITIVE
 
 pub fn run(mut self: ptr[EscapeAnalyser]):
     self.curr_cg = new_connection_graph()
@@ -11448,16 +11467,29 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
             let cg_idx = self.curr_cg.add_value_node(sym_idx, sym.type_id, 0 as u32)
             let init_idx = node.first_child
             if init_idx != 0 as u32:
-                // RFC 0015 P2 (ownership-origin soundness, prerequisite for P3 free):
-                // a local only OWNS fresh, single-owner memory when it is initialised
-                // by a direct aggregate construction (struct/array literal). Any other
-                // initialiser makes it BORROW/ALIAS longer-lived memory that CTGC must
-                // never free: an ident aliases another binding, INDEX/FIELD borrows into
-                // a longer-lived aggregate (RFC 0010 Â§9), and a call may return a borrow
-                // (no interprocedural analysis yet). Conservatively flow such locals to
-                // the escape node so escapes()=true -> P3 will refuse to free them.
+                // RFC 0015 P2/P3 (ownership-origin soundness, prerequisite for P3 free):
+                // a local only OWNS fresh, single-owner memory when its initialiser
+                // constructs a new aggregate. Owning initialisers:
+                //   * a struct/array literal (NODE_STRUCT_LIT / NODE_ARRAY_LIT), and
+                //   * a constructor call `Name(...)` where `Name` resolves to a struct
+                //     type (SYM_STRUCT) -- in AXIOM `Box(f: v)` parses as a CALL_EXPR,
+                //     not a STRUCT_LIT, so without this every struct construction would
+                //     be treated as a borrow and P3 would free nothing.
+                // Any OTHER initialiser makes the local BORROW/ALIAS longer-lived memory
+                // that CTGC must never free (ident=alias, INDEX/FIELD=borrow into a
+                // longer-lived aggregate RFC 0010 Â§9, ordinary call=maybe a borrow, no
+                // interprocedural analysis). Flow such locals to the escape node so
+                // escapes()=true and P3 refuses to free them.
                 let init_kind = self.tree.nodes.data[init_idx].kind
-                if init_kind != NODE_STRUCT_LIT and init_kind != NODE_ARRAY_LIT:
+                mut is_owning := init_kind == NODE_STRUCT_LIT or init_kind == NODE_ARRAY_LIT
+                if init_kind == NODE_CALL_EXPR:
+                    let callee_idx = self.tree.nodes.data[init_idx].first_child
+                    if callee_idx != 0 as u32:
+                        let callee = self.tree.nodes.data[callee_idx]
+                        if callee.kind == NODE_IDENT and callee.payload != 0 as u32:
+                            if self.symtable.symbols.data[callee.payload].kind == SYM_STRUCT:
+                                is_owning = true
+                if not is_owning:
                     self.curr_cg.add_edge(cg_idx, self.escape_node_idx, EDGE_FLOWS_TO)
                 self.analyze_expr(init_idx, cg_idx)
 
@@ -11539,6 +11571,31 @@ pub fn analyze_expr(mut self: ptr[EscapeAnalyser], expr_idx: u32, flow_dest: u32
                 self.analyze_expr(val_idx, flow_dest)
             child_idx = child.next_sibling
 
+    elif kind == NODE_FIELD_EXPR or kind == NODE_INDEX_EXPR:
+        // RFC 0015 P3 flow refinement: a SCALAR (PRIMITIVE) field/element read of a
+        // simple local yields a VALUE COPY -- the base aggregate does NOT escape
+        // through it, so P3 may still free the base. Only an aggregate-typed (or
+        // unresolved) read aliases into the base and must propagate escape.
+        // Conservative on two axes (worst case = free LESS, never a UAF):
+        //   * unresolved result type -> treated as aggregate (propagate), and
+        //   * only a base that is a plain IDENT is exempted; a complex base
+        //     (e.g. `f().field`) falls through to normal propagation.
+        let base_idx = node.first_child
+        mut base_is_ident := false
+        if base_idx != 0 as u32:
+            base_is_ident = self.tree.nodes.data[base_idx].kind == NODE_IDENT
+        if self.ea_result_is_scalar(expr_idx) and base_is_ident:
+            // scalar read of `local.field` / `local[i]`: do NOT flow the base to
+            // dest. Still analyse an index operand (it may contain escaping calls).
+            if kind == NODE_INDEX_EXPR:
+                let idx_operand = self.tree.nodes.data[base_idx].next_sibling
+                self.analyze_expr(idx_operand, flow_dest)
+        else:
+            mut child_idx := node.first_child
+            while child_idx != 0 as u32:
+                self.analyze_expr(child_idx, flow_dest)
+                child_idx = self.tree.nodes.data[child_idx].next_sibling
+
     else:
         mut child_idx := node.first_child
         while child_idx != 0 as u32:
@@ -11558,6 +11615,7 @@ pub struct CtgcInjector:
     pub typetable: ptr[TypeTable]
     pub active_vars: U32Vec // Stack of active sym_idx's
     pub active_var_decls: U32Vec // Stack of AST node decl indices
+    pub free_enabled: bool // RFC 0015 P3: -ctgc-free opt-in; OFF => whole pass is inert
 
 pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[CtgcInjector]:
     let ci = @alloc(@compiler_intrinsic("size_of")[CtgcInjector]()) as ptr[CtgcInjector]
@@ -11567,18 +11625,24 @@ pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: pt
     ci.typetable = typetable
     ci.active_vars = new_u32_vec()
     ci.active_var_decls = new_u32_vec()
+    ci.free_enabled = false
     return ci
 
 pub fn run(mut self: ptr[CtgcInjector]):
+    // RFC 0015 P3: the whole pass is opt-in behind -ctgc-free. With the flag OFF
+    // (the default, incl. the self-host build) run() returns immediately and no
+    // OP_DESTROY is injected, so output is byte-identical to the historical no-op
+    // (fixpoint A==B). Only with the flag ON does compile-time free activate.
+    if not self.free_enabled:
+        return
     self.traverse_and_inject(0 as u32, 0 as u32)
 
 pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
-    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
-    // the real NODE_PROGRAM root, but this guard returns immediately -- no OP_DESTROY
-    // is ever injected, so every local aggregate leaks. Enabling free is unsafe until
-    // escape analysis is sound (RFC 0015 P2/P3): the self-host compiler holds aliases
-    // into buffers it later frees (RFC 0010 Â§9), so premature free = UAF. Inert.
-    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+    // Guard: node 0 is the real NODE_PROGRAM root (ast.ax::new_ast_tree), so the
+    // historical `node_idx == 0` clause made the pass a permanent no-op. Recursive
+    // descents already filter `!= 0` at every call site, so only 0xffffffff is a
+    // genuine sentinel. Reached only when free_enabled (gated in run()).
+    if node_idx == 0xffffffff as u32:
         return
 
     let node = self.tree.nodes.data[node_idx]
@@ -11595,8 +11659,10 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
                 let sym_idx = child.payload
                 if sym_idx != 0 as u32:
                     let sym = self.symtable.symbols.data[sym_idx]
-                    // If it is non-escaping heap variable
-                    if (sym.flags & (FLAG_ESCAPES_TO_HEAP as u16)) == 0 as u16:
+                    // Free only NON-escaping heap locals. Read SYM_FLAG_ESCAPES (4096,
+                    // sym-flag space) set by the EscapeAnalyser -- NOT the old
+                    // FLAG_ESCAPES_TO_HEAP (128), which aliases SYM_FLAG_MOVED.
+                    if (sym.flags & SYM_FLAG_ESCAPES) == 0 as u16:
                         mut is_heap := false
                         let type_id = sym.type_id
                         if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
@@ -11631,17 +11697,14 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
             self.active_vars.len = start_len
             self.active_var_decls.len = start_len
 
-    elif kind == NODE_RETURN_STMT:
-        // Inject destroy statements for all active variables before the return statement
-        if self.active_vars.len > 0 as i64:
-            mut idx := self.active_vars.len - 1 as i64
-            while idx >= 0 as i64:
-                let sym_idx = self.active_vars.data[idx]
-                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
-                self.tree.nodes.data[destroy_node].payload = sym_idx
-                self.insert_before(parent_idx, node_idx, destroy_node)
-                idx = idx - 1
-
+    // NOTE (RFC 0015 P3 soundness): we deliberately do NOT inject destroys before a
+    // `return`. The return VALUE is often computed from an otherwise-freeable local
+    // (`return tmp.v + 1`), so a destroy inserted before the return would free `tmp`
+    // and THEN read `tmp.v` -> use-after-free. Freeing on return paths safely requires
+    // materialising the return value into a temp first (destroy after the value is
+    // computed); that AST transform is deferred. Until then CTGC frees only at block
+    // fall-through (case above): a local live on a return path simply leaks (safe),
+    // never UAFs.
     else:
         mut child_idx := node.first_child
         while child_idx != 0 as u32:
@@ -32428,6 +32491,9 @@ pub fn main() -> i32:
     mut auto_lib := false // RFC 0011 P4 inc3c: --auto-lib â€” auto-build/cache each non-std
                           // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
                           // (may collide/need stdlib) from a standalone library.
+    mut ctgc_free := false // RFC 0015 P3: -ctgc-free â€” inject OP_DESTROY (compile-time free)
+                           // for provably non-escaping, single-owner local aggregates.
+                           // OFF by default so the self-host build stays byte-identical.
 
     // Parse commands
     let cmd = args[1]
@@ -32513,6 +32579,8 @@ pub fn main() -> i32:
                 return 1
         elif opt == "--time":
             show_time = true
+        elif opt == "-ctgc-free" or opt == "--ctgc-free":
+            ctgc_free = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
@@ -32677,12 +32745,13 @@ pub fn main() -> i32:
 
         ax_puts_local("[Debug] Running Escape Analyser...")
         fflush(null as ptr[void])
-        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
+        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable, checker.node_types, checker.node_types_cap)
         escape_an.run()
 
         ax_puts_local("[Debug] Running CTGC Injector...")
         fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
+        ctgc_inj.free_enabled = ctgc_free
         ctgc_inj.run()
 
         ax_puts_local("[Debug] Running Alias Reuse Optimizer...")

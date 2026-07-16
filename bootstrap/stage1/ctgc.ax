@@ -13,6 +13,7 @@ pub struct CtgcInjector:
     pub typetable: ptr[TypeTable]
     pub active_vars: U32Vec // Stack of active sym_idx's
     pub active_var_decls: U32Vec // Stack of AST node decl indices
+    pub free_enabled: bool // RFC 0015 P3: -ctgc-free opt-in; OFF => whole pass is inert
 
 pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[CtgcInjector]:
     let ci = @alloc(@compiler_intrinsic("size_of")[CtgcInjector]()) as ptr[CtgcInjector]
@@ -22,18 +23,24 @@ pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: pt
     ci.typetable = typetable
     ci.active_vars = new_u32_vec()
     ci.active_var_decls = new_u32_vec()
+    ci.free_enabled = false
     return ci
 
 pub fn run(mut self: ptr[CtgcInjector]):
+    // RFC 0015 P3: the whole pass is opt-in behind -ctgc-free. With the flag OFF
+    // (the default, incl. the self-host build) run() returns immediately and no
+    // OP_DESTROY is injected, so output is byte-identical to the historical no-op
+    // (fixpoint A==B). Only with the flag ON does compile-time free activate.
+    if not self.free_enabled:
+        return
     self.traverse_and_inject(0 as u32, 0 as u32)
 
 pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
-    // NOTE (BUG#69 / RFC 0015): this pass is a NO-OP. `run()` enters with node 0,
-    // the real NODE_PROGRAM root, but this guard returns immediately -- no OP_DESTROY
-    // is ever injected, so every local aggregate leaks. Enabling free is unsafe until
-    // escape analysis is sound (RFC 0015 P2/P3): the self-host compiler holds aliases
-    // into buffers it later frees (RFC 0010 §9), so premature free = UAF. Inert.
-    if node_idx == 0xffffffff as u32 or node_idx == 0 as u32:
+    // Guard: node 0 is the real NODE_PROGRAM root (ast.ax::new_ast_tree), so the
+    // historical `node_idx == 0` clause made the pass a permanent no-op. Recursive
+    // descents already filter `!= 0` at every call site, so only 0xffffffff is a
+    // genuine sentinel. Reached only when free_enabled (gated in run()).
+    if node_idx == 0xffffffff as u32:
         return
 
     let node = self.tree.nodes.data[node_idx]
@@ -50,8 +57,10 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
                 let sym_idx = child.payload
                 if sym_idx != 0 as u32:
                     let sym = self.symtable.symbols.data[sym_idx]
-                    // If it is non-escaping heap variable
-                    if (sym.flags & (FLAG_ESCAPES_TO_HEAP as u16)) == 0 as u16:
+                    // Free only NON-escaping heap locals. Read SYM_FLAG_ESCAPES (4096,
+                    // sym-flag space) set by the EscapeAnalyser -- NOT the old
+                    // FLAG_ESCAPES_TO_HEAP (128), which aliases SYM_FLAG_MOVED.
+                    if (sym.flags & SYM_FLAG_ESCAPES) == 0 as u16:
                         mut is_heap := false
                         let type_id = sym.type_id
                         if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
@@ -86,17 +95,14 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
             self.active_vars.len = start_len
             self.active_var_decls.len = start_len
 
-    elif kind == NODE_RETURN_STMT:
-        // Inject destroy statements for all active variables before the return statement
-        if self.active_vars.len > 0 as i64:
-            mut idx := self.active_vars.len - 1 as i64
-            while idx >= 0 as i64:
-                let sym_idx = self.active_vars.data[idx]
-                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
-                self.tree.nodes.data[destroy_node].payload = sym_idx
-                self.insert_before(parent_idx, node_idx, destroy_node)
-                idx = idx - 1
-
+    // NOTE (RFC 0015 P3 soundness): we deliberately do NOT inject destroys before a
+    // `return`. The return VALUE is often computed from an otherwise-freeable local
+    // (`return tmp.v + 1`), so a destroy inserted before the return would free `tmp`
+    // and THEN read `tmp.v` -> use-after-free. Freeing on return paths safely requires
+    // materialising the return value into a temp first (destroy after the value is
+    // computed); that AST transform is deferred. Until then CTGC frees only at block
+    // fall-through (case above): a local live on a return path simply leaks (safe),
+    // never UAFs.
     else:
         mut child_idx := node.first_child
         while child_idx != 0 as u32:

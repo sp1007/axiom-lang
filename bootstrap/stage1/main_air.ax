@@ -740,6 +740,9 @@ pub fn main() -> i32:
     mut auto_lib := false // RFC 0011 P4 inc3c: --auto-lib — auto-build/cache each non-std
                           // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
                           // (may collide/need stdlib) from a standalone library.
+    mut ctgc_free := false // RFC 0015 P3: -ctgc-free — inject OP_DESTROY (compile-time free)
+                           // for provably non-escaping, single-owner local aggregates.
+                           // OFF by default so the self-host build stays byte-identical.
 
     // Parse commands
     let cmd = args[1]
@@ -825,6 +828,8 @@ pub fn main() -> i32:
                 return 1
         elif opt == "--time":
             show_time = true
+        elif opt == "-ctgc-free" or opt == "--ctgc-free":
+            ctgc_free = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
@@ -989,12 +994,13 @@ pub fn main() -> i32:
 
         ax_puts_local("[Debug] Running Escape Analyser...")
         fflush(null as ptr[void])
-        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable)
+        mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable, checker.node_types, checker.node_types_cap)
         escape_an.run()
 
         ax_puts_local("[Debug] Running CTGC Injector...")
         fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
+        ctgc_inj.free_enabled = ctgc_free
         ctgc_inj.run()
 
         ax_puts_local("[Debug] Running Alias Reuse Optimizer...")

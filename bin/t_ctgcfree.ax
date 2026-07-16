@@ -1,0 +1,23 @@
+// RFC 0015 P3 oracle (exit 42). Exercises compile-time free (`-ctgc-free`):
+//   * `b` is an owned struct-ctor local, read only via a scalar field, in a
+//     loop-body block that falls through -> CTGC frees it each iteration.
+//   * `kept` escapes via return -> must NOT be freed.
+// Runs correctly both with and without -ctgc-free (the flag must not change results).
+
+struct Box:
+    v: i64
+
+fn keep(n: i64) -> Box:
+    let kept = Box(v: n)   // escapes (returned) -> not freed
+    return kept
+
+fn main() -> i64:
+    mut total = 0
+    mut i = 0
+    while i < 6:
+        let b = Box(v: 7)  // owned, scalar read only, fall-through -> freed each iter
+        if b.v > 0:
+            total = total + b.v
+        i = i + 1
+    let k = keep(0)        // 42 accumulated above; k.v = 0
+    return total + k.v     // 6*7 + 0 = 42
