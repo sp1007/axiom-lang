@@ -1,0 +1,12 @@
+// Oracle: float-literal width inference in a binary arithmetic op. A float literal
+// defaults to f64, so `y * 2.0` with `y: f32` built mixed f32*f64 operands -> the op
+// was typed F64 and codegen emitted a 64-bit mulsd over `y`'s 32-bit bits -> garbage
+// (miscompiled to 0). typecheck now coerces a float-literal operand to the concrete
+// float width of the other operand (or to an f32 EXPECTED context when both are
+// literals), mirroring the integer-literal bidirectional rule. Frontend, ACCEPT-only.
+fn main() -> i64:
+    let y: f32 = 20.0
+    let a: f32 = y * 2.0      // rhs f64-literal coerced to f32 -> 40
+    let b: f32 = 0.0 * y      // lhs f64-literal coerced to f32 -> 0
+    let c: f32 = 1.0 + 1.0    // both literals, f32-expected context -> 2
+    return (a + b + c) as i64 // 40 + 0 + 2 = 42

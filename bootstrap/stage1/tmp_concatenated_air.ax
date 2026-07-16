@@ -9245,6 +9245,22 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     t2 = self.infer_node(rhs, t1)
                 elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
                     t1 = self.infer_node(lhs, t2)
+                // RFC 0006 float-literal width inference. A float literal defaults to
+                // f64 (NODE_FLOAT_LIT), so `y * 2.0` with `y: f32` produced mixed f32*f64
+                // operands: result_type became F64 (below) but `y` is 32-bit, so codegen
+                // emitted a 64-bit mulsd over the 32-bit bits -> garbage (miscompiled to
+                // 0). Coerce a float-literal operand to the OTHER operand's concrete float
+                // width, or (both literals) to an f32 EXPECTED context, mirroring the
+                // integer-literal rule above. Same-width and pure-f64 code is unchanged.
+                let lhs_flit = self.tree.nodes.data[lhs].kind == NODE_FLOAT_LIT
+                let rhs_flit = self.tree.nodes.data[rhs].kind == NODE_FLOAT_LIT
+                if rhs_flit and not lhs_flit and (t1 == TYPE_F32 or t1 == TYPE_F64) and t1 != t2:
+                    t2 = self.infer_node(rhs, t1)
+                elif lhs_flit and not rhs_flit and (t2 == TYPE_F32 or t2 == TYPE_F64) and t1 != t2:
+                    t1 = self.infer_node(lhs, t2)
+                elif lhs_flit and rhs_flit and expected == TYPE_F32:
+                    t1 = self.infer_node(lhs, TYPE_F32)
+                    t2 = self.infer_node(rhs, TYPE_F32)
                 // BUG#53 class: an arithmetic/bitwise operator on an un-unwrapped
                 // Option/Result operand silently lowers to OP_IADD/etc on the box value
                 // -> garbage (e.g. `v.get(0) + v.get(1)` forgetting `.unwrap()` adds two
