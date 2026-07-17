@@ -17786,6 +17786,15 @@ pub fn is_hoistable_op(op: u16) -> bool:
         return true
     if op == OP_NEG or op == OP_NOT:
         return true
+    // NOTE: OP_COPY is deliberately NOT hoisted. It is pure and would be safe under
+    // the single-def gate, but LICM runs before copy-prop, so an invariant chain
+    // `t1=a*b; t2=t1+c` (lowered with a copy between t1 and t2) only hoists its
+    // first link this pass; the dependent link hoists on a later -O2 build once
+    // copy-prop has collapsed the copy â€” or not at all in a single structural pass.
+    // This is a correctness-neutral effectiveness limitation, not a bug (measured:
+    // hoisting copies gave no additional motion on the probe battery). Revisit only
+    // if a loop-heavy workload shows it matters (then: run copy-prop before LICM, or
+    // iterate LICM in the value-pass loop â€” both are pipeline changes needing a gate).
     return false
 
 // Fill preheader[b] with the pre-header block id for every loop-body block b whose
