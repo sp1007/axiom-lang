@@ -57,6 +57,27 @@ Confirm with a trace of `symbols[inst_sym_idx].type_id`'s ret vs `inferred[T]` (
 rebuild). FRONTEND fix → A==B gate. Add an oracle once fixed (e.g. `t_genfloatret` id/max on f64
 → 42); a WORKAROUND oracle (annotated `let r: f64 =`) already passes today.
 
+## ✅ Root cause NARROWED to one branch (trace-confirmed 2026-07-18)
+Added a temp `XTRACE` at typecheck.ax L3629 and diffed y2 (float) vs y4 (int) traces: the user
+`id` call resolves **`ret=4` (i64) for BOTH** — so it is the monomorphized INSTANCE's SIGNATURE
+return type that defaults to i64 (not the caller, not the arg). Chain, confirmed piece by piece:
+1. `mono.ax substitute_type_params` DOES correctly map the return node: type_id 10 → `intern("f64")`,
+   sets `payload=intern("f64")` + `FLAG_IS_SUBSTITUTED` (the `elif type_id==10: "f64"` case exists).
+   So the substitution side is FINE.
+2. `typecheck.ax pre_infer_func_signature` L2416 computes `ret_type = infer_node(return_node)`.
+   The return node is a **NODE_TYPE_EXPR** (not NODE_IDENT), handled at L4124–4210.
+3. The NODE_IDENT substituted branch (L4079–4114) maps `"f64"→10` correctly, but the **NODE_TYPE_EXPR**
+   branch resolves differently: **L4140–4144 first infers `first_child` and, if non-UNKNOWN, sets
+   `result_type = inner` BEFORE the `"f64"→10` text mapping at L4146+ can run.** Prime suspect: the
+   substituted return TYPE_EXPR still has a child (the old `T` ident) that infers to a generic/int,
+   short-circuiting the correct name resolution — for i64 the wrong path still lands on 4, so int is
+   invisibly "correct"; for f64 it lands on 4 (i64) = the bug.
+NEXT (turnkey): trace `pre_infer_func_signature` for the instance (gate the print to the mangled
+name) to confirm whether L4142 `inner` or the L4146 text path wins for the substituted `-> f64` node;
+then make the NODE_TYPE_EXPR substituted-primitive path resolve the name FIRST (mirror NODE_IDENT
+L4079–4114) or skip the first_child short-circuit when `is_substituted`. Frontend → A==B. Verify
+no regression on generic INT returns (they currently work by coincidence of the same default).
+
 ## Distinct from t_f32generic
 `t_f32generic` covers an f32 LITERAL ARG re-typing in `Vec[f32].push` (arg side). This is the
 RETURN side of a generic fn — uncovered. Not a duplicate.
