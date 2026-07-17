@@ -1,0 +1,11 @@
+// Oracle: a generic METHOD call (Vec[f64].get -> Option[f64], then .unwrap -> f64)
+// returning a float. Complements t_genfloatret (free-fn): confirms the caller reads
+// the monomorphized INSTANCE signature for a FIELD-EXPR callee (flag 2048) too, not
+// the generic template (which would default the float return to int). [[bug-generic-fn-float-return-default-int]]
+fn main() -> i64:
+    mut v := Vec[f64]()
+    v.push(3.5)
+    v.push(2.5)
+    let a = v.get(0).unwrap()
+    let b = v.get(1).unwrap()
+    return ((a + b) * 7.0) as i64   // 6.0*7 = 42
