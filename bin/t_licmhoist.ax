@@ -1,0 +1,19 @@
+// RFC 0025 must-hoist positive oracle: a genuinely loop-invariant sub-expression
+// (x*y, then +7) inside the loop body. Operands x,y are params (single-def, outside
+// the loop); the induction var i and accumulator acc are multiply-defined and must
+// NOT be hoisted. Model-A LICM should hoist `x*y` and `x*y+7` to the pre-header.
+// Correctness is identical with or without hoisting; this oracle guards that the
+// pass stays SOUND while being active (O0..O3 must all agree).
+fn work(x: i64, y: i64, n: i64) -> i64:
+    mut i := 0
+    mut acc := 0
+    while i < n:
+        let inv = x * y + 7      // loop-invariant: hoistable
+        acc = acc + inv + i      // i variant -> the whole add stays in the loop
+        i = i + 1
+    return acc
+
+fn main() -> i64:
+    // x*y+7 = 3*4+7 = 19; n=10 => acc = sum_{i=0..9}(19+i) = 190 + 45 = 235
+    let r = work(3, 4, 10)
+    return r % 240               // 235

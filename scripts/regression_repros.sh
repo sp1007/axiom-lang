@@ -410,6 +410,8 @@ rows=(
   "t_licm|exit|44"
   "t_loopcall|exit|140"
   "t_loopstruct|exit|9"
+  "t_licmhoist|exit|235"
+  "t_loopcross|exit|10"
 )
 
 for row in "${rows[@]}"; do
@@ -436,17 +438,22 @@ done
 
 # --- Optimizer level guard (-O2/-O3) --------------------------------------
 # The rows above all build at -O1. This block guards the -O2/-O3 structural
-# loop passes (strength_reduction/loop_unroll; LICM is disabled as unsound):
-# a loop program must (a) NOT crash the compiler and (b) produce the same
-# result at -O2/-O3 as at -O1. Regression for bug-o2-o3-loop-compile-crash.
+# loop passes (LICM [RFC 0025 model-A] + strength_reduction; loop_unroll stays
+# disabled): a loop program must (a) NOT crash the compiler and (b) produce the
+# same result at -O2/-O3 as at -O1. Regression for bug-o2-o3-loop-compile-crash
+# and RFC 0025 (sound LICM re-enablement).
 # Each entry crosses a different AIR pattern with the loop optimizers:
 #   t_licm       plain induction-var sum loop
 #   t_loopcall   function call inside the loop body (caller-save/clobber)
 #   t_loopstruct struct field read-modify-write inside the loop (aggregate)
+#   t_licmhoist  genuinely-invariant sub-expr -> LICM MUST hoist, stay correct
+#   t_loopcross  loop-crossing value used in the condition (RFC 0016 liveness)
 opt_rows=(
   "t_licm|44"
   "t_loopcall|140"
   "t_loopstruct|9"
+  "t_licmhoist|235"
+  "t_loopcross|10"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

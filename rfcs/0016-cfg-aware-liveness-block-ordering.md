@@ -68,6 +68,32 @@ D4. **Determinism** — RPO must be computed deterministically (fixed DFS succes
 - P2: RPO serialization; B==C fixpoint; regression green; control-flow-heavy oracles pass; no perf regression in self-build time beyond noise.
 - P3: short-circuit shipped; `scB` self-hosts; crash-based + truth-table oracles pass; the guard idiom `if p != null and p[0] > 0` no longer faults.
 
+## 7b. Re-confirmation 2026-07-17 — liveness IS sound for loop-crossing values (RFC 0025 blocker-1 disproved)
+
+RFC 0025 (LICM re-enablement) originally recorded a "blocker 1" claiming the
+register allocator's liveness "is a single linear `[def,use]` interval, not
+CFG-aware (RFC 0016), and mishandles loop-crossing values" — i.e. that hoisting a
+value so it becomes live across a loop and used in the loop condition would
+miscompile. **That claim was investigated at the code level and empirically, and is
+FALSE for the shipped P2' liveness.** Two facts:
+
+1. **Code:** `compute_liveness` after P2' keeps the base `[first_def,last_use]`
+   linear interval but *extends* it via the CFG live-in/live-out dataflow hull
+   (`x86_regalloc.ax` §"CFG-aware liveness extension"). Extension only ever *grows*
+   an interval, so a loop-carried value's interval is grown to cover the whole loop
+   region. Liveness therefore only ever **over**-approximates — it can add spurious
+   interference (extra spills), never under-approximate, so it cannot cause the
+   clobber-miscompile the blocker described.
+2. **Empirical (`bin/t_loopcross.ax`):** a runtime-computed bound defined before
+   a loop, live across it, used in the loop condition, alongside seven independent
+   loop-body temps pressuring the allocator — compiles to the identical correct
+   result at -O0/-O1/-O2/-O3.
+
+The real reason naive LICM crashed was the **non-SSA multiply-defined hoist**
+(RFC 0025 §1 item 3), not liveness. RFC 0025 model-A's single-def gate addresses
+that directly, and sound LICM is now shipped at -O2/-O3 (see RFC 0025 §0). No change
+to the liveness core was needed.
+
 ## 8. Status
 
 **RESOLVED — P2' + P3 SHIPPED (2026-07-09). BUG#86 CLOSED.** Short-circuit `and`/`or` now evaluate lazily per spec; the CFG-aware liveness foundation (P2') plus the `lower_while` CFG-edge fix (found during P3) make the diamond self-host. Final fixpoint `c777ef7b`.

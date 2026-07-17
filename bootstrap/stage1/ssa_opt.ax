@@ -596,35 +596,146 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
 
     return changed
 
-// Loop-Invariant Code Motion.
+// Loop-Invariant Code Motion — RFC 0025 "model A" (sound on non-SSA AIR).
 //
-// DISABLED in the -O2/-O3 pipeline (see SsaOptimizer.run). It is UNSOUND on the
-// current AIR because AIR is NON-SSA: a register may be assigned more than once
-// inside a loop (e.g. an induction variable `i = i + 1`). This pass decides a
-// value is loop-invariant purely from where its *operands* are defined and then
-// hoists a single definition into the pre-header while NOP-ing the in-loop copy —
-// which is only valid under single-assignment. On multiply-defined registers it
-// moves/erases the wrong definition, so the loop body reads a stale/undefined
-// register and the compiled program crashes at runtime (verified: a plain
-// `while i<1000: acc=acc+i; i=i+1` sum loop segfaults at run time when this pass
-// is enabled, even though it compiles cleanly).
+// RE-ENABLED in the -O2/-O3 pipeline (see SsaOptimizer.run). AIR is NON-SSA (a
+// register may be reassigned inside a loop: an induction variable `i = i + 1`, an
+// accumulator `acc = acc + i`). A naive LICM that hoists a definition and NOPs the
+// in-loop copy is only valid under single-assignment, so on a multiply-defined
+// register it moves/erases the wrong definition → the loop body reads a stale
+// register → the compiled program crashes at run time. The previous naive pass hit
+// exactly this (a plain `while i<N: acc=acc+i; i=i+1` sum loop segfaulted at run
+// time). Model A closes that hole with three gates that make every hoist provably
+// safe WITHOUT building SSA:
 //
-// The compiler-time SEGV that used to happen while *building* any loop at -O2/-O3
-// is a SEPARATE, now-fixed pair of bugs this function tripped:
-//   1) insert_inst_at adjusted block instrs_start by block-index instead of
-//      physical layout position (fixed in insert_inst_at), and
-//   2) the src2 invariance test indexed def_block with OP_ICONST/OP_FCONST
-//      immediate bits (e.g. 0xFFFFFFFF) as if they were register ids (fixed below).
-// Both fixes are kept because insert_inst_at is shared by the sound
-// strength_reduction/loop_unroll passes. Re-enabling LICM needs real SSA (or a
-// per-register single-def/dominator check) and belongs in an RFC.
+//   1. WHITELIST (is_hoistable_op): only pure, fault-free, register/immediate-
+//      operand ALU ops (add/sub/mul, float add/sub/mul, compares, bitwise, neg/not).
+//      EXCLUDES: constants (OP_ICONST/OP_FCONST — no compute benefit, and forcing a
+//      const into a loop-crossing register only adds register pressure), all memory
+//      ops (may fault — the address may be valid only inside the loop), div/mod
+//      (trap on div-by-zero if the loop never runs), and everything with a side
+//      effect (store/call/syscall). RFC 0025 D3 + empirical: including constants
+//      previously reintroduced a segfault; excluding them is all-safety / no-loss.
+//   2. SINGLE-DEF GATE: hoist a candidate only if its dest register is defined
+//      EXACTLY ONCE in the whole function AND every register operand is defined
+//      exactly once, OUTSIDE the loop. This is the non-SSA soundness key: a
+//      single-def register cannot be the wrong definition, and def_block[reg] is
+//      then unambiguous. Any induction/accumulator var is multiply-defined → never
+//      hoisted (correct: it is not invariant anyway).
+//   3. UNIQUE DOMINATING PRE-HEADER: hoist only into a loop header that has EXACTLY
+//      ONE predecessor with lower loop_depth (all other preds are back-edges), which
+//      makes that predecessor a true pre-header that dominates the header. If a
+//      unique pre-header cannot be established, the loop is skipped (hoist nothing).
+//
+// The two crash fixes the naive pass needed are kept (they are shared by the sound
+// strength_reduction/loop_unroll passes): insert_inst_at adjusts instrs_start by
+// PHYSICAL layout position, and register-operand reads guard against ICONST/FCONST/
+// JUMP/BRANCH immediate slots. Acceptance test (RFC 0025 §4): differential O0..O3 on
+// the loop battery + a must-hoist positive oracle + building the compiler at -O2 and
+// running the full regression on the -O2-built compiler (self-build is blind — it
+// uses -O1, so LICM never runs during it).
+
+// Pure, fault-free ALU ops whose operands are all registers/immediates. These are
+// the ONLY ops model-A LICM will relocate (RFC 0025 D3). Deliberately excludes
+// OP_ICONST/OP_FCONST (constants), OP_IDIV/OP_IMOD/OP_FDIV (trap), memory ops
+// (LOAD/GET_FIELD/INDEX/... — may fault), casts/conversions (src2 may encode a
+// width, not a register), and anything with a side effect.
+pub fn is_hoistable_op(op: u16) -> bool:
+    if op == OP_IADD or op == OP_ISUB or op == OP_IMUL:
+        return true
+    if op == OP_FADD or op == OP_FSUB or op == OP_FMUL:
+        return true
+    if op == OP_EQ or op == OP_NE or op == OP_LT or op == OP_LE or op == OP_GT or op == OP_GE:
+        return true
+    if op == OP_AND or op == OP_OR or op == OP_XOR or op == OP_SHL or op == OP_SHR:
+        return true
+    if op == OP_NEG or op == OP_NOT:
+        return true
+    return false
+
+// Fill preheader[b] with the pre-header block id for every loop-body block b whose
+// INNERMOST loop has a unique dominating pre-header, else 0xffffffff. A natural loop
+// is identified by a back-edge b->h (h a successor of b, h's block id <= b's). Its
+// header h has a unique pre-header iff exactly one pred of h has loop_depth < h's;
+// that pred then dominates h (every other pred is a back-edge, only reachable after
+// h). Membership is the classic backward walk from the back-edge source, stopping at
+// the header. Only blocks whose own loop_depth equals the header's are assigned here
+// (their innermost loop is this one); blocks in a nested inner loop have a higher
+// depth and are assigned when that inner loop's back-edge is processed. Deterministic
+// (fixed block/succ/pred iteration order).
+pub fn compute_loop_preheaders(f: ptr[AirFunc], preheader: ptr[u32]):
+    let nblocks = f.blocks.len
+    if nblocks == 0 as i64:
+        return
+    let in_loop = @alloc(nblocks) as ptr[bool]
+    let queue = @alloc(nblocks * 4 as i64) as ptr[u32]
+
+    mut b := 0 as u32
+    while b < nblocks as u32:
+        let blk = f.blocks.data[b]
+        mut si := 0 as u32
+        while si < blk.succs_len:
+            let h = f.block_succs.data[blk.succs_start + si]
+            if h <= b and h < nblocks as u32:
+                let hd = f.blocks.data[h].loop_depth
+                // unique pre-header of h = the sole pred with lower loop_depth
+                mut ph := 0xffffffff as u32
+                mut nph := 0 as i64
+                mut pi := 0 as u32
+                while pi < f.blocks.data[h].preds_len:
+                    let p = f.block_preds.data[f.blocks.data[h].preds_start + pi]
+                    if p < nblocks as u32:
+                        if f.blocks.data[p].loop_depth < hd:
+                            ph = p
+                            nph = nph + 1 as i64
+                    pi = pi + 1 as u32
+
+                if nph == 1 as i64:
+                    // membership: {h} U preds*(b) not crossing h
+                    @memset(in_loop as ptr[void], 0 as u8, nblocks)
+                    in_loop[h] = true
+                    in_loop[b] = true
+                    mut head := 0 as i64
+                    mut tail := 0 as i64
+                    if h != b:
+                        queue[tail] = b
+                        tail = tail + 1 as i64
+                    while head < tail:
+                        let curr = queue[head]
+                        head = head + 1 as i64
+                        let curr_blk = f.blocks.data[curr]
+                        mut ppi := 0 as u32
+                        while ppi < curr_blk.preds_len:
+                            let pred = f.block_preds.data[curr_blk.preds_start + ppi]
+                            if pred < nblocks as u32:
+                                if not in_loop[pred]:
+                                    in_loop[pred] = true
+                                    queue[tail] = pred
+                                    tail = tail + 1 as i64
+                            ppi = ppi + 1 as u32
+                    // assign pre-header to member blocks at the header's depth
+                    mut i := 0 as i64
+                    while i < nblocks:
+                        if in_loop[i] and f.blocks.data[i].loop_depth == hd:
+                            preheader[i] = ph
+                        i = i + 1 as i64
+            si = si + 1 as u32
+        b = b + 1 as u32
+
+    @free(in_loop as ptr[u8])
+    @free(queue as ptr[u8])
+
 pub fn licm_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
     if max_reg == 0 as u32:
         return false
 
-    let def_block = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
-    @memset(def_block as ptr[void], 0xff as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
+    let n = max_reg as i64 + 1 as i64
+    // per-register def COUNT (single-def gate) + the block of its (last) def.
+    let def_count = @alloc(n * 4 as i64) as ptr[u32]
+    @memset(def_count as ptr[void], 0 as u8, n * 4 as i64)
+    let def_block = @alloc(n * 4 as i64) as ptr[u32]
+    @memset(def_block as ptr[void], 0xff as u8, n * 4 as i64)
 
     mut bi := 0 as i64
     while bi < f.blocks.len:
@@ -634,101 +745,95 @@ pub fn licm_func(f: ptr[AirFunc]) -> bool:
             let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
             let inst = f.insts.data[inst_idx]
             if inst.opcode != OP_NOP and inst.dest != 0 as u32:
+                def_count[inst.dest] = def_count[inst.dest] + 1 as u32
                 def_block[inst.dest] = bi as u32
             inst_i = inst_i + 1 as u32
         bi = bi + 1 as i64
+
+    // per-block -> unique dominating pre-header (0xffffffff if none)
+    let preheader = @alloc(f.blocks.len * 4 as i64) as ptr[u32]
+    @memset(preheader as ptr[void], 0xff as u8, f.blocks.len * 4 as i64)
+    compute_loop_preheaders(f, preheader)
 
     mut changed := false
 
     bi = 0 as i64
     while bi < f.blocks.len:
-        // NOTE: block/inst fields are re-read fresh from `f.blocks.data[bi]` /
-        // `f.insts.data[inst_idx]` on every use below. A hoist calls
-        // insert_inst_at, which pushes into `f.insts` (may REALLOCATE `insts.data`,
-        // invalidating any held `ptr[AirInst]`) and bumps `instrs_start` of every
-        // block after the pre-header (shifting this block's window when
-        // bi > pre_header_id). Holding a captured `blk`/`inst` across the insert —
-        // as the previous code did — read freed/stale memory and segfaulted the
-        // compiler at -O2/-O3 on any loop. Fresh re-reads keep it correct.
-        if f.blocks.data[bi].loop_depth > 0 as u8:
-            mut pre_header_id := 0xffffffff as u32
-            mut pred_i := 0 as u32
-            while pred_i < f.blocks.data[bi].preds_len:
-                let pred = f.block_preds.data[f.blocks.data[bi].preds_start + pred_i]
-                if pred < f.blocks.len as u32:
-                    if f.blocks.data[pred].loop_depth < f.blocks.data[bi].loop_depth:
-                        pre_header_id = pred
-                        break
-                pred_i = pred_i + 1 as u32
+        // Fresh re-reads of block/inst fields on every use: a hoist calls
+        // insert_inst_at, which may REALLOCATE f.insts.data and shifts instrs_start
+        // of physically-later blocks — a captured ptr[AirInst]/AirBlock would be
+        // stale (this segfaulted the naive pass at -O2/-O3 on any loop).
+        let ph = preheader[bi]
+        if ph != 0xffffffff as u32:
+            let cur_depth = f.blocks.data[bi].loop_depth
+            mut inst_i := 0 as u32
+            while inst_i < f.blocks.data[bi].instrs_len:
+                let inst_idx = f.block_instrs.data[f.blocks.data[bi].instrs_start + inst_i]
+                let op = f.insts.data[inst_idx].opcode
+                let ty = f.insts.data[inst_idx].type_id
+                let dst = f.insts.data[inst_idx].dest
+                let s1 = f.insts.data[inst_idx].src1
+                let s2 = f.insts.data[inst_idx].src2
 
-            if pre_header_id != 0xffffffff as u32:
-                mut inst_i := 0 as u32
-                while inst_i < f.blocks.data[bi].instrs_len:
-                    let inst_idx = f.block_instrs.data[f.blocks.data[bi].instrs_start + inst_i]
-                    // Snapshot the scalar fields we need (safe across the insert).
-                    let op = f.insts.data[inst_idx].opcode
-                    let ty = f.insts.data[inst_idx].type_id
-                    let dst = f.insts.data[inst_idx].dest
-                    let s1 = f.insts.data[inst_idx].src1
-                    let s2 = f.insts.data[inst_idx].src2
+                // Gate 1: whitelist. Gate 2a: dest single-def.
+                if is_hoistable_op(op) and dst != 0 as u32 and dst <= max_reg and def_count[dst] == 1 as u32:
+                    // Gate 2b: every register operand single-def AND defined outside
+                    // the loop. For whitelisted ops src1/src2 are always registers
+                    // (or 0 for the unused slot of a unary op).
+                    mut ok := true
+                    if s1 != 0 as u32:
+                        if s1 > max_reg or def_count[s1] != 1 as u32:
+                            ok = false
+                        else:
+                            let db = def_block[s1]
+                            if db == 0xffffffff as u32 or f.blocks.data[db].loop_depth >= cur_depth:
+                                ok = false
+                    if ok and s2 != 0 as u32:
+                        if s2 > max_reg or def_count[s2] != 1 as u32:
+                            ok = false
+                        else:
+                            let db = def_block[s2]
+                            if db == 0xffffffff as u32 or f.blocks.data[db].loop_depth >= cur_depth:
+                                ok = false
 
-                    if op != OP_NOP and not has_side_effect(op) and dst != 0 as u32:
-                        // A source is a REGISTER operand only for opcodes that
-                        // encode registers there. OP_ICONST/OP_FCONST pack a 64-bit
-                        // immediate into src1+src2, OP_JUMP/OP_BRANCH put a block
-                        // target in a source slot — those are NOT register ids and
-                        // must not index def_block (indexing def_block with a raw
-                        // immediate like 0xFFFFFFFF is a wild out-of-bounds read →
-                        // compiler SEGV). This mirrors max_reg_id's operand rules.
-                        mut inv_src1 := true
-                        if s1 != 0 as u32 and op != OP_ICONST and op != OP_FCONST and op != OP_JUMP:
-                            let def_b = def_block[s1]
-                            if def_b != 0xffffffff as u32:
-                                if f.blocks.data[def_b].loop_depth >= f.blocks.data[bi].loop_depth:
-                                    inv_src1 = false
+                    if ok:
+                        // Insert BEFORE the pre-header's terminator (appending after
+                        // the jump into the loop would be dead code / undefined dest).
+                        mut pos := f.blocks.data[ph].instrs_len
+                        if pos > 0 as u32:
+                            let last_idx = f.block_instrs.data[f.blocks.data[ph].instrs_start + (pos - 1 as u32)]
+                            let last_op = f.insts.data[last_idx].opcode
+                            if last_op == OP_JUMP or last_op == OP_BRANCH or last_op == OP_RETURN:
+                                pos = pos - 1 as u32
 
-                        mut inv_src2 := true
-                        if s2 != 0 as u32 and op != OP_ICONST and op != OP_FCONST and op != OP_JUMP and op != OP_BRANCH:
-                            let def_b = def_block[s2]
-                            if def_b != 0xffffffff as u32:
-                                if f.blocks.data[def_b].loop_depth >= f.blocks.data[bi].loop_depth:
-                                    inv_src2 = false
+                        insert_inst_at(f, ph, pos, AirInst(
+                            opcode: op,
+                            type_id: ty,
+                            dest: dst,
+                            src1: s1,
+                            src2: s2
+                        ))
 
-                        if inv_src1 and inv_src2:
-                            // Insert BEFORE the pre-header's terminator so the
-                            // hoisted value is actually reached (appending at the
-                            // end would place it after the jump into the loop →
-                            // dead code / undefined dest → miscompile).
-                            mut pos := f.blocks.data[pre_header_id].instrs_len
-                            if pos > 0 as u32:
-                                let last_idx = f.block_instrs.data[f.blocks.data[pre_header_id].instrs_start + (pos - 1 as u32)]
-                                let last_op = f.insts.data[last_idx].opcode
-                                if last_op == OP_JUMP or last_op == OP_BRANCH or last_op == OP_RETURN:
-                                    pos = pos - 1 as u32
+                        // The value is now defined in the pre-header (still exactly
+                        // one def). A dependent invariant later in the same block sees
+                        // this and becomes hoistable too (single-pass chaining).
+                        def_block[dst] = ph
 
-                            insert_inst_at(f, pre_header_id, pos, AirInst(
-                                opcode: op,
-                                type_id: ty,
-                                dest: dst,
-                                src1: s1,
-                                src2: s2
-                            ))
+                        // NOP the original in place, addressed by index (the insert
+                        // may have reallocated f.insts.data).
+                        f.insts.data[inst_idx].opcode = OP_NOP
+                        f.insts.data[inst_idx].type_id = 0 as u16
+                        f.insts.data[inst_idx].dest = 0 as u32
+                        f.insts.data[inst_idx].src1 = 0 as u32
+                        f.insts.data[inst_idx].src2 = 0 as u32
 
-                            def_block[dst] = pre_header_id
-
-                            // NOP the original in place, addressed by index (the
-                            // insert may have reallocated f.insts.data).
-                            f.insts.data[inst_idx].opcode = OP_NOP
-                            f.insts.data[inst_idx].type_id = 0 as u16
-                            f.insts.data[inst_idx].dest = 0 as u32
-                            f.insts.data[inst_idx].src1 = 0 as u32
-                            f.insts.data[inst_idx].src2 = 0 as u32
-
-                            changed = true
-                    inst_i = inst_i + 1 as u32
+                        changed = true
+                inst_i = inst_i + 1 as u32
         bi = bi + 1 as i64
 
+    @free(def_count as ptr[u8])
     @free(def_block as ptr[u8])
+    @free(preheader as ptr[u8])
     return changed
 
 pub fn insert_inst_at(f: ptr[AirFunc], block_id: u32, pos_in_block: u32, inst: AirInst) -> u32:
@@ -1567,7 +1672,7 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
             // the iterative loop below will clean up.
             if self.level >= 2 as u8 and not is_large:
                 compute_loop_depths(f)
-                // licm_func(f) DISABLED: unsound on non-SSA AIR — see note at licm_func.
+                licm_func(f) // RFC 0025: sound model-A LICM (single-def gate + whitelist + unique pre-header)
                 strength_reduction_func(f)
                 // loop_unroll_func(f) DISABLED — latent miscompile on large code.
                 // Bisected 2026-07-17: a COMPILER built at -O2 with this pass on

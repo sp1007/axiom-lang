@@ -1,0 +1,33 @@
+// Isolation test for RFC 0016 liveness: values defined BEFORE a loop, live
+// ACROSS it, used in the loop CONDITION, competing with many loop-body temps.
+// If liveness under-approximates loop-crossing values, a body temp reuses the
+// bound's register and the result is wrong. Exercised at -O2/-O3 (self-build
+// only runs -O1, so this shape is otherwise untested at high opt levels).
+
+fn compute_bound(seed: i64) -> i64:
+    return seed * 5 + 3          // runtime value -> must live in a register
+
+fn heavy(n: i64) -> i64:
+    let bound = compute_bound(n)  // live across the whole loop, used in cond
+    let step = n + 1              // also loop-crossing
+    mut i := 0
+    mut acc := 0
+    while i < bound:              // bound used every iteration
+        // many independent temps to pressure the allocator
+        let a = i * 3
+        let b = i + 7
+        let c = i - 2
+        let d = a + b
+        let e = b + c
+        let f = d + e
+        let g = f * 2
+        acc = acc + g + step      // step also used every iteration
+        i = i + 1
+    return acc + bound + step
+
+fn main() -> i64:
+    // bound = 5*5+3 = 28, step = 6
+    // loop i=0..27; sum over i of (a+b + b+c + ... ) — just need determinism
+    let r = heavy(5)
+    // reduce to a small deterministic exit code
+    return r % 100
