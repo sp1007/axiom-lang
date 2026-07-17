@@ -83,6 +83,12 @@ pub struct TypeChecker:
     node_types_cap: i64
     current_return: u32
     current_match_scrutinee: u32
+    // True while type-checking the body of a GENERIC function/method. A generic
+    // call that leaves a type param bound to a generic placeholder legitimately
+    // DEFERS to monomorphization ONLY inside a generic body; in a CONCRETE body
+    // the same situation means the param is genuinely un-inferable and the deferred
+    // call is never instantiated -> segfault. This flag lets the defer site reject.
+    current_fn_is_generic: bool
     pub diags_count: i64
 
 pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: ptr[SymbolTable], types: ptr[TypeTable]) -> ptr[TypeChecker]:
@@ -104,6 +110,7 @@ pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: p
     tc.node_types_cap = initial_cap
     tc.current_return = 0 as u32
     tc.current_match_scrutinee = 0 as u32
+    tc.current_fn_is_generic = false
     tc.diags_count = 0 as i64
     return tc
 
@@ -2601,7 +2608,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         
         let prev_ret = self.current_return
         self.current_return = ret_type
-        
+        let prev_fn_generic = self.current_fn_is_generic
+        self.current_fn_is_generic = (self.tree.nodes.data[node_idx].flags & FLAG_IS_GENERIC) != 0 as u16
+
         mut child := self.tree.nodes.data[node_idx].first_child
         while child != 0 as u32:
             let child_node = self.tree.nodes.data[child]
@@ -2611,6 +2620,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             child = next_sibling
 
         self.current_return = prev_ret
+        self.current_fn_is_generic = prev_fn_generic
 
         // Missing-return check (BUG#53 family): a non-void function whose body can
         // fall off the end returns a garbage register silently. Diagnose it. Only
@@ -3486,6 +3496,17 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         a_idx = a_idx + 1
 
                 if has_generic_arg:
+                    // Deferring a generic-typed call is correct ONLY inside a generic
+                    // body (it re-instantiates at monomorphization). In a CONCRETE
+                    // function the type param is genuinely un-inferable (e.g. only a
+                    // bare `None` supplied it), no instance is ever produced, and the
+                    // deferred call silently SEGFAULTs. Reject cleanly instead (BUG#53
+                    // convention) — the caller must add explicit type arguments
+                    // (`f[T](...)`) or annotate the argument. See
+                    // [[bug-none-first-generic-inference]] residual cluster (s3/n2).
+                    if not self.current_fn_is_generic:
+                        ax_printf_local("error: cannot infer generic type parameter for this call in a non-generic context; add explicit type arguments (f[T](...)) or annotate the argument\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
                     if gen_params.data != null as ptr[u32]:
                         @free(gen_params.data as ptr[u8])
                     if arg_types.data != null as ptr[u32]:

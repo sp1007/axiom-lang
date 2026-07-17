@@ -41,7 +41,19 @@ Fixes the realistic `first_some`/`or_else`-shaped pattern (`Some` + `None` args)
 [[bug91-generic-sum-ctor-inference-open]] / [[bug79-vec-option-none-mono]] but distinct (arg-order,
 concrete-overrides-generic).
 
-## Residual OPEN sub-bug (banked, NOT fixed by the above) — None-value lowering
+## ✅ UPDATE 2026-07-18 (later) — un-inferable-param sub-case now REJECTS cleanly
+`s3` and `n2` (a type param NO argument can determine, in a CONCRETE calling context) now emit
+`error: cannot infer generic type parameter for this call in a non-generic context; add explicit
+type arguments (f[T](...)) or annotate the argument` and halt (BUG#53) instead of segfaulting.
+Implemented exactly per the pointer below: added `current_fn_is_generic` to `TypeChecker`
+(set from `FLAG_IS_GENERIC` at NODE_FUNC_DECL), and at the `has_generic_arg` defer site reject
+when `not self.current_fn_is_generic`. Generic BODIES still defer (self-host untouched: self-build
+OK, A==B `32F4DF0E`, regression 367/367). Oracle `bin/t_uninferreject.ax` (reject mode). The defer
+site is correct-by-construction: the compiler's own concrete code never leaves a param generic, so
+the reject never fires on self-build. **vG (below) is NOT covered — it is inferable (T=i64) so it
+is not rejected; it is the genuinely-remaining None-VALUE-lowering bug.**
+
+## Residual OPEN sub-bug (None-VALUE lowering — STILL OPEN after the reject fix)
 The inference fix picks the right INSTANCE, but the `None` VALUE at a generic call site is still
 lowered from the template repr, so two harder cases remain:
 - **`vG`**: `pick(None, Some(42))` returning `a` (the None) → now compiles (T=i64) but returns
