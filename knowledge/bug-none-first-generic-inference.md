@@ -58,7 +58,31 @@ lowered from the template repr, so two harder cases remain:
 Owning stage: air_builder lowering of a `None` argument in a generic call (value repr must follow
 the monomorphized element type), + expected-return-type flow into generic-call inference, + detect
 "generic binding in a concrete calling context" to reject-or-default rather than defer. Deeper;
-needs a dedicated session. Repro programs in `/tmp/probe/{vG,n2}.ax` + `/tmp/pb4/s3.ax` (regenerate
+needs a dedicated session.
+
+### Implementation pointer (worked out 2026-07-18, NOT yet built — turnkey for the session)
+The defer decision is `if has_generic_arg:` at typecheck.ax ~3488 — it FREEs and returns (defers,
+leaving the call's result_type generic). For a call inside a CONCRETE function this defer is wrong
+(no later mono pass instantiates it → segfault). The missing discriminator = **is the ENCLOSING
+function generic?** Not currently tracked. Add it:
+1. New field `current_fn_is_generic: bool` on `struct TypeChecker` (~L84, beside `current_return`);
+   init false in the ctor (~L106).
+2. At `NODE_FUNC_DECL` (L2590–2613): save/restore like `current_return`; set
+   `self.current_fn_is_generic = (self.tree.nodes.data[node_idx].flags & FLAG_IS_GENERIC) != 0`.
+3. At the defer point: `if has_generic_arg and not self.current_fn_is_generic:` → the param is
+   genuinely un-inferable in a concrete context. Choose per sub-case:
+   - **s3** (leftover generic param is UNUSED for values, only matched as None): default it to a
+     concrete type (mirror the existing `has_unresolved -> TYPE_I32` at L3453) so it monomorphizes
+     correctly. LOW risk for the unused case.
+   - **n2** (param drives the RETURN type via the caller's expected type): needs expected-return
+     (`self.current_return` / the `let` annotation) flowed INTO inference before defaulting, else the
+     i32 default mismatches the Option[i64] slot. Do NOT blind-default this one.
+   - Fallback when neither resolves: clean REJECT "cannot infer type parameter <name>" (BUG#53), not
+     a segfault.
+GATE HAZARD: the compiler's OWN concrete functions must not legitimately rely on `has_generic_arg`
+deferral — verify via A==B fixpoint + full regression (a wrong discriminator either breaks self-host
+build or wrongly rejects). That uncertainty is exactly why this is a dedicated session, not an
+autopilot-tick change. Repro programs in `/tmp/probe/{vG,n2}.ax` + `/tmp/pb4/s3.ax` (regenerate
 from this note). NOTE: the realistic `Some`+`None` case (a concrete sibling determines T) is FIXED;
 all residuals are the "no concrete arg determines the param" family.
 
