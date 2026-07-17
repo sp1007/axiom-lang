@@ -6758,7 +6758,17 @@ pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u3
         mut g_idx := 0 as i64
         while g_idx < gen_params.len:
             if gen_params.data[g_idx] == node_name_id:
+                // First-wins, EXCEPT a concrete arg overrides a previously-inferred
+                // GENERIC/placeholder binding. A bare `None` (or any template-typed)
+                // argument â€” e.g. arg0 of `pick(None, Some(42))` â€” binds T to the
+                // Option template's OWN generic param; without this override, the
+                // later concrete arg (`Some(42)` -> i64) could not correct T, so T
+                // stayed generic and the call mis-monomorphized -> silent segfault.
+                // A concrete binding is never overridden by a later generic one, and
+                // UNKNOWN is still taken by anything.
                 if inferred.data[g_idx] == TYPE_UNKNOWN:
+                    inferred.data[g_idx] = arg_type
+                elif self.is_generic(inferred.data[g_idx]) and not self.is_generic(arg_type):
                     inferred.data[g_idx] = arg_type
                 break
             g_idx = g_idx + 1 as i64

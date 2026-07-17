@@ -1,0 +1,17 @@
+// Oracle: generic fn where T must be inferred from a CONCRETE sibling arg while a
+// bare `None` occupies an earlier param. Before the infer_generic_type_args fix,
+// arg0 `None` bound T to the Option template's own generic param (first-wins), the
+// later `Some(42)` could not correct it, and the call mis-monomorphized -> segfault.
+fn first_some[T](a: Option[T], b: Option[T]) -> Option[T]:
+    match a:
+        Some(x):
+            return a
+        None:
+            return b
+fn main() -> i64:
+    let r = first_some(None, Some(42))
+    match r:
+        Some(v):
+            return v
+        None:
+            return 0
