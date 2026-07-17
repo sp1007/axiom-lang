@@ -1,0 +1,19 @@
+// RFC 0025 LICM chaining oracle: a two-link invariant chain (t1 = a+a, then
+// t2 = t1 + a) inside the loop body. With copy_prop running before LICM (to
+// collapse the copy a lowered chain leaves between links), BOTH links hoist to
+// the pre-header. Correctness is identical with or without hoisting; this guards
+// that the chain stays SOUND while being hoisted (O0..O3 must all agree).
+fn work(a: i64, n: i64) -> i64:
+    mut acc := 0
+    mut i := 0
+    while i < n:
+        let t1 = a + a          // invariant, hoistable
+        let t2 = t1 + a         // dependent invariant -> hoists after copy_prop
+        acc = acc + t2 + i
+        i = i + 1
+    return acc
+
+fn main() -> i64:
+    // t2 = (a+a)+a = 3a = 18; n=6 => acc = sum_{i=0..5}(18+i) = 108 + 15 = 123
+    let r = work(6, 6)
+    return r % 240              // 123

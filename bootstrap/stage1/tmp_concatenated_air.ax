@@ -17786,15 +17786,20 @@ pub fn is_hoistable_op(op: u16) -> bool:
         return true
     if op == OP_NEG or op == OP_NOT:
         return true
-    // NOTE: OP_COPY is deliberately NOT hoisted. It is pure and would be safe under
-    // the single-def gate, but LICM runs before copy-prop, so an invariant chain
-    // `t1=a*b; t2=t1+c` (lowered with a copy between t1 and t2) only hoists its
-    // first link this pass; the dependent link hoists on a later -O2 build once
-    // copy-prop has collapsed the copy â€” or not at all in a single structural pass.
-    // This is a correctness-neutral effectiveness limitation, not a bug (measured:
-    // hoisting copies gave no additional motion on the probe battery). Revisit only
-    // if a loop-heavy workload shows it matters (then: run copy-prop before LICM, or
-    // iterate LICM in the value-pass loop â€” both are pipeline changes needing a gate).
+    // OP_COPY is deliberately not hoisted; instead copy_prop_func runs BEFORE LICM
+    // (see SsaOptimizer.run) to collapse the copies a lowered invariant chain
+    // `t1=a*b; t2=t1+c` leaves between its links. Once t2's operand is t1 directly,
+    // LICM's within-pass chaining hoists the whole chain (after hoisting t1,
+    // def_block[t1]=pre-header, so the direct-operand t2 is then invariant too).
+    //
+    // KNOWN LIMITATION (measured, not a bug): a chain link whose OPERAND vreg is
+    // REUSED inside the loop does not hoist. Example: `t1=a*b; t2=t1+c` where AIR
+    // reuses c's vreg for an unrelated loop temp â†’ c has def_count==2 (one def at
+    // loop depth) â†’ the single-def gate conservatively (correctly) refuses to hoist
+    // t2, since it cannot prove WHICH def of c reaches the use without reaching-
+    // definitions. Non-reused chains DO fully hoist (verified). Closing this gap
+    // needs reaching-defs / SSA â€” the model-B path RFC 0025 scopes as a separate
+    // epic; refusing to hoist here is always sound.
     return false
 
 // Fill preheader[b] with the pre-header block id for every loop-body block b whose
@@ -18300,17 +18305,23 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
     while bi < f.blocks.len:
         let blk = f.blocks.data[bi]
         if blk.loop_depth > 0 as u8:
+            // UNIQUE dominating pre-header only (RFC 0025): exactly one predecessor
+            // with lower loop_depth (all others are back-edges), and the header has
+            // exactly two predecessors (pre-header + single back-edge). This is the
+            // simple natural loop the single-block clone can reproduce; anything else
+            // (multiple entries, irreducible, non-unique pre-header) is skipped.
             mut pre_header_id := 0xffffffff as u32
+            mut ph_count := 0 as i64
             mut pred_i := 0 as u32
             while pred_i < blk.preds_len:
                 let pred = f.block_preds.data[blk.preds_start + pred_i]
                 if pred < f.blocks.len as u32:
                     if f.blocks.data[pred].loop_depth < blk.loop_depth:
                         pre_header_id = pred
-                        break
+                        ph_count = ph_count + 1 as i64
                 pred_i = pred_i + 1 as u32
 
-            if pre_header_id != 0xffffffff as u32:
+            if pre_header_id != 0xffffffff as u32 and ph_count == 1 as i64 and blk.preds_len == 2 as u32:
                 mut cond_inst_idx := 0xffffffff as u32
                 mut loop_body_block_id := 0xffffffff as u32
                 mut exit_block_id := 0xffffffff as u32
@@ -18403,24 +18414,55 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                         if limit_val >= start_val and step_val > 0 as u32:
                                             trip_count = ((limit_val - start_val) / (step_val as u64) + 1 as u64) as u32
 
-                                    if trip_count > 0 as u32 and trip_count <= 4 as u32:
-                                        let renamed_map = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+                                    // SAFETY GATE (RFC 0025 / bug-o2-large-code): only
+                                    // unroll a SINGLE-BLOCK body that jumps straight back
+                                    // to the header, with NO nested control flow, calls,
+                                    // side effects, or memory ops the single-block clone
+                                    // cannot faithfully reproduce. (a) body's only
+                                    // successor is the header; (b) no BRANCH (nested if),
+                                    // CALL/SPAWN/SEND/SYSCALL (clobbers/effects), STORE/
+                                    // SET_FIELD/FREE/DESTROY (memory effects the clone
+                                    // would duplicate/misorder), or LOAD/INDEX/GET_FIELD
+                                    // (may alias the mutated memory). Bail on anything not
+                                    // provably a pure-register straight-line body.
+                                    mut body_ok := true
+                                    if body_blk.succs_len != 1 as u32:
+                                        body_ok = false
+                                    elif f.block_succs.data[body_blk.succs_start] != bi as u32:
+                                        body_ok = false
+                                    mut bchk := 0 as u32
+                                    while body_ok and bchk < body_blk.instrs_len:
+                                        let bi_idx = f.block_instrs.data[body_blk.instrs_start + bchk]
+                                        let bop = f.insts.data[bi_idx].opcode
+                                        if bop == OP_BRANCH or bop == OP_CALL or bop == OP_SPAWN or bop == OP_SEND or bop == OP_SYSCALL or bop == OP_RECV or bop == OP_AWAIT:
+                                            body_ok = false
+                                        elif bop == OP_STORE or bop == OP_SET_FIELD or bop == OP_FREE or bop == OP_DESTROY or bop == OP_ALIAS_REUSE:
+                                            body_ok = false
+                                        elif bop == OP_LOAD or bop == OP_INDEX or bop == OP_GET_FIELD or bop == OP_INDEX_ADDR or bop == OP_FIELD_ADDR or bop == OP_GLOBAL_ADDR or bop == OP_ALLOC:
+                                            body_ok = false
+                                        bchk = bchk + 1 as u32
+
+                                    if body_ok and trip_count > 0 as u32 and trip_count <= 4 as u32:
+                                        // SOUND full unroll on non-SSA AIR. `cur[r]` = the
+                                        // register currently holding original reg r's value.
+                                        // Initialised to identity and PERSISTED across
+                                        // iterations, so a loop-carried value (an
+                                        // accumulator `acc = acc + iv`) is threaded: each
+                                        // iteration reads cur[acc] (the previous iteration's
+                                        // fresh result) and writes a new cur[acc]. The old
+                                        // pass reset the map every iteration, so iteration k
+                                        // read the ORIGINAL acc (and even read its own fresh
+                                        // dest before defining it) â†’ the miscompile that
+                                        // segfaulted a -O2-built compiler.
+                                        let cur = @alloc((max_reg as i64 + 1 as i64) * 4 as i64) as ptr[u32]
+                                        mut ci := 0 as u32
+                                        while ci <= max_reg:
+                                            cur[ci] = ci
+                                            ci = ci + 1 as u32
 
                                         mut iter := 0 as u32
                                         while iter < trip_count:
                                             let curr_iv_val = start_val + (iter as u64) * (step_val as u64)
-                                            @memset(renamed_map as ptr[void], 0 as u8, (max_reg as i64 + 1 as i64) * 4 as i64)
-
-                                            mut body_inst_i2 := 0 as u32
-                                            while body_inst_i2 < body_blk.instrs_len:
-                                                let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
-                                                let b_inst = f.insts.data[b_inst_idx]
-                                                if b_inst.opcode != OP_NOP and b_inst.dest != 0 as u32 and b_inst.dest != iv_reg:
-                                                    let new_reg = next_reg
-                                                    next_reg = next_reg + 1 as u32
-                                                    renamed_map[b_inst.dest] = new_reg
-                                                body_inst_i2 = body_inst_i2 + 1 as u32
-
                                             let temp_iv_reg = next_reg
                                             next_reg = next_reg + 1 as u32
                                             insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
@@ -18431,7 +18473,7 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                                 src2: ((curr_iv_val >> 32 as u64) & 0xFFFFFFFF as u64) as u32
                                             ))
 
-                                            body_inst_i2 = 0 as u32
+                                            mut body_inst_i2 := 0 as u32
                                             while body_inst_i2 < body_blk.instrs_len:
                                                 let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
                                                 let b_inst = f.insts.data[b_inst_idx]
@@ -18439,26 +18481,30 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                                     body_inst_i2 = body_inst_i2 + 1 as u32
                                                     continue
 
+                                                // Read operands THROUGH cur[] (iv â†’ this
+                                                // iteration's const). ICONST/FCONST pack
+                                                // immediates in src1/src2 â€” never remap them.
                                                 mut src1 := b_inst.src1
-                                                if src1 == iv_reg and b_inst.opcode != OP_ICONST and b_inst.opcode != OP_FCONST:
-                                                    src1 = temp_iv_reg
-                                                elif src1 != 0 as u32 and src1 <= max_reg:
-                                                    if renamed_map[src1] != 0 as u32:
-                                                        src1 = renamed_map[src1]
+                                                if b_inst.opcode != OP_ICONST and b_inst.opcode != OP_FCONST:
+                                                    if src1 == iv_reg:
+                                                        src1 = temp_iv_reg
+                                                    elif src1 != 0 as u32 and src1 <= max_reg:
+                                                        src1 = cur[src1]
 
                                                 mut src2 := b_inst.src2
-                                                if src2 == iv_reg and b_inst.opcode != OP_BRANCH:
-                                                    src2 = temp_iv_reg
-                                                elif src2 != 0 as u32 and src2 <= max_reg:
-                                                    if renamed_map[src2] != 0 as u32:
-                                                        src2 = renamed_map[src2]
+                                                if b_inst.opcode != OP_ICONST and b_inst.opcode != OP_FCONST and b_inst.opcode != OP_BRANCH:
+                                                    if src2 == iv_reg:
+                                                        src2 = temp_iv_reg
+                                                    elif src2 != 0 as u32 and src2 <= max_reg:
+                                                        src2 = cur[src2]
 
+                                                // Fresh dest, then publish it to cur AFTER
+                                                // the reads above (so this instruction's own
+                                                // sources still saw the prior value).
                                                 mut dest := b_inst.dest
-                                                if dest == iv_reg:
-                                                    dest = temp_iv_reg
-                                                elif dest != 0 as u32 and dest <= max_reg:
-                                                    if renamed_map[dest] != 0 as u32:
-                                                        dest = renamed_map[dest]
+                                                if b_inst.dest != 0 as u32 and b_inst.dest != iv_reg:
+                                                    dest = next_reg
+                                                    next_reg = next_reg + 1 as u32
 
                                                 insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
                                                     opcode: b_inst.opcode,
@@ -18467,29 +18513,44 @@ pub fn loop_unroll_func(f: ptr[AirFunc]) -> bool:
                                                     src1: src1,
                                                     src2: src2
                                                 ))
+                                                if b_inst.dest != 0 as u32 and b_inst.dest != iv_reg and b_inst.dest <= max_reg:
+                                                    cur[b_inst.dest] = dest
                                                 body_inst_i2 = body_inst_i2 + 1 as u32
-
-                                            if iter == trip_count - 1 as u32:
-                                                body_inst_i2 = 0 as u32
-                                                while body_inst_i2 < body_blk.instrs_len:
-                                                    let b_inst_idx = f.block_instrs.data[body_blk.instrs_start + body_inst_i2]
-                                                    let b_inst = f.insts.data[b_inst_idx]
-                                                    if b_inst.opcode != OP_NOP and b_inst.dest != 0 as u32 and b_inst.dest != iv_reg:
-                                                        let original_dest = b_inst.dest
-                                                        let original_def_b = def_block[original_dest]
-                                                        if original_def_b != loop_body_block_id and original_def_b != 0xffffffff as u32:
-                                                            insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
-                                                                opcode: OP_COPY,
-                                                                type_id: b_inst.type_id,
-                                                                dest: original_dest,
-                                                                src1: renamed_map[original_dest],
-                                                                src2: 0 as u32
-                                                            ))
-                                                    body_inst_i2 = body_inst_i2 + 1 as u32
-
                                             iter = iter + 1 as u32
 
-                                        @free(renamed_map as ptr[u8])
+                                        // Copy each body-defined register's FINAL value back
+                                        // to its original name, so any post-loop read of it
+                                        // sees the unrolled result. Over-copying a dead temp
+                                        // is harmless (DCE removes it). Then set the induction
+                                        // variable to its post-loop value (start + trip*step),
+                                        // the value it holds when the original loop exits.
+                                        mut cb := 0 as u32
+                                        while cb < body_blk.instrs_len:
+                                            let cb_idx = f.block_instrs.data[body_blk.instrs_start + cb]
+                                            let cb_inst = f.insts.data[cb_idx]
+                                            let od = cb_inst.dest
+                                            if cb_inst.opcode != OP_NOP and od != 0 as u32 and od != iv_reg and od <= max_reg:
+                                                if cur[od] != od:
+                                                    insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
+                                                        opcode: OP_COPY,
+                                                        type_id: cb_inst.type_id,
+                                                        dest: od,
+                                                        src1: cur[od],
+                                                        src2: 0 as u32
+                                                    ))
+                                                    cur[od] = od
+                                            cb = cb + 1 as u32
+
+                                        let final_iv_val = start_val + (trip_count as u64) * (step_val as u64)
+                                        insert_inst_at(f, pre_header_id, f.blocks.data[pre_header_id].instrs_len - 1 as u32, AirInst(
+                                            opcode: OP_ICONST,
+                                            type_id: 3 as u32,
+                                            dest: iv_reg,
+                                            src1: (final_iv_val & 0xFFFFFFFF as u64) as u32,
+                                            src2: ((final_iv_val >> 32 as u64) & 0xFFFFFFFF as u64) as u32
+                                        ))
+
+                                        @free(cur as ptr[u8])
 
                                         let ph_blk3 = &f.blocks.data[pre_header_id]
                                         let ph_final_idx = f.block_instrs.data[ph_blk3.instrs_start + ph_blk3.instrs_len - 1 as u32]
@@ -18815,21 +18876,29 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
             // LICM/strength-reduction/unrolling expose new constants that
             // the iterative loop below will clean up.
             if self.level >= 2 as u8 and not is_large:
+                // Collapse copies BEFORE LICM so an invariant chain fully hoists. A
+                // lowered `t1=a*b; t2=t1+c` emits `t1=imul; tc=copy t1; t2=iadd tc,c`;
+                // without this, LICM (whitelist excludes OP_COPY) hoists only t1 â€” the
+                // copy keeps t2's operand "in the loop". copy_prop rewrites t2 to use
+                // t1 directly, so LICM's within-pass chaining then hoists t2 as well
+                // (after hoisting t1, def_block[t1]=pre-header â†’ the direct-operand t2
+                // is invariant). CFG-preserving, so loop_depths below stay valid.
+                copy_prop_func(f)
                 compute_loop_depths(f)
                 licm_func(f) // RFC 0025: sound model-A LICM (single-def gate + whitelist + unique pre-header)
                 strength_reduction_func(f)
-                // loop_unroll_func(f) DISABLED â€” latent miscompile on large code.
-                // Bisected 2026-07-17: a COMPILER built at -O2 with this pass on
-                // SEGFAULTS on every input (small programs are unaffected because
-                // the pass only fires on constant-trip-count loops <=4, which appear
-                // in the compiler's own code but rarely in the small test battery).
-                // The full-unroll clones the loop body into the pre-header with
-                // fresh-register renaming + a loop-carried copy-back on non-SSA AIR;
-                // the transform has correctness bugs beyond a first stale-instrs_start
-                // fix (which alone did NOT resolve it). Re-enabling needs a careful
-                // rewrite (SSA or verified renaming/copy-back) â€” RFC-scale, and gated
-                // on the same -O2-self-compile acceptance test as RFC 0025.
-                // See [[bug-o2-large-code-miscompile]].
+                // RFC 0025: sound full unroll of const-trip (<=4) loops. Re-enabled
+                // after rewriting the renaming: the OLD pass reset its rename map every
+                // iteration, so a loop-carried accumulator (`acc = acc + iv`) read the
+                // ORIGINAL acc each iteration (and read its own fresh dest before
+                // defining it) â†’ a -O2-built compiler SEGFAULTED on every input
+                // ([[bug-o2-large-code-miscompile]]). The new loop_unroll_func threads
+                // values through a PERSISTENT cur[] map, copies each body-defined
+                // register's final value back to its original name, sets the induction
+                // variable to its post-loop value, and BAILS on any body containing a
+                // branch (nested control flow it cannot clone). Gated on the same
+                // -O2-self-compile acceptance test as LICM (self-build is -O1 = blind).
+                loop_unroll_func(f)
 
             // Iterative value passes: fold â†’ simplify â†’ propagate â†’ eliminate.
             // Converges in 2-4 iterations for typical functions.

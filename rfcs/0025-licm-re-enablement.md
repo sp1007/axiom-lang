@@ -1,8 +1,48 @@
 # RFC 0025 — Loop-Invariant Code Motion re-enablement (sound LICM on non-SSA AIR)
 
-Status: **✅ SHIPPED (2026-07-17).** Model-A LICM is re-enabled at -O2/-O3. Supersedes the ad-hoc `licm_func` that shipped disabled in commit `3703d52`. Blocks: nothing. Enables a perf lever for loop-heavy code.
+Status: **✅ SHIPPED (2026-07-17).** Model-A LICM re-enabled at -O2/-O3; LICM invariant-chain hoisting fixed (copy-prop before LICM); and sound full **loop unrolling** re-enabled. Supersedes the ad-hoc `licm_func`/`loop_unroll_func` that shipped disabled in commits `3703d52`/`570d5cb`. Blocks: nothing. Enables perf levers for loop-heavy code.
 
-Related: [[bug-o2-o3-loop-compile-crash]], [[bug-cse-redef-operand-miscompile]] (non-SSA operand hazard), RFC 0016 (CFG-aware liveness — see §7; NOT a blocker, see §0).
+Related: [[bug-o2-o3-loop-compile-crash]], [[bug-cse-redef-operand-miscompile]] (non-SSA operand hazard), [[bug-o2-large-code-miscompile]] (the loop_unroll miscompile, now fixed), RFC 0016 (CFG-aware liveness — see §7; NOT a blocker, see §0).
+
+---
+
+## 0b. FOLLOW-UP 2026-07-17 (pm/later) — LICM chaining + sound loop unroll SHIPPED
+
+Two further loop-optimizer items, gated together (fixpoint A==B `97A0703F`, -O1 daily
+regression + **-O2-built-compiler acceptance both green**, B==C byte-identical):
+
+**LICM invariant-CHAIN hoisting.** `copy_prop_func` now runs immediately BEFORE `licm_func`
+in the -O2/-O3 structural block. A lowered invariant chain `t1=a*b; t2=t1+c` emits a copy
+between the links; LICM (whitelist excludes OP_COPY) hoisted only t1, the copy keeping t2's
+operand "in the loop". copy-prop rewrites t2 to use t1 directly, so LICM's within-pass chaining
+then hoists t2 as well. Verified via `dump-air` (both links move to the pre-header) + oracle
+`t_licmchain`. Residual limitation (documented in `is_hoistable_op`, not a bug): a chain link
+whose OPERAND vreg is REUSED inside the loop (non-SSA) has def_count>1 → the single-def gate
+soundly declines; closing that needs reaching-defs (model-B).
+
+**Sound full loop UNROLLING re-enabled.** `loop_unroll_func` (full-unroll of const-trip ≤4
+loops) is re-enabled after two fixes:
+1. **Loop-carried threading (the miscompile root).** The old pass reset its rename map every
+   iteration, so an accumulator `acc = acc + iv` read the ORIGINAL acc each iteration (and read
+   its own fresh dest before defining it) → a -O2-built compiler SEGFAULTED on every input
+   ([[bug-o2-large-code-miscompile]]). The rewrite threads values through a PERSISTENT `cur[]`
+   map (identity-init, never reset): each iteration reads cur[r] (prior iteration's result) and
+   publishes a fresh cur[r] AFTER its reads. After all iterations it copies every body-defined
+   register's final value back to its original name and sets the induction var to its post-loop
+   value (start + trip*step).
+2. **Conservative gates (what the acceptance test forced).** With threading fixed, the small
+   accumulator oracle passed but a -O2-built compiler STILL segfaulted — the compiler's own
+   loops have shapes the single-block clone cannot reproduce. Unroll now fires ONLY on a
+   provably-simple natural loop: a UNIQUE dominating pre-header, a 2-predecessor header, and a
+   single-block body whose only successor is the header and that contains NO branch, call,
+   memory op (load/store/index/field/alloc/global), or concurrency op — i.e. pure straight-line
+   register arithmetic. Everything else is skipped (sound: not unrolling is always safe).
+
+Acceptance (mandatory — self-build is -O1, blind to both passes): the **-O2-built compiler runs
+the full regression 364/364, 0 failures**. Oracles `t_licmunroll` (const-trip accumulator, the
+exact loop-carried pattern the old pass broke; `dump-air` confirms the loop is unrolled and
+constant-folded to `+3,+6,+9`) and edge probes (multi-accumulator, trip-1, iv-used-after-loop,
+step-2) all correct O0..O3.
 
 ---
 

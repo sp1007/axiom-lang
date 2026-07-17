@@ -412,6 +412,8 @@ rows=(
   "t_loopstruct|exit|9"
   "t_licmhoist|exit|235"
   "t_loopcross|exit|10"
+  "t_licmchain|exit|123"
+  "t_licmunroll|exit|18"
 )
 
 for row in "${rows[@]}"; do
@@ -448,12 +450,16 @@ done
 #   t_loopstruct struct field read-modify-write inside the loop (aggregate)
 #   t_licmhoist  genuinely-invariant sub-expr -> LICM MUST hoist, stay correct
 #   t_loopcross  loop-crossing value used in the condition (RFC 0016 liveness)
+#   t_licmchain  two-link invariant chain -> both hoist (copy_prop before LICM)
+#   t_licmunroll const-trip accumulator loop -> sound full unroll (loop-carried)
 opt_rows=(
   "t_licm|44"
   "t_loopcall|140"
   "t_loopstruct|9"
   "t_licmhoist|235"
   "t_loopcross|10"
+  "t_licmchain|123"
+  "t_licmunroll|18"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

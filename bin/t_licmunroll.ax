@@ -1,0 +1,15 @@
+// RFC 0025 loop-unroll oracle: a constant-trip (4) accumulator loop — exactly the
+// loop-carried pattern the OLD unroller miscompiled (it reset its rename map each
+// iteration, so acc read the original value each time). The sound rewrite threads
+// acc through a persistent value map. Must give the same result unrolled (-O2/-O3)
+// as rolled (-O0/-O1). acc = 0+3+6+9 = 18.
+fn compute() -> i64:
+    mut acc := 0
+    mut i := 0
+    while i < 4:
+        acc = acc + i * 3
+        i = i + 1
+    return acc
+
+fn main() -> i64:
+    return compute()      // 18
