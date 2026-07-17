@@ -24236,6 +24236,22 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     let address_taken = @alloc(graph_size) as ptr[bool]
     @memset(address_taken as ptr[u8], 0 as u8, graph_size)
 
+    // MOVE COALESCING (biased coloring): for each vreg, record ONE move partner â€”
+    // the other vreg of a `MOV vdst, vsrc` it appears in. During color selection we
+    // try to give a vreg the same physical register its partner already got, so the
+    // MOV becomes a self-move (`mov r,r`) the emitter peephole then deletes. This
+    // removes the redundant param/snapshot copy chains (`snap<-rcx; pvreg<-snap`)
+    // that otherwise inflate register pressure and force extra callee-saved pushes.
+    // SAFETY: the bias only ever picks a color that is NOT forbidden (interference,
+    // spans_call, arg-reg, div/shift constraints all already recorded there) and that
+    // is a member of this pass's avail_regs (so a cross-class movq gpr<->xmm partner
+    // can never mis-bias). First move wins; a vreg in no vreg-to-vreg MOV stays -1.
+    let move_partner = @alloc(graph_size * 4) as ptr[i32]
+    mut mp_init := 0 as i64
+    while mp_init < graph_size:
+        move_partner[mp_init] = -1 as i32
+        mp_init = mp_init + 1
+
     mut scan_idx := 0 as i64
     while scan_idx < insts_len:
         let inst = &insts[scan_idx]
@@ -24265,6 +24281,14 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                 let v = inst.src1.vreg
                 if v < graph_size as u32:
                     address_taken[v] = true
+        if inst.op == MACH_MOV and inst.dst.kind == OPND_VREG and inst.src1.kind == OPND_VREG:
+            let vd = inst.dst.vreg
+            let vs = inst.src1.vreg
+            if vd != vs and vd < graph_size as u32 and vs < graph_size as u32:
+                if move_partner[vd as i64] == -1 as i32:
+                    move_partner[vd as i64] = vs as i32
+                if move_partner[vs as i64] == -1 as i32:
+                    move_partner[vs as i64] = vd as i32
         scan_idx = scan_idx + 1
 
     // Precompute call instruction positions once so each interval check is O(log m)
@@ -24376,6 +24400,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
         @free(forbid_rcx as ptr[u8])
         @free(is_arg_vreg as ptr[u8])
         @free(address_taken as ptr[u8])
+        @free(move_partner as ptr[u8])
         @free(r16_def_idx as ptr[u8])
         return RegAllocResult(allocs: allocs_s, max_vreg: max_vreg, spill_count: spill_count_s, pad0: 0 as i64)
 
@@ -24394,8 +24419,22 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             if iv2.start > iv1.end:
                 break
             if iv1.vreg != iv2.vreg:
-                adj[iv1.vreg].push(iv2.vreg)
-                adj[iv2.vreg].push(iv1.vreg)
+                // MOVE COALESCING: a copy pair `d <- s` whose live ranges only TOUCH
+                // at the copy point (s dies exactly where d begins) is not a real
+                // conflict â€” the same register can hold s then d, making the copy a
+                // self-move. The interval model would otherwise flag boundary contact
+                // (iv2.start == iv1.end) as interference and forbid the shared color.
+                // Drop the edge ONLY for a recorded move partner AND only when the
+                // ranges are boundary-disjoint (no true overlap), so genuinely
+                // simultaneously-live values still interfere. move_partner is
+                // first-move-wins (conservative): a non-matching partner keeps the edge.
+                mut coalesce_skip := false
+                if move_partner[iv1.vreg as i64] == iv2.vreg as i32 or move_partner[iv2.vreg as i64] == iv1.vreg as i32:
+                    if iv1.end <= iv2.start or iv2.end <= iv1.start:
+                        coalesce_skip = true
+                if not coalesce_skip:
+                    adj[iv1.vreg].push(iv2.vreg)
+                    adj[iv2.vreg].push(iv1.vreg)
             j = j + 1
         i = i + 1
 
@@ -24528,8 +24567,25 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
             forbidden[REG_RCX as i64] = true
 
         mut colored := false
+        // COALESCE BIAS: if this vreg's move partner is already colored with a legal
+        // (non-forbidden, this-class) register, take it so the copy becomes a self-move.
+        let mp = move_partner[vreg as i64]
+        if mp != -1 as i32 and (mp as i64) < graph_size:
+            let pcolor = assigned_colors[mp as i64]
+            if pcolor != REG_NONE and not forbidden[pcolor as i64]:
+                mut in_avail := false
+                mut ai := 0 as i64
+                while ai < avail_regs_len:
+                    if avail_regs[ai] == pcolor:
+                        in_avail = true
+                        break
+                    ai = ai + 1
+                if in_avail:
+                    assigned_colors[vreg] = pcolor
+                    allocs[vreg] = RegAllocation(vreg: vreg, phys: pcolor, spilled: false, spill_idx: 0 as i32)
+                    colored = true
         mut c_idx := 0 as i64
-        while c_idx < avail_regs_len:
+        while not colored and c_idx < avail_regs_len:
             let color = avail_regs[c_idx]
             if not forbidden[color]:
                 assigned_colors[vreg] = color
@@ -24564,6 +24620,7 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     @free(is_arg_vreg as ptr[u8])
     @free(param_idx_of_vreg as ptr[u8])
     @free(address_taken as ptr[u8])
+    @free(move_partner as ptr[u8])
     @free(r16_def_idx as ptr[u8])
     @free(in_worklist as ptr[u8])
     if simplify_worklist.data != null as ptr[u32]:
