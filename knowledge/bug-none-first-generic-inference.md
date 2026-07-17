@@ -51,26 +51,24 @@ when `not self.current_fn_is_generic`. Generic BODIES still defer (self-host unt
 OK, A==B `32F4DF0E`, regression 367/367). Oracle `bin/t_uninferreject.ax` (reject mode). The defer
 site is correct-by-construction: the compiler's own concrete code never leaves a param generic, so
 the reject never fires on self-build. **vG (below) is NOT covered — it is inferable (T=i64) so it
-is not rejected; it is the genuinely-remaining None-VALUE-lowering bug.**
+is not rejected. See the correction below — vG turned out NOT to be a bug.**
 
-## Residual OPEN sub-bug (None-VALUE lowering — STILL OPEN after the reject fix)
-The inference fix picks the right INSTANCE, but the `None` VALUE at a generic call site is still
-lowered from the template repr, so two harder cases remain:
-- **`vG`**: `pick(None, Some(42))` returning `a` (the None) → now compiles (T=i64) but returns
-  **231** (want 999 via the None arm). Crash → silent-wrong (the None arg round-trip is mis-lowered).
-- **`n2`**: `let r: Option[i64] = id(None)` on `fn id[T](a: Option[T]) -> Option[T]` → **segfault**.
-  Here T can only come from the expected RETURN type (no concrete arg to override the template),
-  which the generic-call inference doesn't flow in.
-- **`s3`** (probe batch 4, 2026-07-18): `combine[A,B](None, Some(100))` on
-  `fn combine[A,B](a: Option[A], b: Option[B]) -> i64` → **segfault**. `A` is inferable ONLY from the
-  bare `None` (genuinely un-inferable; no concrete `A` arg, no expected-type flow), so `A` stays
-  generic → `has_generic_arg` DEFERS even though the caller (`main`) is a CONCRETE (non-generic)
-  context → broken call → crash. Minimum acceptable behavior = clean REJECT (BUG#53) "cannot infer
-  type parameter A", not a segfault; ideal = default an unused-but-un-inferable param.
-Owning stage: air_builder lowering of a `None` argument in a generic call (value repr must follow
-the monomorphized element type), + expected-return-type flow into generic-call inference, + detect
-"generic binding in a concrete calling context" to reject-or-default rather than defer. Deeper;
-needs a dedicated session.
+## ✅✅ CLUSTER FULLY RESOLVED 2026-07-18 — all three sub-cases closed
+- **Realistic Some+None inference** (vD/p7) — FIXED `4aa4868` (concrete overrides generic binding).
+- **Un-inferable param in concrete context** (s3: `combine[A,B](None, Some(100))`; n2:
+  `let r: Option[i64] = id(None)`) — both genuine segfaults (139), now REJECT cleanly `2438ba0`
+  (`current_fn_is_generic` discriminator). n2's T-from-expected-return remains un-inferable at the
+  CALL, so reject is the correct answer (user annotates / gives explicit type args).
+- **`vG`** (`pick(None, Some(42))` returning the None arg) — **NOT A BUG.** It always returned the
+  correct value; I misread a **truncated exit code**: the None arm returned `999`, and `999 & 0xFF
+  = 231`, which is what bash showed. Re-checked with a sub-256 value (None arm `200` → exit `200`)
+  and with the identical `w2` program (None arm `99` → `99`). The None VALUE round-trip through a
+  generic call is CORRECT; there is no None-value-lowering bug.
+
+⚠️ **LESSON (probe hygiene):** bash exit codes are **8-bit** (`value & 0xFF`). An oracle value ≥256
+(like `999`) will alias (`999→231`) and look like a miscompile. ALWAYS keep probe oracle values in
+`[0,255]`, or read the full value via PowerShell `$LASTEXITCODE`. I banked a phantom "None-value-
+lowering residual" for ~an hour on this misread before w2/w3 (same shape, sub-256 arm) exposed it.
 
 ### Implementation pointer (worked out 2026-07-18, NOT yet built — turnkey for the session)
 The defer decision is `if has_generic_arg:` at typecheck.ax ~3488 — it FREEs and returns (defers,
