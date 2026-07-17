@@ -8390,6 +8390,13 @@ pub fn pre_infer_struct(mut self: ptr[TypeChecker], node_idx: u32):
                     if f_type_node != 0 as u32:
                         f_type_id = self.infer_node(f_type_node, TYPE_UNKNOWN)
                     self.symtable.symbols.data[f_sym_idx].type_id = f_type_id
+                    // A field whose type is the struct ITSELF, by value, gives the struct
+                    // infinite size and CRASHES codegen (no diagnostic). Reject (BUG#53):
+                    // a recursive field must go through a pointer. `ptr[S]` resolves to a
+                    // POINTER type (!= the struct's own type_id), so it is correctly allowed.
+                    if sym.type_id != 0 as u32 and f_type_id == sym.type_id:
+                        ax_printf_local("error: recursive struct field of its own type has infinite size; use `ptr[...]` for the recursive field\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
                     fields.push(StructField(name_id: f_sym.name_id, type_id: f_type_id))
 
             child = next_sibling

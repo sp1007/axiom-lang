@@ -13,7 +13,17 @@ to hunt miscompiles; this pass feeds BAD programs and checks reject-vs-crash). A
 convention: a silent accept-then-crash/miscompile must become a clean REJECT with a diagnostic.
 None emit any diagnostic today. Repro files in `/tmp/pb9/{m1,m2,m4,m5}.ax` (regenerate from below).
 
-## m1 — self-recursive struct by value → COMPILER CRASHES (worst; highest priority)
+## ✅ m1 — FIXED 2026-07-18 (A==B `DBA48355`, oracle t_recstructreject, reject mode)
+Was: compiler crashed in codegen. Now REJECTS: "recursive struct field of its own type has
+infinite size; use `ptr[...]` for the recursive field". Fix in `pre_infer_struct` (typecheck.ax
+~L2262): when a field's `type_id == sym.type_id` (the struct's own type, set by the earlier
+pre-registration pass), emit the diagnostic + bump `diags_count` (driver halts before codegen).
+`ptr[S]` resolves to a distinct POINTER type so it's correctly allowed; self-build OK (the compiler's
+own recursive structs all use ptr), valid linked-list + recursive-SUM Tree still work, regression
+green. LIMITATION: catches DIRECT self-reference only; an indirect by-value cycle (A has field B, B
+has field A) is not yet detected — follow-up (needs a small cycle walk over struct field types).
+
+## m1 (original report) — self-recursive struct by value → COMPILER CRASHES
 ```
 struct S:
     x: S        # infinite size: S contains an S by value

@@ -409,6 +409,7 @@ rows=(
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
+  "t_recstructreject|reject|"
   "t_genfloatret|exit|42"
   "t_genmethodfloat|exit|42"
   "t_floatcvt|exit|10"
