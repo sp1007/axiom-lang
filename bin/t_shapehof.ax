@@ -1,0 +1,27 @@
+// Stress: multi-field sum variant, stored in Vec, matched through a generic fn
+enum Shape:
+    Circle(i64)
+    Rect(i64, i64)
+    Tri(i64, i64, i64)
+
+fn area(s: Shape) -> i64:
+    match s:
+        Circle(r):
+            return 3 * r * r
+        Rect(w, h):
+            return w * h
+        Tri(a, b, c):
+            return (a + b + c) / 2
+
+fn sum_over[T](items: Vec[T], f: fn(T) -> i64) -> i64:
+    mut acc := 0 as i64
+    for it in items:
+        acc = acc + f(it)
+    return acc
+
+fn main() -> i64:
+    mut v: Vec[Shape] = Vec[Shape]()
+    v.push(Circle(2))       // 12
+    v.push(Rect(3, 4))      // 12
+    v.push(Tri(4, 5, 9))    // 9
+    return sum_over(v, area)  // 33
