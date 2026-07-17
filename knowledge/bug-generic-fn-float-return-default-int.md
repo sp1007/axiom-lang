@@ -57,7 +57,26 @@ Confirm with a trace of `symbols[inst_sym_idx].type_id`'s ret vs `inferred[T]` (
 rebuild). FRONTEND fix → A==B gate. Add an oracle once fixed (e.g. `t_genfloatret` id/max on f64
 → 42); a WORKAROUND oracle (annotated `let r: f64 =`) already passes today.
 
-## ✅ Root cause NARROWED to one branch (trace-confirmed 2026-07-18)
+## ❌ DEAD ENDS (2026-07-18, attempt 2 — do NOT repeat these)
+Two fix attempts on the "NODE_TYPE_EXPR substituted resolution" hypothesis below BOTH failed:
+1. Guarding the first_child short-circuit (`if child != 0 and not is_substituted`) at typecheck
+   L4138: changed the float result (0/96 → 127/96/224) but did NOT fix it; int stayed correct.
+2. A trace `if is_substituted:` in the NODE_TYPE_EXPR branch (L4124) printed **NOTHING** when
+   compiling y2 — i.e. **the substituted-NODE_TYPE_EXPR branch is NEVER HIT for the instance's
+   return type.** So the return-type resolution does NOT go through that branch at all; the L4140
+   narrowing below is WRONG.
+CONCLUSION: the instance's SIGNATURE return type (which the caller reads as i64, per the L3629
+trace `ret=4` for both int and float) is set on a path I have NOT located. Next attempt MUST first
+find it methodically, not guess: (a) trace `pre_infer_func_signature` (typecheck L2370) — print the
+KIND of the return annotation child at L2416 and the `ret_type` it computes for the mono instance
+(gate the print to the mangled instance name to cut stdlib noise); (b) if the instance takes the
+EXISTING-instance branch (typecheck L3579) its type_id was set on an earlier call — check whether
+mono creates the instance signature with a concrete or generic/defaulted return; (c) also check
+`mono.ax` `substitute_type_params` actually visits the return annotation node (it may skip the
+`-> T` node, leaving ret generic → defaulted to int downstream). Confirm the ACTUAL kind/flags of
+the return node in the cloned instance before touching any resolver branch.
+
+## ⚠️ (SUPERSEDED, kept for history) Root cause NARROWED to one branch (trace-confirmed 2026-07-18)
 Added a temp `XTRACE` at typecheck.ax L3629 and diffed y2 (float) vs y4 (int) traces: the user
 `id` call resolves **`ret=4` (i64) for BOTH** — so it is the monomorphized INSTANCE's SIGNATURE
 return type that defaults to i64 (not the caller, not the arg). Chain, confirmed piece by piece:
