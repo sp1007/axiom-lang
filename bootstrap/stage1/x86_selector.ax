@@ -2283,6 +2283,76 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
         p = p + 1
     @free(snaps as ptr[u8])
 
+// PEEPHOLE (pre-regalloc, vreg-level): compare-branch fusion.
+// `select_comparison` lowers `a < b` into the 3-inst boolean sequence
+//   CMP a,b / SETCC cc -> vb / MOVZX_B vb <- vb
+// and `OP_BRANCH` lowers `if vb:` into
+//   TEST vb,vb / JCC NE -> Ltrue / JMP -> Lfalse
+// When these six land contiguously (the overwhelmingly common `if <cmp>:` /
+// `while <cmp>:` shape) the boolean vb is a throwaway: we can branch directly on
+// the CMP's flags. Collapse the window
+//   CMP a,b / SETCC cc / MOVZX vb / TEST vb / JCC NE Ltrue   ->   CMP a,b / JCC cc Ltrue
+// dropping SETCC+MOVZX+TEST and the dead vb vreg. This removes 3 hot-path insts
+// per conditional AND one live vreg (register-pressure relief), and is exactly
+// what clang emits (`cmp;jl`) — closing a large slice of the M6 perf gap.
+//
+// SAFETY: (1) the window must be textually contiguous, so no MACH_LABEL (block
+// boundary) or flag-clobbering inst can sit between the CMP and the JCC — the
+// CMP's flags reach the fused JCC intact (SETCC/MOVZX/mov do not write flags).
+// (2) vb must have NO other use in the function (occurrence count == exactly the
+// 5 references inside the removed insts), else the boolean is consumed elsewhere
+// and must still be materialized. (3) SETCC's cc and JCC's cc share the x86 tttn
+// encoding (setcc=0x90+cc, jcc=0x80+cc), so reusing SETCC's cc for the JCC is a
+// verbatim condition transfer; TEST+JNE means "branch when vb!=0" == "branch when
+// cc holds", so the fused JCC uses cc unchanged.
+pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 5 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut fused := false
+        if r + 4 < len:
+            let c0 = &insts[r]
+            let c1 = &insts[r + 1 as i64]
+            let c2 = &insts[r + 2 as i64]
+            let c3 = &insts[r + 3 as i64]
+            let c4 = &insts[r + 4 as i64]
+            if (c0.op == MACH_CMP or c0.op == MACH_FCMP) and c1.op == MACH_SETCC and c2.op == MACH_MOVZX_B and c3.op == MACH_TEST and c4.op == MACH_JCC and c4.cc == CC_NE:
+                let vb = c1.dst.vreg
+                if c1.dst.kind == OPND_VREG and c2.dst.kind == OPND_VREG and c2.dst.vreg == vb and c2.src1.kind == OPND_VREG and c2.src1.vreg == vb and c3.dst.kind == OPND_VREG and c3.dst.vreg == vb and c3.src1.kind == OPND_VREG and c3.src1.vreg == vb:
+                    if (vb as i64) < n and counts[vb as i64] == 5 as i32:
+                        // keep the CMP/FCMP as-is
+                        insts[w] = insts[r]
+                        w = w + 1 as i64
+                        // replace TEST+JCC(NE) with a single JCC using SETCC's condition
+                        insts[w] = MachInst(op: MACH_JCC, cc: c1.cc, padding: 0 as u8, dst: c4.dst, src1: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64))
+                        w = w + 1 as i64
+                        r = r + 5 as i64
+                        fused = true
+        if not fused:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+            r = r + 1 as i64
+    @free(counts as ptr[u8])
+    return w
+
 pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr[SymbolTable], pool: ptr[InternPool]) -> MachInstVec:
     mut actual_max_vreg := 0 as u32
     mut vi := 0 as i64
@@ -2363,4 +2433,8 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
             i = i + 1
 
     @free(gr_def_idx as ptr[u8])
+    // Peephole: fuse throwaway compare-then-branch boolean sequences into a direct
+    // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
+    // before liveness/allocation). See fuse_compare_branch for the safety contract.
+    result.len = fuse_compare_branch(result.data, result.len, sel.max_vreg)
     return result
