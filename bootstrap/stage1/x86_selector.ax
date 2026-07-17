@@ -1633,7 +1633,21 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                     shadow_size = (arg_count as i64 - 6 as i64) * 8 as i64
                 shadow_size = (shadow_size + 15 as i64) & ~15 as i64
 
-            if shadow_size > 0 as i64:
+            // PERF (M6): on win64 the prologue (compute_frame) unconditionally reserves
+            // 32 bytes of outgoing shadow space at the BOTTOM of the frame ([rsp+0..32],
+            // below every rbp-relative spill/local — see insert_spill_code's negative
+            // rbp offsets). A call whose shadow requirement fits in that 32 (<=4 register
+            // args, so no stack-arg MACH_STOREs below) needs NO per-call rsp adjustment:
+            // the reserved region already serves as the callee's shadow and rsp stays
+            // 16-aligned. Skipping the sub/add removes 2 instrs (14 bytes) per such call
+            // — the common case, e.g. both recursive calls in fib. Calls with >4 args
+            // (shadow_size > 32) keep the full adjustment: they store stack args at
+            // [rsp+32+..], which requires the transient extra space.
+            mut adjust_rsp := shadow_size > 0 as i64
+            if sel.abi_name == "win64" and shadow_size <= 32 as i64:
+                adjust_rsp = false
+
+            if adjust_rsp:
                 out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
             // 1. Store stack arguments (must be done first when RSP is stable and registers are safe)
@@ -1681,7 +1695,7 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
             else:
                 out_insts.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: sym_imm), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
-            if shadow_size > 0 as i64:
+            if adjust_rsp:
                 out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: shadow_size), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
  
             if inst.dest != 0 as u32:
