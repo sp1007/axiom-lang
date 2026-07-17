@@ -406,6 +406,7 @@ rows=(
   "t_shapehof|exit|33"
   "t_castwidth|exit|15"
   "t_divpow2|exit|16"
+  "t_immfold|exit|42"
   "t_floatcvt|exit|10"
   "t_licm|exit|44"
   "t_loopcall|exit|140"

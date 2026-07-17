@@ -1,0 +1,25 @@
+// Oracle for immediate-operand folding (x86_selector const_imm32):
+//   cmp reg,imm  /  add reg,imm  /  sub reg,imm  + dead MOV_IMM removal.
+// Exercises: signed const compare (< and ==), const addend in src2,
+// COMMUTATIVE const addend in src1, const subtrahend in src2, and a
+// loop-counter increment + const-bounded loop condition. Deterministic → 42.
+
+fn loopadd(n: i64) -> i64:
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 7:          // const compare (7 folds into cmp)
+        s = s + 3         // const add, src2
+        i = i + 1         // loop-counter const add
+    return s              // 21
+
+fn compute(x: i64) -> i64:
+    mut r := x            // 8
+    if r < 50:            // const compare (<)
+        r = r + 20        // const add src2 -> 28
+    if r == 28:           // const compare (==)
+        r = 3 + r         // commutative const add (const in src1) -> 31
+    r = r - 10            // const sub src2 -> 21
+    return r
+
+fn main() -> i64:
+    return loopadd(7) + compute(8)   // 21 + 21 = 42
