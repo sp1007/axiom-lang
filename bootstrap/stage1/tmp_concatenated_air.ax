@@ -8902,6 +8902,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let scrutinee_type = self.current_match_scrutinee
         if scrutinee_type != TYPE_UNKNOWN:
             let s_entry = self.types.entries.data[scrutinee_type]
+            // A variant pattern (Some/None/Ok/Err/user variant) requires a sum-like
+            // scrutinee. On a non-sum (a scalar/struct/pointer, e.g. `match an_i64: Some(v):`)
+            // the payload never binds and the arm body reads uninitialized memory -> segfault.
+            // Reject (BUG#53). OPTION/RESULT/SUM/GENERIC_INST are the sum-like kinds handled
+            // below (a generic-inst may be an Option[T]/user-sum instance). See
+            // [[bug-malformed-input-robustness-cluster]] (m4).
+            if pattern != 0 as u32 and self.tree.nodes.data[pattern].kind == NODE_VARIANT_PAT:
+                if not (s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT or s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST):
+                    ax_printf_local("error: cannot match a value of a non-sum type against a variant pattern (Some/None/Ok/Err/...)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             if s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
                 // OPTION/RESULT (kind 11/12) have NO sumtypes entry -- `.extra` is the
                 // inner/ok TYPE id, not a sumtypes index -- so the SUM path below would

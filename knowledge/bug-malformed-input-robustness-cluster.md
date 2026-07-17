@@ -50,7 +50,15 @@ Built an exe; runtime **segfault (139)**. FIX: at NODE_CALL typecheck, if the ca
 value whose type is NOT a function/function-pointer type, REJECT "value of type 'i64' is not
 callable". WATCH: genuine fn-pointer/closure values ARE callable (TYPE_KIND_FUNC) — exclude those.
 
-## m4 — match on a non-sum with variant patterns → accept-then-SEGFAULT
+## ✅ m4 — FIXED 2026-07-18 (A==B `B9F66834`, oracle t_matchnonsum, reject mode)
+Was: `match an_i64: Some(v):` accepted → segfault (payload never binds). Now REJECTS: "cannot match
+a value of a non-sum type against a variant pattern (Some/None/Ok/Err/...)". Fix in the NODE_MATCH_ARM
+handler (typecheck.ax ~L2773): if the pattern is a `NODE_VARIANT_PAT` and the scrutinee's type kind
+is not OPTION/RESULT/SUM/GENERIC_INST (the sum-like kinds), emit the diagnostic + bump diags_count.
+Verified: scalar binding/int-literal match arms still allowed (`match x: 1: ... y: ...`), and valid
+Option/Result/multi-field-variant/Tree-sum matches still work; self-build OK, regression green.
+
+## m4 (original report) — match on a non-sum with variant patterns → accept-then-SEGFAULT
 ```
 fn main() -> i64:
     let x = 5           # i64
