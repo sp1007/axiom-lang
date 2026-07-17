@@ -18704,7 +18704,18 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
                 compute_loop_depths(f)
                 // licm_func(f) DISABLED: unsound on non-SSA AIR â€” see note at licm_func.
                 strength_reduction_func(f)
-                loop_unroll_func(f)
+                // loop_unroll_func(f) DISABLED â€” latent miscompile on large code.
+                // Bisected 2026-07-17: a COMPILER built at -O2 with this pass on
+                // SEGFAULTS on every input (small programs are unaffected because
+                // the pass only fires on constant-trip-count loops <=4, which appear
+                // in the compiler's own code but rarely in the small test battery).
+                // The full-unroll clones the loop body into the pre-header with
+                // fresh-register renaming + a loop-carried copy-back on non-SSA AIR;
+                // the transform has correctness bugs beyond a first stale-instrs_start
+                // fix (which alone did NOT resolve it). Re-enabling needs a careful
+                // rewrite (SSA or verified renaming/copy-back) â€” RFC-scale, and gated
+                // on the same -O2-self-compile acceptance test as RFC 0025.
+                // See [[bug-o2-large-code-miscompile]].
 
             // Iterative value passes: fold â†’ simplify â†’ propagate â†’ eliminate.
             // Converges in 2-4 iterations for typical functions.
