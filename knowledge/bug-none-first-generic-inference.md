@@ -49,9 +49,18 @@ lowered from the template repr, so two harder cases remain:
 - **`n2`**: `let r: Option[i64] = id(None)` on `fn id[T](a: Option[T]) -> Option[T]` → **segfault**.
   Here T can only come from the expected RETURN type (no concrete arg to override the template),
   which the generic-call inference doesn't flow in.
+- **`s3`** (probe batch 4, 2026-07-18): `combine[A,B](None, Some(100))` on
+  `fn combine[A,B](a: Option[A], b: Option[B]) -> i64` → **segfault**. `A` is inferable ONLY from the
+  bare `None` (genuinely un-inferable; no concrete `A` arg, no expected-type flow), so `A` stays
+  generic → `has_generic_arg` DEFERS even though the caller (`main`) is a CONCRETE (non-generic)
+  context → broken call → crash. Minimum acceptable behavior = clean REJECT (BUG#53) "cannot infer
+  type parameter A", not a segfault; ideal = default an unused-but-un-inferable param.
 Owning stage: air_builder lowering of a `None` argument in a generic call (value repr must follow
-the monomorphized element type), + expected-return-type flow into generic-call inference. Deeper;
-needs a dedicated session. Repro programs in `/tmp/probe/{vG,n2}.ax` (regenerate from this note).
+the monomorphized element type), + expected-return-type flow into generic-call inference, + detect
+"generic binding in a concrete calling context" to reject-or-default rather than defer. Deeper;
+needs a dedicated session. Repro programs in `/tmp/probe/{vG,n2}.ax` + `/tmp/pb4/s3.ax` (regenerate
+from this note). NOTE: the realistic `Some`+`None` case (a concrete sibling determines T) is FIXED;
+all residuals are the "no concrete arg determines the param" family.
 
 ## LESSON
 When shrinking a probe, the isolation matrix (None-first vs None-second, annotated vs bare,
