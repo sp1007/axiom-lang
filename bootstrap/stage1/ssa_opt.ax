@@ -596,6 +596,28 @@ pub fn dce_func(f: ptr[AirFunc]) -> bool:
 
     return changed
 
+// Loop-Invariant Code Motion.
+//
+// DISABLED in the -O2/-O3 pipeline (see SsaOptimizer.run). It is UNSOUND on the
+// current AIR because AIR is NON-SSA: a register may be assigned more than once
+// inside a loop (e.g. an induction variable `i = i + 1`). This pass decides a
+// value is loop-invariant purely from where its *operands* are defined and then
+// hoists a single definition into the pre-header while NOP-ing the in-loop copy —
+// which is only valid under single-assignment. On multiply-defined registers it
+// moves/erases the wrong definition, so the loop body reads a stale/undefined
+// register and the compiled program crashes at runtime (verified: a plain
+// `while i<1000: acc=acc+i; i=i+1` sum loop segfaults at run time when this pass
+// is enabled, even though it compiles cleanly).
+//
+// The compiler-time SEGV that used to happen while *building* any loop at -O2/-O3
+// is a SEPARATE, now-fixed pair of bugs this function tripped:
+//   1) insert_inst_at adjusted block instrs_start by block-index instead of
+//      physical layout position (fixed in insert_inst_at), and
+//   2) the src2 invariance test indexed def_block with OP_ICONST/OP_FCONST
+//      immediate bits (e.g. 0xFFFFFFFF) as if they were register ids (fixed below).
+// Both fixes are kept because insert_inst_at is shared by the sound
+// strength_reduction/loop_unroll passes. Re-enabling LICM needs real SSA (or a
+// per-register single-def/dominator check) and belongs in an RFC.
 pub fn licm_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
     if max_reg == 0 as u32:
@@ -620,72 +642,88 @@ pub fn licm_func(f: ptr[AirFunc]) -> bool:
 
     bi = 0 as i64
     while bi < f.blocks.len:
-        let blk = f.blocks.data[bi]
-        if blk.loop_depth > 0 as u8:
+        // NOTE: block/inst fields are re-read fresh from `f.blocks.data[bi]` /
+        // `f.insts.data[inst_idx]` on every use below. A hoist calls
+        // insert_inst_at, which pushes into `f.insts` (may REALLOCATE `insts.data`,
+        // invalidating any held `ptr[AirInst]`) and bumps `instrs_start` of every
+        // block after the pre-header (shifting this block's window when
+        // bi > pre_header_id). Holding a captured `blk`/`inst` across the insert —
+        // as the previous code did — read freed/stale memory and segfaulted the
+        // compiler at -O2/-O3 on any loop. Fresh re-reads keep it correct.
+        if f.blocks.data[bi].loop_depth > 0 as u8:
             mut pre_header_id := 0xffffffff as u32
             mut pred_i := 0 as u32
-            while pred_i < blk.preds_len:
-                let pred = f.block_preds.data[blk.preds_start + pred_i]
+            while pred_i < f.blocks.data[bi].preds_len:
+                let pred = f.block_preds.data[f.blocks.data[bi].preds_start + pred_i]
                 if pred < f.blocks.len as u32:
-                    if f.blocks.data[pred].loop_depth < blk.loop_depth:
+                    if f.blocks.data[pred].loop_depth < f.blocks.data[bi].loop_depth:
                         pre_header_id = pred
                         break
                 pred_i = pred_i + 1 as u32
 
             if pre_header_id != 0xffffffff as u32:
                 mut inst_i := 0 as u32
-                while inst_i < blk.instrs_len:
-                    let inst_idx = f.block_instrs.data[blk.instrs_start + inst_i]
-                    mut inst := &f.insts.data[inst_idx]
-                    
-                    if inst.opcode != OP_NOP and not has_side_effect(inst.opcode) and inst.dest != 0 as u32:
+                while inst_i < f.blocks.data[bi].instrs_len:
+                    let inst_idx = f.block_instrs.data[f.blocks.data[bi].instrs_start + inst_i]
+                    // Snapshot the scalar fields we need (safe across the insert).
+                    let op = f.insts.data[inst_idx].opcode
+                    let ty = f.insts.data[inst_idx].type_id
+                    let dst = f.insts.data[inst_idx].dest
+                    let s1 = f.insts.data[inst_idx].src1
+                    let s2 = f.insts.data[inst_idx].src2
+
+                    if op != OP_NOP and not has_side_effect(op) and dst != 0 as u32:
+                        // A source is a REGISTER operand only for opcodes that
+                        // encode registers there. OP_ICONST/OP_FCONST pack a 64-bit
+                        // immediate into src1+src2, OP_JUMP/OP_BRANCH put a block
+                        // target in a source slot — those are NOT register ids and
+                        // must not index def_block (indexing def_block with a raw
+                        // immediate like 0xFFFFFFFF is a wild out-of-bounds read →
+                        // compiler SEGV). This mirrors max_reg_id's operand rules.
                         mut inv_src1 := true
-                        if inst.src1 != 0 as u32 and inst.opcode != OP_ICONST and inst.opcode != OP_FCONST and inst.opcode != OP_JUMP:
-                            let def_b = def_block[inst.src1]
+                        if s1 != 0 as u32 and op != OP_ICONST and op != OP_FCONST and op != OP_JUMP:
+                            let def_b = def_block[s1]
                             if def_b != 0xffffffff as u32:
-                                if f.blocks.data[def_b].loop_depth >= blk.loop_depth:
+                                if f.blocks.data[def_b].loop_depth >= f.blocks.data[bi].loop_depth:
                                     inv_src1 = false
-                        
+
                         mut inv_src2 := true
-                        if inst.src2 != 0 as u32 and inst.opcode != OP_BRANCH:
-                            let def_b = def_block[inst.src2]
+                        if s2 != 0 as u32 and op != OP_ICONST and op != OP_FCONST and op != OP_JUMP and op != OP_BRANCH:
+                            let def_b = def_block[s2]
                             if def_b != 0xffffffff as u32:
-                                if f.blocks.data[def_b].loop_depth >= blk.loop_depth:
+                                if f.blocks.data[def_b].loop_depth >= f.blocks.data[bi].loop_depth:
                                     inv_src2 = false
-                                    
+
                         if inv_src1 and inv_src2:
-                            let new_inst_idx = f.insts.push(AirInst(
-                                opcode: inst.opcode,
-                                type_id: inst.type_id,
-                                dest: inst.dest,
-                                src1: inst.src1,
-                                src2: inst.src2
+                            // Insert BEFORE the pre-header's terminator so the
+                            // hoisted value is actually reached (appending at the
+                            // end would place it after the jump into the loop →
+                            // dead code / undefined dest → miscompile).
+                            mut pos := f.blocks.data[pre_header_id].instrs_len
+                            if pos > 0 as u32:
+                                let last_idx = f.block_instrs.data[f.blocks.data[pre_header_id].instrs_start + (pos - 1 as u32)]
+                                let last_op = f.insts.data[last_idx].opcode
+                                if last_op == OP_JUMP or last_op == OP_BRANCH or last_op == OP_RETURN:
+                                    pos = pos - 1 as u32
+
+                            insert_inst_at(f, pre_header_id, pos, AirInst(
+                                opcode: op,
+                                type_id: ty,
+                                dest: dst,
+                                src1: s1,
+                                src2: s2
                             ))
-                            
-                            def_block[inst.dest] = pre_header_id
-                            
-                            let ph = &f.blocks.data[pre_header_id]
-                            let insert_pos = ph.instrs_start + ph.instrs_len
-                            
-                            f.block_instrs.push(0 as u32)
-                            mut shift_i := f.block_instrs.len - 1 as i64
-                            while shift_i > insert_pos as i64:
-                                f.block_instrs.data[shift_i] = f.block_instrs.data[shift_i - 1 as i64]
-                                shift_i = shift_i - 1 as i64
-                            f.block_instrs.data[insert_pos] = new_inst_idx
-                            ph.instrs_len = ph.instrs_len + 1 as u32
-                            
-                            mut adjust_bi := pre_header_id as i64 + 1 as i64
-                            while adjust_bi < f.blocks.len:
-                                f.blocks.data[adjust_bi].instrs_start = f.blocks.data[adjust_bi].instrs_start + 1 as u32
-                                adjust_bi = adjust_bi + 1 as i64
-                                
-                            inst.opcode = OP_NOP
-                            inst.type_id = 0 as u16
-                            inst.dest = 0 as u32
-                            inst.src1 = 0 as u32
-                            inst.src2 = 0 as u32
-                            
+
+                            def_block[dst] = pre_header_id
+
+                            // NOP the original in place, addressed by index (the
+                            // insert may have reallocated f.insts.data).
+                            f.insts.data[inst_idx].opcode = OP_NOP
+                            f.insts.data[inst_idx].type_id = 0 as u16
+                            f.insts.data[inst_idx].dest = 0 as u32
+                            f.insts.data[inst_idx].src1 = 0 as u32
+                            f.insts.data[inst_idx].src2 = 0 as u32
+
                             changed = true
                     inst_i = inst_i + 1 as u32
         bi = bi + 1 as i64
@@ -697,7 +735,7 @@ pub fn insert_inst_at(f: ptr[AirFunc], block_id: u32, pos_in_block: u32, inst: A
     let new_inst_idx = f.insts.push(inst)
     let blk = &f.blocks.data[block_id]
     let insert_pos = blk.instrs_start + pos_in_block
-    
+
     f.block_instrs.push(0 as u32)
     mut shift_i := f.block_instrs.len - 1 as i64
     while shift_i > insert_pos as i64:
@@ -705,10 +743,21 @@ pub fn insert_inst_at(f: ptr[AirFunc], block_id: u32, pos_in_block: u32, inst: A
         shift_i = shift_i - 1 as i64
     f.block_instrs.data[insert_pos] = new_inst_idx
     blk.instrs_len = blk.instrs_len + 1 as u32
-    
-    mut adjust_bi := block_id as i64 + 1 as i64
+
+    // Bump instrs_start for every OTHER block whose region is PHYSICALLY at or
+    // after the insertion point. `block_instrs` is a flat array laid out in
+    // physical (instrs_start) order, which is NOT necessarily block-index order —
+    // an optimizer may make a loop's pre-header (lower instrs_start) have a HIGHER
+    // block index than the loop body (e.g. LICM hoisting into `pre_header_id > bi`).
+    // The old `index > block_id` adjustment then failed to shift a physically-later
+    // block that happened to have a lower index, corrupting its instruction window
+    // (duplicate/garbage indices → out-of-bounds read → compiler SEGV at -O2/-O3).
+    // Comparing physical positions is correct regardless of index ordering.
+    mut adjust_bi := 0 as i64
     while adjust_bi < f.blocks.len:
-        f.blocks.data[adjust_bi].instrs_start = f.blocks.data[adjust_bi].instrs_start + 1 as u32
+        if adjust_bi != block_id as i64:
+            if f.blocks.data[adjust_bi].instrs_start >= insert_pos:
+                f.blocks.data[adjust_bi].instrs_start = f.blocks.data[adjust_bi].instrs_start + 1 as u32
         adjust_bi = adjust_bi + 1 as i64
     return new_inst_idx
 
@@ -1518,7 +1567,7 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
             // the iterative loop below will clean up.
             if self.level >= 2 as u8 and not is_large:
                 compute_loop_depths(f)
-                licm_func(f)
+                // licm_func(f) DISABLED: unsound on non-SSA AIR — see note at licm_func.
                 strength_reduction_func(f)
                 loop_unroll_func(f)
 

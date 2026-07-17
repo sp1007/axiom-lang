@@ -406,6 +406,8 @@ rows=(
   "t_shapehof|exit|33"
   "t_castwidth|exit|15"
   "t_divpow2|exit|16"
+  "t_floatcvt|exit|10"
+  "t_licm|exit|44"
 )
 
 for row in "${rows[@]}"; do
@@ -427,6 +429,25 @@ for row in "${rows[@]}"; do
     echo "PASS $name ($cmp=$got)"; pass=$((pass+1))
   else
     echo "FAIL $name ($cmp: got '$got' want '$want')"; fail=$((fail+1)); failed="$failed $name"
+  fi
+done
+
+# --- Optimizer level guard (-O2/-O3) --------------------------------------
+# The rows above all build at -O1. This block guards the -O2/-O3 structural
+# loop passes (strength_reduction/loop_unroll; LICM is disabled as unsound):
+# a loop program must (a) NOT crash the compiler and (b) produce the same
+# result at -O2/-O3 as at -O1. Regression for bug-o2-o3-loop-compile-crash.
+for opt in O2 O3; do
+  src="bin/t_licm.ax"
+  if [ -f "$src" ]; then
+    oe="/tmp/reg_t_licm_${opt}.exe"; rm -f "$oe"
+    timeout "$TIMEOUT" "$AXC" build "$src" -o "$oe" -${opt} >/dev/null 2>&1
+    if [ ! -f "$oe" ]; then
+      echo "FAIL t_licm@-${opt} (compiler produced no exe — crash?)"; fail=$((fail+1)); failed="$failed t_licm@-${opt}"
+    else
+      "$oe" >/dev/null 2>&1; ge=$?
+      if [ "$ge" = "44" ]; then echo "PASS t_licm@-${opt} (exit=44)"; pass=$((pass+1)); else echo "FAIL t_licm@-${opt} (exit: got '$ge' want '44')"; fail=$((fail+1)); failed="$failed t_licm@-${opt}"; fi
+    fi
   fi
 done
 
