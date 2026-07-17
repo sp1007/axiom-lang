@@ -22403,6 +22403,14 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                         out_insts.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 8 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset)))
                         return
                 out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+                // BUG (narrowing-cast width): a scalar int cast to a narrow type
+                // (i8/u8/i16/u16/i32/u32) must NORMALIZE the value to that width â€”
+                // otherwise `300 as u8` leaves the full 300 in the register (dirty
+                // upper bits), and a later 64-bit `==`/compare reads 300, not 44.
+                // Every other narrow-value producer (load, arithmetic) already wraps
+                // (see emit_wrap_to_width's invariant comment); the cast MOV was the
+                // one gap. No-op for 64-bit dests, so widening casts are unaffected.
+                emit_wrap_to_width(sel, inst.dest, inst.type_id, out_insts)
 
 
     elif op == OP_FADD:

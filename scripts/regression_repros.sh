@@ -404,6 +404,7 @@ rows=(
   "elfglob|exit|55"
   "t_parse|exit|40"
   "t_shapehof|exit|33"
+  "t_castwidth|exit|15"
 )
 
 for row in "${rows[@]}"; do
