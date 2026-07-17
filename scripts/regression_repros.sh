@@ -405,6 +405,7 @@ rows=(
   "t_parse|exit|40"
   "t_shapehof|exit|33"
   "t_castwidth|exit|15"
+  "t_divpow2|exit|16"
 )
 
 for row in "${rows[@]}"; do

@@ -150,7 +150,9 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
     let op = inst.op
     let buf = &e.code
     
-    if op == MACH_NOP:
+    if op == MACH_NOP or op == MACH_DIVCLOBBER:
+        // MACH_DIVCLOBBER is a regalloc-only marker (see x86_selector.ax); emit a
+        // harmless nop so it occupies no meaningful code (1 byte, no effect).
         x86_encode_nop(buf)
     elif op == MACH_LABEL:
         label_map_set(&e.labels, inst.dst.label, buf.len)

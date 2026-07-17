@@ -654,7 +654,10 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
     mut idiv_count := 0 as i64
     mut di_scan := 0 as i64
     while di_scan < insts_len:
-        if insts[di_scan].op == MACH_IDIV or insts[di_scan].op == MACH_DIV:
+        // MACH_DIVCLOBBER marks a div/mod-by-pow2 strength-reduced sequence that
+        // clobbers RAX+RDX (see x86_selector.ax); treat it exactly like IDIV/DIV so
+        // any vreg whose live range spans it is denied RAX/RDX.
+        if insts[di_scan].op == MACH_IDIV or insts[di_scan].op == MACH_DIV or insts[di_scan].op == MACH_DIVCLOBBER:
             idiv_pos[idiv_count] = di_scan as i32
             idiv_count = idiv_count + 1
         di_scan = di_scan + 1
