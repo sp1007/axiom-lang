@@ -408,6 +408,8 @@ rows=(
   "t_divpow2|exit|16"
   "t_floatcvt|exit|10"
   "t_licm|exit|44"
+  "t_loopcall|exit|140"
+  "t_loopstruct|exit|9"
 )
 
 for row in "${rows[@]}"; do
@@ -437,18 +439,29 @@ done
 # loop passes (strength_reduction/loop_unroll; LICM is disabled as unsound):
 # a loop program must (a) NOT crash the compiler and (b) produce the same
 # result at -O2/-O3 as at -O1. Regression for bug-o2-o3-loop-compile-crash.
+# Each entry crosses a different AIR pattern with the loop optimizers:
+#   t_licm       plain induction-var sum loop
+#   t_loopcall   function call inside the loop body (caller-save/clobber)
+#   t_loopstruct struct field read-modify-write inside the loop (aggregate)
+opt_rows=(
+  "t_licm|44"
+  "t_loopcall|140"
+  "t_loopstruct|9"
+)
 for opt in O2 O3; do
-  src="bin/t_licm.ax"
-  if [ -f "$src" ]; then
-    oe="/tmp/reg_t_licm_${opt}.exe"; rm -f "$oe"
-    timeout "$TIMEOUT" "$AXC" build "$src" -o "$oe" -${opt} >/dev/null 2>&1
+  for orow in "${opt_rows[@]}"; do
+    IFS='|' read -r oname owant <<< "$orow"
+    osrc="bin/${oname}.ax"
+    [ -f "$osrc" ] || continue
+    oe="/tmp/reg_${oname}_${opt}.exe"; rm -f "$oe"
+    timeout "$TIMEOUT" "$AXC" build "$osrc" -o "$oe" -${opt} >/dev/null 2>&1
     if [ ! -f "$oe" ]; then
-      echo "FAIL t_licm@-${opt} (compiler produced no exe — crash?)"; fail=$((fail+1)); failed="$failed t_licm@-${opt}"
+      echo "FAIL ${oname}@-${opt} (compiler produced no exe — crash?)"; fail=$((fail+1)); failed="$failed ${oname}@-${opt}"
     else
       "$oe" >/dev/null 2>&1; ge=$?
-      if [ "$ge" = "44" ]; then echo "PASS t_licm@-${opt} (exit=44)"; pass=$((pass+1)); else echo "FAIL t_licm@-${opt} (exit: got '$ge' want '44')"; fail=$((fail+1)); failed="$failed t_licm@-${opt}"; fi
+      if [ "$ge" = "$owant" ]; then echo "PASS ${oname}@-${opt} (exit=$ge)"; pass=$((pass+1)); else echo "FAIL ${oname}@-${opt} (exit: got '$ge' want '$owant')"; fail=$((fail+1)); failed="$failed ${oname}@-${opt}"; fi
     fi
-  fi
+  done
 done
 
 echo "=== regression: $pass passed, $fail failed ==="

@@ -1,0 +1,13 @@
+// -O2/-O3 structural-pass guard: struct field read-modify-write inside a loop
+// (aggregate field access under the loop optimizers).
+struct Acc:
+    sum: i64
+    cnt: i64
+fn main() -> i64:
+    mut a := Acc(sum: 0, cnt: 0)
+    mut i := 0
+    while i < 25:
+        a.sum = a.sum + i * 3
+        a.cnt = a.cnt + 1
+        i = i + 1
+    return (a.sum + a.cnt) % 229
