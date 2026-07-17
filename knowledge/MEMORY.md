@@ -1,0 +1,99 @@
+- [🟢 STATE 2026-07-17 (pm/loop-opt)](session-handoff-2026-07-09.md) — **ĐỌC ĐẦU TIÊN**. `origin/main`=**`f885c75`**, **364/364**, daily driver sha `97A0703F` (-O2-built compiler cũng 364/364, B==C byte-identical). Mới nhất: **`f885c75` RFC 0025 follow-up — LICM invariant-CHAIN hoisting (copy_prop trước licm) + sound LOOP UNROLL re-enabled** (persistent `cur[]` threading + conservative gates; đóng loop_unroll của [[bug-o2-large-code-miscompile]]); trước đó `bd6616e` **RFC 0025 model-A LICM re-enabled** (blocker-1 "RFC 0016 liveness" = misdiagnosis). Chi tiết + gate + oracles ở [[rfc0025-licm-shipped]]. **GATE quyết định cho loop pass = build compiler AT -O2 rồi regression trên -O2-built compiler** (self-build -O1 mù với LICM/unroll). Lịch sử session: `570d5cb` disable loop_unroll (nay re-enabled), `3703d52` -O2/-O3 loop crash fix [[bug-o2-o3-loop-compile-crash]], `38a9d81` div/pow2 strength-reduction [[perf-div-pow2-strength-reduction]], M6 perf (`a4784ee` compare-branch fusion + `50796cc` move-coalescing) [[m6-perf-gate-fib-benchmark]]. LESSON: **backend change → B==C KHÔNG đủ, full regression + -O2 acceptance bắt buộc** (opcode collision, unroll body-shape bug chỉ -O2-built compiler bắt).
+  **Gate cmd:** `& scripts/fast_fixpoint.ps1`(A==B) → `cp bin/axc_fpB.exe bin/axc_native.exe` → `AXC=bin/axc_native.exe bash scripts/regression_repros.sh`; loop/opt pass thêm: build `-self-link -O2` → `AXC=bin/axc_O2built.exe bash scripts/regression_repros.sh`. Linux: `scripts/elf_linux_check.sh`. Edit module→regen tự động (ĐỪNG sửa tmp_concatenated); frontend=A==B, backend/ABI/linker=B==C. Lambda=`|x: T| -> R expr`.
+- [✅ RFC 0025 LICM + loop-unroll — SHIPPED](rfc0025-licm-shipped.md) — model-A LICM (`bd6616e`) + chain-hoist & sound loop-unroll (`f885c75`) re-enabled -O2/-O3. Gate = -O2-built-compiler regression. Blocker-1 "RFC 0016 liveness" = misdiagnosis. Oracles t_licmhoist/t_loopcross/t_licmchain/t_licmunroll.
+- [✅ -O2 LARGE-code miscompile — loop_unroll (nay RE-ENABLED)](bug-o2-large-code-miscompile.md) — root = loop_unroll per-iter rename-reset (acc đọc giá trị gốc); fixed persistent cur[] + gates ở [[rfc0025-licm-shipped]]. `570d5cb` từng disable, `f885c75` re-enable.
+- [✅ -O2/-O3 loop compile crash — FIXED `3703d52`](bug-o2-o3-loop-compile-crash.md) — insert_inst_at physical-order + ICONST src2 guard (shared bởi strength/unroll). licm_func từng disable ở đây, nay re-enabled.
+- [⭐ div/mod-by-pow2 strength-reduction `38a9d81`](perf-div-pow2-strength-reduction.md) — idiv→shift, collatz 10.5x→2.89x. non-SSA multi-def divisor + RAX/RDX phys + opcode collision. Oracle t_divpow2.
+  **NEXT backlog (large, cần user chỉ định):** div-pow2 signed self-host, fib recursion→loop (RFC), async/spawn-await (cross-platform incomplete, hỏng cả Win+Linux), macOS/Mach-O, RFC 0015 P3 CTGC-free, RFC 0014 bignum-leak, LICM chaining model-B (reaching-defs). Tick-sized: INTRINSIC-not-lowered audit (std/sync.ax native path trả garbage), Vec HOF for_each/reduce/zip. Gate cmd ở STATE line trên.
+- [✅ Windows to_i64/to_f64 panic FIXED `4cf8239`](bug-windows-to-i64-panic.md) — reimpl pure-AXIOM parse trong std/string.ax (bỏ extern C ax_str_parse_* hỏng, class BUG#29). Fix cả Windows lẫn Linux.
+- [📊 M6 perf gate: Fib 2.44x vs clang -O2](m6-perf-gate-fib-benchmark.md) — Fib(42) 2379ms vs clang 974ms, gate ≤1.05x CHƯA đạt; perf half = optimizer effort lớn (inline/recursion→loop). §10 ĐỪNG optimize blind.
+- [🎉 RFC 0009 P3 Linux ELF SHIPPED](rfc0009-p3-elf-linux-target-wip.md) — `--target linux -self-link -O1` → runnable ELF 10/10 WSL. CÒN: actor/scheduler thread port, ax_time_now_ns. WSL run cmd + digs ở topic file.
+- [✅ accept-then-miscompile cluster (5 fixes)](bug-accept-then-miscompile-cluster-0711.md) — undefined-method/non-exhaustive-enum/arity/field/Vec `v[i]` → clean REJECT (rejects phải receiver-AGNOSTIC). Vec `v[i]` shipped RFC 0021.
+- [✅ variant-name shadow REJECT](bug92-generic-recursive-multifield-open.md) — sum reusing builtin variant name (`Pair[T]=P(T,T)|None`) miscompiled → REJECT in `pre_infer_type_alias`. `62c0619`.
+- [✅ BUG#92 generic recursive multi-field FIXED](bug92-generic-recursive-multifield-open.md) — `Tree[T]=Node(T,Tree[T],Tree[T])` child field sai→segfault; `field_is_pointer_sum` nhận kind-8 generic_inst-of-SUM. `938c48b`. Oracle `t_gentree`.
+- [✅ match Option[str]/Result[str] payload length FIXED](bug-match-optstr-payload-length.md) — match `str` payload dropped len half; `lower_match_tagged` pl_type=12. `6c0b976`. Oracle `t_optstrmatch`.
+- [✅✅ free-fn/stdlib collision cluster CLOSED](bug-freefn-stdlib-collision-noarg.md) — user fn trùng stdlib `ax_<name>` → link-merge SIGSEGV; fix arity+arg0 disambig + MODDUP mangle. `f7bc186`.
+- [✅ array element-coercion cluster FIXED](bug-array-return-type-dropped.md) — int-array-lit element coercion trọn cụm (param/return/for-in/let/ctor-field): [i32;N]→[i64;N] stride; `c103b9f`.
+- [⚠️ string = UTF-8 default](string-utf8-default.md) — `str` UTF-8; `for c in s` theo codepoint (rune), `s[i]`/`s.len` = BYTE-level (Rust model). RFC 0020 P1+P2+P3 SHIPPED (`beab7d1`: slice/UFCS/as_bytes/chars/char_at); ascii/utf16-32/char_indices DEFER out-of-scope.
+- [✅ missing-return diagnostic](missing-return-diagnostic-shipped.md) — typecheck REJECT non-void fn rơi khỏi cuối body không `return` (trước: silent garbage RAX); `stmt_terminates` conservative. `ebca3d3`. Thêm `reject` cmp mode cho regression harness.
+- [ℹ️ inline match arm = unsupported](inline-match-arm-unsupported.md) — `fa9e76a`: inline STATEMENT arm reject sạch; inline-stmt thật=RFC, defer.
+- [✅ RFC 0018 P1 for-in-array](rfc0018-for-in-array-shipped.md) — `for x in <fixed-array>` element iteration SHIPPED (`96dd586`). Vec/HashMap iteration = P2.
+- [✅ BUG#89 for-continue](bug89-for-continue-increment.md) — `continue` trong `for` HANG (bỏ qua increment); fix emit +1 inline trước jump-to-cond. `3e26928` B==C.
+- [🤖 HARNESS autopilot](harness-autopilot.md) — `.claude/` có agent+skill tự chủ; "tiếp tục"→`axiom-autopilot` tự chọn task→gate→auto-commit. CLAUDE.md §24.
+- [✅ CSE redef-operand miscompile](bug-cse-redef-operand-miscompile.md) — cse_func reuse expr qua redefinition operand → `x=x op x` sai ở -O1; AIR non-SSA. Fix scan-down-stop-at-redef. `f65addb` B==C.
+- [📋 Backlog OPEN items](backlog-open-items.md) — danh sách task còn mở đã đối soát (next-step-15 + RFC follow-ups); ĐỪNG làm lại phần đã ship.
+- [✅ RFC 0019 multi-field variant SHIPPED](rfc0019-multifield-variant-shipped.md) — `Rect(i64,i64)` (desugar→synth-struct); ĐÓNG BUG#81. `59bc731`, A==B==C, 125/125.
+- [✅ BUG#91 FIXED generic-sum match](bug91-generic-sum-ctor-inference-open.md) — unannotated `let p = One(42)` cho `Opt[T]` trả 0: match GENERIC_INST-of-sum không lower. Fix `resolve_sum_type`. `57b2218`.
+- [✅ BUG#93 silent-segfault FIXED](bug93-qualified-str-call-segfault.md) — unresolved module-qualified call (`std.math.gcd` typo) giờ REJECT sạch (gốc=native strip-import bundling). `468f581`. CÒN: import-driven bundling.
+- [✅ BUG#90 Option-method — CLOSED (re-verified 2026-07-17)](bug90-option-method-segfault-open.md) — `.unwrap()/.is_some()` TYPED=Option `1f203bc` + untyped `m.get(k).unwrap()` deterministic (re-verify daily driver: 42). Spawned bug93-contains ĐÃ FIXED `9f89b64` (contains_key/HashSet.contains 42/42). Cả cụm đóng.
+- [RFC 0016 ✅ RESOLVED](rfc0016-p2prime-cfg-liveness.md) — P2' CFG-aware liveness (`e3f9539`, `compute_liveness` live-in/out, mở khóa lowering tạo block giữa expr) + P3 short-circuit (`755d7b8`), đóng BUG#86.
+- [✅ RFC 0024 block strings SHIPPED](backlog-open-items.md) — `72e4858`: `"""..."""` multi-line (escapes, verbatim, no dedent). 3 site: lexer/unescape/strip_quotes. A==B `21ED17B1`.
+- [✅ RFC 0023 if-expressions SHIPPED](rfc0023-if-expressions-shipped.md) — `4c3ee6b`: `if c: a elif …: b else: c` value-expression, mandatory else, NUD-only (statement-if bất biến), chạy trong lambda body. Value-diamond air (model RFC 0016 P3). 290/290.
+- [✅ lambda param field/method capture false-positive](bug-lambda-param-field-capture.md) — `b37c14a`: `param.field`/`param.method()` trong lambda bị reject "captures ''"; fix=scan bỏ qua FIELD_EXPR field-name child payload==0. Cùng họ `7e5965a`.
+- [Feedback: memory→./knowledge](feedback-memory-location.md) — Lưu MỌI memory vào `./knowledge` trong repo (ko dùng global .claude memory). Index chính = `knowledge/MEMORY.md`.
+- [Feedback: auto-commit](feedback-auto-commit.md) — Tự git commit+push thẳng main mỗi khi fix xong bug.
+- [Feedback: auto-run bash](feedback-auto-run-bash.md) — Tự chạy shell (gate/probe/build/git) ko hỏi; enforcement=settings.json `permissions.allow` USER tự set. ĐỪNG dùng `-ExecutionPolicy Bypass`.
+- [Feedback: fixpoint-async rule](feedback-fixpoint-async-rule.md) — Frontend-thuần: commit sau regression GREEN, fixpoint async. Backend/ABI/linker: fixpoint bắt buộc TRƯỚC commit.
+- [Feedback: làm việc tự chủ](feedback-autonomous.md) — Ko hỏi lại; tự chọn hướng tối ưu; chờ build thì làm việc build-independent.
+- [Feedback: chạy liên tục](feedback-continuous-loop.md) — Self-perpetuating loop, KHÔNG ngủ đông: arm persistent `Monitor` heartbeat 5 phút (ScheduleWakeup ko fire idle); mỗi tick → tự chọn+chạy task kế, ko hỏi; chỉ TaskStop khi user bảo. CLAUDE.md §24.
+- [Feedback: auto-compact context](feedback_compact.md) — Tự động /compact khi context gần đầy.
+- [Feedback: ergonomics ngôn ngữ](feedback-ergonomics.md) — User ghét boilerplate (`as u32` khắp nơi); ưu tiên inference/sugar an toàn → RFC 0005.
+- [Fast fixpoint workflow](fast-fixpoint-workflow.md) — `scripts/fast_fixpoint.ps1` ~9s gate (seed axc_native→A→B, **A==B**=fixpoint). Daily-driver rebuild sau mỗi commit trước khi AXC= regression.
+- [DESIGN: struct reference semantics](axiom-struct-reference-semantics.md) — ⚠️ AXIOM struct/aggregate = REFERENCE (RFC 0001 §5): `mut cpy:=src`/`b=a`/param struct đều ALIAS, ko copy (chỉ scalar). ĐÚNG, đừng "fix".
+
+## Trạng thái nền / lịch sử
+- [next-step-15 self-host status](next-step-15-selfhost-status.md) — 🎉 SELF-HOST FIXPOINT (lịch sử): chain #24→#31 + RFC 0002-0007 đóng; bignum=pure library; float native OK.
+- [next-step-16 fn-ptr shipped](next-step-16-fnptr-shipped.md) — 🎉 BUG#49 fn pointers + std.numerical/sort + float BUG#45/46/48; RFC 0008 closures drafted.
+- [next-step-17 closures P1 shipped](next-step-17-closures-p1-shipped.md) — 🎉 Closures P1 + BUG#50 (zero-capture; capture=BUG#73 reject).
+- [BUG#51+52 FIXED](bug51-hunt-progress.md) — 🎉 stale aggregate-alias qua mono vec-grow; mở khóa daily-driver `bin/axc_native.exe` (8s self-build).
+- [next-step-13 optimizer](project_next_step_13.md) — native codegen + alg_simp_func + cse_func passes.
+- [next-step-14 sumtype size bug](next-step-14-sumtype-size-bug.md) — stage2 crash: builder_type_size_and_align sai size Result generic-inst.
+
+## FFI / separate compilation
+- [FFI/dynamic-linking](ffi-dynamic-linking-priority.md) — RFC 0009 P1+P2 SHIPPED: nhập (`extern "C" from`) + xuất (`#[export]`/`--shared` DLL); còn P3 ELF.
+- [RFC 0011 static libs](rfc0011-static-libs.md) — P1+P2 SHIPPED: `--staticlib` COFF `.lib` + `-l` link tĩnh.
+- [RFC 0011 P4 separate-comp](rfc0011-p4-separate-compilation.md) — import-driven auto-libs (Go-style) XONG + cache: `library` keyword, `--auto-lib`, DLL `_ffi.ax` gen. Còn: struct field ptr/nested + type-alias.
+
+## Ownership / CTGC / bignum
+- [bignum vs CTGC](bignum-ctgc-conflict.md) — std.bignum ngoài CTGC → rò rỉ; gốc ở [[bug69-ctgc-ownership-escape-noop]].
+- [BUG#69 — RFC 0015 P1-P3 SHIPPED](bug69-ctgc-ownership-escape-noop.md) — 🎉 Ownership/Escape/Ctgc từng NO-OP (guard node_idx==0). P1 mutability-only (E4002); P2/P2.1 escape active; P3 free scoped drop-typed (general free defer). Chi tiết đầy đủ ở đây.
+- [RFC 0014 drop-glue ✅ SHIPPED c149872](rfc0014-drop-glue-blocked.md) — `drop(self)` hook opt-in `-ctgc-free`; gọi trước OP_DESTROY cho non-escaping owned drop-typed local. Mở khóa bignum leak.
+
+## Cụm tagged-type / Option / generics (ĐÓNG)
+- [BUG#60/61/62/63](bug60-61-option-followups.md) tagged-type/Option-match+generics; HashMap/HashSet/Vec native (≤8B). [BUG#57+59](bug57-match-option-native.md) native match dispatch. [BUG#58](bug58-sum-struct-payload.md) sum payload=STRUCT reorder. [BUG#56](bug56-nested-sum-payload.md) payload-SUM box-8B báo 16B.
+- [BUG#54+55](bug54-qualified-variant.md) qualified variant segfault. [BUG#66](bug66-hashmap-i64-value-corruption.md) HashMap[K,i64]=0 first-binding-wins. [BUG#67](bug67-option-struct-payload-unwrap.md) `Some(x)` top-level GENERIC_INST. [BUG#74](bug74-generic-struct-inferred-ctor-args.md) `Pair[A,B]` field 2+ đọc 0 (combo type-size là chìa khóa).
+
+## Cụm aggregate/16-byte repr (ĐÓNG)
+- [BUG#77 16B repr UNIFIED](bug77-16byte-struct-byaddress-unified.md) ROOT 75/76/77: chỉ `str` inline-16, mọi aggregate 16B by-address. [BUG#76](bug76-return-16byte-struct-field.md) `return o.inner` OP_RETURN theo KIỂU TRẢ VỀ. [BUG#64+65](bug64-vec-big-aggregate-element.md) Vec element >8B regalloc OP_INDEX +RFC0013 generic_args.
+- [BUG#84 `&a[i]` `c7072f0`](bug84-scalar-array-elem-address.md) + [BUG#85 TWIN `&s.f` `80f09e6`](bug85-scalar-field-address.md) — scalar addr trả TEMP; fix OP_INDEX_ADDR/FIELD_ADDR LEA ko load.
+
+## Cụm None-in-container (ĐÓNG)
+- [BUG#78](bug78-array-of-option-none.md) `[Some(3),None]` segfault store/load 8B ptr. [BUG#79](bug79-vec-option-none-mono.md) `v.push(None)` unresolved ax_push, arg-generic chặn khi param chưa resolve.
+
+## Silent accept-then-miscompile → reject/fix (convention BUG#53)
+- [BUG#53 FIXED](bug53-single-line-if-miscompile.md) — driver HALT khi diags_count>0 trước codegen; inline `if COND: <stmt>` reject; `;` separator first-class.
+- [BUG#83 FIXED](bug83-underscore-digit-separator.md) — 1fb6397: digit separator `_` cắt cụt literal ở CẢ HAI parser; fix skip `_`. Oracle t_underscore.
+- [BUG#80 FIXED](bug80-free-call-overload-collision.md) — 6b310f4: free-fn trùng tên stdlib (`get`) miscompile về 0; resolve theo arg[0]. Bài học: đổi TÊN hàm khi thu hẹp repro.
+- [BUG#81 FIXED](bug81-multifield-variant-payload.md) — df2f867: variant >1 payload field drop field 2+; reject (superseded RFC 0019).
+- [BUG#88 FIXED](bug88-str-concat-operator.md) — 9b45355: `str+str` cộng con trỏ (OP_IADD) thay vì concat; fix lower → `std.string.concat`. Oracle t_strconcat.
+- [BUG#68 FIXED](bug68-struct-eq-no-overload.md) — struct `==` ko có `eq` overload so sánh ĐỊA CHỈ; reject. Bài học: diagnostic cùng cơ chế resolution với lowering.
+- [BUG#70 FIXED + array literals](bug70-array-literal-shipped.md) — `[e0,e1,...]` parser NUD+typecheck; fix lower_array_lit stride.
+- [BUG#71 FIXED](bug71-interface-dynamic-dispatch.md) — method qua interface-TYPED value segfault; reject dynamic dispatch (chưa vtable).
+- [BUG#72 FIXED](bug72-range-index-reject.md) — `arr[x..y]` slicing segfault (`..` ko có Range type); reject.
+- [BUG#73 FIXED](bug73-closure-capture-reject.md) — closure capture (`|x| base+x`) tính SAI âm thầm; free-var scan + reject (zero-capture only).
+
+- [BUG#87 FIXED](bug87-for-range-loop-var.md) — ✅ 694da03 (A==B): `for i in a..b` loop var đọc 0/rác — lower_for key local_map sai (name_id vs sym_idx). Oracle t_forrange(28).
+- [BUG#86 FIXED](bug86-short-circuit-open.md) — 755d7b8 (RFC 0016 P2'+P3, B==C): short-circuit `and`/`or`; cần nền P2' CFG-aware liveness [[rfc0016-p2prime-cfg-liveness]]. Bài học: -O0 pass/-O1 fail ⇒ soi ssa_opt.
+
+## OPEN
+- [✅ narrowing-cast compare width — FIXED `aede254`](bug-narrowing-cast-compare-width.md) — `300 as u8` left DIRTY upper bits (scalar OP_CAST skipped wrap) → 64-bit `==` read 300; fix normalize after cast. Oracle t_castwidth.
+- [✅ f32 binop mixed-width — FIXED `ec8a0d0`](bug-f32-binop-mixed-width.md) — `y*2.0` (y:f32) op F64→mulsd sai; fix float-lit bidirectional width inference. Residual: concrete mixed-width var (hiếm, defer).
+- [✅ consecutive float width-cvt calls — CLOSED (verified 2026-07-17)](bug-consecutive-float-cvt-call-regalloc.md) — từng nghi backend xmm-regalloc miscompile 2 back-to-back f32↔f64 cvt calls; re-verify trên daily driver `38a9d81`: 10 (want 10) ở O0+O1, identity=12. Fix incidental qua float-lit width `ec8a0d0`. Oracle `t_floatcvt`.
+- [✅ f32 boundary miscompile — FIXED `c7f6b78`](bug-f32-boundary-abi-open.md) — f32 param/return đọc 0; root FRONTEND: NODE_FLOAT_LIT luôn F64; fix coerce float lit→F32 khi expected==F32. Oracle t_f32boundary.
+- [✅ `Vec[(i64,T)]` tuple-generic-element mono — FIXED `aa419a2`](bug-vec-generic-tuple-element-mono-open.md) — Vec element=tuple chứa generic T segfault; fix `is_generic` đệ quy field `__tup`.
+- [✅ cross-module close mis-link — FIXED `a9cfd91`](bug-crossmodule-resolution-fragility-open.md) — UFCS match-by-name chạy cả khi resolved (flag 2048) → mis-link; fix skip UFCS khi 2048.
+- [✅ inline lambda × generic — FIXED `2cc67ed`](bug-lambda-generic-fntype-infer-open.md) — `apply2[T,U]`/`Option.map(|..|)` link-error; mở khóa Vec HOF.
+- [✅✅ tuple as generic-arg payload — CLOSED](bug-tuple-generic-payload-unwrap-open.md) — CTOR `1aff7ca` + method-arg `3d2aab0`: element-width gap; re-infer tuple-lit với `__tup`. +assign-coercion `803a806`.
+- [✅ Option/Result element trong array/Vec — FIXED `bf1361c`](bug-option-array-element-read-open.md); [✅ Option/Result arith miscompile REJECT `313cb51`](bug-option-arith-miscompile-open.md) — quên unwrap giờ reject.
+- [✅ generic-inst field mono — CLOSED `a02db69`](bug-inferred-generic-field-type-open.md); [✅ instance+static method MIX `491575a`](bug-instance-static-mixed-call-segfault-open.md) — static-form bogus receiver SIGSEGV, skip synth khi kind=type.
+- [BUG#82 FIXED](bug82-global-var-semantics-open.md) — 9e00177 (RFC 0017 P1, B==C): module-level globals có STATIC STORAGE thật (`.data`+OP_GLOBAL_ADDR). Oracle t_globals. Còn P2: aggregate/ELF → [[backlog-open-items]].
