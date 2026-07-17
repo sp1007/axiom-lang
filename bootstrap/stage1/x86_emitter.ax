@@ -167,7 +167,12 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             elif reg_is_gpr(dst) and reg_is_xmm(src):
                 x86_encode_movqd(dst, src, buf)
             else:
-                x86_encode_mov_rr(dst, src, buf)
+                // Peephole: skip a GPR self-move `mov reg, reg` — a no-op on x86 (no flags,
+                // no side effects). Register allocation frequently resolves a MACH_MOV's dst
+                // and src to the SAME physical register (~15% of reg-reg movs were self-moves),
+                // so dropping them shrinks every function's hot path. (M6 perf.)
+                if dst != src:
+                    x86_encode_mov_rr(dst, src, buf)
     elif op == MACH_MOV_IMM:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         let imm = inst.src1.imm
