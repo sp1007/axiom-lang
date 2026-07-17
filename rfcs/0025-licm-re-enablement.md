@@ -29,14 +29,16 @@ compute-benefit), and the 17-program battery then passed — but this was an EMP
 not a root-cause fix. Any invariant *arithmetic* used in a loop condition is the same shape
 and could recur. **RFC 0016 (CFG-aware liveness) is a HARD PREREQUISITE.**
 
-**Blocker 2 — there is no reliable large-scale acceptance test, because -O2 independently
-miscompiles large code.** The definitive stress test for a loop optimizer is "build the
-compiler at -O2 and check the -O2-built compiler still works." That test is **useless here**:
-a compiler built at -O2 SEGFAULTS on every input **even with LICM disabled** — i.e. -O2
-(strength_reduction / loop_unroll / regalloc pressure on mid-size functions) already
-miscompiles the compiler's own codebase. This is a SEPARATE pre-existing latent bug (the
-daily driver and self-host use -O1, so it never bites). Until it is fixed, LICM cannot be
-validated at realistic scale, so it must not ship. Recorded as its own backlog item.
+**Blocker 2 — [RESOLVED 2026-07-17] there was no reliable large-scale acceptance test,
+because -O2 independently miscompiled large code.** The definitive stress test for a loop
+optimizer is "build the compiler at -O2 and check the -O2-built compiler still works." When
+this RFC was first written that test was useless: a compiler built at -O2 SEGFAULTED on every
+input **even with LICM disabled**. That was traced (commit `570d5cb`) to `loop_unroll_func`
+(a SEPARATE latent miscompile, now disabled — see [[bug-o2-large-code-miscompile]]); with it
+off, **a -O2-built compiler now passes the full 352/352 regression**. So the large-scale
+acceptance test below is now USABLE. This does NOT unblock LICM by itself (Blocker 1 / RFC
+0016 still stands), but it means a future LICM re-attempt CAN be validated the right way:
+build the LICM-enabled compiler at -O2 and require it to pass the full regression.
 
 **Consequences for this RFC:**
 - Prerequisites to re-enable: (1) RFC 0016 CFG-aware liveness; (2) fix the separate
