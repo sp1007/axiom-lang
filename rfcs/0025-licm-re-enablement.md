@@ -1,8 +1,52 @@
 # RFC 0025 — Loop-Invariant Code Motion re-enablement (sound LICM on non-SSA AIR)
 
-Status: **DRAFT** (2026-07-17). Supersedes the ad-hoc `licm_func` that shipped disabled in commit `3703d52`. Blocks: nothing (LICM is currently OFF and the pipeline is sound without it); enables a future perf lever for loop-heavy code.
+Status: **DRAFT — BLOCKED on RFC 0016** (2026-07-17, updated). Supersedes the ad-hoc `licm_func` that shipped disabled in commit `3703d52`. Blocks: nothing (LICM is currently OFF and the pipeline is sound without it); enables a future perf lever for loop-heavy code.
 
-Related: [[bug-o2-o3-loop-compile-crash]], [[bug-cse-redef-operand-miscompile]] (non-SSA operand hazard), RFC 0016 (CFG-aware liveness — a prerequisite building block).
+Related: [[bug-o2-o3-loop-compile-crash]], [[bug-cse-redef-operand-miscompile]] (non-SSA operand hazard), RFC 0016 (CFG-aware liveness — a **hard prerequisite**, see §7).
+
+---
+
+## 0. UPDATE 2026-07-17 — model A implemented & validated at AIR level, but left DISABLED (two blockers)
+
+The conservative "model A" (§3, D1-A) was fully implemented: `is_hoistable_op` whitelist +
+per-register `def_count` single-def gate + unique dominating pre-header gate. At the **AIR
+level it is correct**: a 17-program O0..O3 differential battery (nested loops, break/continue,
+calls-in-loop, struct-mutation, data-dependent trip counts, header-condition invariants) all
+matched, and `dump-air` confirmed genuine invariant arithmetic moving to the pre-header.
+**The implementation was then reverted** (not kept as disabled dead code); its design lives
+here.
+
+It is NOT re-enabled, for two independently-sufficient reasons found this session:
+
+**Blocker 1 — LICM triggers a backend register-liveness miscompile (RFC 0016).** With
+constants included in the hoist whitelist, `t_loopstruct` (a struct field RMW loop) segfaulted
+at -O2: LICM hoisted the loop-bound `iconst 25` into the pre-header, making it a value live
+ACROSS the loop and used in the loop CONDITION. The register allocator's liveness is a single
+linear `[def,use]` interval, not CFG-aware (RFC 0016), and mishandles loop-crossing values.
+Excluding OP_ICONST/OP_FCONST from hoisting made that symptom disappear (constants are
+rematerialized as immediates by the backend, so hoisting them is all-liveness-risk / no
+compute-benefit), and the 17-program battery then passed — but this was an EMPIRICAL patch,
+not a root-cause fix. Any invariant *arithmetic* used in a loop condition is the same shape
+and could recur. **RFC 0016 (CFG-aware liveness) is a HARD PREREQUISITE.**
+
+**Blocker 2 — there is no reliable large-scale acceptance test, because -O2 independently
+miscompiles large code.** The definitive stress test for a loop optimizer is "build the
+compiler at -O2 and check the -O2-built compiler still works." That test is **useless here**:
+a compiler built at -O2 SEGFAULTS on every input **even with LICM disabled** — i.e. -O2
+(strength_reduction / loop_unroll / regalloc pressure on mid-size functions) already
+miscompiles the compiler's own codebase. This is a SEPARATE pre-existing latent bug (the
+daily driver and self-host use -O1, so it never bites). Until it is fixed, LICM cannot be
+validated at realistic scale, so it must not ship. Recorded as its own backlog item.
+
+**Consequences for this RFC:**
+- Prerequisites to re-enable: (1) RFC 0016 CFG-aware liveness; (2) fix the separate
+  -O2-miscompiles-large-code bug so that (3) the acceptance test below is meaningful.
+- **Mandatory acceptance test:** differential O0..O3 on small programs is NECESSARY BUT NOT
+  SUFFICIENT; you MUST also build the compiler at -O2 and verify the -O2-built compiler
+  compiles the regression suite correctly. (Self-build fixpoint is blind here — self-build
+  uses -O1, so LICM never runs during it.)
+- Re-implementing model A from this RFC is straightforward (the three gates + whitelist,
+  with constants excluded, are fully specified in §3 and above).
 
 ---
 
