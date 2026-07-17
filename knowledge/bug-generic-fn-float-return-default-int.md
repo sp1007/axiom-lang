@@ -1,12 +1,32 @@
 ---
 name: bug-generic-fn-float-return-default-int
-description: "OPEN silent-miscompile: a generic fn whose return type is a bare type param T, called WITHOUT an expected-type hint, resolves its result type to generic-T which defaults to INT — correct for int instances, garbage for float (and likely struct) returns. Workaround: annotate the result."
+description: "FIXED: a generic fn whose return type is a bare type param T, called without a result annotation, mis-typed a FLOAT return as int (caller read the generic TEMPLATE signature, not the concrete instance). Fix: prefer the monomorphized instance's signature (callee.payload, flag 2048) over infer_node's template re-resolution."
 metadata:
   node_type: memory
   type: project
 ---
 
-# Generic fn returning bare `T` → result type defaults to INT (float returns miscompile) — OPEN
+# Generic fn returning bare `T` → result type defaulted to INT (float returns miscompiled) — ✅ FIXED
+
+## ✅ FIXED 2026-07-18 (A==B `6F1A1ED5`, regression 368/368, oracle t_genfloatret)
+**Real root cause (trace-nailed, NOT the earlier NODE_TYPE_EXPR guesses):** the monomorphized
+instance's SIGNATURE is CORRECT — `pre_infer_func_signature` computes ret f64(10) for the f64
+instance, i32(3) for the int instance, and stores it on `symbols[callee.payload].type_id`. But at
+the call site (typecheck.ax ~L3627) `callee_type = infer_node(callee)` **re-resolves the ident to
+the generic TEMPLATE** (func type with generic/`ret=0` return, id 63 in the trace) instead of the
+instance (id 457, ret=10/3). So `result_type = fi.ret` became 0 → defaulted to int downstream →
+correct for int returns (default matched), a spurious `itof` corrupting f64/other returns.
+Decisive trace: `XCALL callee=_AX_std_id__f64__o1T ctype=63 ctRET=0 ptid=457 ptRET=10` (float) vs
+`ptRET=3` (int) — the payload (instance) type had the right return; infer_node's `ctype` did not.
+
+**Fix:** at L3627, when the call was monomorphized (`callee.flags & 2048`, set right after the
+instance is bound), override `callee_type` with the instance's own signature
+(`symbols[callee.payload].type_id`) when it is a FUNC type. Frontend-only, A==B held, self-build OK,
+no regressions (int generics unaffected — they only worked by the int-default coincidence). Oracle
+`bin/t_genfloatret.ax` (maxof + id on f64 → 42). This also fixes generic STRUCT/other-repr returns
+that would have hit the same default.
+
+## (historical below — symptom, isolation, and the WRONG earlier hypotheses/dead-ends)
 
 ## Symptom (probe batch 6, 2026-07-18)
 ```

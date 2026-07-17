@@ -9751,7 +9751,21 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if inferred.data != null as ptr[u32]:
                         @free(inferred.data as ptr[u8])
             
-            let callee_type = self.infer_node(callee, TYPE_UNKNOWN)
+            mut callee_type = self.infer_node(callee, TYPE_UNKNOWN)
+            // A monomorphized generic call (callee.flags & 2048, set above) had its
+            // payload pointed at the concrete INSTANCE symbol, whose pre-inferred
+            // signature carries the concrete return type (f64/i32/struct/...). But
+            // infer_node re-resolves the ident to the generic TEMPLATE, whose return is
+            // the generic param (ret=0/UNKNOWN) â€” so result_type below defaulted to int,
+            // silently corrupting a FLOAT (or other non-int-repr) return (int matched the
+            // default by coincidence, hiding this until now). Prefer the instance's own
+            // signature type. See [[bug-generic-fn-float-return-default-int]].
+            if (self.tree.nodes.data[callee].flags & 2048 as u16) != 0 as u16:
+                let inst_pay = self.tree.nodes.data[callee].payload
+                if inst_pay != 0 as u32 and (inst_pay as i64) < self.symtable.symbols.len:
+                    let inst_tid = self.symtable.symbols.data[inst_pay as i64].type_id
+                    if inst_tid != 0 as u32 and (inst_tid as i64) < self.types.entries.len and self.types.entries.data[inst_tid].kind == TYPE_KIND_FUNC:
+                        callee_type = inst_tid
             if callee_type != TYPE_UNKNOWN:
                 let entry = self.types.entries.data[callee_type]
                 if entry.kind == TYPE_KIND_FUNC:
