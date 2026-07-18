@@ -34,9 +34,15 @@ CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
   promoted (fixpoint now `aae2ea1f`). Win: `benchmarks/hotloop` **185→72ms = 2.57x**; fib/collatz
   unchanged (skipped). 2 bring-up bugs fixed (AirInst aliasing via `mut nn:=cin`; params.data=TYPE
   ids not vregs). Oracle `t_inline`. Details [[m6-perf-gate-fib-benchmark]]. `origin/main`=**`d64a68d`**.
+- ✅ **RFC 0026 P1.5 GETTER INLINING SHIPPED** (`67a0bbe`): scalar-field getters (`fn get_x(p)=return p.x`)
+  now inline. `SsaOptimizer.run`/`inline_func` take the `TypeTable` (threaded from main_air.ax:1085);
+  `OP_GET_FIELD` whitelisted but gated to a scalar field of a param (field_size≤8, not aggregate/
+  pointer-sum). **B==C `f286cac9`, 412/412**, daily driver promoted. Win: `benchmarks/getter`
+  **185→64ms = 2.89x**. Oracle `t_inline4`. `origin/main`=**`67a0bbe`**.
 - **NEXT (dedicated-session backlog)**: (1) RFC 0026 P2 — control-flow inliner (catches collatz) +
-  accumulator-recursion→loop (fib), higher bench leverage, same B==C gate; (2) RFC 0015 P3 CTGC-free
-  (high-risk, attempt-with-tight-gate per user). Both need full B==C + -O2 regression + revert-on-red.
+  accumulator-recursion→loop (fib), higher bench leverage; also multi-field/aggregate getters +
+  `OP_INDEX` (array-element getters) as further P1.x; (2) RFC 0015 P3 CTGC-free (high-risk,
+  attempt-with-tight-gate per user). All need full B==C + -O2 regression + revert-on-red.
 
 ## ✅ CẬP NHẬT 2026-07-12 — RFC 0017 GLOBAL STORAGE HOÀN CHỈNH + probing
 `origin/main`=`ceceb7e`, 243/243, daily driver `bin/axc_native.exe` **A==B==C `81522e76`** (đổi ở `288c86a`=backend; sau đó chỉ test-only).
