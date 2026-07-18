@@ -1,0 +1,13 @@
+// M6 perf benchmark — naive double-recursion Fibonacci (call-dominated).
+// This is the canonical M6 gate workload: clang -O2 transforms the double
+// recursion into a single-call loop, so the AXIOM/clang ratio measures how
+// well AXIOM handles call/frame overhead + (future) inlining & recursion->loop.
+// Exit code = fib(42) % 1000 (267914296 % 1000 = 296, truncated to 8-bit = 40).
+fn fib(n: i64) -> i64:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fn main() -> i32:
+    let r = fib(42)
+    return (r % 1000) as i32

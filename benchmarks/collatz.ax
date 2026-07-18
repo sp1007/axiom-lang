@@ -1,0 +1,22 @@
+// M6 perf benchmark — Collatz step-count sum over 1..300000 (div/mod + call-in-loop).
+// A FAIR benchmark: clang cannot closed-form or constant-fold it, so the ratio
+// reflects real codegen quality (div/mod-by-2 strength reduction, the loop body,
+// and the per-iteration call to collatz_len). Complements fib (pure call overhead).
+fn collatz_len(n0: i64) -> i64:
+    mut n := n0
+    mut steps := 0 as i64
+    while n > 1:
+        if n % 2 == 0:
+            n = n / 2
+        else:
+            n = 3 * n + 1
+        steps = steps + 1
+    return steps
+
+fn main() -> i32:
+    mut total := 0 as i64
+    mut i := 1 as i64
+    while i < 300000:
+        total = total + collatz_len(i)
+        i = i + 1
+    return (total % 1000) as i32

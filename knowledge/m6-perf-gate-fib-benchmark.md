@@ -9,6 +9,19 @@ metadata:
 
 # M6 perf gate — Fib benchmark (measured 2026-07-17)
 
+## 2026-07-18 (autopilot) — committed benchmark harness + RFC 0026 (inlining + recursion→loop)
+User prioritized M6 perf ([[autopilot-direction-2026-07-18]]). Shipped the **reusable, committed
+perf harness** (was previously ad-hoc): `scripts/bench_perf.sh` builds `benchmarks/{fib,collatz}.ax`
+with AXIOM -O1 + `.c` refs with clang -O2, times best-of-N, prints ratio. **Re-measured baseline on
+current daily driver `22DA5200`:** fib(42) **2.72x** (2442ms vs 899ms), collatz **3.19x** (170ms vs
+53ms) — both exit-correct vs clang (40, 161). (2.44x→2.72x vs the 2026-07-17 number = measurement
+variance + driver drift, same ballpark.) **RFC 0026** (`rfcs/0026-inlining-and-recursion-to-loop.md`)
+designs the two chosen levers: (1) module-level **inliner** of small single-block non-recursive
+callees inserted before the per-fn loop at `ssa_opt.ax:1798` (vreg-rename + param→arg bind +
+return→copy in flat AIR); (2) **tail-self-recursion→loop** (accumulator form like fib is P2/deferred —
+fib's ratio is closed mainly by inlining). GATE = B==C + 401/401 regression + -O2 guard + bench delta
++ new t_inline*/t_selfrec* oracles; revert-on-red, record blocker here. Harness cmd: `bash scripts/bench_perf.sh`.
+
 `docs/tasks/milestones.md` **M6 (Native x86-64)** gate = "ELF binary without GCC, **Fib(40)
 ≤ 5% slower than clang -O2**". This session shipped the ELF-binary half (`--target linux`);
 this note records the perf half.
