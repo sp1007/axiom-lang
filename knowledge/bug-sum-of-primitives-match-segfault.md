@@ -47,3 +47,24 @@ zero `type .. = prim | prim` in bin/*.ax). Two fix directions:
 **Priority:** medium — it's a real silent SIGSEGV, but on an aspirational/rare construct. The
 (a) reject is the bounded, self-host-safe fix; gate is fast now
 ([[infra-defender-build-throttle]]). Schedule as an M4-core bounded task.
+
+## ❌ Attempt 1 (2026-07-18, REVERTED) — match-level "payload-less variant" reject is UNSOUND
+Added to the NODE_MATCH_ARM SUM path (typecheck.ax ~2962): reject when a variant pattern
+`V(x)` binds a payload (`first_child` is NODE_BINDING_PAT) but the found variant's
+`payload_type == TYPE_UNKNOWN`. It correctly rejected the bug AND passed **A==B fixpoint**
+(3F7E05A8) — but the **full regression caught an OVER-REJECTION**: `t_treeoptchild`
+(`match root.left { Some(p): ... }` where `root.left: Option[ptr[Node]]`) was wrongly
+rejected. ROOT: builtin **Option/Result — and generic sums — reach this path with a variant
+`Some`/`Ok` whose `payload_type` resolves to `TYPE_UNKNOWN` at the match check** (the generic
+payload isn't concretized there), indistinguishable from a genuinely payload-less variant.
+Gating to `s_entry.kind == TYPE_KIND_SUM` (excluding GENERIC_INST) did **not** help — Option
+is a builtin generic sum that still presents as SUM here with an unresolved `Some` payload.
+**LESSON (same imprecision wall as m2):** `payload_type == TYPE_UNKNOWN` at the match site is
+NOT a reliable "genuinely payload-less" signal. Reverted cleanly (driver back to 1C2E3D6A);
+A==B ≠ correctness — the full regression (t_treeoptchild) is what caught it.
+**Refined fix direction:** do the reject at the **DECLARATION** of `type T = <primitive-type> |
+...` — detect that a "variant" node is a BARE TYPE expression (primitive/type name) rather than
+a named constructor (with/without payload). That distinguishes the bug (`i32`/`string` as
+variants) from valid payload-less constructors (`Nil`, `Empty`) and from generic Option/Result
+entirely. Requires reading the parser's sum-variant node structure (does a bare-type variant
+differ structurally from a named `Nil`?). NOT the match site. Still low priority (rare construct).
