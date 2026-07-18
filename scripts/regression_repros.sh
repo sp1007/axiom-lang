@@ -503,6 +503,8 @@ done
 #   t_licmchain  two-link invariant chain -> both hoist (copy_prop before LICM)
 #   t_licmunroll const-trip accumulator loop -> sound full unroll (loop-carried)
 opt_rows=(
+  "t_compliance|60"
+  "t_compliance2|28"
   "t_foldu32wrap|205"
   "t_licm|44"
   "t_loopcall|140"
