@@ -20,6 +20,7 @@
 - [✅ array element-coercion cluster FIXED](bug-array-return-type-dropped.md) — int-array-lit element coercion trọn cụm (param/return/for-in/let/ctor-field): [i32;N]→[i64;N] stride; `c103b9f`.
 - [⚠️ string = UTF-8 default](string-utf8-default.md) — `str` UTF-8; `for c in s` theo codepoint (rune), `s[i]`/`s.len` = BYTE-level (Rust model). RFC 0020 P1+P2+P3 SHIPPED (`beab7d1`: slice/UFCS/as_bytes/chars/char_at); ascii/utf16-32/char_indices DEFER out-of-scope.
 - [✅ missing-return diagnostic](missing-return-diagnostic-shipped.md) — typecheck REJECT non-void fn rơi khỏi cuối body không `return` (trước: silent garbage RAX); `stmt_terminates` conservative. `ebca3d3`. Thêm `reject` cmp mode cho regression harness.
+- [🟢 probe batch 2026-07-18-b CLEAN](probe-batch-clean-2026-07-18-b.md) — 6 crosses (sum-match/u32-bitwise-boundary/nested-continue/15-temp-spill/fib-recursion/signed→u8-roundtrip) all correct O0==O1 trên driver 1C2E3D6A; plateau xác nhận, ĐỪNG re-probe.
 - [ℹ️ inline match arm = unsupported](inline-match-arm-unsupported.md) — `fa9e76a`: inline STATEMENT arm reject sạch; inline-stmt thật=RFC, defer.
 - [✅ RFC 0018 P1 for-in-array](rfc0018-for-in-array-shipped.md) — `for x in <fixed-array>` element iteration SHIPPED (`96dd586`). Vec/HashMap iteration = P2.
 - [✅ BUG#89 for-continue](bug89-for-continue-increment.md) — `continue` trong `for` HANG (bỏ qua increment); fix emit +1 inline trước jump-to-cond. `3e26928` B==C.
