@@ -95,9 +95,20 @@ An interim note wrongly flagged lambdas as broken (I used spec syntax); CORRECTE
   syntax — [[next-step-16-fnptr-shipped]]/2cc67ed CONFIRMED correct), **zero-capture closures**
   (over globals/consts). GAP: **closure capturing a LOCAL var** (test_030 `outer`) → clean
   REJECT "only zero-capture closures are currently supported (RFC 0008 P2 not yet implemented)".
-**Emerging pattern (updated):** the core LANGUAGE is MORE complete than first thought. Real
-feature gaps so far are only **local `const`** and **closure-capture-of-locals (RFC 0008 P2)** —
-both cleanly diagnosed, not silent. The rest are pure surface-syntax dialect (`fn(...)` lambdas,
-`=>` match arms, brace blocks) — a suite-rewrite (approach b) sidesteps them. Groups 4-6
-(structs/ownership, interfaces/generics, error/sum) still to measure. Bounded tasks surfaced:
-**local-const support** (parser, small) and **RFC 0008 P2 local capture** (larger, RFC exists).
+- **Group 4 (031-040): 8/10.** SUPPORTED: struct instantiate `Point(x:..,y:..)`, mut field
+  assign, value copy/move `let b = a`, **borrow `&a` + `view.x`**, UFCS method `p.area()`
+  (top-level fn), **`in [Arena]:` region block** (works!), scoped-lifetime/CTGC scopes.
+  GAPS (both aspirational ownership annotations, syntax not parsed): **`@SOA` struct attribute**
+  (033, "expected top level declaration") and **`!Point` sink parameter** (036, "expected type
+  expression"). test_037 uses a NESTED fn decl (rewritable to top-level; UFCS itself works).
+
+**Emerging pattern (updated):** the core LANGUAGE is MORE complete than first thought —
+**~36/40 of groups 1-4 work**. Real gaps are all cleanly diagnosed (no silent miscompiles):
+`local const`, `closure-capture-of-locals` (RFC 0008 P2), `@SOA`, `!Point` sink. The rest are
+pure surface-syntax dialect (`fn(...)` lambdas → impl `|..|`, `=>` match arms → `pattern:`,
+brace blocks → indentation) that an approach-(b) suite rewrite sidesteps. Groups 5-6
+(interfaces/generics, error/sum — both heavily exercised & fixed already, likely high pass)
+still to measure. **Bounded tasks surfaced, smallest first:** (1) **local-`const` support**
+(parser: allow `const` in a block; top-level machinery exists — likely small, but a syntax
+addition ⇒ light RFC per §13); (2) **RFC 0008 P2 local capture** (larger; RFC exists);
+(3) `@SOA` / `!` sink (aspirational ownership — defer, design-level).
