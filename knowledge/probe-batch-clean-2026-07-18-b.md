@@ -27,6 +27,20 @@ silent-miscompile veins are exhausted. Remaining backlog is design-level pending
 direction (m2 fn-pointer type in the type system = RFC; milestones M4 compliance suite,
 M6 ELF export/perf gate/Mach-O). Don't re-probe the crosses above.
 
+## Batches 4-5 (post gate-fix, fast probing on axc_native `1C2E3D6A`) — also CLEAN
+Five more valid crosses, O0==O1, all correct:
+7. nested sum `match` (Leaf/Node) over an `[Tree;2]` array iterated in a for-loop → 50
+8. `str` concat `a + b` then `.len` field → 12
+9. multi-arg tail recursion `gcd(1071,462)` → 21
+10. negative truncated division+modulo `-17%5=-2, -17/5=-3` → -103 (verify via PowerShell
+    `$LASTEXITCODE`; bash shows 127/153 = negative-exit clamp trap)
+11. bit ops `(1<<6)|5 & 0x0F` → 5
+Malformed probes CLEANLY REJECTED (robustness fixes working): `c.len()` → "'len' is a field,
+not a function; it cannot be called"; `vec_new_i64` (wrong API) → "undefined name" ([[bug-undefined-name-accept]]).
+**13 total crosses clean this session — plateau firmly holds; don't re-probe these.**
+Pitfall: `str.len` is a FIELD not a method (no parens); dynamic Vec API is NOT `vec_new_i64`
+(find the real ctor before probing Vec HOFs).
+
 Pitfall re-confirmed: match arms use **bare patterns** (`Wrap(x):`), NOT `case`;
 multi-field variant `Rect(i64,i64)` is REJECTED by design (BUG#81, backlog); loops are
 `for i in a..b:` with `mut x: T = v` (no `let`) for mutables.
