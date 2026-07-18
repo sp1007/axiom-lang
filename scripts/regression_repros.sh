@@ -150,6 +150,7 @@ rows=(
   "t_partialmatch|reject|"
   "t_undefname|reject|"
   "t_retmismatch|reject|"
+  "t_strnumop|reject|"
   "t_forvec|exit|60"
   "t_rune|exit|65"
   "t_bytesview|exit|204"

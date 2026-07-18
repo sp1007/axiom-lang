@@ -9357,6 +9357,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     ax_printf_local("error: operator '%s' is not defined for Option/Result operands (missing .unwrap()?)\n", get_str_ptr(bot) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     safe_free_str(bot)
                     self.diags_count = self.diags_count + 1 as i64
+                // BUG#53: a binary arithmetic/bitwise op with ONE str/bytes operand and
+                // ONE numeric operand (`"hello" + 5`) silently lowered to pointer+int
+                // (OP_IADD on the str's {ptr,len}) -> garbage. Reject. str+str stays
+                // valid (both str -> concat, handled elsewhere); numeric+numeric is the
+                // normal path. Only the genuinely-incompatible str<->numeric mix is
+                // caught. See [[bug-malformed-input-robustness-cluster]].
+                let t1_str = t1 == TYPE_STRING or t1 == TYPE_BYTES
+                let t2_str = t2 == TYPE_STRING or t2 == TYPE_BYTES
+                if (t1_str and tc_is_numeric(t2)) or (tc_is_numeric(t1) and t2_str):
+                    let bot2 = self.node_text(node_idx)
+                    ax_printf_local("error: operator '%s' is not defined between a string and a numeric operand\n", get_str_ptr(bot2) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    safe_free_str(bot2)
+                    self.diags_count = self.diags_count + 1 as i64
                 // numeric promotion simple. RFC 0007: for a user-type lhs (operator
                 // overload, lowered to a method call by air_builder) the result is
                 // the lhs type â€” which the final `else` already yields.
