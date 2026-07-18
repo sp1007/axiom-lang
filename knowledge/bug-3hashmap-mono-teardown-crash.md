@@ -168,6 +168,19 @@ The gate builds each program ONCE and checks the OUTPUT exe's exit code; the exe
 a 1-in-~12 teardown crash rarely hits on a single build. The fixpoint checks output determinism (holds
 — the crash is post-output). So this slipped through as a rare, output-invisible teardown flake.
 
+## gdb path (checked 2026-07-18) — heisenbug resists it; even a catch shows only the symptom
+`gdb` IS available on Windows (`C:\msys64\ucrt64\bin\gdb.exe`, used to root-cause the next-step-14
+native bugs). BUT driving the compiler under gdb on the repro = 0 crashes in 25 runs (native rate ~15%
+→ 0.85^25≈1.7% odds of that if unperturbed) — **gdb perturbs the heap layout and masks the intermittent
+crash** (classic heisenbug). The crash rate CAPS at ~10-15% (a max-stress 5-hash-container+big-struct
+repro `big.ax` = 2/20, no higher), so it can't be made deterministic by piling on instances. AND even a
+successful gdb catch would land on the LATER heap op that walks the corrupted free-list, not the
+original OOB write (they are separated in time) — so it shows the symptom, not the cause. Pinning the
+write needs a hardware WATCHPOINT on the clobbered address (unknown ahead of time) or a verify-on-every-
+alloc debug allocator that panics right after the write. => the two non-invasive tools (gdb,
+C-backend-canary) both fail; the fix needs the INVASIVE self-link-allocator canary (below) or a source
+audit. This is why it's a dedicated session, and genuinely so — not a lack of trying.
+
 ## Debug-allocator path is BLOCKED (checked 2026-07-18) — C backend can't build the compiler
 Tried to catch the OOB write with the C runtime's canary allocator: `runtime/axalloc/axalloc_compiled.c`
 has `AX_ALLOC_DEBUG` (header+footer magics, `verify_all_allocations` on every alloc/free, `ax_free`
