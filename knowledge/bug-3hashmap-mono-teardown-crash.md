@@ -97,6 +97,14 @@ the corrupting store). This localization + the minimal repro should make that a 
   only dangles once buffers are large enough (3rd HashMap), OR corruption while registering the 3rd
   HashMap's monomorphized methods/types (typetable/symtable growth). Confirm with ASAN.
 
+## Audit note (2026-07-18) — the held-ref-into-vector pattern is widespread; don't hand-audit, use ASAN
+The suspected bug class (`mut x := &self.<vec>.data[i]` held across a same-vector grow) appears at 30+
+sites (air.ax, resolver.ax, ssa_opt.ax:257/397/643/1072/1485/1537, mono.ax:74/216, air_builder.ax:309,
+etc.). Almost all are safe (the held ref is not used after a grow to THAT vector in-scope). Isolating
+which one fires in the hash-container mono cascade by hand is infeasible — ASAN/valgrind pins the exact
+faulting read+write in a single run of the 9-line repro. So the fix session should go straight to the
+sanitizer rather than auditing these sites manually.
+
 ## Suspected root cause (NOT confirmed — needs tooling)
 Heap corruption introduced while monomorphizing the 3rd HashMap instantiation (mono.ax / typetable /
 the generic-instance size+align machinery), latent until the cleanup `@free` chain at the end of the
