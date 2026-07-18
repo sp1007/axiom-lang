@@ -28,6 +28,21 @@ calling `sq`): **185.5ms → 72.3ms = 2.57x faster** (17.5x→7.3x vs clang). fi
 **NEXT (higher bench leverage, deferred):** inline callees WITH control flow (multi-block clone +
 block-id remap) to catch collatz; accumulator-recursion→loop for fib. Both larger, same B==C gate.
 
+**P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
+adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified constraints:
+- `OP_GET_FIELD.src1` = struct-ptr VREG (rename it); `.src2` = FIELD INDEX, NOT a vreg — must be
+  EXCLUDED from renaming (like ICONST/FCONST), else `field_offset(type,src2)` reads a bogus index.
+- Correctness depends on `get_register_type(src1)` returning the right struct type. When inlined,
+  src1 = the param-copy target whose `type_id` = `params.data[i]` (the struct type) — so the type
+  resolves IF the param-copy carries the struct type id (it does). Verify this holds.
+- The selector's GET_FIELD has size==16 / aggregate / pointer-sum(Option/Result/sum-field) branches
+  (x86_selector.ax:2099-2114). To stay safe, restrict getter inlining to SCALAR fields (size≤8, not
+  aggregate, not pointer-sum) in the first cut; aggregate/16B/opt fields are a further increment.
+- Same for `OP_INDEX`/`OP_SET_FIELD`/`OP_FIELD_ADDR` if ever added — check which operand is a vreg.
+This is a real aggregate/memory increment (P1 was pure-scalar precisely to avoid this), so it needs
+its own careful pass + oracles (scalar getter, nested, wrong-type guard) + full B==C gate. NOT a
+tail-of-session change.
+
 ## 2026-07-18 (autopilot) — INLINER IMPLEMENTATION SPEC + cost/benefit gate (staged, not shipped)
 Fully designed the flat-AIR inliner (read air.ax/ssa_opt.ax/x86_selector.ax). **Key finding that
 gates it:** the value passes (copy_prop/cse/dce, `ssa_opt.ax`) scan `f.insts` in PHYSICAL order =
