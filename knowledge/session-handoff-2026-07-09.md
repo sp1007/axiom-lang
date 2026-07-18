@@ -41,7 +41,11 @@ CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
   **185→64ms = 2.89x**. Also covers computed multi-field accessors (`area=w*h`). **7 inliner oracles**
   banked (`t_inline`..`t_inline7`: pure-arith, edge cases, generics/loop/branch crosses, scalar/
   multi-field getters, negative safety-gate for 16B/pointer-sum fields, mixed scalar/aggregate struct).
-  Multiple probe batches CLEAN (no inliner miscompile). Full suite **green** (`26c5425`). `origin/main`=**`26c5425`**.
+  Multiple probe batches CLEAN (no inliner miscompile).
+- ✅ **OP_INDEX SHIPPED** (`90ca7e4`): scalar array-element getter inlining (`at(a,i)=a[i]`), gated to
+  resolved scalar element (type_id!=0, not aggregate, size≤8). **B==C `343fa03b`, 418/418**. Oracle
+  `t_inline8`. **GETTER FAMILY COMPLETE** (pure-arith + field + multi-field + array-element; 8 oracles
+  `t_inline`..`t_inline8`). Full suite **green**. `origin/main`=**`90ca7e4`**.
 - **NEXT (dedicated-session backlog)**: (1) RFC 0026 P2 — control-flow inliner (catches collatz) +
   accumulator-recursion→loop (fib), higher bench leverage; also multi-field/aggregate getters +
   `OP_INDEX` (array-element getters) as further P1.x; (2) RFC 0015 P3 CTGC-free (high-risk,
