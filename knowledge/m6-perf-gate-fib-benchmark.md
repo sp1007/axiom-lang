@@ -9,6 +9,32 @@ metadata:
 
 # M6 perf gate — Fib benchmark (measured 2026-07-17)
 
+## ✅ 2026-07-18 (autopilot) — RFC 0026 P2 CONTROL-FLOW (multi-block) INLINER SHIPPED (`6b40dec`, B==C `4138AEB5`, 421/421)
+`inline_multiblock_func` (ssa_opt.ax) inlines a small MULTI-block callee (if/else, while) — clones
+the callee's blocks into the caller: split the caller block at the call, clone each callee block with
+fresh ids + vreg offset in **reverse-post-order**, remap terminator targets, `return v` → `copy
+call.dest=v'; jump cont`. Gated -O1 after single-block `inline_func`; scalar params/return +
+whitelisted pure-scalar/control-flow body, no nested calls/memory/aggregates.
+- **Groundwork `recompute_cfg(f)`** (air.ax): rebuilds block_succs/block_preds from each block's
+  terminator, reproducing add_edge's EXACT ordering (succ [true=src2, false=dest]; preds
+  ascending-source-index). The RFC called edge-ordering "THE TRAP" — PROVEN exact by wiring it
+  UNCONDITIONALLY on every function and confirming a bit-identical B==C + 418/418 (a true no-op iff
+  ordering-exact) BEFORE building the inliner. Reusable for any future CFG-rewriting pass.
+- **THE bring-up bug (classic §4 hazard):** cloning callee blocks in INDEX order put a merge/exit
+  block physically BEFORE its predecessors (e.g. `floorf`'s exit = block index 1), placing a value
+  USE physically before its conditional redef → the physical-order value/regalloc passes miscompiled
+  it **once inlined** (t_mathfill 127→126, t_fft 18→10 at -O1) **while B==C still held**. Standalone
+  the same layout survives; inlined into a bigger fn it breaks. Fix = **clone in RPO** (`inl_rpo_dfs`
+  DFS from callee entry, remap targets via RPO position map). LESSON reinforced: **B==C is necessary
+  but NOT sufficient — the full USER-program regression is what caught this** (self-build never hit
+  the float-fn shape). Always run the full regression, not just fixpoint.
+- **Perf:** collatz UNCHANGED at -O1 (its inner while-loop dominates; call removal negligible, and
+  strength-reduction is -O2-only). The clear P2 win is **call-dominated** multi-block code: new bench
+  `cfhot` (200M calls to `classify()` w/ 2 ifs) = 2511→2205ms = **12% faster** with the inliner (main
+  has 0 calls vs 1). Bench A/B via a temporary `if false` gate on the inliner call. **fib still needs
+  accumulator-recursion→loop** (self-recursive → not inlinable) = the remaining P2 lever.
+- Oracle `t_inlinecf` (exit 17: if/else `absdiff` + while `sumloop` inlined). Gate cmd unchanged.
+
 ## ✅ 2026-07-18 (autopilot) — RFC 0026 P1 INLINER SHIPPED (B==C, 407/407, hotloop 2.57x)
 The pure-scalar single-block inliner is IMPLEMENTED, gated, and shipped in `ssa_opt.ax`
 (`inline_func` + helpers, wired in `SsaOptimizer.run` at level≥1 before the per-fn passes).
