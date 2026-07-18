@@ -8890,7 +8890,21 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_RETURN_STMT:
         let expr = self.tree.nodes.data[node_idx].first_child
         if expr != 0 as u32:
-            self.infer_node(expr, self.current_return)
+            let et_ret = self.infer_node(expr, self.current_return)
+            // BUG#53 (m5agg): `return <aggregate variable>` from a NUMERIC-returning fn
+            // (`return p` where p is a struct, fn is `-> i64`) was silently accepted --
+            // the aggregate's address was returned as an int -> garbage for the caller.
+            // Reject. Gated on the return expr being a bare NODE_IDENT (a variable, whose
+            // declared aggregate type is reliable) so an imprecisely-inferred call result
+            // is never mis-rejected. Only fires numeric-return vs aggregate-value; struct
+            // -> struct and scalar -> scalar returns are untouched.
+            if self.current_return != TYPE_UNKNOWN and self.tree.nodes.data[expr].kind == NODE_IDENT and et_ret != TYPE_UNKNOWN and (et_ret as i64) < self.types.entries.len:
+                let ce_num = self.current_return >= TYPE_I8 and self.current_return <= TYPE_USIZE and self.current_return != TYPE_STRING and self.current_return != TYPE_VOID
+                let ek = self.types.entries.data[et_ret as i64].kind
+                let e_agg = ek == TYPE_KIND_STRUCT or ek == TYPE_KIND_SUM or ek == TYPE_KIND_ARRAY or ek == TYPE_KIND_OPTION or ek == TYPE_KIND_RESULT
+                if ce_num and e_agg:
+                    ax_printf_local("error: type mismatch in `return`: cannot return an aggregate value from a function with a numeric return type\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             // BUG#53 (return-path analog of m5): `return <string literal>` from a
             // numeric-returning fn (or a numeric literal from a str/bytes-returning
             // fn) was silently accepted then miscompiled to garbage. Reject the
