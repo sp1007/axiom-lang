@@ -30,7 +30,19 @@ Feature crosses that all compiled+ran CORRECTLY (O0..O3 where tested):
 - tuple return + destructure; generic `dup[T]->(T,T)`; Pair[A,B] two-param; 16B struct return via branch
 - optimizer stress: loop × fn-call × sum-of-squares stable across -O0/-O1/-O2/-O3
 
-**Conclusion:** yield is ~zero (compiler mature at 373 regression tests). Per the bug-probe skill this
+## Batch 4 (arithmetic/bitwise) — found the ONE real bug this session
+A later arithmetic/bitwise batch (bitwise/shift/signed-div-mod/narrow-int-wrap/comparison-chain)
+DID surface a real backend bug: **narrow-int const-fold wrap** ([[bug-const-fold-narrow-int-wrap]],
+fixed `633913E9`). Two testing-pitfall reminders it also re-taught (keep oracles simple):
+- **8-bit exit truncation** (documented): oracles 462/512/1111 read back as 206/0/87 — always keep
+  oracle exit codes < 256.
+- **bash clamps NEGATIVE Windows exit codes to 127**: `return -2` shows `$?`==127 in bash (looks like
+  a bug!) but the RAW OS code is -2 (correct — verified via PowerShell `$LASTEXITCODE`). Signed div/mod
+  and negative returns are all CORRECT. **Keep probe oracles NON-NEGATIVE**, or read the raw code via
+  PowerShell. Chased a phantom "a3 signed-arith bug" (127) before realizing it was this clamp.
+
+**Conclusion:** yield is ~zero for VALID-feature crosses (compiler mature); the arithmetic batch shows
+edge-value/overflow crosses are the more productive probe angle. Per the bug-probe skill this
 is the signal to STOP probing and re-plan from milestones. Remaining backlog is design-level:
 m2 (fn-ptr type / callee-inference hardening — [[bug-malformed-input-robustness-cluster]]) and the
 larger items in [[backlog-open-items]] (need user direction). Don't redo these crosses next session.
