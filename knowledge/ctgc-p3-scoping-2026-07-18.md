@@ -139,3 +139,15 @@ safe (a no-op). Real user-program CTGC free still works (oracles free clean loca
 free) is now LOW-risk but delivers no self-host benefit (compiler freeable=0); worth it only to make
 `-ctgc-free` free non-drop user aggregates — a future opt-in, gated the same way (re-measure each
 program's freeable set with the report, full regression under the activated compiler, revert-on-red).
+
+## VALIDATION (2026-07-18, dump-only stress batch, no source change) — escape analysis robustly sound
+Ran `-ctgc-free-report` over 5 aggregate/container/escape stress programs. The escape analyser marked
+as freeable ONLY genuine single-owner local scratch, correctly excluding every stored/passed/aliased
+local (all exit codes correct): (p1) ctor `stored` assigned into `arr[0]` -> freeable {} (non-ident
+LHS escape); (p2) ctor `x` assigned into `o.inner` -> {} ; (p3) ctor `item` passed to `consume(item)`
+-> {} (call-arg escape, the container-store fix generalizing to any by-value arg); (p4) ctor `a`
+aliased by `let b = a` -> {} (a reaches escape transitively through non-owning b); (p5) ctor `s` read
+only via a scalar field, never stored/passed/returned -> freeable {s} (the one correct positive).
+No residual escape gaps in these patterns — corroborates that the container-store + reassign-to-borrow
+fixes leave the analysis conservative-sound across the common aggregate-escape shapes, not just the
+self-host source. (Batch was scratch, not banked — t_ctgcescape already guards the primary path.)
