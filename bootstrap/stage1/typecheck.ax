@@ -482,6 +482,24 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 // generic function's param monomorphized to a packed concrete struct -- every field
 // past the first read at the wrong offset (silently 0/garbage, no crash). Returns
 // the template type_id unchanged when the struct is non-generic or nothing binds.
+// BUG#53: reject an `if`/`while`/`elif` condition whose type is a string/bytes or an
+// aggregate (struct/sum/Option/Result/array). Such a value is never a meaningful
+// boolean -- `if opt` (forgot `.is_some()`/match), `if s` (a str), `if v` (a Vec) --
+// and silently lowers to a truthy test on the {ptr,len}/box, a real accept-then-
+// miscompile. Scalars (int/bool/float/char/pointer) are LEFT allowed: the compiler's
+// own source uses truthy `if <i64>` conditions (11 sites), so only the non-scalar
+// aggregate/str cases are caught -> self-build-safe. See
+// [[bug-malformed-input-robustness-cluster]] (non-bool-condition note).
+pub fn check_cond_type(mut self: ptr[TypeChecker], ct: u32):
+    if ct == TYPE_UNKNOWN or (ct as i64) >= self.types.entries.len:
+        return
+    let is_str = ct == TYPE_STRING or ct == TYPE_BYTES
+    let k = self.types.entries.data[ct as i64].kind
+    let is_agg = k == TYPE_KIND_STRUCT or k == TYPE_KIND_SUM or k == TYPE_KIND_OPTION or k == TYPE_KIND_RESULT or k == TYPE_KIND_ARRAY
+    if is_str or is_agg:
+        ax_printf_local("error: condition must be a boolean or scalar; a string/aggregate/Option value is not a valid condition (forgot a comparison or .is_some()?)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        self.diags_count = self.diags_count + 1 as i64
+
 // BUG#53 (m3): reject a struct constructor argument whose str/numeric LITERAL kind
 // mismatches the declared field type (`P(x: "hi")` where `P.x: i64`) -- was accepted
 // then miscompiled to garbage. Walk fields (decl order) and ctor args (positional,
@@ -2994,7 +3012,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_IF_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
         if cond != 0 as u32:
-            self.infer_node(cond, TYPE_BOOL)
+            self.check_cond_type(self.infer_node(cond, TYPE_BOOL))
             let then_branch = self.tree.nodes.data[cond].next_sibling
             if then_branch != 0 as u32:
                 result_type = self.infer_node(then_branch, expected)
@@ -3006,7 +3024,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_ELIF_CLAUSE:
         let cond = self.tree.nodes.data[node_idx].first_child
         if cond != 0 as u32:
-            self.infer_node(cond, TYPE_BOOL)
+            self.check_cond_type(self.infer_node(cond, TYPE_BOOL))
             let body = self.tree.nodes.data[cond].next_sibling
             if body != 0 as u32:
                 result_type = self.infer_node(body, expected)
@@ -3089,7 +3107,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
     elif kind == NODE_WHILE_STMT:
         let cond = self.tree.nodes.data[node_idx].first_child
         if cond != 0 as u32:
-            self.infer_node(cond, TYPE_BOOL)
+            self.check_cond_type(self.infer_node(cond, TYPE_BOOL))
             let body = self.tree.nodes.data[cond].next_sibling
             if body != 0 as u32:
                 self.infer_node(body, TYPE_UNKNOWN)
