@@ -1,0 +1,12 @@
+// Oracle (exit 24): RFC 0026 — SINGLE-block and MULTI-block inliners interacting
+// in one caller. dbl (single-block) and pick (multi-block if/else) are both inlined
+// into main, including nested (dbl(pick(..)) and pick(dbl(..),..)). Must be identical
+// at -O0 (no inline) and -O1/-O2/-O3 (inlined).
+fn dbl(x: i64) -> i64:
+    return x * 2
+fn pick(a: i64, b: i64) -> i64:
+    if a > b:
+        return a
+    return b
+fn main() -> i32:
+    return (dbl(pick(3, 8)) + pick(dbl(4), 5)) as i32   // dbl(8)=16 + pick(8,5)=8 => 24

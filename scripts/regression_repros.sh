@@ -482,6 +482,8 @@ rows=(
   "t_inline8|exit|60"
   # RFC 0026 P2 — CONTROL-FLOW (multi-block) inlining (if/else + while callees)
   "t_inlinecf|exit|17"
+  # RFC 0026 — single-block + multi-block inliners interacting in one caller (nested)
+  "t_inlinecf2|exit|24"
 )
 
 for row in "${rows[@]}"; do
@@ -534,6 +536,7 @@ opt_rows=(
   "t_licmchain|123"
   "t_licmunroll|18"
   "t_inlinecf|17"
+  "t_inlinecf2|24"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do
