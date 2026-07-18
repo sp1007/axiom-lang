@@ -1,6 +1,6 @@
 ---
 name: bug-malformed-input-robustness-cluster
-description: "Cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handled. ALL FIXED→reject: m1 (self-recursive struct crash), m2 (calling a non-fn value → segfault), m4 (match non-sum), m5 (str↔numeric let literal). CLUSTER CLOSED. All BUG#53-class: REJECT with a diagnostic."
+description: "Cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handled. FIXED→reject: m1 (self-recursive struct crash), m2 (calling a non-fn value → segfault), m4 (match non-sum), m5 (str↔numeric let literal). One RARE residual m2b OPEN: a local var SHADOWING a fn, then called, still segfaults (guard spares same-named fns). All BUG#53-class: REJECT with a diagnostic."
 metadata:
   node_type: memory
   type: project
@@ -52,6 +52,29 @@ land: the 5 false-positive sites all attribute to `len`, a bare ident that resol
 `len` exists, those defer to normal resolution untouched. `x(3)` (no `fn x` anywhere) is rejected.
 A genuine fn pointer types as TYPE_KIND_FUNC and is handled in the branch above, so first-class
 fn-values are unaffected. Self-build-safe (A==B). **CLUSTER CLOSED** (m1/m2/m4/m5 all fixed).
+
+### 🐞 m2b — RESIDUAL (OPEN, rare): local variable SHADOWING a function, then called
+Boundary probe after the m2 fix surfaced one adjacent silent SIGSEGV the receiver-agnostic
+guard deliberately does NOT catch:
+```
+fn helper() -> i64: return 9
+fn main() -> i32:
+    let helper: i64 = 5     # local shadows the fn
+    return helper(0) as i32 # calls the i64 local -> BUILT, then SIGSEGV (139)
+```
+The guard skips the reject because a `SYM_FUNC helper` EXISTS — the very property that makes
+the `len` field/function coincidence safe (see above). Here the callee ident RESOLVES to the
+LOCAL (SYM_VAR shadowing the fn), so calling it is wrong regardless. A correct fix must
+distinguish "callee resolved to a genuine LOCAL/PARAM value that shadows a fn" (reject) from
+"bare ident coincides with a struct-field name but a real fn of that name exists" (spare) —
+likely via the resolved value symbol's `decl_node` kind (NODE_LET/param decl vs NODE_FIELD_DECL)
+or scope depth. **NOT attempted** — the `len` false-positive mechanism (why a bare `len` ident
+callee resolves to a FIELD sym at all in compiler source) is not yet understood; touching the
+call-resolution path here risks the A==B fixpoint. LOW priority: requires a deliberate
+fn-name/local-name collision — very rare in real code. Probe-banked repro `/tmp/pa_shadow.ax`.
+Boundary CONFIRMED elsewhere: const-call `K(1)` and param-call `n(2)` (no same-named fn) both
+REJECT correctly; single-primitive alias `type UserId = i64` is NOT mis-rejected (separate
+narrowing, commit 66a3f48).
 
 ## (historical) m2 — the two failed attempts before the receiver-agnostic guard
 ❌ **Attempt 1 (2026-07-18, REVERTED):** reject when ident-callee payload is `SYM_VAR`/`SYM_PARAM`
