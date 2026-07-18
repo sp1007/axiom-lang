@@ -61,3 +61,21 @@ fast gate ([[infra-defender-build-throttle]]). This gives a real, growing M4-cor
 a productive bounded-bug pipeline. Defer groups 7-10 (blocked on async/comptime/gpu/quantum).
 **Autonomous-safe** except approach choice (a/b/c) and the brace-grammar RFC — those need the
 user. Until a choice is made, the compiler stays stable; this is the derived next direction.
+
+## Baseline measurement started 2026-07-18 (approach-b spike, group 1)
+Rewrote group 1 (tests 001-010) in the implemented grammar (indentation, `not`, `.len`
+field, direct `if COND:`\n`    ...` blocks, oracle-style pass-count return) and ran on
+`axc_native 1C2E3D6A`: **9/10 core features already work.** Confirmed SUPPORTED: i32/f64/
+bool decls, `mut`+reassign, `and`/`not`, string literal + `.len`, **block string `"""..."""`
+(RFC 0024)**, `char8 'A'`, type inference `let x = 1000`, hex `0xFF` + bin `0b1010`.
+**ONLY GAP: `const NAME = value`** → parse error "expected expression nud" (test_008). `const`
+is a new keyword/syntax the impl lacks (impl has `let` immutable + `mut`); adding it is a
+SYNTAX change ⇒ RFC per CLAUDE.md §13 (not an autonomous bugfix). Substituting `let` for
+`const` makes group 1 pass 10/10.
+Also re-confirmed impl-grammar constraints when rewriting the suite: **inline `if x: stmt`
+is REJECTED** ("inline ':' suites are not supported" — must be an indented block on the next
+line); `.length()` doesn't exist (`.len` is a field). 
+**Immediate next autonomous step:** measure groups 2-6 the same way (each ~10 tests, quick
+rewrite+run) to produce the full M4-core (001-060) baseline + gap list. Each gap is then a
+bounded task (RFC if syntax, else a plain fix). Groups 7-10 stay deferred (async/comptime/
+gpu/quantum subsystems). First known gap to schedule: **RFC + impl for `const` declarations.**
