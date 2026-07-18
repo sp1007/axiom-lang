@@ -1,6 +1,6 @@
 ---
 name: bug-3hashmap-mono-teardown-crash
-description: "OPEN (low-severity): compiling a program whose HASH-CONTAINER (HashMap/HashSet) monomorphization WORK crosses a cumulative threshold intermittently (~10%) segfaults the compiler AT TEARDOWN (after Stage 6). Trigger is cumulative mono complexity, not a fixed count: 3 distinct scalar-value maps OR just 2 distinct STRUCT-value maps. OUTPUT exe always correct (exit 0) — only the compiler's process exit crashes. Flag-independent. NOT clone-volume (8 Vec clean) — hash-container-mono-specific. Minimal repro included. Needs ASAN/Linux to pin (binary unsymbolized)."
+description: "OPEN (low-severity): compiling a program whose HASH-CONTAINER (HashMap/HashSet) monomorphization WORK crosses a cumulative threshold intermittently (~10%) segfaults the compiler AT TEARDOWN (after Stage 6). Trigger is cumulative mono complexity, not a fixed count: 3 distinct scalar-value maps OR just 2 distinct STRUCT-value maps. OUTPUT exe always correct (exit 0) — only the compiler's process exit crashes. Flag-independent. NOT clone-volume (8 Vec clean) — hash-container-mono-specific. Minimal repro included. ROOT CAUSE = an OUT-OF-BOUNDS HEAP WRITE during hash-container mono that corrupts allocator free-list metadata (crash is at the FIRST heap op after Stage 6, before any resource-free — proven by teardown instrumentation), NOT a held-pointer. Likely a size-miscalc for a hash-container internal array (keys/values/occupied). Fixable via C-backend + gcc -fsanitize=address (allocator is C, symbolizable) — no WSL needed."
 metadata:
   type: project
 ---
@@ -39,6 +39,31 @@ Stress: `for i in $(seq 1 25); do bin/axc_native.exe build c_3map.ax -o t.exe -s
 - Other generic-heavy programs (`t_gentree`, `t_vecstructopt`, `t_forvec`): 0/20-25. So it is specific
   to **multiple HashMap instantiations**, not generics in general.
 - Crash is post-`Stage 6` (teardown). Output exe verified present + correct (exit 0) on a crashing run.
+
+## ⭐ ROOT-CAUSE ADVANCE (2026-07-18, teardown instrumentation) — it's an OOB HEAP WRITE corrupting allocator metadata
+Instrumented every teardown `@free` in main_air.ax (self-link path, ~L1252-1338) with flushed
+static-string markers, built a throwaway compiler, stress-ran the n4a repro (2 struct-value HashMaps).
+On the crash: **NOT ONE marker printed** — the segfault lands right after `[Debug] Stage 6: Finished
+self-linking.` and before the very first post-Stage-6 marker `[TD0a]`, i.e. at the FIRST heap
+operation after self-linking (the `ax_puts_local`/`fflush`/small alloc for the marker itself). So the
+crash is NOT in freeing a specific compiler structure (tree.nodes/typetable/symtable) — it's the
+allocator's own metadata (free-list/heap header) that is corrupted, and the next heap op that reaches
+the damaged entry faults. **=> The hash-container-mono bug is an OUT-OF-BOUNDS HEAP WRITE**, not a
+held-pointer dangling. Intermittent because whether/when the allocator reaches the clobbered free-list
+entry depends on the allocation sequence.
+- **This supersedes the "held-ptr-across-realloc" hypothesis** (kept below for history). Prime new
+  suspect: a SIZE MISCALCULATION for a hash-container internal array (`keys`/`values`/`occupied`) during
+  monomorphization → an `@alloc` too small or a `@memcpy`/store past the end → clobbers an adjacent
+  heap block's allocator header. Strongly connects to [[next-step-14-sumtype-size-bug]] (generic-inst
+  `builder_type_size_and_align` mis-sizing) — the same size-machinery class. Aggregate value types (the
+  n4a struct-value trigger at just 2 maps) fit: a bigger/mis-sized value element makes the wrong-size
+  write land sooner/larger.
+- **Next fix step (no ASAN needed):** the allocator is C (`runtime/axalloc/axalloc_compiled.c`), which
+  IS symbolizable — add heap canary/red-zone checks there (or build it with `-fsanitize=address`) and
+  run the C-backend compile of n4a to catch the exact overflowing `@alloc`/store. OR instrument
+  `builder_type_size_and_align` / the hash-container internal-array alloc sites in air_builder for a
+  size mismatch on the 2nd/3rd hash-container. This is now a concrete OOB-write hunt, much more tractable
+  than the earlier "held-ptr among 30 sites" framing.
 
 ## Sharpened isolation (2026-07-18, no-rebuild repro matrix)
 - **It is the number of DISTINCT HashMap monomorphizations, not concrete types, not f64:**
