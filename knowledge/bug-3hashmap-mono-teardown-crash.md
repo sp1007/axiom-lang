@@ -130,6 +130,16 @@ The gate builds each program ONCE and checks the OUTPUT exe's exit code; the exe
 a 1-in-~12 teardown crash rarely hits on a single build. The fixpoint checks output determinism (holds
 — the crash is post-output). So this slipped through as a rare, output-invisible teardown flake.
 
+## Tooling reality (checked 2026-07-18) — why the fix is a real session, not a tick
+WSL2 (Ubuntu 26.04) IS available, but `valgrind`/`gdb` are NOT installed, and — decisively — the
+self-hosted compiler binary carries NO debug symbols (no DWARF), so a sanitizer would report raw
+addresses, not AXIOM source lines. So pinning the corrupting write requires one of: (a) `apt install
+valgrind` + a way to map addresses back to functions (symbol table / a `nm`-able build), (b) printf
+instrumentation bisecting the hash-container mono path (slow, and adding code perturbs the heap layout
+that the intermittent bug depends on — may mask it), or (c) adding debug-info emission to the backend
+first. All are multi-step and disproportionate to a LOW-severity, near-zero-impact bug — hence deferred
+until hash-container/generic-mono work is being done anyway, or the user prioritizes it.
+
 ## Fix path (deferred — dedicated tooled session)
 Root-causing an intermittent heap corruption needs a memory sanitizer. The compiler self-hosts to a
 Linux ELF (RFC 0009 P3) — build the Linux target and run `valgrind`/ASAN-equivalent on `c_3map` to get
