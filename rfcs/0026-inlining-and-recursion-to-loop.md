@@ -1,10 +1,9 @@
 # RFC 0026 — Function Inlining & Self-Recursion→Loop (M6 perf)
 
-- Status: DRAFT — groundwork shipped (harness + baseline, `8d05f96`); inliner fully
-  SPECed + staged (see [[m6-perf-gate-fib-benchmark]] "INLINER IMPLEMENTATION SPEC"). The
-  safe pure-arithmetic form is perf-neutral on fib/collatz, so the next increment is the
-  higher-leverage accumulator-recursion→loop (fib) or control-flow inliner (collatz), each a
-  dedicated B==C-gated session.
+- Status: **P1 SHIPPED** — pure-scalar single-block inliner in `ssa_opt.ax` (`inline_func`),
+  B==C fixpoint + 407/407 regression, hotloop 2.57x faster (see [[m6-perf-gate-fib-benchmark]]).
+  Groundwork harness/baseline in `8d05f96`. P2 (control-flow inliner for collatz;
+  accumulator-recursion→loop for fib) remains, each a dedicated B==C-gated session.
 - Author: autopilot (2026-07-18), per user direction [[autopilot-direction-2026-07-18]]
 - Affected: `bootstrap/stage1/ssa_opt.ax` (optimizer pipeline), AIR only. No syntax,
   no ABI, no linker, no runtime changes.

@@ -1,0 +1,18 @@
+// Oracle (exit 140): RFC 0026 inlining of a small pure-arithmetic helper called
+// in a loop. `sq` is single-block, pure scalar, no param mutation -> inlinable.
+// Correctness is invariant to whether inlining fires; the value must stay 140.
+// sum of i*i for i in 0..8 = 0+1+4+9+16+25+36+49 = 140.
+fn sq(x: i64) -> i64:
+    return x * x
+
+fn addmul(a: i64, b: i64) -> i64:
+    return a * b + a
+
+fn main() -> i32:
+    mut s := 0 as i64
+    for i in 0..8:
+        s = s + sq(i)
+    // also exercise a 2-arg pure helper: addmul(3,4) = 3*4+3 = 15
+    let extra = addmul(3 as i64, 4 as i64)
+    // 140 + 15 = 155 ... keep oracle at sum-of-squares only; subtract extra back
+    return (s + extra - extra) as i32

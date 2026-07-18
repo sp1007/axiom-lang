@@ -464,6 +464,8 @@ rows=(
   "t_compliance|exit|60"
   # M4 compliance part 2 — stdlib collections/strings/iteration/formatting + control-flow
   "t_compliance2|exit|28"
+  # RFC 0026 — inlining of small pure-arithmetic helpers (sum of squares 0..8 = 140)
+  "t_inline|exit|140"
 )
 
 for row in "${rows[@]}"; do

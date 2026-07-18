@@ -9,6 +9,25 @@ metadata:
 
 # M6 perf gate — Fib benchmark (measured 2026-07-17)
 
+## ✅ 2026-07-18 (autopilot) — RFC 0026 P1 INLINER SHIPPED (B==C, 407/407, hotloop 2.57x)
+The pure-scalar single-block inliner is IMPLEMENTED, gated, and shipped in `ssa_opt.ax`
+(`inline_func` + helpers, wired in `SsaOptimizer.run` at level≥1 before the per-fn passes).
+**Gate GREEN:** B==C fixpoint bit-identical (`aae2ea1f…`), full regression **407/407** (incl.
+compliance @ -O2/-O3), daily driver promoted. **Measured win** (`benchmarks/hotloop` = hot loop
+calling `sq`): **185.5ms → 72.3ms = 2.57x faster** (17.5x→7.3x vs clang). fib (2.77x) / collatz
+(3.21x) unchanged — correctly skipped (recursive / multi-block). Oracle `t_inline|exit|140`.
+**TWO bugs found + fixed during bring-up (both classic AXIOM gotchas):**
+1. `mut nn := cin` ALIASES the callee's original AirInst (aggregates are by-reference) → mutating
+   the clone corrupted the CALLEE's body (dump showed a leaf `sq` with a dangling `ret %2`). Fix:
+   build a FRESH `AirInst(...)` via constructor, never mutate an aliased copy.
+2. `AirFunc.params.data[i]` holds the param's TYPE id, NOT its vreg (the param vreg is `i+1`,
+   air_builder.ax:288-295). Original param→arg mapping compared vregs to type ids → args never
+   wired, inlined body read garbage offsets. Fix: emit an explicit param-copy `base+(i+1) = arg`
+   (type = `params.data[i]`) at the site, then offset ALL callee vregs by `base` uniformly (also
+   isolates param mutation, so the no-mutation guard was dropped).
+**NEXT (higher bench leverage, deferred):** inline callees WITH control flow (multi-block clone +
+block-id remap) to catch collatz; accumulator-recursion→loop for fib. Both larger, same B==C gate.
+
 ## 2026-07-18 (autopilot) — INLINER IMPLEMENTATION SPEC + cost/benefit gate (staged, not shipped)
 Fully designed the flat-AIR inliner (read air.ax/ssa_opt.ax/x86_selector.ax). **Key finding that
 gates it:** the value passes (copy_prop/cse/dce, `ssa_opt.ax`) scan `f.insts` in PHYSICAL order =

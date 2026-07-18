@@ -19306,11 +19306,208 @@ pub fn cse_func(f: ptr[AirFunc]) -> bool:
 // avoid blowing compilation time on giant switch-dispatch functions.
 pub const OPT_LARGE_FUNC_THRESHOLD: i64 = 2000
 
+// ============================================================================
+// RFC 0026 â€” function INLINING (module-level pre-pass, before per-fn passes).
+// Minimal first increment: inline only SMALL, SINGLE-BLOCK, PURE-SCALAR-
+// ARITHMETIC, NON-RECURSIVE callees that never mutate a param. This sidesteps
+// every memory/aggregate/control-flow/type hazard (see the design + hazard list
+// in knowledge/m6-perf-gate-fib-benchmark.md "INLINER IMPLEMENTATION SPEC").
+// The one synthesized instruction is the return->copy, whose type_id is the
+// callee's real return type. Downstream fold/copy_prop/dce clean up the copies.
+// ============================================================================
+pub const INLINE_INST_THRESHOLD: i64 = 16
+
+// A callee-body opcode safe to clone: pure scalar const / copy / arithmetic /
+// compare / convert (class 0x02xx) / return. Anything touching memory, fields,
+// aggregates, calls, branches, or globals is rejected (callee not inlinable).
+fn inline_op_ok(op: u16) -> bool:
+    if op == OP_ICONST or op == OP_FCONST or op == OP_COPY or op == OP_RETURN:
+        return true
+    if op >= 0x0201 as u16 and op <= 0x0223 as u16:
+        return true
+    return false
+
+// AXIOM convention (air_builder.ax:288-295): AirFunc.params.data[i] holds the
+// param's TYPE id; the param's VREG is (i + 1). We copy each arg into a fresh
+// param vreg at the inline site, so param mutation is isolated (no clobber of
+// the caller's arg) and no param-mutation guard is needed.
+
+fn inl_is_inlinable(callee: ptr[AirFunc]) -> bool:
+    if callee.is_extern or callee.is_async:
+        return false
+    if callee.blocks.len != 1 as i64:
+        return false
+    if callee.insts.len > INLINE_INST_THRESHOLD:
+        return false
+    let bb = &callee.blocks.data[0]
+    mut nret := 0 as i64
+    mut i := 0 as i64
+    while i < bb.instrs_len as i64:
+        let idx = callee.block_instrs.data[bb.instrs_start as i64 + i] as i64
+        let inst = callee.insts.data[idx]
+        if not inline_op_ok(inst.opcode):
+            return false
+        if inst.opcode == OP_RETURN:
+            if inst.src1 == 0 as u32:      // void return: nothing to copy -> skip
+                return false
+            nret = nret + 1 as i64
+        i = i + 1 as i64
+    if nret != 1 as i64:
+        return false
+    return true
+
+fn inl_find_callee(m: ptr[AirModule], sym: u32) -> i64:
+    mut i := 0 as i64
+    while i < m.funcs.len:
+        if m.funcs.data[i].sym_id == sym:
+            return i
+        i = i + 1 as i64
+    return -1 as i64
+
+// returns the callee func index if `inst` is an inlinable DIRECT call, else -1
+fn inl_call_target(inst: AirInst, caller: ptr[AirFunc], m: ptr[AirModule]) -> i64:
+    if inst.opcode != OP_CALL:
+        return -1 as i64
+    if inst.src1 != 0 as u32:                 // indirect (fn-ptr) call
+        return -1 as i64
+    let ci = inl_find_callee(m, inst.type_id as u32)
+    if ci < 0 as i64:
+        return -1 as i64
+    let callee = &m.funcs.data[ci]
+    if callee.sym_id == caller.sym_id:         // never inline self-recursion
+        return -1 as i64
+    if not inl_is_inlinable(callee):
+        return -1 as i64
+    let arg_start = inst.src2
+    if arg_start >= caller.extras.len as u32:
+        return -1 as i64
+    let argc = caller.extras.data[arg_start]
+    if argc as i64 != callee.params.len:
+        return -1 as i64
+    return ci
+
+// physical order == execution order iff every block references strictly-
+// increasing inst indices in block order. If so a block-order rebuild is an
+// order-preserving reindex; otherwise bail (leave the caller untouched).
+fn inl_blocks_contiguous(f: ptr[AirFunc]) -> bool:
+    if f.blocks.len == 0 as i64:
+        return false
+    mut prev := -1 as i64
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        let bb = &f.blocks.data[bi]
+        mut k := 0 as i64
+        while k < bb.instrs_len as i64:
+            let idx = f.block_instrs.data[bb.instrs_start as i64 + k] as i64
+            if idx <= prev:
+                return false
+            prev = idx
+            k = k + 1 as i64
+        bi = bi + 1 as i64
+    return true
+
+// rename a callee vreg for cloning into the caller: every callee vreg (params
+// included) is offset by `base` into fresh caller vreg space. Args are wired via
+// explicit param-copies emitted at the inline site (see inline_func).
+fn inl_rename(v: u32, base: u32) -> u32:
+    if v == 0 as u32:
+        return 0 as u32
+    return base + v
+
+pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule]) -> bool:
+    if caller.is_extern:
+        return false
+    mut found := false
+    mut i := 0 as i64
+    while i < caller.insts.len:
+        if inl_call_target(caller.insts.data[i], caller, m) >= 0 as i64:
+            found = true
+            i = caller.insts.len
+        else:
+            i = i + 1 as i64
+    if not found:
+        return false
+    if not inl_blocks_contiguous(caller):
+        return false
+
+    mut fresh := max_reg_id(caller) + 1 as u32
+    mut new_insts := new_air_inst_vec()
+    mut new_bi := new_u32_vec()
+
+    mut bi := 0 as i64
+    while bi < caller.blocks.len:
+        mut bb := &caller.blocks.data[bi]
+        let new_start = new_bi.len as u32
+        mut k := 0 as i64
+        while k < bb.instrs_len as i64:
+            let old_idx = caller.block_instrs.data[bb.instrs_start as i64 + k] as i64
+            let inst = caller.insts.data[old_idx]
+            let ci = inl_call_target(inst, caller, m)
+            if ci >= 0 as i64:
+                let callee = &m.funcs.data[ci]
+                let base = fresh
+                let arg_start = inst.src2
+                // Wire args: copy each caller arg vreg into the callee's (offset)
+                // param vreg. Param i has callee vreg (i+1); its type is params.data[i].
+                mut pidx := 0 as i64
+                while pidx < callee.params.len:
+                    let argv = caller.extras.data[arg_start + 1 as u32 + pidx as u32]
+                    let pcopy = AirInst(opcode: OP_COPY, type_id: callee.params.data[pidx] as u16, dest: base + (pidx as u32 + 1 as u32), src1: argv, src2: 0 as u32)
+                    let ppc = new_insts.push(pcopy)
+                    new_bi.push(ppc)
+                    pidx = pidx + 1 as i64
+                let cbb = &callee.blocks.data[0]
+                mut j := 0 as i64
+                while j < cbb.instrs_len as i64:
+                    let cidx = callee.block_instrs.data[cbb.instrs_start as i64 + j] as i64
+                    let cin = callee.insts.data[cidx]
+                    if cin.opcode == OP_RETURN:
+                        if inst.dest != 0 as u32:
+                            let rv = inl_rename(cin.src1, base)
+                            let cp = AirInst(opcode: OP_COPY, type_id: callee.ret_type as u16, dest: inst.dest, src1: rv, src2: 0 as u32)
+                            let pp = new_insts.push(cp)
+                            new_bi.push(pp)
+                    else:
+                        // Build a FRESH AirInst â€” `mut nn := cin` would ALIAS the
+                        // callee's original inst (aggregates are by-reference in AXIOM),
+                        // so mutating it corrupts the callee's own AIR body.
+                        mut nd := cin.dest
+                        if cin.dest != 0 as u32:
+                            nd = base + cin.dest
+                        mut ns1 := cin.src1
+                        mut ns2 := cin.src2
+                        if cin.opcode != OP_ICONST and cin.opcode != OP_FCONST:
+                            ns1 = inl_rename(cin.src1, base)
+                            ns2 = inl_rename(cin.src2, base)
+                        let nn = AirInst(opcode: cin.opcode, type_id: cin.type_id, dest: nd, src1: ns1, src2: ns2)
+                        let pp = new_insts.push(nn)
+                        new_bi.push(pp)
+                    j = j + 1 as i64
+                fresh = fresh + max_reg_id(callee) + 1 as u32
+            else:
+                let pp = new_insts.push(inst)
+                new_bi.push(pp)
+            k = k + 1 as i64
+        bb.instrs_start = new_start
+        bb.instrs_len = new_bi.len as u32 - new_start
+        bi = bi + 1 as i64
+
+    if caller.insts.data != null as ptr[AirInst]:
+        @free(caller.insts.data as ptr[u8])
+    if caller.block_instrs.data != null as ptr[u32]:
+        @free(caller.block_instrs.data as ptr[u8])
+    caller.insts = new_insts
+    caller.block_instrs = new_bi
+    return true
+
 pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
     mut fi := 0 as i64
     while fi < m.funcs.len:
         mut f := &m.funcs.data[fi]
         if not f.is_extern:
+            // RFC 0026: inline small pure-arithmetic helpers before value passes.
+            if self.level >= 1 as u8:
+                inline_func(f, m)
             let is_large = f.insts.len > OPT_LARGE_FUNC_THRESHOLD
 
             // Structural passes: run once before iterative value passes.

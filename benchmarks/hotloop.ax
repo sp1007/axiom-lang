@@ -1,0 +1,15 @@
+// M6 perf benchmark — a hot loop calling a small pure-arithmetic helper. This is
+// the shape RFC 0026 inlining targets: without inlining, one `call sq` per
+// iteration (call/frame overhead); with inlining, the body folds into the loop.
+// Measures the inliner's value directly (AXIOM inline vs no-inline daily driver).
+// Deterministic under i64 wraparound; exit = (sum of i*i for i in 0..60M) % 1000.
+fn sq(x: i64) -> i64:
+    return x * x
+
+fn main() -> i32:
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 60000000:
+        s = s + sq(i)
+        i = i + 1
+    return (s % 1000) as i32
