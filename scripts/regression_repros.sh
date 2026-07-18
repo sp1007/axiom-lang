@@ -476,6 +476,8 @@ rows=(
   "t_inline5|exit|112"
   # RFC 0026 P1.5 SAFETY GATE — str/Option-field getters must NOT inline, stay correct
   "t_inline6|exit|47"
+  # RFC 0026 P1.5 — getter of a scalar field on a struct that ALSO has an aggregate field
+  "t_inline7|exit|37"
 )
 
 for row in "${rows[@]}"; do

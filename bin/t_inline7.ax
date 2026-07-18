@@ -1,0 +1,19 @@
+// Oracle (exit 37): RFC 0026 P1.5 gate must evaluate the SPECIFIC field's
+// scalarness, not the whole struct — Outer has an AGGREGATE field (inner: Inner)
+// plus a scalar `tag`. get_tag reads the scalar tag -> inlinable; the aggregate
+// field must not disqualify it, and must not be touched.
+struct Inner:
+    v: i64
+struct Outer:
+    inner: Inner
+    tag: i64
+fn get_tag(o: Outer) -> i64:
+    return o.tag
+fn main() -> i32:
+    let o = Outer(inner: Inner(v: 5), tag: 37)
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 1:
+        s = s + get_tag(o)
+        i = i + 1
+    return s as i32
