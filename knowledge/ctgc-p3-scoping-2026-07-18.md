@@ -151,3 +151,28 @@ only via a scalar field, never stored/passed/returned -> freeable {s} (the one c
 No residual escape gaps in these patterns — corroborates that the container-store + reassign-to-borrow
 fixes leave the analysis conservative-sound across the common aggregate-escape shapes, not just the
 self-host source. (Batch was scratch, not banked — t_ctgcescape already guards the primary path.)
+
+## ⛔ ACTIVATION ATTEMPTED → REVERTED (gate RED) — real blocker = OP_DESTROY not robust for nested-heap aggregates
+Attempted the true general-free activation: in `air_builder.ax::lower_destroy`, add an `else` to the
+drop-narrowing so a non-escaping owned local with NO `drop` method is freed with a plain `OP_DESTROY`
+(no drop call). Self-host side was PERFECT — A==B==C `28DCDE0A` (compiler freeable=0 so its
+`-ctgc-free` build injects nothing, byte-identical), full regression 435/435, ctgc_free_check 10/10.
+**But the broad `-ctgc-free` sweep (401 regression programs compiled with AND without the flag) caught
+`t_hashi64` CRASHING THE COMPILER during `-ctgc-free` codegen (rc=139 segfault).** Root: t_hashi64 has
+`HashMap[K,V].new()` locals — non-escaping owned GENERIC_INST aggregates. General free injects
+`OP_DESTROY` on a HashMap-typed local, and the backend selector/regalloc chokes on `OP_DESTROY` for a
+generic-inst aggregate that OWNS nested heap (HashMap's keys/values/occupied buffers). **REVERTED**
+(uncommitted, per revert-on-red); clean state restored (A==B `11EB77BD`, t_hashi64 back to 42 both
+ways, ctgc_free_check 10/10).
+
+**This is the concrete activation blocker (supersedes "escape soundness" — that's DONE):** the free
+GLUE, not the escape analysis. `OP_DESTROY` today only knows how to free a simple flat struct block; a
+non-drop aggregate that owns nested heap (HashMap, Vec, dynamic containers) needs **typed recursive
+free-glue** (free the inner buffers, then the header) — exactly the RFC 0014 drop-glue mechanism but
+COMPILER-SYNTHESISED for container types rather than user-declared. This is ALSO why the drop-narrowing
+is the correct conservative gate: drop-typed user types carry their own resource-freeing `drop()`;
+arbitrary non-drop aggregates don't, and freeing their header alone leaks (or, as here, crashes codegen).
+**Next activation session** = implement synthesised free-glue for nested-heap aggregate types (or
+restrict general free to FLAT non-drop aggregates with no owned nested heap — a safer first cut: gate
+`lower_destroy`'s new else on "type has no pointer/aggregate fields"), then re-run the broad sweep.
+The escape-analysis half is complete and validated; the container-free-glue half is the remaining work.
