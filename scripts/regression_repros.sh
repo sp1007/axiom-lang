@@ -484,6 +484,8 @@ rows=(
   "t_inlinecf|exit|17"
   # RFC 0026 — single-block + multi-block inliners interacting in one caller (nested)
   "t_inlinecf2|exit|24"
+  # RFC 0026 §2b — tail-self-recursion -> loop (accumulator + swap-style gcd)
+  "t_selfrec|exit|67"
 )
 
 for row in "${rows[@]}"; do
@@ -537,6 +539,7 @@ opt_rows=(
   "t_licmunroll|18"
   "t_inlinecf|17"
   "t_inlinecf2|24"
+  "t_selfrec|67"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

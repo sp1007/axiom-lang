@@ -1,0 +1,15 @@
+// M6 perf benchmark — deep TAIL-recursive accumulator, called in a loop.
+// RFC 0026 §2b turns `return sumto(n-1, acc+n)` into an in-function loop, so each
+// call runs with ONE activation (no per-iteration call/frame). Without it, each
+// sumto(5000) recurses 5000 deep (frame setup per level).
+fn sumto(n: i64, acc: i64) -> i64:
+    if n == 0:
+        return acc
+    return sumto(n - 1, acc + n)
+fn main() -> i32:
+    mut r := 0 as i64
+    mut i := 0 as i64
+    while i < 40000:
+        r = r + sumto(5000, 0)
+        i = i + 1
+    return (r % 1000) as i32

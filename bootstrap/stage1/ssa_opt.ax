@@ -2386,6 +2386,118 @@ pub fn inline_multiblock_func(mut caller: ptr[AirFunc], m: ptr[AirModule], table
     caller.blocks = new_blocks
     return true
 
+// True if block `bi` ends with a TAIL self-call: `%r = call self(args)` immediately
+// followed by the block-terminating `ret %r` (result used only by that return),
+// direct call, argc == nparams. Writes the arg-list start to *arg_start_out.
+fn sr_is_tail_block(f: ptr[AirFunc], bi: i64, arg_start_out: ptr[u32]) -> bool:
+    let bb = &f.blocks.data[bi]
+    if bb.instrs_len < 2 as u32:
+        return false
+    let last_idx = f.block_instrs.data[bb.instrs_start as i64 + (bb.instrs_len as i64) - 1 as i64] as i64
+    let prev_idx = f.block_instrs.data[bb.instrs_start as i64 + (bb.instrs_len as i64) - 2 as i64] as i64
+    let last = f.insts.data[last_idx]
+    let prev = f.insts.data[prev_idx]
+    if last.opcode != OP_RETURN or prev.opcode != OP_CALL:
+        return false
+    if prev.src1 != 0 as u32:                       // indirect call
+        return false
+    if prev.type_id as u32 != f.sym_id:             // not a SELF call
+        return false
+    if prev.dest == 0 as u32 or last.src1 != prev.dest:  // result not the returned value
+        return false
+    let as0 = prev.src2
+    if as0 >= f.extras.len as u32:
+        return false
+    if f.extras.data[as0] as i64 != f.params.len:  // argc must match
+        return false
+    arg_start_out[0 as i64] = as0
+    return true
+
+// RFC 0026 §2b — TAIL-SELF-RECURSION -> LOOP. Rewrites `return self(args)` into
+// `paramN = argN (staged via temps); jump entry(block 0)`, turning tail recursion
+// into an in-function loop (one activation; no call/frame per iteration). Safe
+// because emit_param_prologue runs BEFORE the .L_b_0 label (x86_selector option B),
+// so re-entering block 0 does NOT re-materialize params from the incoming arg
+// registers. The two-phase stage (args->temps->params) is REQUIRED so an arg that
+// references a param isn't clobbered (e.g. a swap `f(b,a)`). MUST run AFTER the
+// value passes (copy_prop would collapse `param=copy temp` — params have no other
+// AIR def — and rewrite the entry's param reads to the loop-only temp). Adds a
+// back-edge; the caller recomputes the CFG.
+pub fn selfrec_to_loop(mut f: ptr[AirFunc]) -> bool:
+    if f.is_extern or f.is_async:
+        return false
+    if f.blocks.len == 0 as i64:
+        return false
+    if f.params.len == 0 as i64:                    // no args to advance -> would be an infinite loop
+        return false
+    // NOTE: no contiguity guard — the rebuild re-lays-out block_instrs in block
+    // order, and this pass runs LAST (no physical-order value pass follows), so a
+    // non-contiguous layout (common for `if-return / else-tailcall`, where the
+    // tail block sits at a low index but is emitted last) is fine.
+    // any tail-self-call?
+    mut as_tmp := 0 as u32
+    mut any := false
+    mut bi := 0 as i64
+    while bi < f.blocks.len:
+        if sr_is_tail_block(f, bi, &as_tmp):
+            any = true
+        bi = bi + 1 as i64
+    if not any:
+        return false
+
+    let nparams = f.params.len
+    mut fresh := max_reg_id(f) + 1 as u32
+    mut new_insts := new_air_inst_vec()
+    mut new_bi := new_u32_vec()
+    bi = 0 as i64
+    while bi < f.blocks.len:
+        mut bb := &f.blocks.data[bi]
+        let new_start = new_bi.len as u32
+        mut arg_start := 0 as u32
+        let is_tail = sr_is_tail_block(f, bi, &arg_start)
+        let lim = bb.instrs_len as i64
+        mut k := 0 as i64
+        while k < lim:
+            if is_tail and k == lim - 2 as i64:
+                // replace the CALL (+ the following RET at k+1) with staging + jump
+                let base = fresh
+                mut p := 0 as i64
+                while p < nparams:                  // phase 1: temp_i = arg_i
+                    let argv = f.extras.data[arg_start + 1 as u32 + p as u32]
+                    let c1 = AirInst(opcode: OP_COPY, type_id: f.params.data[p] as u16, dest: base + (p as u32 + 1 as u32), src1: argv, src2: 0 as u32)
+                    let i1 = new_insts.push(c1)
+                    new_bi.push(i1)
+                    p = p + 1 as i64
+                p = 0 as i64
+                while p < nparams:                  // phase 2: param_i = temp_i
+                    let c2 = AirInst(opcode: OP_COPY, type_id: f.params.data[p] as u16, dest: (p as u32 + 1 as u32), src1: base + (p as u32 + 1 as u32), src2: 0 as u32)
+                    let i2 = new_insts.push(c2)
+                    new_bi.push(i2)
+                    p = p + 1 as i64
+                fresh = fresh + nparams as u32 + 1 as u32
+                let jj = AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: 0 as u32, src2: 0 as u32)
+                let ji = new_insts.push(jj)
+                new_bi.push(ji)
+                k = k + 2 as i64                    // skip CALL and RET
+            else:
+                let idx = f.block_instrs.data[bb.instrs_start as i64 + k] as i64
+                let pp = new_insts.push(f.insts.data[idx])
+                new_bi.push(pp)
+                k = k + 1 as i64
+        bb.instrs_start = new_start
+        bb.instrs_len = new_bi.len as u32 - new_start
+        if is_tail:
+            bb.is_exit = false                      // now ends in JUMP, not RETURN
+        bi = bi + 1 as i64
+
+    if f.insts.data != null as ptr[AirInst]:
+        @free(f.insts.data as ptr[u8])
+    if f.block_instrs.data != null as ptr[u32]:
+        @free(f.block_instrs.data as ptr[u8])
+    f.insts = new_insts
+    f.block_instrs = new_bi
+    return true
+
 pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable]):
     mut fi := 0 as i64
     while fi < m.funcs.len:
@@ -2450,4 +2562,12 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable])
                 if not changed:
                     break
                 iter = iter + 1
+
+            // RFC 0026 §2b — tail-self-recursion -> loop. Runs LAST (after the value
+            // passes): copy_prop would otherwise collapse the synthesized
+            // `param = copy temp` (params carry no other AIR def) and rewrite the
+            // entry's param reads to the loop-only temp -> garbage on first entry.
+            if self.level >= 1 as u8:
+                if selfrec_to_loop(f):
+                    recompute_cfg(f)
         fi = fi + 1 as i64

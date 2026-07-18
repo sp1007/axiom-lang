@@ -2490,6 +2490,13 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     let is_main = (fn_name == "main" or fn_name == "_AX_main_main_v_v")
 
     if f.blocks.len > 0:
+        // Materialize params BEFORE the first block label (.L_b_0), so the entry
+        // block is RE-ENTRANT: a jump to .L_b_0 (RFC 0026 §2b tail-self-recursion->
+        // loop) must NOT re-run the `MOV pvreg=arg_reg` snapshot (that would reset
+        // params to the original incoming args). Byte-identical for non-looping code
+        // (the label emits no bytes and nothing jumped to entry before).
+        emit_param_prologue(&sel, &result)
+        sel.param_idx_processed = sel.fn_ptr.params.len as i32
         mut bi := 0 as i64
         while bi < f.blocks.len:
             let bb = &f.blocks.data[bi]
@@ -2504,10 +2511,6 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
                 result.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 result.push(MachInst(op: MACH_CALL, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: -4 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
                 result.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-
-            if bi == 0 as i64:
-                emit_param_prologue(&sel, &result)
-                sel.param_idx_processed = sel.fn_ptr.params.len as i32
 
             mut i := 0 as i64
             while i < bb.instrs_len as i64:

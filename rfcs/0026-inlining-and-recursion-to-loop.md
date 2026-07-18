@@ -1,6 +1,6 @@
 # RFC 0026 — Function Inlining & Self-Recursion→Loop (M6 perf)
 
-- Status: **P1 + P1.5 + OP_INDEX + P2 CONTROL-FLOW INLINER SHIPPED** — pure-scalar single-block
+- Status: **P1 + P1.5 + OP_INDEX + P2 CONTROL-FLOW INLINER + §2b TAIL-SELF-RECURSION→LOOP SHIPPED** (§2b: B==C `ECABD5EF`, 427/427, tailrec 4.9x) — pure-scalar single-block
   inliner (`d64a68d`, hotloop 2.57x) + scalar-field/multi-field getter inlining (`f286cac9`, getter
   2.89x) + scalar array-element getter inlining (`343fa03b`, 418/418) + **P2 multi-block (control-flow)
   inliner** (this session, B==C `4138AEB5`, 421/421, cfhot 12% win). The getter family is complete
@@ -104,7 +104,24 @@ simple** (single basic block, no nested calls in the first increment):
 has >1 block, contains any `OP_CALL`, has aggregate/16B params or return (by-address ABI —
 defer), is `is_async`, or is variadic/intrinsic. Skip the whole pass on `is_large` callers.
 
-### 2b. Self-recursion→loop (`selfrec_to_loop`)
+### 2b. Self-recursion→loop (`selfrec_to_loop`) — ✅ SHIPPED (B==C `ECABD5EF`, 427/427, tailrec 4.9x)
+IMPLEMENTED as `selfrec_to_loop` + `sr_is_tail_block` (ssa_opt.ax), gated -O1, run LAST (after the
+value passes), + the `emit_param_prologue`-before-`.L_b_0` move (option B, x86_selector.ax). Detects
+`%r = call self(args); ret %r` (adjacent, block-terminating, direct, argc==nparams); rewrites to
+two-phase staged `temp_i = arg_i` then `param_i = temp_i` (staging is REQUIRED for swap-style tail
+calls like `gcd(b, a%b)`), then `jump block_0`; adds the back-edge via `recompute_cfg`. THREE things
+that mattered in bring-up: (1) **option B** (param prologue before the entry label) is mandatory —
+else `jump block_0` re-materializes params from arg registers → infinite loop; (2) run it **LAST** —
+copy_prop would collapse `param=copy temp` (params have no other AIR def) and rewrite the entry's
+param reads to the loop-only temp → garbage on first entry; (3) **no contiguity guard** — the tail
+block commonly sits at a LOW index but is emitted LAST (`if-return / else-tailcall`), so
+`inl_blocks_contiguous` is false; the rebuild re-lays-out block_instrs in block order and (running
+last, no physical-order pass follows) that's fine. Non-tail (`n*fact(n-1)`) and mixed tail/non-tail
+(ack) correctly untouched. Perf A/B: `benchmarks/tailrec` (deep tail sumto in a loop) OFF 1214ms →
+ON 246ms = **4.9x**. Oracle `t_selfrec` (accumulator + swap gcd, exit 67). Accumulator-recursion for
+fib (`return n*fib(n-1)`, tree-recursive) remains out of scope (needs a recurrence transform).
+
+Original plan:
 Only for a function whose **every** recursive call to itself is in **tail position**
 (the call's result is returned directly, no post-call arithmetic): rewrite
 `return self(a,b)` into `param0=a; param1=b; jump entry`. The accumulator form
