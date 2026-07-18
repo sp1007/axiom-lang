@@ -2228,6 +2228,17 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                 // variant); full support would need type-directed construction (RFC).
                 let sum_base_nm = extract_qualified_base_name(self.intern.get(sym.name_id))
                 let sum_is_builtin = sum_base_nm == "Option" or sum_base_nm == "Result"
+                // Count variants up front: a bare-primitive "variant" is only the
+                // union-of-primitives BUG when the alias is a genuine MULTI-variant union
+                // (`type ID = i32 | string`). A SINGLE-variant `type UserId = i64` is a
+                // transparent primitive type ALIAS (like `type CPtr = ptr[u8]`) — it
+                // assigns/reads fine and must NOT be rejected. See is_primitive_type_name use.
+                mut variant_count := 0 as i64
+                mut vc_node := self.tree.nodes.data[sum_node].first_child
+                while vc_node != 0 as u32:
+                    if self.tree.nodes.data[vc_node].kind == NODE_VARIANT_DECL:
+                        variant_count = variant_count + 1 as i64
+                    vc_node = self.tree.nodes.data[vc_node].next_sibling
                 mut v_node := self.tree.nodes.data[sum_node].first_child
                 while v_node != 0 as u32:
                     let v_node_struct = self.tree.nodes.data[v_node]
@@ -2250,7 +2261,7 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                                 // (`Nil`/`Empty`) and from Option/Result, and never fires on compiler
                                 // source (zero prim-named variants). Full union-of-primitives support
                                 // (tag + inline value, no box) is a larger RFC-gated feature.
-                                if is_primitive_type_name(vnm):
+                                if variant_count > 1 as i64 and is_primitive_type_name(vnm):
                                     ax_printf_local("error: sum type variant '%s' is a bare primitive type; a union of primitive types is not supported — use a named constructor (e.g. `IntId(i32)`) instead\n", get_str_ptr(vnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                     self.diags_count = self.diags_count + 1 as i64
                             
