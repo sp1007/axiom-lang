@@ -39,6 +39,27 @@ carries the callee **symbol index** in `type_id`, the result vreg in `dest`, and
 per-function pipeline in `SsaOptimizer.run` (`ssa_opt.ax:1798`), so their output is cleaned
 up by the downstream fold→simplify→copy-prop→cse→dce loop.
 
+### 2a′. P2 control-flow inliner — technical plan (investigated 2026-07-18, NOT yet built)
+To inline a MULTI-block callee (e.g. `collatz_len` with its `while`), the linear machinery
+(shipped: single-block, param-copy + offset-rename + return→copy + per-block f.insts/block_instrs
+rebuild) must be extended with CFG surgery:
+1. **Block-ID remap**: fresh callee block ids = `max_block_id(caller)+1 + callee_block`. Clone all
+   callee blocks; remap every terminator's target (OP_JUMP `src1`, OP_BRANCH targets) to the new ids.
+2. **Split the caller block at the call**: `[pre-call insts]` end with a JUMP to the callee entry;
+   a new continuation block holds `[post-call insts]`. Callee `OP_RETURN v` → `copy call.dest=v'` +
+   JUMP to the continuation.
+3. **⚠️ CFG REBUILD IS THE TRAP**: `block_succs`/`block_preds` are built ONLY via explicit
+   `add_edge(src,dst)` calls during AIR construction (air.ax:355-385) — there is NO recompute
+   function, and the passes (compute_loop_depths/liveness/licm) READ the stored edges directly. A
+   control-flow inline must call a NEW `recompute_cfg(f)` that rebuilds succs/preds from each block's
+   terminator. **B==C depends on edge ORDER** matching what add_edge produced (succs in the builder's
+   emission order; preds in block-visit order). `recompute_cfg` MUST reproduce that exact ordering or
+   a -O2-built compiler diverges. Verify by asserting recompute_cfg == the as-built CFG on every
+   function before trusting it for inlined ones.
+4. Gate: build the OP_BRANCH target encoding first (which of dest/src1/src2 hold the two block ids),
+   then the split, then recompute_cfg, then the full B==C + -O2 regression + collatz benchmark.
+This is milestone-scale (~200 lines + the ordering-exact recompute_cfg); do it in a dedicated session.
+
 ### 2a. Inlining (`inline_module`)
 For each `OP_CALL` to a **directly-resolvable, non-extern, non-recursive** callee whose
 body is **small** (≤ `INLINE_INST_THRESHOLD`, initially ~12 real insts) and **structurally
