@@ -745,6 +745,8 @@ pub fn main() -> i32:
                           // (may collide/need stdlib) from a standalone library.
     mut ctgc_free := false // RFC 0015 P3: -ctgc-free — inject OP_DESTROY (compile-time free)
                            // for provably non-escaping, single-owner local aggregates.
+    mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report — dump the freeable
+                             // set (print, no OP_DESTROY, byte-identical output). Measurement only.
                            // OFF by default so the self-host build stays byte-identical.
 
     // Parse commands
@@ -835,6 +837,8 @@ pub fn main() -> i32:
             show_time = true
         elif opt == "-ctgc-free" or opt == "--ctgc-free":
             ctgc_free = true
+        elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
+            ctgc_report = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
@@ -1024,6 +1028,7 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
         ctgc_inj.free_enabled = ctgc_free
+        ctgc_inj.report_only = ctgc_report
         ctgc_inj.run()
 
         ax_puts_local("[Debug] Running Alias Reuse Optimizer...")

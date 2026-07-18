@@ -12174,6 +12174,7 @@ pub struct CtgcInjector:
     pub active_vars: U32Vec // Stack of active sym_idx's
     pub active_var_decls: U32Vec // Stack of AST node decl indices
     pub free_enabled: bool // RFC 0015 P3: -ctgc-free opt-in; OFF => whole pass is inert
+    pub report_only: bool // RFC 0015 P3 precursor: -ctgc-free-report â€” PRINT the freeable set, inject nothing (dump-only, byte-identical output)
 
 pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[CtgcInjector]:
     let ci = @alloc(@compiler_intrinsic("size_of")[CtgcInjector]()) as ptr[CtgcInjector]
@@ -12184,14 +12185,17 @@ pub fn new_ctgc_injector(tree: ptr[AstTree], pool: ptr[InternPool], symtable: pt
     ci.active_vars = new_u32_vec()
     ci.active_var_decls = new_u32_vec()
     ci.free_enabled = false
+    ci.report_only = false
     return ci
 
 pub fn run(mut self: ptr[CtgcInjector]):
-    // RFC 0015 P3: the whole pass is opt-in behind -ctgc-free. With the flag OFF
+    // RFC 0015 P3: the whole pass is opt-in behind -ctgc-free. With BOTH flags OFF
     // (the default, incl. the self-host build) run() returns immediately and no
     // OP_DESTROY is injected, so output is byte-identical to the historical no-op
-    // (fixpoint A==B). Only with the flag ON does compile-time free activate.
-    if not self.free_enabled:
+    // (fixpoint A==B). -ctgc-free ON => compile-time free activates. -ctgc-free-report
+    // ON => the traversal runs but only PRINTS the freeable set (no tree mutation,
+    // still byte-identical output) â€” the P3 measurement precursor.
+    if not self.free_enabled and not self.report_only:
         return
     self.traverse_and_inject(0 as u32, 0 as u32)
 
@@ -12245,10 +12249,19 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
             mut idx := self.active_vars.len - 1 as i64
             while idx >= start_len:
                 let sym_idx = self.active_vars.data[idx]
-                // Create NODE_DESTROY_STMT node
-                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
-                self.tree.nodes.data[destroy_node].payload = sym_idx
-                self.append_child_node(node_idx, destroy_node)
+                if self.report_only:
+                    // Dump-only precursor: PRINT the freeable local, mutate nothing.
+                    // Enumerates the freeable set across the compiled program so the
+                    // future activation session can inspect the (currently un-enumerated)
+                    // borrow-alias blast radius. See [[ctgc-p3-scoping-2026-07-18]].
+                    let sym = self.symtable.symbols.data[sym_idx]
+                    let nm = self.pool.get_str(sym.name_id)
+                    ax_puts_local(std.string.concat("[ctgc-freeable] ", nm))
+                else:
+                    // Create NODE_DESTROY_STMT node
+                    let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
+                    self.tree.nodes.data[destroy_node].payload = sym_idx
+                    self.append_child_node(node_idx, destroy_node)
                 idx = idx - 1
 
             // Pop them from stack
@@ -34797,6 +34810,8 @@ pub fn main() -> i32:
                           // (may collide/need stdlib) from a standalone library.
     mut ctgc_free := false // RFC 0015 P3: -ctgc-free â€” inject OP_DESTROY (compile-time free)
                            // for provably non-escaping, single-owner local aggregates.
+    mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report â€” dump the freeable
+                             // set (print, no OP_DESTROY, byte-identical output). Measurement only.
                            // OFF by default so the self-host build stays byte-identical.
 
     // Parse commands
@@ -34887,6 +34902,8 @@ pub fn main() -> i32:
             show_time = true
         elif opt == "-ctgc-free" or opt == "--ctgc-free":
             ctgc_free = true
+        elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
+            ctgc_report = true
         opt_idx = opt_idx + 1
 
     let filename = args[file_arg_idx as i64]
@@ -35076,6 +35093,7 @@ pub fn main() -> i32:
         fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
         ctgc_inj.free_enabled = ctgc_free
+        ctgc_inj.report_only = ctgc_report
         ctgc_inj.run()
 
         ax_puts_local("[Debug] Running Alias Reuse Optimizer...")

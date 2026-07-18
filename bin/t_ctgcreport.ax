@@ -1,0 +1,13 @@
+// Oracle (exit 20): RFC 0015 P3 precursor — -ctgc-free-report (dump-only freeable-set).
+// Compiled on the DEFAULT path (no flag) this must be byte-identical to any build and
+// exit 20 (10 + 10), proving the new report code path is inert. Under -ctgc-free-report
+// the compiler additionally prints `[ctgc-freeable] owned` (the Box ctor local is a
+// non-escaping owning heap local) while `borrow` (a scalar field read) is correctly
+// NOT reported. Verified byte-identical output with vs without the flag (dump-only).
+struct Box:
+    v: i64
+
+fn main() -> i64:
+    let owned = Box(v: 10)
+    let borrow = owned.v
+    return owned.v + borrow
