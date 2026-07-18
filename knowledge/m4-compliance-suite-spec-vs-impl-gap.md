@@ -112,3 +112,29 @@ still to measure. **Bounded tasks surfaced, smallest first:** (1) **local-`const
 (parser: allow `const` in a block; top-level machinery exists — likely small, but a syntax
 addition ⇒ light RFC per §13); (2) **RFC 0008 P2 local capture** (larger; RFC exists);
 (3) `@SOA` / `!` sink (aspirational ownership — defer, design-level).
+
+- **Group 5 (041-050): interfaces/generics — PARTIAL.** SUPPORTED (from prior work + spot
+  checks): generic structs `Box[T]`, multi-param `Pair[K,V]`, nested generics `Box[Box[i32]]`,
+  generic inference `Box(value:88)`, monomorphization. GAP: **`interface`/`impl ... for`
+  declaration syntax does NOT parse** ("unexpected token") — zero interface examples exist in
+  bin/*.ax; interface dispatch + trait-bound `[T: Drawable]` are unimplemented (matches backlog
+  "interface-vtable dispatch open (niche)"). Tests 041/044/045 need it. Structural-duck-typing
+  method dispatch `p.method()` via a top-level fn DOES work (UFCS).
+- **Group 6 (051-060): error/sum — mostly SUPPORTED with 1 BUG.** SUPPORTED: Result Ok/Err,
+  Option Some/None, match on them, error propagation via match, custom error struct in Err
+  (all heavily exercised, [[probe-batch-clean-2026-07-18-b]]). GAPS: **match-as-expression**
+  `let x = match ...:` (059) → parse error (not supported; RFC 0023 did if-expr, not match-expr);
+  **`{.raises: [E].}` effect annotation** (060) → parse error (aspirational effects). 🐞 **REAL
+  BUG:** `type ID = i32 | string` bare-primitive union + `i32(v)` variant match → accept-then-
+  SEGFAULT (057/058) — see [[bug-sum-of-primitives-match-segfault]] (bounded reject fix
+  available).
+
+### M4-core (groups 1-6) SUMMARY — measurement COMPLETE
+Core language is largely implemented. **Bounded/small tasks** (fast gate): local `const`;
+reject bare-primitive-union match [[bug-sum-of-primitives-match-segfault]]. **Larger/RFC:**
+closure-capture-of-locals (RFC 0008 P2); interface/impl + trait bounds; match-as-expression.
+**Aspirational/defer (design-level):** `@SOA`, `!` sink, `{.raises.}` effects, and groups 7-10
+(async/comptime/gpu/quantum/AI). Everything is CLEANLY DIAGNOSED except the one sum-primitive
+segfault. Approach-(b) suite rewrite would score ~45-50/60 on core today; the rest map to the
+bounded/RFC tasks above. **This method (rewrite a compliance group in impl grammar, run, triage
+gaps) is the productive replacement for exhausted random probing — it already found a real bug.**
