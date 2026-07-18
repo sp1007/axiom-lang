@@ -75,6 +75,30 @@ infer_node. This is an implementation-hardening task (needs build + A==B gate + 
 self-host-risky), NOT a design change. **Deferred** — priority low (rare hand-written typo `let x=5;
 x(3)`), blocked on the infer_node/resolver hardening + a quiet box for the gate.
 
+🎯 **Concrete fix strategy (2026-07-18 static read, NOT yet built — start the quiet-box attempt HERE):**
+Verified in code, so the next attempt skips re-deriving:
+- **Imprecision root CONFIRMED:** `typecheck.ax:4234-4235` — for a `NODE_IDENT`, infer_node does
+  `result_type = symbols[node.payload].type_id`. For the 5 valid sites `node.payload` is a
+  *mis-resolved* `SYM_VAR` (type i64), so ANY reject keyed on `infer_node(callee)` / `callee.payload`
+  over-rejects. Do NOT key the reject on infer_node(callee) — that path is fundamentally the wrong
+  oracle here.
+- **Authoritative callability oracle is the CALL handler's OWN dispatch, not the callee's payload:**
+  free calls resolve via `resolve_free_call_overload(callee.payload, first_arg, argc)` at
+  `typecheck.ax:3353` (returns the real `SYM_FUNC` idx `ov_pick`); method calls resolve via the
+  `NODE_FIELD_EXPR` path (`~3368`, flag 2048). The genuine bug `let x=5; x(3)` is the case where the
+  callee is a `NODE_IDENT` and NEITHER (a) `resolve_free_call_overload` yields a valid `SYM_FUNC`
+  NOR (b) the bound symbol's own type_id is `TYPE_KIND_FUNC` (a real fn-ptr value like `let f=add`).
+- **Proposed predicate (reject non-callable):** at the NODE_CALL_EXPR handler, for a `NODE_IDENT`
+  callee, reject ONLY when: `resolve_free_call_overload(...) == 0`/not-a-SYM_FUNC **AND** the callee's
+  bound symbol is a `SYM_VAR`/`SYM_PARAM` whose `type_id` kind is a scalar PRIMITIVE (not
+  `TYPE_KIND_FUNC`, not a ptr/ref-to-func). The "no SYM_FUNC of this name resolves" clause is exactly
+  what attempt-1 was missing → its over-rejection. VERIFY the 5 sites: instrument
+  `resolve_free_call_overload`'s return for them — hypothesis is it DOES resolve them to a real
+  SYM_FUNC (so they'd be correctly spared), and only `x(3)` fails all avenues.
+- **Gate:** frontend reject → A==B + full regression + confirm the 5 compiler-source sites still
+  build (they were the canaries). Oracle `t_callnonfn` (reject mode). Self-host-risky → needs the
+  quiet box (Defender makes the gate multi-hour today).
+
 ## m2 (original report) — calling a non-function → accept-then-SEGFAULT
 ```
 fn main() -> i64:
