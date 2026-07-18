@@ -155,16 +155,12 @@ green): **let** (m5), **return** (t_retmismatch), **arithmetic binop** `"a"+5` (
 `x="s"` (t_assignstrnum). Also **index-a-scalar-variable** `x[0]` where x:i64 → reject (t_scalaridx,
 GATED on collection==NODE_IDENT — infer_node returns i64 imprecisely for CALL collections, m2/m5 trap).
 
-### OPEN candidates (confirmed accept-then-miscompile, ready for a future session)
-Found in the 3rd bad-input batch, NOT yet fixed (each still builds+miscompiles today on `497465B0`):
-- **m3 — struct ctor field type mismatch**: `P(x: "hello")` where `P.x: i64` → accepted, garbage
-  (exit 168). The ctor-field analog of the str↔numeric family. Fix = match each ctor arg against the
-  struct's field types in the NODE_CALL_EXPR struct-ctor path (callee_type==TYPE_KIND_STRUCT, ~L3790
-  `try_instantiate_struct_ctor`) and apply the same literal-gated str↔numeric reject. More involved
-  (named/positional field matching) → deferred, not rushed.
-- **m2 — array literal mixed element types**: `[1, 2, "three"]` → accepted, exit 0. Should reject a
-  heterogeneous array literal (int elements + a str element). Fix = in the array-literal typecheck,
-  require all elements share a compatible type; reject a str-vs-numeric element mix (literal-gated).
+### ✅ ALL candidates FIXED — str↔numeric mismatch family CLOSED across 8 paths
+- ✅ **m3 — struct ctor field mismatch FIXED `cec104e`** (A==B `47BC1E70`, 393/393, oracle
+  t_ctorfieldstrnum): `P(x: "hello")` where `P.x: i64` → reject. `check_ctor_field_str_num` walks
+  fields+args lockstep (like try_instantiate_struct_ctor), gated same-tree + literal.
+- ✅ **m2 — array literal mixed elements FIXED `b6359bd`** (A==B `F89A4EE7`, 392/392, oracle
+  t_arrmixstrnum): `[1, 2, "three"]` → reject. Element-loop str↔numeric literal check.
 - ✅ **m5agg — FIXED `78245e5`** (A==B `B9D819F6`, 391/391, oracle t_retagg): `return <aggregate
   ident>` (struct/sum/array/Option/Result) from a numeric-returning fn → reject. Gated on the return
   expr being a bare NODE_IDENT (reliable declared type). Only the RETURN path done; assign/let
