@@ -42,6 +42,12 @@ adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified cons
 This is a real aggregate/memory increment (P1 was pure-scalar precisely to avoid this), so it needs
 its own careful pass + oracles (scalar getter, nested, wrong-type guard) + full B==C gate. NOT a
 tail-of-session change.
+- ⚠️ **ARCHITECTURAL PREREQ (found 2026-07-18):** gating to scalar fields needs `field_size`/
+  `field_is_aggregate`/`field_is_pointer_sum`, which require the `TypeTable` — but `SsaOptimizer.run(self, m)`
+  only receives the `AirModule`, NOT the TypeTable. So getter-inlining first needs the TypeTable threaded
+  into the optimizer (signature change to `run` + its call site in main_air.ax ~L1085). Without it the
+  inliner can't tell a scalar field from a 16B/aggregate/pointer-sum one → would miscompile. Do the
+  plumbing as step 0 of the getter-inlining increment.
 
 ## 2026-07-18 (autopilot) — INLINER IMPLEMENTATION SPEC + cost/benefit gate (staged, not shipped)
 Fully designed the flat-AIR inliner (read air.ax/ssa_opt.ax/x86_selector.ax). **Key finding that
