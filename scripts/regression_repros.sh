@@ -158,6 +158,7 @@ rows=(
   "t_retagg|reject|"
   "t_arrmixstrnum|reject|"
   "t_ctorfieldstrnum|reject|"
+  "t_castneg2u|exit|42"
   "t_forvec|exit|60"
   "t_rune|exit|65"
   "t_bytesview|exit|204"
