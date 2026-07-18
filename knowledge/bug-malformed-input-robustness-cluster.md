@@ -132,6 +132,21 @@ carefully (A==B + full regression; a too-strict check breaks self-build).
 - m6 `Pair[i64](a:1, b:2)` on `struct Pair[A,B]` → returns p.a=1 CORRECTLY: B was inferred from the
   field `b:2`. Lenient (only one of two type args given) but correct. Leave it.
 
+## Second malformed-input pass — 2026-07-18 (7 bad programs, 3 new FIXES)
+A fresh reject-vs-accept batch beyond the original m1–m6:
+- ✅ **undefined name** (`return foo` where foo undeclared) → was accept+garbage, now REJECT
+  "undefined name 'X'". Resolver forced payload=0 on unresolved + typecheck reject. A==B `D79B62DE`,
+  oracle t_undefname. Full write-up [[bug-undefined-name-accept]]. (Cleanly rejectable unlike m2 —
+  the RESOLVER with live scopes is the reliable oracle.)
+- ✅ **return-type str↔numeric mismatch** (`return "hello"` from `-> i64`) → was accept+garbage, now
+  REJECT. Literal-gated (return-path analog of m5). A==B `20DCA173`, oracle t_retmismatch.
+- ✅ **binop str↔numeric mismatch** (`"hi" + 5`) → was pointer+int garbage, now REJECT. Both-definite
+  str+numeric; str+str concat & numeric+numeric untouched. A==B `6F638209`, oracle t_strnumop.
+- **NOT bugs:** missing struct field (`P(x:5)` when P has x,y) → fields ZERO-FILLED (verified 0 even
+  after stack noise), safe partial-init (Go-like), leave it. Assign-to-immutable already REJECTS.
+  Wrong generic arg count `Pair[i64]` → B inferred from field (lenient-correct, = m6). Duplicate
+  struct-literal field (`P(x:5,x:7)`) → accepted first-wins; minor typo, low value, LEFT open.
+
 ## Gate & priority
 All FRONTEND (typecheck/struct-layout) → A==B. Each is a REJECT (adds a diagnostic + `diags_count`
 bump so the driver halts before codegen — same mechanism as the existing rejects, e.g. variant-shadow
