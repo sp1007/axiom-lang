@@ -153,6 +153,7 @@ rows=(
   "t_strnumop|reject|"
   "t_argstrnum|reject|"
   "t_cmpstrnum|reject|"
+  "t_scalaridx|reject|"
   "t_forvec|exit|60"
   "t_rune|exit|65"
   "t_bytesview|exit|204"
