@@ -40,20 +40,33 @@ A→B→A) and REJECT: "recursive struct 'S' has infinite size; use `ptr[S]` for
 Direct self-reference is the safe bounded first cut (the compiler's own structs never self-reference
 by value — they use ptr — so self-build is unaffected). Indirect cycles = follow-up.
 
-## m2 — calling a non-function → accept-then-SEGFAULT (STILL OPEN; attempt 1 over-rejected)
-❌ **Attempt 1 (2026-07-18, REVERTED):** rejected when the ident-callee's payload is `SYM_VAR`/
-`SYM_PARAM` (kinds 0/6) with a resolved `type_id` whose kind is not `TYPE_KIND_FUNC`. It rejected m2
-correctly AND a simple `let f = add; f(..)` still worked — BUT the fixpoint gate caught an
-OVER-REJECTION: compiling the compiler's OWN source, A rejected **5 valid call sites** with "value of
-a non-function type is not callable" → A!=B (B build failed). So the compiler has ≥5 valid callable
-forms whose var/param type is NOT directly `TYPE_KIND_FUNC` — likely higher-order-function PARAMS
-(`fn foo(f: fn(i64)->i64)` then `f(x)`) or fn-pointers stored as a POINTER-to-func / a distinct
-fn-type representation. NEXT attempt MUST first enumerate those 5 forms (temp-trace the rejected
-call sites: print the callee sym kind + type_id + that type's entry.kind) and BROADEN the "callable"
-predicate to include them (follow POINTER/REF to a func; accept whatever kind a `fn(...)->...` param
-type actually has), THEN reject only genuinely non-callable scalar/struct/etc. values. Gate = A==B
-(the over-rejection shows up as B-build-fails-on-compiler-source). Lower priority than it looked —
-the callable-form enumeration is the real work.
+## m2 — calling a non-function → accept-then-SEGFAULT (OPEN — HARD, type-based reject is UNSOUND)
+❌ **Attempt 1 (2026-07-18, REVERTED):** reject when ident-callee payload is `SYM_VAR`/`SYM_PARAM`
+with a resolved type not `TYPE_KIND_FUNC` → over-rejected **5 valid compiler-source sites** → A!=B.
+
+🔬 **Attempt 2 enumeration (2026-07-18, traced, then reverted — NO fix shipped):** instrumented the
+NODE_CALL_EXPR fall-through (after the FUNC/STRUCT/SUM/GENERIC_INST/OPTION/RESULT/FIELD_EXPR elif
+chain, `typecheck.ax` ~L3676) with a NON-fatal trace over every NODE_IDENT callee whose
+`callee_type` isn't handled. Findings on the compiler's own source:
+  - Exactly **5 sites**, all identical: `callee_type=4` (**i64**, `ekind=PRIMITIVE`, unwrap-through-
+    ptr/ref still PRIMITIVE), `symkind=0` (**SYM_VAR**), attributed `name=len`.
+  - BUT there is **no literal `len(` free-call anywhere** in source (bootstrap/stage1 or the inlined
+    stdlib in tmp_concatenated) → the `name=len` payload is a **mis-attribution**: `infer_node(callee)`
+    returns **i64 spuriously** for these valid callees (the SAME inference imprecision that bit m5,
+    where infer_node returned i64 for str-returning CALLs). The callee.payload does not reliably
+    identify the callee here.
+  - Control: `let f = add; f(20,22)` → 42 and does NOT trip the trace → a fn-name-assigned fn-pointer
+    is correctly typed `TYPE_KIND_FUNC` (handled at ~L3678). So fn-pointers are NOT the false-positive
+    source; imprecise callee inference is.
+**CONCLUSION: a type-kind-based "not callable" reject at typecheck is UNSOUND** — `callee_type` (from
+`infer_node(callee)`) returns i64 for ≥5 valid call sites, indistinguishable from the genuine bug
+`let x=5; x(3)` (also i64 SYM_VAR). Neither symbol-kind nor callee_type separates them. Also note the
+TypeChecker struct has **no `tokens`/source field**, so pinning offsets needs extra plumbing.
+**A real fix needs either** (a) a proper fn-pointer TYPE in the type system so callable values are
+reliably kinded (RFC-level), or (b) hardening `infer_node`'s callee path so it never spuriously
+returns i64 for a valid call (then a scalar-callee reject becomes safe). Both are larger than a
+bounded bugfix and self-host-risky. **Deferred as a hard blocker** (needs the fn-ptr-type/inference
+design). Priority: low — a rare hand-written typo, and the safe fix is a design change.
 
 ## m2 (original report) — calling a non-function → accept-then-SEGFAULT
 ```
