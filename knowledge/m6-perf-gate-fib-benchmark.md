@@ -9,6 +9,37 @@ metadata:
 
 # M6 perf gate — Fib benchmark (measured 2026-07-17)
 
+## 2026-07-18 (autopilot) — INLINER IMPLEMENTATION SPEC + cost/benefit gate (staged, not shipped)
+Fully designed the flat-AIR inliner (read air.ax/ssa_opt.ax/x86_selector.ax). **Key finding that
+gates it:** the value passes (copy_prop/cse/dce, `ssa_opt.ax`) scan `f.insts` in PHYSICAL order =
+execution order, so inlining CANNOT append — it needs a per-block **rebuild** of `f.insts` +
+`f.block_instrs` (blocks index inst-indices via `block_instrs`, `x86_selector.ax:2514`; extras hold
+VREGS not inst-indices, so reindexing is safe). Enumerated hazards + the safe design:
+- **Rename by offset**: `rename(v)= v==0?0 : base+v`, `base = max_reg_id(caller)+1`, advance by
+  `max_reg_id(callee)+1` per site. Params map DIRECTLY to caller arg vregs
+  (`caller.extras[arg_start+1+i]`, arg_start=call.src2) — NO param-copy — but ONLY if the callee
+  never mutates a param (guard: no inst `dest==params[i]`), else the arg vreg is clobbered.
+- **Return→copy**: `OP_RETURN v` → `OP_COPY(dest=call.dest, src1=rename(v), type_id=callee.ret_type)`
+  (type known-correct; the one synthesized inst).
+- **ICONST/FCONST src1/src2 are immediates, NOT vregs** — don't rename. To avoid ALL other operand-
+  kind/type/memory hazards, WHITELIST the callee body to pure scalar ops (ICONST/FCONST/0x02xx
+  arithmetic/OP_COPY/OP_MOVE/OP_RETURN); bail on OP_LOAD/STORE/GET_FIELD/INDEX/CALL/branches/globals.
+- **Guards**: callee non-extern, non-async, single block, whitelist-only body, no param mutation,
+  scalar ret, ≤~12 insts, non-recursive; call site direct (src1==0), resolvable sym, argc==paramc;
+  caller `blocks_are_contiguous` (block order == physical order) else bail.
+- **Insertion point**: new `inline_module(m)` called in `SsaOptimizer.run` BEFORE the per-fn loop
+  (`ssa_opt.ax:1798`); downstream fold/copy_prop/dce clean up.
+
+⚠️ **COST/BENEFIT — why NOT shipped this pass**: the SAFE (whitelist) form is **perf-NEUTRAL on the
+benchmarks** — fib is self-recursive (skipped), collatz_len is multi-block/loop (skipped), so neither
+improves; it would FAIL RFC 0026's "revert if no ratio gain" criterion. Moving fib/collatz needs the
+RISKY forms: (a) inline callees WITH control flow (multi-block clone + block-id remap + CFG rebuild —
+much larger), or (b) **accumulator-recursion→loop** (fib's shape: `return n*fib(n-1)` — needs an
+accumulator-introduction transform, clang does it, high risk). Both are multi-session backend efforts
+requiring the full B==C + -O2 regression + bench gate with revert-on-red. **Next dedicated session:**
+implement (b) accumulator→loop for fib specifically (highest bench leverage) OR the control-flow
+inliner, using this spec. Do NOT ship the pure-arithmetic-only inliner alone (perf-neutral churn).
+
 ## 2026-07-18 (autopilot) — committed benchmark harness + RFC 0026 (inlining + recursion→loop)
 User prioritized M6 perf ([[autopilot-direction-2026-07-18]]). Shipped the **reusable, committed
 perf harness** (was previously ad-hoc): `scripts/bench_perf.sh` builds `benchmarks/{fib,collatz}.ax`
