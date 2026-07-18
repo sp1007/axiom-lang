@@ -6622,6 +6622,50 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 // generic function's param monomorphized to a packed concrete struct -- every field
 // past the first read at the wrong offset (silently 0/garbage, no crash). Returns
 // the template type_id unchanged when the struct is non-generic or nothing binds.
+// BUG#53 (m3): reject a struct constructor argument whose str/numeric LITERAL kind
+// mismatches the declared field type (`P(x: "hi")` where `P.x: i64`) -- was accepted
+// then miscompiled to garbage. Walk fields (decl order) and ctor args (positional,
+// matching try_instantiate_struct_ctor's model) in lockstep; for each, if the field is
+// numeric and the arg is a string literal (or field str/bytes and arg a numeric
+// literal), reject. Literal-gated so real coercions & value args are untouched. Gated
+// to SAME-TREE structs so the field type-expr node is a valid self.tree index to infer.
+pub fn check_ctor_field_str_num(mut self: ptr[TypeChecker], callee: u32):
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return
+    let ssym_idx = self.tree.nodes.data[callee].payload
+    if ssym_idx == 0 as u32 or (ssym_idx as i64) >= self.symtable.symbols.len:
+        return
+    let ssym = self.symtable.symbols.data[ssym_idx as i64]
+    if ssym.kind != SYM_STRUCT or ssym.decl_node == 0 as u32 or ssym.decl_node == 0xffffffff as u32:
+        return
+    if (ssym_idx as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[ssym_idx as i64]
+        if t != null as ptr[AstTree] and t != self.tree:
+            return
+    if (ssym.decl_node as i64) >= self.tree.nodes.len:
+        return
+    mut field_node := self.tree.nodes.data[ssym.decl_node].first_child
+    mut call_arg := self.tree.nodes.data[callee].next_sibling
+    while field_node != 0 as u32 and call_arg != 0 as u32:
+        let fn_node = self.tree.nodes.data[field_node]
+        if fn_node.kind == NODE_FIELD_DECL:
+            let field_type_node = fn_node.first_child
+            mut val_node := call_arg
+            if self.tree.nodes.data[call_arg].kind == NODE_NAMED_ARG:
+                val_node = self.tree.nodes.data[call_arg].first_child
+            if field_type_node != 0 as u32 and val_node != 0 as u32:
+                let ftype = self.infer_node(field_type_node, TYPE_UNKNOWN)
+                let vk = self.tree.nodes.data[val_node].kind
+                let f_str = ftype == TYPE_STRING or ftype == TYPE_BYTES
+                let f_num = ftype >= TYPE_I8 and ftype <= TYPE_USIZE and ftype != TYPE_STRING and ftype != TYPE_VOID
+                let v_strlit = vk == NODE_STRING_LIT
+                let v_numlit = vk == NODE_INT_LIT or vk == NODE_FLOAT_LIT
+                if (f_num and v_strlit) or (f_str and v_numlit):
+                    ax_printf_local("error: struct field initializer type mismatch: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
+            call_arg = self.tree.nodes.data[call_arg].next_sibling
+        field_node = fn_node.next_sibling
+
 pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, struct_type_id: u32) -> u32:
     if self.tree.nodes.data[callee].kind != NODE_IDENT:
         return struct_type_id
@@ -9942,6 +9986,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // BUG#74: if this is a generic struct constructed without
                     // explicit type args, monomorphize it from the field values.
                     result_type = self.try_instantiate_struct_ctor(callee, callee_type)
+                    self.check_ctor_field_str_num(callee)
                 elif entry.kind == TYPE_KIND_SUM:
                     result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
