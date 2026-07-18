@@ -176,3 +176,19 @@ arbitrary non-drop aggregates don't, and freeing their header alone leaks (or, a
 restrict general free to FLAT non-drop aggregates with no owned nested heap — a safer first cut: gate
 `lower_destroy`'s new else on "type has no pointer/aggregate fields"), then re-run the broad sweep.
 The escape-analysis half is complete and validated; the container-free-glue half is the remaining work.
+
+### CORRECTION (2026-07-18) — the "flat aggregate first cut" criterion is INSUFFICIENT; real blocker = a codegen crash needing root-cause
+Read the `OP_DESTROY` lowering (x86_selector.ax:1867-1874) — it's a trivial `mov arg0, ptr; call free`,
+so the crash is NOT in the destroy selector itself. Crucially, **HashMap's nested heap sits behind
+scalar `ptr[T]` fields** (keys/values/occupied are pointers = scalar 8B), so `field_is_aggregate`/
+`field_is_pointer_sum` are FALSE for them → a "flat = all-scalar-fields" gate would NOT exclude HashMap
+and would crash again. The t_hashi64 segfault is therefore an UPSTREAM codegen issue (prime suspects:
+`local_map_get` for a container local returning a reg the injected `OP_DESTROY` then feeds to a value/
+regalloc pass that chokes, or the extra `OP_DESTROY` inst breaking a physical-order/liveness invariant
+for a generic-inst-typed local). **It is not diagnosable without re-applying the activation and
+bisecting the crash** (a debug/trace build) — a dedicated investigation, NOT a tail-of-session tweak.
+So the accurate remaining-work statement is: (1) root-cause the `OP_DESTROY`-on-container-local compiler
+crash (reproduce with a 1-line HashMap program under `-ctgc-free`, trace the failing pass); (2) THEN
+decide the safe criterion (synthesised free-glue for owned nested heap, vs a correct "owns-no-nested-
+heap" predicate that must inspect `ptr`/container fields, not just `field_is_aggregate`). The
+escape-analysis half remains complete + validated; this is the true blocker for the activation half.
