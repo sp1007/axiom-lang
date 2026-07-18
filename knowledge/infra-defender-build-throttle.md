@@ -20,16 +20,25 @@ remaining bounded bug (m2 call-non-fn, strategy prepped in
 [[bug-malformed-input-robustness-cluster]]) is blocked on it: the fix is understood but
 can't be gated in reasonable wall-time on a Defender-throttled box.
 
-**Mitigation (USER-SIDE — Claude cannot self-apply; editing security settings is
-privilege-escalation-class, same caveat as the settings.json permissions in CLAUDE.md §24):**
-add a Microsoft Defender **folder/process exclusion** for the repo build output so newly
-built compilers/exes aren't re-scanned:
-- Exclude folders: `d:\projects\compiler\Axiom\bin`, `...\bootstrap\stage1`, and the
-  scratch/temp build dir.
-- Or exclude the process `axc_native.exe` / `axc_stage1.exe`.
-(Windows Security → Virus & threat protection → Manage settings → Exclusions.)
-Expected effect: restores ~10-min full regressions and ~seconds-per-hop fixpoint, which
-unblocks m2 and any future build-gated fix.
+**Mitigation — RESOLVED 2026-07-18.** User added Defender folder exclusions for
+`d:\projects\compiler\Axiom\bin` + `...\bootstrap\stage1` → build to those dirs dropped
+from ~99s to **~1s**. ⚠️ BUT the regression harness built test exes to hardcoded `/tmp`
+(= `C:\Users\sp\AppData\Local\Temp`, NOT excluded) → still ~99s each. FIXED in
+`regression_repros.sh` (`61768b5`): build dir is now `$REGTMP` (default `/tmp`, unchanged
+for CI/Linux); on this box run **`REGTMP=bin/_regtmp bash scripts/regression_repros.sh`**
+(bin/ is excluded → ~1s/build, full 396-test run in minutes). `bin/_regtmp/` is gitignored.
+(USER-SIDE note kept for reference: Claude cannot self-apply Defender settings — same
+privilege-escalation caveat as CLAUDE.md §24. Windows Security → Virus & threat protection
+→ Manage settings → Exclusions.)
+
+🐞 **SEPARATE gotcha found same session (`61768b5`):** the harness DEFAULT compiler was the
+**stale `bin/axc_stage1.exe`** (bootstrap seed, hash `448cd6c7`, predates recent aggregate
+fixes), NOT the daily driver `axc_native.exe` (`1c2e3d6a`). A plain `bash
+scripts/regression_repros.sh` therefore tested the OLD compiler → spurious struct/Option
+SIGSEGV "failures" (an old compiler genuinely miscompiling aggregates the current driver
+handles). Default is now `AXC=bin/axc_native.exe` (the gate compiler per build_native.ps1:67).
+LESSON: always gate on `axc_native`; if you see aggregate-only failures, FIRST check which
+compiler ran + reproduce standalone with `bin/axc_native.exe` before suspecting a regression.
 
 **Operating note until then:** run regressions/fixpoints in the BACKGROUND (they finish
 async and notify), commit additive/independently-verified changes without waiting hours,
