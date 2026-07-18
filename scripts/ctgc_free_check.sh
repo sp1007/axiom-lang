@@ -26,6 +26,11 @@ rows=(
   "t_gentree|15|15"
   "t_structoptfield|42|42"
   "t_vecstructopt|42|42"
+  # NEGATIVE escape oracle: a ctor local pushed into a Vec must NOT be freed under
+  # -ctgc-free (container-store escape f873948 + reassign-to-borrow 68d2c78). If either
+  # escape fix regresses, `it` becomes wrongly freeable -> freed -> the Vec dangles ->
+  # on != off / crash. on==off==33 proves the escaped local is retained.
+  "t_ctgcescape|33|33"
 )
 
 for row in "${rows[@]}"; do

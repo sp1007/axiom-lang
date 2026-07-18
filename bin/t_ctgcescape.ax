@@ -1,0 +1,28 @@
+// RFC 0015 P3 NEGATIVE oracle (exit 33). Locks in the escape-analysis soundness fixes
+// (container-store escape f873948 + reassign-to-borrow 68d2c78): a ctor local that is
+// STORED into a container must NOT be freed under -ctgc-free, or the container would hold
+// a dangling pointer and reading it back would UAF. The ctgc_free_check harness runs this
+// with the flag OFF and ON and requires identical results, so a regression of either
+// escape fix (the local becoming wrongly freeable) shows up as on != off / a crash.
+import std.collections
+
+struct Item:
+    x: i64
+
+fn build() -> Vec[Item]:
+    mut v = Vec[Item].new()
+    mut i = 0
+    while i < 3:
+        let it = Item(x: 10 + i)  // ctor local; its ONLY use is v.push(it) — a container
+        v.push(it)                // store => escapes. Pre-fix it looked freeable and would
+        i = i + 1                 // be freed at this block's fall-through => v dangles.
+    return v
+
+fn main() -> i64:
+    let v = build()
+    mut sum = 0
+    mut j = 0
+    while j < 3:
+        sum = sum + v[j].x        // reads it-back-from-the-Vec; UAF if it was freed
+        j = j + 1
+    return sum                    // 10 + 11 + 12 = 33

@@ -426,6 +426,9 @@ rows=(
   # DEFAULT build of this Box-ctor+scalar-borrow shape is byte-identical & runs 20.
   # (The report itself prints [ctgc-freeable] owned; verified inert byte-identity.)
   "t_ctgcreport|exit|20"
+  # RFC 0015 P3 — negative escape oracle: ctor local pushed into a Vec, read back.
+  # Default path (no free) = 33; the -ctgc-free off==on guard lives in ctgc_free_check.sh.
+  "t_ctgcescape|exit|33"
   # RFC 0024 block strings """...""" (len/multi-line/escapes/byte/embedded-quotes)
   "t_blockstr|exit|5"
   "t_blockstrml|exit|5"
