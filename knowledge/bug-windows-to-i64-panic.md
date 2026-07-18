@@ -1,6 +1,6 @@
 ---
 name: bug-windows-to-i64-panic
-description: "OPEN (pre-existing, Windows C-runtime): std.string.to_i64(\"42\") returns Err on the Windows COFF build → .unwrap() panics (exit 101). The ax_runtime.dll ax_str_parse_i64 is broken. Found 2026-07-17 while adding the Linux parse twins (which work correctly). Not caused by any recent change."
+description: "FIXED 4cf8239 (2026-07-17, A==B==C F846D40C, 339/339): Windows std.string.to_i64/to_f64 broke via the C-runtime ax_str_parse_* (unwrap panicked exit 101). Reimplemented in pure AXIOM (value ABI) in std/string.ax, dropping the extern C calls — works on Windows AND Linux now. Oracle t_parse=40. (was: OPEN pre-existing Windows C-runtime bug.)"
 metadata:
   node_type: memory
   type: project

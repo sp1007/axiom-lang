@@ -1,6 +1,6 @@
 ---
 name: bug-consecutive-float-cvt-call-regalloc
-description: "OPEN (pre-existing, backend regalloc): two back-to-back function calls that each need an f32<->f64 width conversion (cvtss2sd/cvtsd2ss) at the call boundary miscompile — the SECOND call reads the FIRST call's argument value. Reproduces with EXPLICIT `as` casts on the pre-change compiler, so it is independent of the HOLE#6 implicit-coercion fix. An unrelated filler statement between the two calls masks it (register-pressure/spill dependent)."
+description: "CLOSED (verified 2026-07-16 pm, daily driver ec8a0d0): two back-to-back calls each needing an f32<->f64 width conversion at the call boundary — the reported 'second call reads first call arg' no longer reproduces (explicit-as, identity id64/id32, and implicit-coercion forms all correct at O0 and O1). Likely fixed as a side effect of HOLE#6 05ef55f + float-lit-width ec8a0d0. (was: OPEN backend regalloc miscompile.)"
 metadata:
   node_type: memory
   type: project
