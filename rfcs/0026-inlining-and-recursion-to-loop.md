@@ -1,11 +1,15 @@
 # RFC 0026 — Function Inlining & Self-Recursion→Loop (M6 perf)
 
-- Status: **P1 + P1.5 + OP_INDEX SHIPPED** — pure-scalar single-block inliner (`d64a68d`, hotloop
-  2.57x) + scalar-field/multi-field getter inlining (`f286cac9`, getter 2.89x) + scalar array-element
-  getter inlining (`343fa03b`, 418/418). The getter family is complete (field + index). See
-  [[m6-perf-gate-fib-benchmark]]. Groundwork in `8d05f96`. P2 (control-flow inliner for collatz;
-  accumulator-recursion→loop for fib) remains — the real fib/collatz-gate closers, each a dedicated
-  B==C-gated session.
+- Status: **P1 + P1.5 + OP_INDEX + P2 CONTROL-FLOW INLINER SHIPPED** — pure-scalar single-block
+  inliner (`d64a68d`, hotloop 2.57x) + scalar-field/multi-field getter inlining (`f286cac9`, getter
+  2.89x) + scalar array-element getter inlining (`343fa03b`, 418/418) + **P2 multi-block (control-flow)
+  inliner** (this session, B==C `4138AEB5`, 421/421, cfhot 12% win). The getter family is complete
+  (field + index). See [[m6-perf-gate-fib-benchmark]]. Groundwork in `8d05f96`. P2 built the
+  `recompute_cfg` groundwork (§2a′, ordering PROVEN exact via unconditional-rebuild B==C) + the
+  RPO-ordered block clone. **Remaining P2: accumulator-recursion→loop for fib** (fib is
+  self-recursive → not inlinable; needs the recurrence transform). collatz gains from P2 only at -O2
+  (its inner loop dominates at -O1; call removal is negligible there) — the clear P2 win is on
+  call-dominated multi-block code (cfhot: `classify()` with 2 `if`s, 200M calls).
 - Author: autopilot (2026-07-18), per user direction [[autopilot-direction-2026-07-18]]
 - Affected: `bootstrap/stage1/ssa_opt.ax` (optimizer pipeline), AIR only. No syntax,
   no ABI, no linker, no runtime changes.
@@ -39,7 +43,21 @@ carries the callee **symbol index** in `type_id`, the result vreg in `dest`, and
 per-function pipeline in `SsaOptimizer.run` (`ssa_opt.ax:1798`), so their output is cleaned
 up by the downstream fold→simplify→copy-prop→cse→dce loop.
 
-### 2a′. P2 control-flow inliner — technical plan (investigated 2026-07-18, NOT yet built)
+### 2a′. P2 control-flow inliner — SHIPPED (this session)
+IMPLEMENTED as `inline_multiblock_func` (ssa_opt.ax) + `recompute_cfg` (air.ax), gated at -O1 after
+the single-block `inline_func`. Confirmed self-host-safe: B==C `4138AEB5`, 421/421 (incl. -O2/-O3),
+oracle `t_inlinecf` (exit 17). The plan below held, with ONE addition found during bring-up:
+**callee blocks MUST be cloned in reverse-post-order, not the callee's index order.** A callee's
+merge/exit block can sit physically BEFORE its predecessors (e.g. `floorf`'s exit is block index 1);
+cloning that verbatim puts a value USE physically before its (conditional) redefinition, which the
+physical-order value/regalloc passes miscompile once inlined into a larger function (standalone it
+happens to survive; inlined it broke t_mathfill/t_fft at -O1 while B==C still held — the exact
+"passes A/self-build but breaks user code" hazard §4 warns about). Fix: RPO DFS from the callee entry
+(`inl_rpo_dfs`), clone in that order, remap terminator targets through the RPO position map. The
+`recompute_cfg` ordering (below) was PROVEN exact independently by wiring it unconditionally on every
+function and confirming a bit-identical B==C + 418/418 (a true no-op iff ordering-exact).
+
+Original plan (kept for reference):
 To inline a MULTI-block callee (e.g. `collatz_len` with its `while`), the linear machinery
 (shipped: single-block, param-copy + offset-rename + return→copy + per-block f.insts/block_instrs
 rebuild) must be extended with CFG surgery:

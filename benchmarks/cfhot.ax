@@ -1,0 +1,18 @@
+// M6 perf benchmark — CALL-dominated hot loop over a small MULTI-block callee.
+// classify() has two `if`s (control flow), tiny body; called 200M times, so the
+// per-call frame/call overhead dominates. Exercises RFC 0026 P2 control-flow
+// inlining (the callee is multi-block, so only the P2 inliner removes the call).
+fn classify(x: i64) -> i64:
+    if x < 0:
+        return 0 - x
+    if x > 100:
+        return 100
+    return x
+
+fn main() -> i32:
+    mut acc := 0 as i64
+    mut i := 0 as i64
+    while i < 200000000:
+        acc = acc + classify((i % 250) - 50)
+        i = i + 1
+    return (acc % 1000) as i32

@@ -1,0 +1,28 @@
+// Oracle (exit 17): RFC 0026 P2 — CONTROL-FLOW (multi-block) inlining.
+// absdiff has an if/else (2+ blocks); sumloop has a while (2+ blocks). Both are
+// small, scalar-param, scalar-return, pure-arithmetic + control-flow callees, so
+// inline_multiblock_func clones their blocks into main at -O1+. The result must be
+// identical at -O0 (no inline) and -O1/-O2/-O3 (inlined).
+fn absdiff(a: i64, b: i64) -> i64:
+    mut r := 0 as i64
+    if a > b:
+        r = a - b
+    else:
+        r = b - a
+    return r
+
+fn sumloop(n: i64) -> i64:
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        s = s + i
+        i = i + 1
+    return s
+
+fn main() -> i32:
+    mut total := 0 as i64
+    total = total + absdiff(10, 3)   // 7  (if/else, multi-block)
+    total = total + absdiff(4, 9)    // 5  (else branch)
+    total = total + sumloop(5)       // 0+1+2+3+4 = 10 (while, multi-block)
+    total = total - 5                // 7 + 5 + 10 - 5 = 17
+    return total as i32

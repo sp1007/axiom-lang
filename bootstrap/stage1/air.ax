@@ -411,6 +411,71 @@ pub fn build_func(mut self: ptr[AirFuncBuilder]) -> AirFunc:
         block_preds: self.block_preds,
     )
 
+// RFC 0026 P2: rebuild block_succs/block_preds from each block's terminator,
+// reproducing add_edge's EXACT ordering (validated against the as-built CFG — the
+// codegen/liveness passes read these edges directly, so B==C depends on the order):
+//   - per-block SUCC order: OP_JUMP -> [src1]; OP_BRANCH -> [src2 (true-target),
+//     dest (false-target)] — every air_builder BRANCH site adds the true-target
+//     BEFORE the false-target. Duplicate targets collapse (add_edge appends unique;
+//     the only single-terminator dup is a BRANCH with src2==dest). Out-of-range
+//     targets are skipped (mirrors add_edge's bounds guard).
+//   - per-block PRED order: the builder adds edges in lowering order, which visits
+//     source blocks in ascending block-index order, so a block's preds are its source
+//     blocks in ascending index. Reproduced by scanning sources ascending.
+// Needed by the multi-block inliner (inline_func) after it rewrites the block list.
+pub fn recompute_cfg(mut f: ptr[AirFunc]):
+    mut new_succs := new_u32_vec()
+    mut new_preds := new_u32_vec()
+    let n = f.blocks.len
+    // Pass 1: successors, per block in index order.
+    mut b := 0 as i64
+    while b < n:
+        mut bb := &f.blocks.data[b]
+        bb.succs_start = new_succs.len as u32
+        bb.succs_len = 0 as u32
+        if bb.instrs_len > 0 as u32:
+            let last_ii = bb.instrs_start as i64 + (bb.instrs_len as i64) - 1 as i64
+            let last = f.block_instrs.data[last_ii] as i64
+            let t = f.insts.data[last]
+            if t.opcode == OP_JUMP:
+                if (t.src1 as i64) < n:
+                    new_succs.push(t.src1)
+                    bb.succs_len = bb.succs_len + 1 as u32
+            elif t.opcode == OP_BRANCH:
+                if (t.src2 as i64) < n:
+                    new_succs.push(t.src2)
+                    bb.succs_len = bb.succs_len + 1 as u32
+                if (t.dest as i64) < n and t.dest != t.src2:
+                    new_succs.push(t.dest)
+                    bb.succs_len = bb.succs_len + 1 as u32
+        b = b + 1 as i64
+    // Pass 2: predecessors, per dst block; scan sources in ascending index order.
+    mut d := 0 as i64
+    while d < n:
+        mut db := &f.blocks.data[d]
+        db.preds_start = new_preds.len as u32
+        db.preds_len = 0 as u32
+        mut s := 0 as i64
+        while s < n:
+            let sb = &f.blocks.data[s]
+            mut k := 0 as u32
+            mut has := false
+            while k < sb.succs_len:
+                if new_succs.data[sb.succs_start + k] == d as u32:
+                    has = true
+                k = k + 1 as u32
+            if has:
+                new_preds.push(s as u32)
+                db.preds_len = db.preds_len + 1 as u32
+            s = s + 1 as i64
+        d = d + 1 as i64
+    if f.block_succs.data != null as ptr[u32]:
+        @free(f.block_succs.data as ptr[u8])
+    if f.block_preds.data != null as ptr[u32]:
+        @free(f.block_preds.data as ptr[u8])
+    f.block_succs = new_succs
+    f.block_preds = new_preds
+
 pub fn opcode_mnemonic(op: u16) -> str:
     if op == OP_NOP:
         return "nop"

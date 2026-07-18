@@ -480,6 +480,8 @@ rows=(
   "t_inline7|exit|37"
   # RFC 0026 — inlining a scalar array-element getter (at(a,i)=a[i], OP_INDEX)
   "t_inline8|exit|60"
+  # RFC 0026 P2 — CONTROL-FLOW (multi-block) inlining (if/else + while callees)
+  "t_inlinecf|exit|17"
 )
 
 for row in "${rows[@]}"; do
@@ -531,6 +533,7 @@ opt_rows=(
   "t_loopcross|10"
   "t_licmchain|123"
   "t_licmunroll|18"
+  "t_inlinecf|17"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

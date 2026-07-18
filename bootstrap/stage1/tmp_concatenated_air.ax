@@ -12758,6 +12758,71 @@ pub fn build_func(mut self: ptr[AirFuncBuilder]) -> AirFunc:
         block_preds: self.block_preds,
     )
 
+// RFC 0026 P2: rebuild block_succs/block_preds from each block's terminator,
+// reproducing add_edge's EXACT ordering (validated against the as-built CFG â€” the
+// codegen/liveness passes read these edges directly, so B==C depends on the order):
+//   - per-block SUCC order: OP_JUMP -> [src1]; OP_BRANCH -> [src2 (true-target),
+//     dest (false-target)] â€” every air_builder BRANCH site adds the true-target
+//     BEFORE the false-target. Duplicate targets collapse (add_edge appends unique;
+//     the only single-terminator dup is a BRANCH with src2==dest). Out-of-range
+//     targets are skipped (mirrors add_edge's bounds guard).
+//   - per-block PRED order: the builder adds edges in lowering order, which visits
+//     source blocks in ascending block-index order, so a block's preds are its source
+//     blocks in ascending index. Reproduced by scanning sources ascending.
+// Needed by the multi-block inliner (inline_func) after it rewrites the block list.
+pub fn recompute_cfg(mut f: ptr[AirFunc]):
+    mut new_succs := new_u32_vec()
+    mut new_preds := new_u32_vec()
+    let n = f.blocks.len
+    // Pass 1: successors, per block in index order.
+    mut b := 0 as i64
+    while b < n:
+        mut bb := &f.blocks.data[b]
+        bb.succs_start = new_succs.len as u32
+        bb.succs_len = 0 as u32
+        if bb.instrs_len > 0 as u32:
+            let last_ii = bb.instrs_start as i64 + (bb.instrs_len as i64) - 1 as i64
+            let last = f.block_instrs.data[last_ii] as i64
+            let t = f.insts.data[last]
+            if t.opcode == OP_JUMP:
+                if (t.src1 as i64) < n:
+                    new_succs.push(t.src1)
+                    bb.succs_len = bb.succs_len + 1 as u32
+            elif t.opcode == OP_BRANCH:
+                if (t.src2 as i64) < n:
+                    new_succs.push(t.src2)
+                    bb.succs_len = bb.succs_len + 1 as u32
+                if (t.dest as i64) < n and t.dest != t.src2:
+                    new_succs.push(t.dest)
+                    bb.succs_len = bb.succs_len + 1 as u32
+        b = b + 1 as i64
+    // Pass 2: predecessors, per dst block; scan sources in ascending index order.
+    mut d := 0 as i64
+    while d < n:
+        mut db := &f.blocks.data[d]
+        db.preds_start = new_preds.len as u32
+        db.preds_len = 0 as u32
+        mut s := 0 as i64
+        while s < n:
+            let sb = &f.blocks.data[s]
+            mut k := 0 as u32
+            mut has := false
+            while k < sb.succs_len:
+                if new_succs.data[sb.succs_start + k] == d as u32:
+                    has = true
+                k = k + 1 as u32
+            if has:
+                new_preds.push(s as u32)
+                db.preds_len = db.preds_len + 1 as u32
+            s = s + 1 as i64
+        d = d + 1 as i64
+    if f.block_succs.data != null as ptr[u32]:
+        @free(f.block_succs.data as ptr[u8])
+    if f.block_preds.data != null as ptr[u32]:
+        @free(f.block_preds.data as ptr[u8])
+    f.block_succs = new_succs
+    f.block_preds = new_preds
+
 pub fn opcode_mnemonic(op: u16) -> str:
     if op == OP_NOP:
         return "nop"
@@ -19316,6 +19381,11 @@ pub const OPT_LARGE_FUNC_THRESHOLD: i64 = 2000
 // callee's real return type. Downstream fold/copy_prop/dce clean up the copies.
 // ============================================================================
 pub const INLINE_INST_THRESHOLD: i64 = 16
+// RFC 0026 P2 â€” multi-block (control-flow) inliner caps. Kept small so the first
+// increment stays a bounded, benchmark-relevant transform (collatz_len is ~5
+// blocks / ~25 insts) and does not explode the compiler's own giant functions.
+pub const INLINE_MB_BLOCK_THRESHOLD: i64 = 8
+pub const INLINE_MB_INST_THRESHOLD: i64 = 48
 
 // A callee-body opcode safe to clone: pure scalar const / copy / arithmetic /
 // compare / convert (class 0x02xx) / return. Anything touching memory, fields,
@@ -19540,6 +19610,316 @@ pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule], table: ptr[TypeT
     caller.block_instrs = new_bi
     return true
 
+// ============================================================================
+// RFC 0026 P2 â€” CONTROL-FLOW (multi-block) inliner.
+// Inlines a small, MULTI-block callee (e.g. `collatz_len` with its while loop)
+// by cloning its blocks into the caller: split the caller block at the call,
+// clone every callee block with fresh block ids + vreg offset, remap terminator
+// targets, turn each `return v` into `copy call.dest=v'; jump continuation`, and
+// lay the result out in EXECUTION order (so the physical-order value passes stay
+// valid). Caller original terminators reference caller block ids â†’ remapped via
+// caller_newid[]; callee clone terminators reference callee-local ids â†’ remapped
+// inline via clone_base. The CFG is rebuilt by recompute_cfg (caller in run()).
+// First increment: scalar params/return only, whitelisted pure-scalar +
+// control-flow body, NO nested calls / memory / aggregates / getters.
+// ============================================================================
+
+// Body opcode allowed in a multi-block clone: pure scalar const/copy/arithmetic,
+// plus the control-flow terminators (JUMP/BRANCH/RETURN). Excludes calls, memory,
+// fields, index, globals â€” kept out of this first increment.
+fn inl_mb_op_ok(op: u16) -> bool:
+    if op == OP_JUMP or op == OP_BRANCH or op == OP_RETURN:
+        return true
+    if op == OP_ICONST or op == OP_FCONST or op == OP_COPY:
+        return true
+    if op >= 0x0201 as u16 and op <= 0x0223 as u16:
+        return true
+    return false
+
+// Successors of a callee block (from its terminator) â€” used by the RPO DFS.
+// JUMP -> [src1]; BRANCH -> [src2 (true), dest (false)]; RETURN/none -> [].
+fn inl_block_term(callee: ptr[AirFunc], b: u32) -> AirInst:
+    let bb = &callee.blocks.data[b as i64]
+    if bb.instrs_len == 0 as u32:
+        return AirInst(opcode: OP_NOP, type_id: 0 as u16, dest: 0 as u32, src1: 0 as u32, src2: 0 as u32)
+    let last = callee.block_instrs.data[bb.instrs_start as i64 + (bb.instrs_len as i64) - 1 as i64] as i64
+    return callee.insts.data[last]
+
+// Post-order DFS from `b`, appending to `post`. RPO = reverse(post) gives an
+// execution-order block layout so the physical-order value/regalloc passes stay
+// correct after the callee's blocks are cloned into the caller (the callee's own
+// block order may put a merge/exit block physically before its predecessors).
+fn inl_rpo_dfs(callee: ptr[AirFunc], b: u32, mut visited: ptr[bool], mut post: ptr[U32Vec]):
+    if visited[b]:
+        return
+    visited[b] = true
+    let t = inl_block_term(callee, b)
+    let nb = callee.blocks.len
+    if t.opcode == OP_JUMP:
+        if (t.src1 as i64) < nb:
+            inl_rpo_dfs(callee, t.src1, visited, post)
+    elif t.opcode == OP_BRANCH:
+        if (t.src2 as i64) < nb:
+            inl_rpo_dfs(callee, t.src2, visited, post)
+        if (t.dest as i64) < nb:
+            inl_rpo_dfs(callee, t.dest, visited, post)
+    post.push(b)
+
+fn inl_multiblock_ok(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
+    if callee.is_extern or callee.is_async:
+        return false
+    if callee.blocks.len < 2 as i64:            // single-block handled by inline_func
+        return false
+    if callee.blocks.len > INLINE_MB_BLOCK_THRESHOLD:
+        return false
+    if callee.insts.len > INLINE_MB_INST_THRESHOLD:
+        return false
+    // scalar params only (no by-address aggregate ABI in this increment)
+    mut pi := 0 as i64
+    while pi < callee.params.len:
+        let pty = callee.params.data[pi] as u32
+        if type_is_aggregate(table, pty):
+            return false
+        mut psz := 0 as u32
+        mut pal := 0 as u32
+        type_size_and_align(table, pty, &psz, &pal)
+        if psz > 8 as u32:
+            return false
+        pi = pi + 1 as i64
+    // scalar, non-void return
+    if callee.ret_type == 0 as u32:
+        return false
+    if type_is_aggregate(table, callee.ret_type):
+        return false
+    mut rsz := 0 as u32
+    mut ral := 0 as u32
+    type_size_and_align(table, callee.ret_type, &rsz, &ral)
+    if rsz > 8 as u32:
+        return false
+    // whitelist body + require at least one value return
+    mut has_ret := false
+    mut bi := 0 as i64
+    while bi < callee.blocks.len:
+        let bb = &callee.blocks.data[bi]
+        mut k := 0 as i64
+        while k < bb.instrs_len as i64:
+            let idx = callee.block_instrs.data[bb.instrs_start as i64 + k] as i64
+            let inst = callee.insts.data[idx]
+            if not inl_mb_op_ok(inst.opcode):
+                return false
+            if inst.opcode == OP_RETURN:
+                if inst.src1 == 0 as u32:        // void return -> defer
+                    return false
+                has_ret = true
+            k = k + 1 as i64
+        bi = bi + 1 as i64
+    return has_ret
+
+// callee func index if `inst` is an inlinable DIRECT call to a MULTI-block callee, else -1
+fn inl_mb_call_target(inst: AirInst, caller: ptr[AirFunc], m: ptr[AirModule], table: ptr[TypeTable]) -> i64:
+    if inst.opcode != OP_CALL:
+        return -1 as i64
+    if inst.src1 != 0 as u32:                    // indirect (fn-ptr) call
+        return -1 as i64
+    if inst.dest == 0 as u32:                    // void call -> no return value to wire
+        return -1 as i64
+    let ci = inl_find_callee(m, inst.type_id as u32)
+    if ci < 0 as i64:
+        return -1 as i64
+    let callee = &m.funcs.data[ci]
+    if callee.sym_id == caller.sym_id:           // never inline self-recursion
+        return -1 as i64
+    if not inl_multiblock_ok(callee, table):
+        return -1 as i64
+    let arg_start = inst.src2
+    if arg_start >= caller.extras.len as u32:
+        return -1 as i64
+    let argc = caller.extras.data[arg_start]
+    if argc as i64 != callee.params.len:
+        return -1 as i64
+    return ci
+
+pub fn inline_multiblock_func(mut caller: ptr[AirFunc], m: ptr[AirModule], table: ptr[TypeTable]) -> bool:
+    if caller.is_extern:
+        return false
+    if caller.insts.len > OPT_LARGE_FUNC_THRESHOLD:   // skip huge callers (code explosion)
+        return false
+    mut found := false
+    mut i := 0 as i64
+    while i < caller.insts.len:
+        if inl_mb_call_target(caller.insts.data[i], caller, m, table) >= 0 as i64:
+            found = true
+            break
+        i = i + 1 as i64
+    if not found:
+        return false
+    if not inl_blocks_contiguous(caller):
+        return false
+
+    let ncaller = caller.blocks.len
+    let caller_newid = @alloc(ncaller * 4 as i64) as ptr[u32]
+    mut fixups := new_u32_vec()               // new_insts indices of caller-original terminators
+
+    mut new_insts := new_air_inst_vec()
+    mut new_bi := new_u32_vec()
+    mut new_blocks := new_basic_block_vec()
+    mut fresh := max_reg_id(caller) + 1 as u32
+    mut next_id := 0 as u32                    // == new_blocks.len, assigned as blocks open
+
+    mut bi := 0 as i64
+    while bi < ncaller:
+        let cbb = &caller.blocks.data[bi]
+        mut open_id := next_id
+        next_id = next_id + 1 as u32
+        mut open_start := new_bi.len as u32
+        mut cur_is_entry := cbb.is_entry
+        caller_newid[bi] = open_id
+
+        mut k := 0 as i64
+        while k < cbb.instrs_len as i64:
+            let old_idx = caller.block_instrs.data[cbb.instrs_start as i64 + k] as i64
+            let inst = caller.insts.data[old_idx]
+            let ci = inl_mb_call_target(inst, caller, m, table)
+            if ci >= 0 as i64:
+                let callee = &m.funcs.data[ci]
+                let base = fresh
+                let arg_start = inst.src2
+                // param copies into the current open block
+                mut pidx := 0 as i64
+                while pidx < callee.params.len:
+                    let argv = caller.extras.data[arg_start + 1 as u32 + pidx as u32]
+                    let pc = AirInst(opcode: OP_COPY, type_id: callee.params.data[pidx] as u16, dest: base + (pidx as u32 + 1 as u32), src1: argv, src2: 0 as u32)
+                    let pci = new_insts.push(pc)
+                    new_bi.push(pci)
+                    pidx = pidx + 1 as i64
+                // Reverse-post-order the callee blocks so the clone is laid out in
+                // EXECUTION order (a callee merge/exit block can sit physically before
+                // its predecessors â€” cloning that verbatim breaks the physical-order
+                // value/regalloc passes). pos[j] = clone position of callee block j.
+                let nblk = callee.blocks.len
+                let visited = @alloc(nblk) as ptr[bool]
+                @memset(visited as ptr[void], 0 as u8, nblk)
+                let pos = @alloc(nblk * 4 as i64) as ptr[u32]
+                @memset(pos as ptr[void], 0 as u8, nblk * 4 as i64)
+                mut post := new_u32_vec()
+                inl_rpo_dfs(callee, 0 as u32, visited, &post)
+                let ncloned = post.len                          // reachable blocks (== nblk normally)
+                mut pp := 0 as i64
+                while pp < ncloned:
+                    let blk_id = post.data[ncloned - 1 as i64 - pp]
+                    pos[blk_id] = pp as u32
+                    pp = pp + 1 as i64
+                let clone_base = next_id
+                let cont_id = clone_base + ncloned as u32
+                // close head with a JUMP to the callee entry clone (RPO puts entry first)
+                let hj = AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: clone_base + pos[0 as i64], src2: 0 as u32)
+                let hji = new_insts.push(hj)
+                new_bi.push(hji)
+                new_blocks.push(BasicBlock(id: open_id, instrs_start: open_start, instrs_len: new_bi.len as u32 - open_start, succs_start: 0 as u32, succs_len: 0 as u32, preds_start: 0 as u32, preds_len: 0 as u32, loop_depth: 0 as u8, is_entry: cur_is_entry, is_exit: false))
+                cur_is_entry = false
+                // clone callee blocks in RPO order
+                mut cp := 0 as i64
+                while cp < ncloned:
+                    let cbid = post.data[ncloned - 1 as i64 - cp] as i64
+                    let clbb = &callee.blocks.data[cbid]
+                    let cl_id = clone_base + cp as u32
+                    next_id = next_id + 1 as u32
+                    let cl_start = new_bi.len as u32
+                    mut j := 0 as i64
+                    while j < clbb.instrs_len as i64:
+                        let cidx = callee.block_instrs.data[clbb.instrs_start as i64 + j] as i64
+                        let cin = callee.insts.data[cidx]
+                        if cin.opcode == OP_RETURN:
+                            let rv = inl_rename(cin.src1, base)
+                            let cp2 = AirInst(opcode: OP_COPY, type_id: callee.ret_type as u16, dest: inst.dest, src1: rv, src2: 0 as u32)
+                            let cpi = new_insts.push(cp2)
+                            new_bi.push(cpi)
+                            let rj = AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: cont_id, src2: 0 as u32)
+                            let rji = new_insts.push(rj)
+                            new_bi.push(rji)
+                        elif cin.opcode == OP_JUMP:
+                            let nj = AirInst(opcode: OP_JUMP, type_id: 0 as u16, dest: 0 as u32, src1: clone_base + pos[cin.src1 as i64], src2: 0 as u32)
+                            let nji = new_insts.push(nj)
+                            new_bi.push(nji)
+                        elif cin.opcode == OP_BRANCH:
+                            // src1 = cond VREG (rename); src2 = true-target, dest = false-target (block ids -> RPO pos)
+                            let nb = AirInst(opcode: OP_BRANCH, type_id: cin.type_id, dest: clone_base + pos[cin.dest as i64], src1: inl_rename(cin.src1, base), src2: clone_base + pos[cin.src2 as i64])
+                            let nbi = new_insts.push(nb)
+                            new_bi.push(nbi)
+                        elif cin.opcode == OP_ICONST or cin.opcode == OP_FCONST:
+                            mut nd := cin.dest
+                            if cin.dest != 0 as u32:
+                                nd = base + cin.dest
+                            let nc = AirInst(opcode: cin.opcode, type_id: cin.type_id, dest: nd, src1: cin.src1, src2: cin.src2)
+                            let nci = new_insts.push(nc)
+                            new_bi.push(nci)
+                        else:
+                            mut nd2 := cin.dest
+                            if cin.dest != 0 as u32:
+                                nd2 = base + cin.dest
+                            let nn = AirInst(opcode: cin.opcode, type_id: cin.type_id, dest: nd2, src1: inl_rename(cin.src1, base), src2: inl_rename(cin.src2, base))
+                            let nni = new_insts.push(nn)
+                            new_bi.push(nni)
+                        j = j + 1 as i64
+                    new_blocks.push(BasicBlock(id: cl_id, instrs_start: cl_start, instrs_len: new_bi.len as u32 - cl_start, succs_start: 0 as u32, succs_len: 0 as u32, preds_start: 0 as u32, preds_len: 0 as u32, loop_depth: 0 as u8, is_entry: false, is_exit: false))
+                    cp = cp + 1 as i64
+                @free(visited as ptr[u8])
+                @free(pos as ptr[u8])
+                if post.data != null as ptr[u32]:
+                    @free(post.data as ptr[u8])
+                // advance past the clone's vregs â€” cover both body vregs and the
+                // param vregs (a param unused in the body would otherwise be missed).
+                mut adv := max_reg_id(callee)
+                if callee.params.len as u32 > adv:
+                    adv = callee.params.len as u32
+                fresh = fresh + adv + 1 as u32
+                // open the continuation block
+                open_id = cont_id
+                next_id = next_id + 1 as u32
+                open_start = new_bi.len as u32
+            else:
+                let ni = new_insts.push(inst)
+                new_bi.push(ni)
+                if inst.opcode == OP_JUMP or inst.opcode == OP_BRANCH:
+                    fixups.push(ni)
+            k = k + 1 as i64
+
+        // close the final block of caller block bi
+        mut is_exit := false
+        if new_bi.len as u32 > open_start:
+            let li = new_bi.data[new_bi.len - 1 as i64] as i64
+            if new_insts.data[li].opcode == OP_RETURN:
+                is_exit = true
+        new_blocks.push(BasicBlock(id: open_id, instrs_start: open_start, instrs_len: new_bi.len as u32 - open_start, succs_start: 0 as u32, succs_len: 0 as u32, preds_start: 0 as u32, preds_len: 0 as u32, loop_depth: 0 as u8, is_entry: cur_is_entry, is_exit: is_exit))
+        bi = bi + 1 as i64
+
+    // remap caller-original terminator targets (caller block id -> new head id)
+    mut fx := 0 as i64
+    while fx < fixups.len:
+        let ii = fixups.data[fx] as i64
+        mut term := &new_insts.data[ii]
+        if term.opcode == OP_JUMP:
+            if (term.src1 as i64) < ncaller:
+                term.src1 = caller_newid[term.src1]
+        elif term.opcode == OP_BRANCH:
+            if (term.src2 as i64) < ncaller:
+                term.src2 = caller_newid[term.src2]
+            if (term.dest as i64) < ncaller:
+                term.dest = caller_newid[term.dest]
+        fx = fx + 1 as i64
+
+    @free(caller_newid as ptr[u8])
+    if caller.insts.data != null as ptr[AirInst]:
+        @free(caller.insts.data as ptr[u8])
+    if caller.block_instrs.data != null as ptr[u32]:
+        @free(caller.block_instrs.data as ptr[u8])
+    if caller.blocks.data != null as ptr[BasicBlock]:
+        @free(caller.blocks.data as ptr[u8])
+    caller.insts = new_insts
+    caller.block_instrs = new_bi
+    caller.blocks = new_blocks
+    return true
+
 pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable]):
     mut fi := 0 as i64
     while fi < m.funcs.len:
@@ -19548,6 +19928,11 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable])
             // RFC 0026: inline small pure-arithmetic + scalar-getter helpers.
             if self.level >= 1 as u8:
                 inline_func(f, m, table)
+                // RFC 0026 P2: control-flow (multi-block) inliner. Rewrites the block
+                // list, so it recomputes the CFG internally. Runs after the single-block
+                // inliner (which removes single-block calls first).
+                if inline_multiblock_func(f, m, table):
+                    recompute_cfg(f)
             let is_large = f.insts.len > OPT_LARGE_FUNC_THRESHOLD
 
             // Structural passes: run once before iterative value passes.
