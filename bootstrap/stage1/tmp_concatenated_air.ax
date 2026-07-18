@@ -11350,6 +11350,21 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let rhs_a = self.tree.nodes.data[lhs_a].next_sibling
             if rhs_a != 0 as u32:
                 self.infer_node(rhs_a, lhs_ty)
+                // BUG#53 (assignment-path analog of m5): `x = <string literal>` where
+                // x is numeric (or a numeric literal into a str/bytes lvalue) was
+                // silently accepted then miscompiled to garbage. Reject the
+                // str<->numeric pair. Literal-gated (RHS node kind), so real coercions
+                // and value assignments are untouched. See
+                // [[bug-malformed-input-robustness-cluster]].
+                if lhs_ty != TYPE_UNKNOWN:
+                    let ak = self.tree.nodes.data[rhs_a].kind
+                    let l_str = lhs_ty == TYPE_STRING or lhs_ty == TYPE_BYTES
+                    let l_num = lhs_ty >= TYPE_I8 and lhs_ty <= TYPE_USIZE and lhs_ty != TYPE_STRING and lhs_ty != TYPE_VOID
+                    let a_strlit = ak == NODE_STRING_LIT
+                    let a_numlit = ak == NODE_INT_LIT or ak == NODE_FLOAT_LIT
+                    if (l_num and a_strlit) or (l_str and a_numlit):
+                        ax_printf_local("error: type mismatch in assignment: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        self.diags_count = self.diags_count + 1 as i64
 
     else:
         // Default traversal
