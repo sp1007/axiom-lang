@@ -1,0 +1,247 @@
+// ============================================================================
+// AXIOM COMPLIANCE SUITE (M4) — part 2: stdlib collections, strings, iteration,
+// number formatting, and control-flow variations. Complements bin/t_compliance.ax
+// (core language). All real-grammar, builds + runs on the native self-host driver.
+// Exit code == number of passing tests (28). Gated as t_compliance2|exit|28.
+// ============================================================================
+import std.string
+import std.collections
+
+// ---------------- collections (Vec / HashMap / arrays) ----------------
+fn c01_vec_push_index() -> i32:
+    mut v = Vec[i64].new()
+    v.push(3)
+    v.push(5)
+    v.push(7)
+    assert(v[0] == 3 and v[1] == 5 and v[2] == 7)
+    return 1
+
+fn c02_vec_map() -> i32:
+    let v = Vec[i64].new()
+    v.push(10)
+    v.push(20)
+    let w = v.map(|x: i64| -> i64 x + 1)
+    assert(w[0] == 11 and w[1] == 21)
+    return 1
+
+fn c03_vec_fold() -> i32:
+    let v = Vec[i64].new()
+    v.push(20)
+    v.push(22)
+    let s = v.fold(0, |acc: i64, x: i64| -> i64 acc + x)
+    assert(s == 42)
+    return 1
+
+fn c04_vec_filter() -> i32:
+    let v = Vec[i64].new()
+    v.push(5)
+    v.push(42)
+    v.push(3)
+    let w = v.filter(|x: i64| -> bool x > 10)
+    assert(w[0] == 42)
+    return 1
+
+fn c05_for_in_vec() -> i32:
+    mut v = Vec[i64].new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    mut sum := 0 as i64
+    for x in v:
+        sum = sum + x
+    assert(sum == 60)
+    return 1
+
+fn c06_hashmap_get() -> i32:
+    mut m = new_hashmap[i64, i64]()
+    m.insert(1, 100)
+    m.insert(2, 200)
+    assert(m.get(2).unwrap() == 200)
+    return 1
+
+fn c07_hashmap_len() -> i32:
+    mut m = new_hashmap[i64, i64]()
+    m.insert(1, 10)
+    m.insert(2, 20)
+    m.insert(3, 30)
+    assert(m.len() == 3)
+    return 1
+
+fn c08_hashmap_iterate() -> i32:
+    mut m = new_hashmap[i64, i64]()
+    mut i := 1 as i64
+    while i <= 5:
+        m.insert(i, i)
+        i = i + 1
+    mut ksum := 0 as i64
+    for k in m:
+        ksum = ksum + k
+    assert(ksum == 15)
+    return 1
+
+fn c09_array_literal_index() -> i32:
+    let a = [3, 5, 7]
+    assert(a[0] + a[1] + a[2] == 15)
+    return 1
+
+fn c10_for_in_array() -> i32:
+    let a = [1, 2, 3, 4]
+    mut sum := 0 as i64
+    for x in a:
+        sum = sum + x
+    assert(sum == 10)
+    return 1
+
+// ---------------- strings ----------------
+fn s01_concat() -> i32:
+    let s = "ab" + "cd"
+    assert(s.len == 4)
+    return 1
+
+fn s02_split_count() -> i32:
+    let parts = "a,bb,ccc".split(",")
+    assert(parts.len == 3)
+    return 1
+
+fn s03_split_elem_len() -> i32:
+    let parts = "a,bb,ccc,dddd".split(",")
+    mut total := 0 as i64
+    for p in parts:
+        total = total + p.len
+    assert(total == 10)
+    return 1
+
+fn s04_trim() -> i32:
+    let t = "  hi  ".trim()
+    assert(t.len == 2)
+    return 1
+
+fn s05_contains() -> i32:
+    let s = "hello world"
+    assert(s.contains("world"))
+    return 1
+
+fn s06_to_upper_starts_with() -> i32:
+    let u = "hello".to_upper()
+    assert(u.starts_with("HELLO"))
+    return 1
+
+fn s07_index_of() -> i32:
+    let s = "hello world"
+    assert(s.index_of("world") == 6)
+    return 1
+
+fn s08_for_in_str() -> i32:
+    mut n := 0 as i64
+    for c in "hello":
+        n = n + 1
+    assert(n == 5)
+    return 1
+
+fn s09_numeric_to_str() -> i32:
+    let n = 42 as i64
+    let s = n.to_str()
+    assert(s.len == 2)
+    return 1
+
+fn s10_numeric_to_hex() -> i32:
+    let n = 255 as i64
+    let s = n.to_hex()
+    assert(s.len == 2)
+    return 1
+
+// ---------------- control-flow variations ----------------
+fn m01_nested_for() -> i32:
+    mut count := 0 as i64
+    for i in 0..3:
+        for j in 0..3:
+            count = count + 1
+    assert(count == 9)
+    return 1
+
+fn m02_while_break() -> i32:
+    mut i := 0 as i64
+    while i < 100:
+        if i == 7:
+            break
+        i = i + 1
+    assert(i == 7)
+    return 1
+
+fn m03_while_continue() -> i32:
+    mut i := 0 as i64
+    mut sum := 0 as i64
+    while i < 5:
+        i = i + 1
+        if i == 3:
+            continue
+        sum = sum + i
+    assert(sum == 12)
+    return 1
+
+fn m04_for_break() -> i32:
+    mut last := 0 as i64
+    for i in 0..100:
+        last = i
+        if i == 4:
+            break
+    assert(last == 4)
+    return 1
+
+fn m05_short_circuit() -> i32:
+    let a = 5
+    let ok = a > 0 and a < 10
+    let any = a > 100 or a == 5
+    assert(ok and any)
+    return 1
+
+fn m06_cast_chain() -> i32:
+    let a = 5 as i32
+    let b = a as i64
+    let c = b as i32
+    assert(c == 5)
+    return 1
+
+fn m07_tuple_fields() -> i32:
+    let t = (3, 4)
+    assert(t.0 + t.1 == 7)
+    return 1
+
+fn m08_nested_if_expr() -> i32:
+    let x = 5
+    let r = if x > 10: 1 elif x > 3: 2 else: 3
+    assert(r == 2)
+    return 1
+
+// ---------------- entry ----------------
+fn main() -> i32:
+    mut n := 0 as i32
+    n = n + c01_vec_push_index()
+    n = n + c02_vec_map()
+    n = n + c03_vec_fold()
+    n = n + c04_vec_filter()
+    n = n + c05_for_in_vec()
+    n = n + c06_hashmap_get()
+    n = n + c07_hashmap_len()
+    n = n + c08_hashmap_iterate()
+    n = n + c09_array_literal_index()
+    n = n + c10_for_in_array()
+    n = n + s01_concat()
+    n = n + s02_split_count()
+    n = n + s03_split_elem_len()
+    n = n + s04_trim()
+    n = n + s05_contains()
+    n = n + s06_to_upper_starts_with()
+    n = n + s07_index_of()
+    n = n + s08_for_in_str()
+    n = n + s09_numeric_to_str()
+    n = n + s10_numeric_to_hex()
+    n = n + m01_nested_for()
+    n = n + m02_while_break()
+    n = n + m03_while_continue()
+    n = n + m04_for_break()
+    n = n + m05_short_circuit()
+    n = n + m06_cast_chain()
+    n = n + m07_tuple_fields()
+    n = n + m08_nested_if_expr()
+    return n

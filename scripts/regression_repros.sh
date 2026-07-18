@@ -462,6 +462,8 @@ rows=(
   # surface (primitives/control-flow/functions/structs/generics/sum-types). Exit code
   # == number of passing tests; a silent miscompile flips an assert -> nonzero.
   "t_compliance|exit|60"
+  # M4 compliance part 2 — stdlib collections/strings/iteration/formatting + control-flow
+  "t_compliance2|exit|28"
 )
 
 for row in "${rows[@]}"; do

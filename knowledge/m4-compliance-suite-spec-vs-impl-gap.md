@@ -15,7 +15,13 @@ the ACTUAL shipped grammar. Deliverable = **`bin/t_compliance.ax`** — 60 tests
 1–6 (primitives, control flow, functions/lambdas/tuples, structs & methods, generics &
 collections, sum types & error handling), each asserting a known-correct value; **exit code ==
 number of passing tests = 60**. Builds clean on daily driver + runs 60 on the native path.
-**Gated forever** as `t_compliance|exit|60` in `scripts/regression_repros.sh`.
+**Gated forever** as `t_compliance|exit|60` in `scripts/regression_repros.sh`. **Part 2 added**
+(`bin/t_compliance2.ax`, `t_compliance2|exit|28`): 28 more real-grammar tests over the stdlib
+surface — Vec HOFs (map/fold/filter/for-in), HashMap (insert/get.unwrap/len/for-in keys), arrays
+(literal+index+for-in), strings (concat/split/trim/contains/to_upper/starts_with/index_of/for-in
+chars), numeric formatting (to_str/to_hex UFCS), and control-flow variations (nested for, while
+break/continue, cast chain, tuple .0/.1, nested if-expr). Built clean + exit 28 first try. Combined
+M4 compliance surface = **88 real-grammar tests** across the language + stdlib.
 - The aspirational spec-dialect original is preserved at `tests/axiom_compliance_suite_aspirational.ax`;
   `tests/axiom_compliance_suite.ax` is now a pointer doc to the real suite.
 - **Dialect gaps SIDESTEPPED (not blockers):** local `const` → module-level `const X: T = v`;
