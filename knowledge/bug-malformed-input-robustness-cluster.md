@@ -167,6 +167,21 @@ GATED on collection==NODE_IDENT — infer_node returns i64 imprecisely for CALL 
   aggregate↔scalar left for a follow-up if a repro surfaces.
 - NOT-bugs from this batch: `mut x:i64 = 5; x = 10` (valid), method-arg mismatch already parse/rejects.
 
+## NON-bugs / design-tension (4th bad-input batch 2026-07-18) — do NOT re-probe
+- **Non-bool `if`/`while` condition** (`if x` where x:i64; `if s` where s:str): ACCEPTED (truthy —
+  nonzero/non-null = true). The spec task-doc (`AXIOM SPECIFICATION`.../`docs/tasks/p04-t06`:58) says
+  "condition must be bool" (code 3011), BUT the compiler's OWN source uses **11 truthy `if <i64>`
+  conditions** (verified by trace) — the implementation RELIES on truthy int conditions. Enforcing
+  bool-only would break self-build; it needs migrating those 11 sites + is a design decision (bool-only
+  vs C-like truthy). **Deferred — needs user/spec decision, not an autonomous change.** A NARROWER
+  future option: reject only str/aggregate/Option conditions (never meaningfully truthy; the 11
+  compiler sites are all int so it'd be self-build-safe) — catches `if <Option>` (forgot .is_some())
+  and `if <str>`; left as a candidate if a decision is made to tighten.
+- **Literal out of range for its type** (`let x:u8 = 300` → 44; `let x:u8 = -5` → 251): ACCEPTED,
+  DETERMINISTIC WRAP (two's-complement). Consistent with AXIOM's narrow-int wrap semantics (cf.
+  [[bug-const-fold-narrow-int-wrap]]). Rust rejects these as a strictness choice; AXIOM wrapping is a
+  valid alternative design. NOT a miscompile. Leave unless a strictness policy is decided.
+
 ## Gate & priority
 All FRONTEND (typecheck/struct-layout) → A==B. Each is a REJECT (adds a diagnostic + `diags_count`
 bump so the driver halts before codegen — same mechanism as the existing rejects, e.g. variant-shadow
