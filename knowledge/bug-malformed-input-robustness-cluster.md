@@ -165,11 +165,10 @@ Found in the 3rd bad-input batch, NOT yet fixed (each still builds+miscompiles t
 - **m2 — array literal mixed element types**: `[1, 2, "three"]` → accepted, exit 0. Should reject a
   heterogeneous array literal (int elements + a str element). Fix = in the array-literal typecheck,
   require all elements share a compatible type; reject a str-vs-numeric element mix (literal-gated).
-- **m5agg — return/assign an aggregate where a scalar is expected**: `return p` (p a struct) from a
-  `-> i64` fn → accepted, exit 8 (returns the struct address as an int). This is the aggregate↔scalar
-  branch of the return/let/assign mismatch (my fixes only cover str↔numeric *literals*). Fix = extend
-  the return/assign checks: if the value's inferred type is an aggregate (STRUCT/SUM/TUPLE/ARRAY) and
-  the target is a scalar (or vice versa), reject. Watch infer imprecision (gate on reliable forms).
+- ✅ **m5agg — FIXED `78245e5`** (A==B `B9D819F6`, 391/391, oracle t_retagg): `return <aggregate
+  ident>` (struct/sum/array/Option/Result) from a numeric-returning fn → reject. Gated on the return
+  expr being a bare NODE_IDENT (reliable declared type). Only the RETURN path done; assign/let
+  aggregate↔scalar left for a follow-up if a repro surfaces.
 - NOT-bugs from this batch: `mut x:i64 = 5; x = 10` (valid), method-arg mismatch already parse/rejects.
 
 ## Gate & priority
