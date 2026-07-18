@@ -6,8 +6,12 @@
   inliner** (this session, B==C `4138AEB5`, 421/421, cfhot 12% win). The getter family is complete
   (field + index). See [[m6-perf-gate-fib-benchmark]]. Groundwork in `8d05f96`. P2 built the
   `recompute_cfg` groundwork (§2a′, ordering PROVEN exact via unconditional-rebuild B==C) + the
-  RPO-ordered block clone. **Remaining P2: accumulator-recursion→loop for fib** (fib is
-  self-recursive → not inlinable; needs the recurrence transform). collatz gains from P2 only at -O2
+  RPO-ordered block clone. **Remaining P2: accumulator-recursion→loop for fib — DEFERRED by
+  determination 2026-07-18** (fib is TREE-recursive `fib(n-1)+fib(n-2)`, not tail → needs an
+  accumulator/recurrence-introduction transform whose call reassociation is only sound for
+  provably-pure callees → high B==C self-host risk for narrow single-benchmark ROI; §10 don't force.
+  Not "todo" — deferred until a dedicated, user-prioritized perf session; rationale at top of
+  [[m6-perf-gate-fib-benchmark]]). collatz gains from P2 only at -O2
   (its inner loop dominates at -O1; call removal is negligible there) — the clear P2 win is on
   call-dominated multi-block code (cfhot: `classify()` with 2 `if`s, 200M calls).
 - Author: autopilot (2026-07-18), per user direction [[autopilot-direction-2026-07-18]]
