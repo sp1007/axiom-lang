@@ -12003,6 +12003,23 @@ pub fn analyze_block(mut self: ptr[EscapeAnalyser], block_idx: u32):
         self.analyze_stmt(child_idx)
         child_idx = self.tree.nodes.data[child_idx].next_sibling
 
+pub fn expr_is_owning(self: ptr[EscapeAnalyser], init_idx: u32) -> bool:
+    // A value OWNS fresh single-owner memory only when it constructs a new aggregate:
+    // a struct/array literal, or a `Name(...)` call where Name resolves to a struct type
+    // (in AXIOM `Box(f: v)` parses as a CALL_EXPR, not a STRUCT_LIT). Any other expression
+    // (ident=alias, INDEX/FIELD=borrow into longer-lived memory RFC 0010 Â§9, ordinary
+    // call=maybe a borrow) is NON-owning: the value aliases memory CTGC must never free.
+    let init_kind = self.tree.nodes.data[init_idx].kind
+    mut is_owning := init_kind == NODE_STRUCT_LIT or init_kind == NODE_ARRAY_LIT
+    if init_kind == NODE_CALL_EXPR:
+        let callee_idx = self.tree.nodes.data[init_idx].first_child
+        if callee_idx != 0 as u32:
+            let callee = self.tree.nodes.data[callee_idx]
+            if callee.kind == NODE_IDENT and callee.payload != 0 as u32:
+                if self.symtable.symbols.data[callee.payload].kind == SYM_STRUCT:
+                    is_owning = true
+    return is_owning
+
 pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
     if stmt_idx == 0 as u32 or stmt_idx == 0xffffffff as u32:
         return
@@ -12029,16 +12046,7 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
                 // longer-lived aggregate RFC 0010 Â§9, ordinary call=maybe a borrow, no
                 // interprocedural analysis). Flow such locals to the escape node so
                 // escapes()=true and P3 refuses to free them.
-                let init_kind = self.tree.nodes.data[init_idx].kind
-                mut is_owning := init_kind == NODE_STRUCT_LIT or init_kind == NODE_ARRAY_LIT
-                if init_kind == NODE_CALL_EXPR:
-                    let callee_idx = self.tree.nodes.data[init_idx].first_child
-                    if callee_idx != 0 as u32:
-                        let callee = self.tree.nodes.data[callee_idx]
-                        if callee.kind == NODE_IDENT and callee.payload != 0 as u32:
-                            if self.symtable.symbols.data[callee.payload].kind == SYM_STRUCT:
-                                is_owning = true
-                if not is_owning:
+                if not self.expr_is_owning(init_idx):
                     self.curr_cg.add_edge(cg_idx, self.escape_node_idx, EDGE_FLOWS_TO)
                 self.analyze_expr(init_idx, cg_idx)
 
@@ -12053,6 +12061,17 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
                     let lhs_cg_idx = self.curr_cg.node_of_sym(sym_idx)
                     if lhs_cg_idx != 0xffffffff as u32:
                         self.analyze_expr(rhs_idx, lhs_cg_idx)
+                        // RFC 0015 P3 soundness (reassign-to-borrow): an owned local
+                        // REASSIGNED to a NON-owning RHS (a borrow: index/field read,
+                        // ident alias, or ordinary call) now ALIASES longer-lived memory,
+                        // so it must escape -- otherwise CTGC would free the borrowed
+                        // backing at block end (UAF). Mirrors the VAR_DECL owning-origin
+                        // rule. Real case: `dst_alloc = allocs[v]` in x86_regalloc.ax made
+                        // the ctor-init'd dst_alloc alias the allocs vector while the escape
+                        // graph still saw it as freeable. Conservative (worst case = free
+                        // LESS, never a UAF); a reassignment to a fresh ctor stays owning.
+                        if not self.expr_is_owning(rhs_idx):
+                            self.curr_cg.add_edge(lhs_cg_idx, self.escape_node_idx, EDGE_FLOWS_TO)
                     else:
                         // RFC 0015 P3 soundness: the LHS ident is NOT a tracked local
                         // (a module global, or a binding outside this function's graph),

@@ -114,3 +114,28 @@ every regression program to enumerate their freeable sets, (b) remove the drop-n
 revert-on-red. High enough risk (changes free behavior for ALL user programs) that it is its own
 deliberate increment, not a tail-of-session change -- but now de-risked from "pervasive" to "one
 compiler local + measurable per-program sets".
+
+## ⭐⭐⭐ 2nd escape gap FIXED — freeable set 1 → 0 (A==B `11EB77BD`, 434/434, CTGC_FREE_OK)
+Auditing the last freeable local (`dst_alloc`, x86_regalloc.ax:1202) found it is NOT single-owner:
+at x86_regalloc.ax:1208 it is REASSIGNED `dst_alloc = alloc` where `alloc = allocs[v]` (an INDEX
+borrow into the `allocs` vector). Under AXIOM aggregate=reference semantics that makes `dst_alloc`
+ALIAS `allocs[v]`, so freeing it would free the borrowed slot -> UAF. The escape analyser missed it
+because it keyed "owning" off the INIT (a `RegAllocation(...)` ctor) and ignored the later
+reassignment to a borrow. **Second gap, same family as the first.** Fix: in `analyze_stmt`'s
+NODE_ASSIGN_STMT ident-LHS branch, after flowing RHS->LHS, if the RHS is NON-owning
+(`expr_is_owning` false: index/field/ident/plain-call) add an escape edge LHS->escape_node — an owned
+local reassigned to a borrow now escapes. Also refactored the VAR_DECL owning-origin check into the
+shared `expr_is_owning(init_idx)` helper (used by both VAR_DECL and ASSIGN). **Verified via report:
+freeable set 1 -> 0** — the escape analyser is now provably conservative-sound on the entire self-host
+build (no local it deems freeable aliases longer-lived memory). Inert (A==B `11EB77BD`, 434/434) and
+the 9 `-ctgc-free` oracles STILL free their legit single-owner ctor locals (CTGC_FREE_OK: t_drop 42x,
+t_ctgcfree 42x) — the reassign rule is precise, not over-marking.
+
+**Net position after this session:** the two escape holes that caused the historic `-ctgc-free`
+self-build UAF (container-store escape + reassign-to-borrow) are BOTH closed; the compiler's freeable
+set is 0 (nothing to wrongly free), so general-free activation on the self-host build is now provably
+safe (a no-op). Real user-program CTGC free still works (oracles free clean locals). The remaining
+"activation" lever (remove the drop-narrowing air_builder.ax:4225 so non-drop-typed clean locals also
+free) is now LOW-risk but delivers no self-host benefit (compiler freeable=0); worth it only to make
+`-ctgc-free` free non-drop user aggregates — a future opt-in, gated the same way (re-measure each
+program's freeable set with the report, full regression under the activated compiler, revert-on-red).
