@@ -1,0 +1,10 @@
+// Oracle (exit 21): RFC 0026 §2b — tail-self-recursion with >6 params. Params 7+
+// are passed on the STACK (not arg registers), so the loop-back param reassignment
+// must correctly rewrite stack-slot param vregs (validated by option-B param
+// prologue running once before the re-entrant entry label).
+fn f7(a: i64, b: i64, c: i64, d: i64, e: i64, g: i64, n: i64) -> i64:
+    if n == 0:
+        return a + b + c + d + e + g
+    return f7(a, b, c, d, e, g, n - 1)
+fn main() -> i32:
+    return f7(1, 2, 3, 4, 5, 6, 100) as i32   // 1+2+3+4+5+6 = 21

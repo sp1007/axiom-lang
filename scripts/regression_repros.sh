@@ -486,6 +486,8 @@ rows=(
   "t_inlinecf2|exit|24"
   # RFC 0026 §2b — tail-self-recursion -> loop (accumulator + swap-style gcd)
   "t_selfrec|exit|67"
+  # RFC 0026 §2b — tail-self-recursion with >6 params (stack-passed param reassignment)
+  "t_selfrec2|exit|21"
 )
 
 for row in "${rows[@]}"; do
@@ -540,6 +542,7 @@ opt_rows=(
   "t_inlinecf|17"
   "t_inlinecf2|24"
   "t_selfrec|67"
+  "t_selfrec2|21"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do
