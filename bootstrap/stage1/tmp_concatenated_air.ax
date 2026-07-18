@@ -10627,13 +10627,31 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 expected_elem = exp_entry.extra as u32
         mut elem_type := expected_elem
         mut count := 0 as u32
+        mut mixed_strnum := false
         mut child := self.tree.nodes.data[node_idx].first_child
         while child != 0 as u32:
+            let ck = self.tree.nodes.data[child].kind
             let et = self.infer_node(child, elem_type)
             if elem_type == TYPE_UNKNOWN:
                 elem_type = et
+            else:
+                // BUG#53: an array literal mixing string and numeric elements
+                // (`[1, 2, "three"]`) was accepted -- a str stuffed into a numeric
+                // array (or vice versa) -> garbage. Reject. Literal-gated on the
+                // element's node kind (unambiguous), so real element coercions
+                // (int-lit -> the array's int width, etc.) are untouched.
+                // See [[bug-malformed-input-robustness-cluster]].
+                let el_str = elem_type == TYPE_STRING or elem_type == TYPE_BYTES
+                let el_num = elem_type >= TYPE_I8 and elem_type <= TYPE_USIZE and elem_type != TYPE_STRING and elem_type != TYPE_VOID
+                let c_strlit = ck == NODE_STRING_LIT
+                let c_numlit = ck == NODE_INT_LIT or ck == NODE_FLOAT_LIT
+                if (el_num and c_strlit) or (el_str and c_numlit):
+                    mixed_strnum = true
             count = count + 1 as u32
             child = self.tree.nodes.data[child].next_sibling
+        if mixed_strnum:
+            ax_printf_local("error: array literal mixes string and numeric elements\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            self.diags_count = self.diags_count + 1 as i64
         if elem_type == TYPE_UNKNOWN:
             elem_type = TYPE_I32
         result_type = self.types.register_array(elem_type, count)
