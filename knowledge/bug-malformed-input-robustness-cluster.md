@@ -53,31 +53,34 @@ land: the 5 false-positive sites all attribute to `len`, a bare ident that resol
 A genuine fn pointer types as TYPE_KIND_FUNC and is handled in the branch above, so first-class
 fn-values are unaffected. Self-build-safe (A==B). **CLUSTER CLOSED** (m1/m2/m4/m5 all fixed).
 
-### 🐞 m2b — RESIDUAL (OPEN, rare): local variable SHADOWING a function, then called
-Boundary probe after the m2 fix surfaced one adjacent silent SIGSEGV the receiver-agnostic
-guard deliberately does NOT catch:
+### 🟡 m2b — PARTIAL FIX shipped (arity-mismatch shadow REJECTS; arity-MATCH shadow still open)
+Boundary probe after the m2 fix surfaced an adjacent silent SIGSEGV. A local variable SHADOWING a
+same-named function, then called:
 ```
 fn helper() -> i64: return 9
 fn main() -> i32:
-    let helper: i64 = 5     # local shadows the fn
-    return helper(0) as i32 # calls the i64 local -> BUILT, then SIGSEGV (139)
+    let helper: i64 = 5      # local shadows the fn
+    return helper(0) as i32  # helper takes 0 args, called with 1
 ```
-The guard skips the reject because a `SYM_FUNC helper` EXISTS — the very property that makes
-the `len` field/function coincidence safe (see above). Here the callee ident RESOLVES to the
-LOCAL (SYM_VAR shadowing the fn), so calling it is wrong regardless. A correct fix must
-distinguish "callee resolved to a genuine LOCAL/PARAM value that shadows a fn" (reject) from
-"bare ident coincides with a struct-field name but a real fn of that name exists" (spare) —
-likely via the resolved value symbol's `decl_node` kind (NODE_LET/param decl vs NODE_FIELD_DECL)
-or scope depth. **NOT attempted** — the `len` false-positive mechanism (why a bare `len` ident
-callee resolves to a FIELD sym at all in compiler source) is not yet understood; touching the
-call-resolution path here risks the A==B fixpoint.
-**Lead for a future session (2026-07-18 read-only dig):** struct fields are defined as `SYM_VAR`
-with `decl_node = NODE_FIELD_DECL` (resolver.ax:932), whereas locals get NODE_LET / params get a
-param decl — so `symbols[cvsym].decl_node`'s node-kind is the candidate discriminator (reject when
-it's a LET/param decl, spare NODE_FIELD_DECL). BUT: grep found ZERO genuine bare `len(` calls in
-the concatenated source (only 3 hits, all inside comments), so where attempt-1's "5 sites, name=len,
-SYM_VAR" actually came from is unexplained — do NOT ship the decl_node discriminator until a
-build+trace confirms those 5 sites' decl_node kind (else risk A!=B again). LOW priority: requires a deliberate
+**Trace nailed the mechanism (2026-07-18, build+trace of the compiler source):** the receiver-
+agnostic guard's 5 false-positives are `name=len symkind=SYM_VAR declkind=13 (NODE_VAR_DECL)` — i.e.
+the compiler's own `let len = std.string.len(s)` LOCALS. On the native path the qualified
+`std.string.len` collapses to a bare `len` IDENT whose typecheck-resolved callee is the local, yet
+air_builder RE-BINDS it to `fn len(s: str)` by name+args and it works. So `decl_node` kind does NOT
+separate them (both NODE_VAR_DECL) — the real discriminator is **arity**: the 5 `len` sites are
+1-arg and `fn len` is 1-param.
+**SHIPPED (arity-aware guard):** reject only when NO same-named `SYM_FUNC` has a matching param
+count (`fpc == argc` or `fpc == argc+1` for a self-method form). `helper(0)` (1 arg vs 0-param fn)
+→ REJECT ✓; the 5 `len` sites (1 arg / 1-param) → spared, A==B `22DA5200`, 399/399. Oracle
+`t_shadowcall`.
+**STILL OPEN (deeper, rarer):** an arity-MATCHING shadow — `fn twice(n): …; let twice: i64 = 5;
+twice(20)` — is still accept-then-SIGSEGV: the arity guard conservatively spares it (a fn `twice`
+with matching arity exists), but air_builder here binds to the LOCAL (segfault), NOT the function
+(unlike the qualified-collapse `len` case which binds to the fn). The clean fix needs typecheck to
+know whether the callee was ORIGINALLY a qualified name that collapsed (bind to fn) vs a genuine
+bare shadow (reject) — info partly lost after import-strip. This is the "infer_node/resolver
+hardening" the m2 note always flagged as deep. LOW priority (deliberate fn-name/local collision
+with matching arity — very rare). Do not chase without mapping air_builder's bare-call binding. LOW priority: requires a deliberate
 fn-name/local-name collision — very rare in real code. Probe-banked repro `/tmp/pa_shadow.ax`.
 Boundary CONFIRMED elsewhere: const-call `K(1)` and param-call `n(2)` (no same-named fn) both
 REJECT correctly; single-primitive alias `type UserId = i64` is NOT mis-rejected (separate

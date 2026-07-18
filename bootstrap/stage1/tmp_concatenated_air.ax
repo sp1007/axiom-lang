@@ -10055,24 +10055,38 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         let cvk = self.symtable.symbols.data[cvsym as i64].kind
                         if cvk == SYM_VAR or cvk == SYM_PARAM or cvk == SYM_CONST:
                             let cv_name_id = self.symtable.symbols.data[cvsym as i64].name_id
-                            // RECEIVER-AGNOSTIC guard (mirrors the FIELD_EXPR "no callable"
-                            // reject ~L4106): a bare ident can also resolve to a struct FIELD
-                            // symbol (also SYM_VAR) whose name coincides with a real free/UFCS
-                            // function â€” e.g. `len` names both a Vec `.len` field and the
-                            // stdlib `fn len(s: str)`. Only reject when NO SYM_FUNC of this
-                            // name exists ANYWHERE; if some function shares the name, defer to
-                            // normal resolution (which the compiler's own source relies on).
-                            // `x(3)` (x: i64, no `fn x` anywhere) is still rejected.
+                            // ARITY-AWARE guard. A bare ident can resolve (at typecheck) to a
+                            // VALUE symbol that SHADOWS a same-named free function â€” e.g. the
+                            // compiler's own `let len = std.string.len(s)` locals: the qualified
+                            // call collapses to a bare `len` whose typecheck-resolved callee is
+                            // the local, yet air_builder re-binds it to `fn len(s: str)` by
+                            // name+args and it works. So "a function of this name exists" is too
+                            // lenient (it also spared the genuine bug `helper(0)` where
+                            // `fn helper()` takes 0 args but is called with 1). Reject only when
+                            // NO same-named SYM_FUNC has a matching PARAMETER COUNT: the 5 `len`
+                            // self-build sites are 1-arg and `fn len` is 1-param (spared, A==B),
+                            // while `helper(0)` (1 arg vs 0-param fn) and `x(3)` (no `fn x`)
+                            // both reject. A genuine fn pointer types as TYPE_KIND_FUNC and never
+                            // reaches this branch, so first-class fn-values are unaffected.
                             let cvnm = self.intern.get(cv_name_id)
-                            mut fn_name_exists := false
+                            mut cv_argc := 0 as i64
+                            mut cv_an := self.tree.nodes.data[callee].next_sibling
+                            while cv_an != 0 as u32:
+                                cv_argc = cv_argc + 1 as i64
+                                cv_an = self.tree.nodes.data[cv_an as i64].next_sibling
+                            mut arity_match := false
                             mut fsi := 0 as i64
                             while fsi < self.symtable.symbols.len:
                                 let fssym = self.symtable.symbols.data[fsi]
                                 if fssym.kind == SYM_FUNC and self.intern.name_matches_method(fssym.name_id, cvnm):
-                                    fn_name_exists = true
-                                    break
+                                    let fpc = self.sym_decl_param_count(fsi as u32)
+                                    // free-call form: exact param count, OR method form where
+                                    // param[0] is self (param count == argc + 1). Spare both.
+                                    if fpc == cv_argc or fpc == cv_argc + 1 as i64:
+                                        arity_match = true
+                                        break
                                 fsi = fsi + 1 as i64
-                            if not fn_name_exists:
+                            if not arity_match:
                                 ax_printf_local("error: '%s' is not a function; it cannot be called\n", get_str_ptr(cvnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                 self.diags_count = self.diags_count + 1 as i64
                             safe_free_str(cvnm)

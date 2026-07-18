@@ -1,0 +1,11 @@
+// Oracle (m2b): a local variable that SHADOWS a same-named function, then called
+// with a NON-matching arity, must be REJECTED (was accept-then-SIGSEGV). Here
+// `fn helper()` takes 0 args but `helper(0)` passes 1 — no overload matches, so
+// the call would fall through to an indirect call on the i64 local. The arity-aware
+// guard rejects it. See knowledge/bug-malformed-input-robustness-cluster.md (m2b).
+fn helper() -> i64:
+    return 9
+
+fn main() -> i32:
+    let helper: i64 = 5
+    return helper(0) as i32

@@ -456,6 +456,8 @@ rows=(
   "t_callnonfn|reject|"
   # guard: a genuine fn POINTER call `f(3,4)` must still build+run (reject boundary)
   "t_fnptrcall|exit|7"
+  # m2b: local shadowing a fn, called with mismatched arity -> reject (arity-aware guard)
+  "t_shadowcall|reject|"
 )
 
 for row in "${rows[@]}"; do
