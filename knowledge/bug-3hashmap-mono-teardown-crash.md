@@ -40,6 +40,34 @@ Stress: `for i in $(seq 1 25); do bin/axc_native.exe build c_3map.ax -o t.exe -s
   to **multiple HashMap instantiations**, not generics in general.
 - Crash is post-`Stage 6` (teardown). Output exe verified present + correct (exit 0) on a crashing run.
 
+## Sharpened isolation (2026-07-18, no-rebuild repro matrix)
+- **It is the number of DISTINCT HashMap monomorphizations, not concrete types, not f64:**
+  3 HashMaps with keys i64/str/i32 all-i64-value (`a_3map_nof64`) = 5/30; 2 maps incl. an f64-value
+  (`c_2map_f64`) = 0/30. So f64 is innocent; the trigger is the 3rd distinct `HashMap[K,V]` instance.
+- **It is DISTINCT instantiations, not local count / usage:** 3 locals of the SAME `HashMap[i64,i64]`
+  (`d_3samemap`) = 0/30.
+- **It is HashMap-SPECIFIC, not generics or 2-type-param generics in general:** 3 distinct `Vec[T]`
+  (`b_3vec`) = 0/30; 3 distinct instantiations of a user 2-param `Pair[A,B]` (`e_3pair`) = 0/30.
+  Only HashMap (a large stdlib generic with many methods + nested keys/values/occupied arrays) trips it.
+
+## Code-path localization (2026-07-18, read-only)
+Narrowed to the monomorphizer clone path: `mono.ax::instantiate_function` (L423) →
+`AstTree::clone_subtree_from` (ast.ax:238). For a stdlib generic like HashMap the template lives in the
+SAME tree, so `src_tree = self.tree` (mono.ax:433, the default; only overridden if a separate
+`symbol_trees` entry exists). Thus cloning HashMap's LARGE method set GROWS `self.tree.nodes`,
+`self.tokens`, and repeatedly reallocates `self.src` (ast.ax:258 `self.src = concat(old_src, tok_text)`
+runs per token-bearing cloned node — hundreds of times for HashMap) WHILE reading from the same tree.
+Each distinct HashMap instantiation repeats this; 3× crosses a realloc/heap threshold intermittently.
+The three hot functions I inspected — `clone_subtree_from` (extracts orig fields to SCALARS before
+`add_node`), `substitute_type_params` (holds `&self.tree.nodes.data[node_idx]` at mono.ax:74 but does
+NOT grow the tree within its own body), and `remove_generic_params_child` — each look individually
+safe, so the corrupting write is NOT obvious by inspection; prime remaining suspects: (a) a held
+pointer into `self.src`/`self.tokens`/`self.nodes` across one of the many `clone_subtree_from` reallocs
+that only dangles once the buffers are large enough (3rd instantiation), or (b) typetable/symtable
+growth while registering the 3rd HashMap's monomorphized methods. **Confirming the exact line needs a
+memory sanitizer** (build the Linux ELF target, run the 9-line repro under valgrind → faulting free +
+the corrupting store). This localization + the minimal repro should make that a short tooled session.
+
 ## Suspected root cause (NOT confirmed — needs tooling)
 Heap corruption introduced while monomorphizing the 3rd HashMap instantiation (mono.ax / typetable /
 the generic-instance size+align machinery), latent until the cleanup `@free` chain at the end of the
