@@ -1810,6 +1810,8 @@ pub const INLINE_INST_THRESHOLD: i64 = 16
 fn inline_op_ok(op: u16) -> bool:
     if op == OP_ICONST or op == OP_FCONST or op == OP_COPY or op == OP_RETURN:
         return true
+    if op == OP_GET_FIELD:      // gated further to scalar fields of a param (see inl_is_inlinable)
+        return true
     if op >= 0x0201 as u16 and op <= 0x0223 as u16:
         return true
     return false
@@ -1819,7 +1821,7 @@ fn inline_op_ok(op: u16) -> bool:
 // param vreg at the inline site, so param mutation is isolated (no clobber of
 // the caller's arg) and no param-mutation guard is needed.
 
-fn inl_is_inlinable(callee: ptr[AirFunc]) -> bool:
+fn inl_is_inlinable(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
     if callee.is_extern or callee.is_async:
         return false
     if callee.blocks.len != 1 as i64:
@@ -1838,6 +1840,20 @@ fn inl_is_inlinable(callee: ptr[AirFunc]) -> bool:
             if inst.src1 == 0 as u32:      // void return: nothing to copy -> skip
                 return false
             nret = nret + 1 as i64
+        elif inst.opcode == OP_GET_FIELD:
+            // Only a single-level SCALAR field read of a PARAM: src1 must be a
+            // param vreg (1..params.len), whose struct type = params.data[src1-1];
+            // the field must be scalar (<=8B, not aggregate, not a pointer-sum box).
+            // src2 is the field INDEX (not a vreg).
+            if inst.src1 < 1 as u32 or (inst.src1 as i64) > callee.params.len:
+                return false
+            let struct_type = callee.params.data[(inst.src1 as i64) - 1 as i64] as u32
+            if field_is_aggregate(table, struct_type, inst.src2):
+                return false
+            if field_is_pointer_sum(table, struct_type, inst.src2):
+                return false
+            if field_size(table, struct_type, inst.src2) > 8 as u32:
+                return false
         i = i + 1 as i64
     if nret != 1 as i64:
         return false
@@ -1852,7 +1868,7 @@ fn inl_find_callee(m: ptr[AirModule], sym: u32) -> i64:
     return -1 as i64
 
 // returns the callee func index if `inst` is an inlinable DIRECT call, else -1
-fn inl_call_target(inst: AirInst, caller: ptr[AirFunc], m: ptr[AirModule]) -> i64:
+fn inl_call_target(inst: AirInst, caller: ptr[AirFunc], m: ptr[AirModule], table: ptr[TypeTable]) -> i64:
     if inst.opcode != OP_CALL:
         return -1 as i64
     if inst.src1 != 0 as u32:                 // indirect (fn-ptr) call
@@ -1863,7 +1879,7 @@ fn inl_call_target(inst: AirInst, caller: ptr[AirFunc], m: ptr[AirModule]) -> i6
     let callee = &m.funcs.data[ci]
     if callee.sym_id == caller.sym_id:         // never inline self-recursion
         return -1 as i64
-    if not inl_is_inlinable(callee):
+    if not inl_is_inlinable(callee, table):
         return -1 as i64
     let arg_start = inst.src2
     if arg_start >= caller.extras.len as u32:
@@ -1901,13 +1917,13 @@ fn inl_rename(v: u32, base: u32) -> u32:
         return 0 as u32
     return base + v
 
-pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule]) -> bool:
+pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule], table: ptr[TypeTable]) -> bool:
     if caller.is_extern:
         return false
     mut found := false
     mut i := 0 as i64
     while i < caller.insts.len:
-        if inl_call_target(caller.insts.data[i], caller, m) >= 0 as i64:
+        if inl_call_target(caller.insts.data[i], caller, m, table) >= 0 as i64:
             found = true
             i = caller.insts.len
         else:
@@ -1929,7 +1945,7 @@ pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule]) -> bool:
         while k < bb.instrs_len as i64:
             let old_idx = caller.block_instrs.data[bb.instrs_start as i64 + k] as i64
             let inst = caller.insts.data[old_idx]
-            let ci = inl_call_target(inst, caller, m)
+            let ci = inl_call_target(inst, caller, m, table)
             if ci >= 0 as i64:
                 let callee = &m.funcs.data[ci]
                 let base = fresh
@@ -1963,7 +1979,14 @@ pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule]) -> bool:
                             nd = base + cin.dest
                         mut ns1 := cin.src1
                         mut ns2 := cin.src2
-                        if cin.opcode != OP_ICONST and cin.opcode != OP_FCONST:
+                        if cin.opcode == OP_ICONST or cin.opcode == OP_FCONST:
+                            // src1/src2 are immediate bits — keep verbatim
+                            ns1 = cin.src1
+                            ns2 = cin.src2
+                        elif cin.opcode == OP_GET_FIELD:
+                            ns1 = inl_rename(cin.src1, base)   // struct ptr vreg
+                            ns2 = cin.src2                      // field INDEX — keep
+                        else:
                             ns1 = inl_rename(cin.src1, base)
                             ns2 = inl_rename(cin.src2, base)
                         let nn = AirInst(opcode: cin.opcode, type_id: cin.type_id, dest: nd, src1: ns1, src2: ns2)
@@ -1987,14 +2010,14 @@ pub fn inline_func(mut caller: ptr[AirFunc], m: ptr[AirModule]) -> bool:
     caller.block_instrs = new_bi
     return true
 
-pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule]):
+pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable]):
     mut fi := 0 as i64
     while fi < m.funcs.len:
         mut f := &m.funcs.data[fi]
         if not f.is_extern:
-            // RFC 0026: inline small pure-arithmetic helpers before value passes.
+            // RFC 0026: inline small pure-arithmetic + scalar-getter helpers.
             if self.level >= 1 as u8:
-                inline_func(f, m)
+                inline_func(f, m, table)
             let is_large = f.insts.len > OPT_LARGE_FUNC_THRESHOLD
 
             // Structural passes: run once before iterative value passes.

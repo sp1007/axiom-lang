@@ -1,0 +1,17 @@
+// Oracle (exit 42): RFC 0026 P1.5 — inlining of scalar-field getters.
+// get_x/get_y read a scalar i64 field of a struct param -> inlinable.
+struct Pt:
+    x: i64
+    y: i64
+fn get_x(p: Pt) -> i64:
+    return p.x
+fn get_y(p: Pt) -> i64:
+    return p.y
+fn main() -> i32:
+    let p = Pt(x: 30, y: 12)
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 5:
+        s = s + get_x(p)          // 30*5 = 150
+        i = i + 1
+    return (get_y(p) + s - 120) as i32   // 12 + 150 - 120 = 42

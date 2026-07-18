@@ -1,0 +1,19 @@
+// M6 perf benchmark — a hot loop calling a scalar-field getter (RFC 0026 P1.5).
+// Without inlining, one `call getx` per iteration; with getter inlining the field
+// read folds into the loop. Measures the getter-inliner's value directly.
+// Deterministic under i64 wraparound; exit = (7 * 60M) % 1000 = 0.
+struct Vec2:
+    x: i64
+    y: i64
+
+fn getx(v: Vec2) -> i64:
+    return v.x
+
+fn main() -> i32:
+    let v = Vec2(x: 7, y: 3)
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 60000000:
+        s = s + getx(v)
+        i = i + 1
+    return (s % 1000) as i32

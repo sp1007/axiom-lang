@@ -28,7 +28,20 @@ calling `sq`): **185.5ms → 72.3ms = 2.57x faster** (17.5x→7.3x vs clang). fi
 **NEXT (higher bench leverage, deferred):** inline callees WITH control flow (multi-block clone +
 block-id remap) to catch collatz; accumulator-recursion→loop for fib. Both larger, same B==C gate.
 
-**P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
+### ✅ P1.5 SHIPPED 2026-07-18 — scalar-field getter inlining (B==C, 412/412, getter 2.89x)
+Getter inlining is now IMPLEMENTED. `SsaOptimizer.run` + `inline_func` now take the `TypeTable`
+(threaded from main_air.ax:1085). `OP_GET_FIELD` added to the whitelist, gated in `inl_is_inlinable`
+to a **single-level SCALAR field read of a PARAM**: `src1` must be a param vreg (1..params.len),
+struct type = `params.data[src1-1]`, and the field must satisfy `not field_is_aggregate and not
+field_is_pointer_sum and field_size<=8` (via TypeTable). In the clone, `OP_GET_FIELD.src2` (field
+INDEX) is kept verbatim (not a vreg); `src1` is offset-renamed. The inlined struct-ptr resolves its
+type via the param-copy's `type_id`. **Gate GREEN:** B==C `f286cac9`, regression **412/412**, daily
+driver promoted. **Win:** `benchmarks/getter` (hot loop calling `getx`) **185.6ms → 64.2ms = 2.89x**
+(O0 no-inline vs O1 inline); hotloop/fib/collatz unchanged. Oracle `t_inline4|exit|42`. The scoping
+note below is kept for history. NEXT beyond P1.5: multi-field/aggregate getters, `OP_INDEX` (array
+element getters), then P2 control-flow inliner.
+
+**(historical) P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
 adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified constraints:
 - `OP_GET_FIELD.src1` = struct-ptr VREG (rename it); `.src2` = FIELD INDEX, NOT a vreg — must be
   EXCLUDED from renaming (like ICONST/FCONST), else `field_offset(type,src2)` reads a bogus index.

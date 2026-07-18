@@ -470,6 +470,8 @@ rows=(
   "t_inline2|exit|8"
   # RFC 0026 — inliner crossed with generics / loops / branches (self-host paths)
   "t_inline3|exit|53"
+  # RFC 0026 P1.5 — inlining of scalar-field getters (return p.x)
+  "t_inline4|exit|42"
 )
 
 for row in "${rows[@]}"; do
