@@ -114,17 +114,32 @@ fib itself is accumulator-recursive, so the fib ratio is primarily closed by **i
 in this RFC; the pure tail-self-recursion transform benefits the many tail-recursive
 helpers in the compiler/stdlib.
 
-**FEASIBILITY CONFIRMED (2026-07-18, read-only):** the one hazard — does `jump entry` re-run
-the prologue and corrupt the stack? — is RESOLVED. `emit_function` (x86_asm_emitter.ax:512-527)
-emits `fn_name:` → the **prologue** (push rbp / sub rsp / callee-saves) → THEN the block insts,
-where the entry block carries its own label `.L_b_0:` (MACH_LABEL). So a jump to the entry block's
-label lands **after** the prologue — it does NOT re-run frame setup. The transform is therefore:
-(1) detect a self-`OP_CALL` whose result is immediately returned (tail position: `%r=call self; ret
-%r`, no post-call use of %r); (2) stage args into FRESH temps (an arg may reference a param being
-overwritten), copy temps→param vregs, replace the call+return with `jump block_0`; (3) add the
-block→entry back-edge and call `recompute_cfg` (already built for P2). Gate at -O2 per §5, B==C +
--O2-built-compiler regression, + a tail-recursive benchmark. This is the recommended NEXT lever
-(more general + lower-risk than fib tree-recursion; directly reuses the P2 `recompute_cfg`).
+**FEASIBILITY (2026-07-18, read-only) — one hazard CLEAR, a SECOND hazard is the real blocker:**
+- ✅ **Frame prologue is safe.** `emit_function` (x86_asm_emitter.ax:512-527) emits `fn_name:` →
+  frame prologue (push rbp / sub rsp / callee-saves) → THEN the blocks. The entry block's label
+  `.L_b_0:` is after the frame prologue, so `jump .L_b_0` does NOT re-run frame setup.
+- ❌ **The PARAM prologue IS re-run — this is the blocker.** `select_all` (x86_selector.ax:2494-2510)
+  emits, per block: `MACH_LABEL(.L_b_{id})` FIRST, then (only for `bi==0`) `emit_param_prologue`
+  (the `MOV pvreg = arg_reg` snapshot that materializes params from the incoming ABI arg registers).
+  So the param materialization lives INSIDE block 0, AFTER its label. A `jump .L_b_0` re-executes it
+  → every param vreg is reset to the ORIGINAL incoming arg register → the tail-recursion's updated
+  args are clobbered → infinite loop with the original arguments. So jumping to block 0 is WRONG.
+
+**Two ways to fix (both need a full B==C + -O2 regression gate — codegen change):**
+- **(B, cleanest) Move `emit_param_prologue` to BEFORE the first block label** (into the true
+  prologue region of `emit_function`/`select_all`, before the `bi==0` label push). Then params
+  materialize exactly once on entry and block 0 is re-entrant → `jump .L_b_0` is safe. General
+  improvement; risk = it changes emitted code for EVERY function (verify B==C holds + the `is_main`
+  runtime-init ordering at bi==0 is untouched).
+- **(A) Insert an empty pre-header as the new block 0** (carries the param prologue) that jumps to
+  the old entry (now block 1); tail-calls target the old entry, skipping the param prologue. Needs a
+  block-renumber (+1) + terminator remap (the P2 machinery), + recompute_cfg.
+
+The AIR transform itself is then simple (detect `%r=call self; ret %r`; stage args→temps→param
+vregs; replace with a jump to the re-entrant header; add back-edge; recompute_cfg). Gate at -O2 per
+§5 + a tail-recursive benchmark. **Do option B first** (self-contained codegen move) as a SEPARATE
+gated commit, THEN the AIR transform on top. Deferred to a dedicated session under non-Defender
+build conditions. (This corrects an earlier note that checked only the frame prologue.)
 
 ## 3. Alternatives considered
 - **Immediate-operand folding** (`CMP/ADD reg,imm`) — attempted twice, both **reverted**:
