@@ -2751,6 +2751,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let expr = self.tree.nodes.data[node_idx].first_child
         if expr != 0 as u32:
             self.infer_node(expr, self.current_return)
+            // BUG#53 (return-path analog of m5): `return <string literal>` from a
+            // numeric-returning fn (or a numeric literal from a str/bytes-returning
+            // fn) was silently accepted then miscompiled to garbage. Reject the
+            // genuinely-incompatible str<->numeric pair. Gated on the return expr's
+            // LITERAL node kind (unambiguous type), NOT the inferred type, because
+            // infer is imprecise for str-returning CALLs (same reasoning as m5) --
+            // so real coercions and value returns are untouched.
+            let rk = self.tree.nodes.data[expr].kind
+            let rt = self.current_return
+            if rt != TYPE_UNKNOWN:
+                let ret_is_str = rt == TYPE_STRING or rt == TYPE_BYTES
+                let ret_is_num = rt >= TYPE_I8 and rt <= TYPE_USIZE and rt != TYPE_STRING and rt != TYPE_VOID
+                let e_strlit = rk == NODE_STRING_LIT
+                let e_numlit = rk == NODE_INT_LIT or rk == NODE_FLOAT_LIT
+                if (ret_is_num and e_strlit) or (ret_is_str and e_numlit):
+                    ax_printf_local("error: type mismatch in `return`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
 
     elif kind == NODE_DEFER_STMT:
         // #38.4: typecheck the deferred expression so its node_types are
