@@ -458,6 +458,10 @@ rows=(
   "t_fnptrcall|exit|7"
   # m2b: local shadowing a fn, called with mismatched arity -> reject (arity-aware guard)
   "t_shadowcall|reject|"
+  # M4 compliance suite (real-grammar edition) — 60 tests over the shipped language
+  # surface (primitives/control-flow/functions/structs/generics/sum-types). Exit code
+  # == number of passing tests; a silent miscompile flips an assert -> nonzero.
+  "t_compliance|exit|60"
 )
 
 for row in "${rows[@]}"; do

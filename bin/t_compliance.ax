@@ -1,0 +1,572 @@
+// ============================================================================
+// AXIOM COMPLIANCE SUITE (M4) — real-grammar edition.
+//
+// Redefines M4: exercises the ACTUAL shipped language surface (not the
+// aspirational spec dialect of tests/axiom_compliance_suite.ax, which used
+// `=>` match arms, `impl Trait`, std.gpu/quantum/net, `.length()` — none of
+// which the compiler parses). Every test below builds and RUNS on the native
+// self-host driver. Each test asserts a known-correct value and returns 1;
+// main() sums them, so the exit code == number of passing tests (60). A
+// silent miscompile flips an assert and aborts nonzero; a regression that
+// drops a test changes the exit code — either way the gate catches it.
+//
+// Gated by scripts/regression_repros.sh as oracle `t_compliance|exit|60`.
+// ============================================================================
+import std.string
+import std.collections
+
+// module-level const (local `const` is not a parse form in AXIOM)
+const MAX_USERS: i64 = 100
+
+// ---- top-level helpers (functions, recursion, lambdas, tuples) ----
+fn add2(a: i32, b: i32) -> i32:
+    return a + b
+
+fn fact(n: i64) -> i64:
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+
+fn apply(f: fn(i64) -> i64, v: i64) -> i64:
+    return f(v)
+
+fn apply2(g: fn(i64, i64) -> i64, x: i64, y: i64) -> i64:
+    return g(x, y)
+
+fn coords() -> (i64, i64):
+    return (10, 20)
+
+fn is_even(n: i64) -> bool:
+    if n == 0:
+        return true
+    return is_odd(n - 1)
+
+fn is_odd(n: i64) -> bool:
+    if n == 0:
+        return false
+    return is_even(n - 1)
+
+fn early() -> i64:
+    if true:
+        return 1
+    return 2
+
+// ---- structs (fields + methods + nesting) ----
+struct Point:
+    x: i32
+    y: i32
+    fn area(self) -> i32:
+        return self.x * self.y
+    fn shift(mut self, d: i32):
+        self.x = self.x + d
+
+struct Inner:
+    v: i64
+
+struct Outer:
+    inner: Inner
+    tag: i64
+
+struct Money:
+    amount: f64
+
+struct Named:
+    label: str
+
+fn read_x(p: Point) -> i32:
+    return p.x
+
+fn make_point(a: i32, b: i32) -> Point:
+    return Point(x: a, y: b)
+
+// ---- generics ----
+struct Box[T]:
+    value: T
+
+struct Pair[K, V]:
+    key: K
+    val: V
+
+fn ident[T](x: T) -> T:
+    return x
+
+fn pair_val[K, V](p: Pair[K, V]) -> V:
+    return p.val
+
+// ---- sum types / error handling ----
+type Shape = Circle(i64) | Rect(i64, i64) | Tag(str)
+
+struct Node:
+    val: i64
+    next: Option[i64]
+
+fn shape_area(sh: Shape) -> i64:
+    match sh:
+        Circle(r):
+            return r * r
+        Rect(w, h):
+            return w * h
+        Tag(n):
+            return n.len
+
+fn divide(a: i64, b: i64) -> Result[i64, str]:
+    if b == 0:
+        return Err("divide by zero")
+    return Ok(a / b)
+
+fn find(n: i64) -> Option[i64]:
+    if n > 0:
+        return Some(n)
+    return None
+
+// ============================================================================
+// GROUP 1 — primitive types & basic syntax
+// ============================================================================
+fn t01_i32_decl() -> i32:
+    let x: i32 = 42
+    assert(x == 42)
+    return 1
+
+fn t02_mut_assign() -> i32:
+    mut y := 10
+    y = 20
+    assert(y == 20)
+    return 1
+
+fn t03_f64_float() -> i32:
+    let pi: f64 = 3.14159
+    assert(pi > 3.0)
+    return 1
+
+fn t04_bool_logic() -> i32:
+    let ok = true and not false
+    let any = false or true
+    assert(ok and any)
+    return 1
+
+fn t05_string_len() -> i32:
+    let name = "Axiom"
+    assert(name.len == 5)
+    return 1
+
+fn t06_block_string() -> i32:
+    let q = """hello"""
+    assert(q.len == 5)
+    return 1
+
+fn t07_const() -> i32:
+    assert(MAX_USERS == 100)
+    return 1
+
+fn t08_type_inference() -> i32:
+    let inferred = 1000
+    assert(inferred == 1000)
+    return 1
+
+fn t09_hex_bin_literals() -> i32:
+    let h = 0xFF
+    let b = 0b1010
+    assert(h == 255 and b == 10)
+    return 1
+
+fn t10_digit_separator() -> i32:
+    let m = 1_000_000
+    assert(m == 1000000)
+    return 1
+
+// ============================================================================
+// GROUP 2 — control flow
+// ============================================================================
+fn t11_if() -> i32:
+    let a = 10
+    mut hit := 0
+    if a > 5:
+        hit = 1
+    assert(hit == 1)
+    return 1
+
+fn t12_if_elif_else() -> i32:
+    let b = 5
+    mut r := 0
+    if b > 10:
+        r = 1
+    elif b == 5:
+        r = 2
+    else:
+        r = 3
+    assert(r == 2)
+    return 1
+
+fn t13_for_in_range() -> i32:
+    mut count := 0
+    for i in 1..5:
+        count = count + 1
+    assert(count == 4)
+    return 1
+
+fn t14_for_range_sum() -> i32:
+    mut sum := 0 as i64
+    for i in 0..5:
+        sum = sum + i
+    assert(sum == 10)
+    return 1
+
+fn t15_match_basic() -> i32:
+    let x = 2
+    mut r := 0
+    match x:
+        1:
+            r = 10
+        2:
+            r = 20
+        _:
+            r = 30
+    assert(r == 20)
+    return 1
+
+fn t16_while_loop() -> i32:
+    mut i := 0
+    while i < 5:
+        i = i + 1
+    assert(i == 5)
+    return 1
+
+fn t17_nested_if() -> i32:
+    mut ok := 0
+    if true:
+        if true:
+            ok = 1
+    assert(ok == 1)
+    return 1
+
+fn t18_continue() -> i32:
+    mut sum := 0
+    for i in 1..4:
+        if i == 2:
+            continue
+        sum = sum + i
+    assert(sum == 4)
+    return 1
+
+fn t19_break() -> i32:
+    mut x := 0
+    for i in 0..100:
+        if x == 5:
+            break
+        x = x + 1
+    assert(x == 5)
+    return 1
+
+fn t20_early_return() -> i32:
+    assert(early() == 1)
+    return 1
+
+// ============================================================================
+// GROUP 3 — functions, lambdas, tuples, recursion
+// ============================================================================
+fn t21_function_call() -> i32:
+    assert(add2(2, 3) == 5)
+    return 1
+
+fn t22_scalar_param_byvalue() -> i32:
+    // scalars pass by value; the callee cannot mutate the caller's variable
+    mut x := 5
+    let _ = add2(x, x)
+    assert(x == 5)
+    return 1
+
+fn t23_recursion() -> i32:
+    assert(fact(4) == 24)
+    return 1
+
+fn t24_lambda_var() -> i32:
+    let mul = |a: i64, b: i64| -> i64 a * b
+    assert(mul(4, 5) == 20)
+    return 1
+
+fn t25_higher_order() -> i32:
+    let dbl = |x: i64| -> i64 x * 2
+    assert(apply(dbl, 10) == 20)
+    return 1
+
+fn t26_tuple_destructure() -> i32:
+    let (x, y) = coords()
+    assert(x == 10 and y == 20)
+    return 1
+
+fn t27_fn_as_variable() -> i32:
+    let op = add2
+    assert(op(1, 1) == 2)
+    return 1
+
+fn t28_two_lambdas() -> i32:
+    let s = apply2(|a: i64, b: i64| -> i64 a - b, 10, 3)
+    assert(s == 7)
+    return 1
+
+fn t29_bool_lambda() -> i32:
+    let lt = |a: i64, b: i64| -> bool a < b
+    assert(lt(3, 4))
+    return 1
+
+fn t30_mutual_recursion() -> i32:
+    assert(is_even(10) and is_odd(7))
+    return 1
+
+// ============================================================================
+// GROUP 4 — structs & methods
+// ============================================================================
+fn t31_struct_instantiation() -> i32:
+    let p = Point(x: 10, y: 20)
+    assert(p.x == 10)
+    return 1
+
+fn t32_mut_struct_field() -> i32:
+    mut p := Point(x: 0, y: 0)
+    p.x = 100
+    assert(p.x == 100)
+    return 1
+
+fn t33_struct_method() -> i32:
+    let p = Point(x: 5, y: 5)
+    assert(p.area() == 25)
+    return 1
+
+fn t34_nested_struct() -> i32:
+    let o = Outer(inner: Inner(v: 5), tag: 1)
+    assert(o.inner.v == 5)
+    return 1
+
+fn t35_struct_param() -> i32:
+    let p = Point(x: 7, y: 7)
+    assert(read_x(p) == 7)
+    return 1
+
+fn t36_struct_return() -> i32:
+    let p = make_point(3, 4)
+    assert(p.y == 4)
+    return 1
+
+fn t37_mut_self_method() -> i32:
+    mut p := Point(x: 1, y: 2)
+    p.shift(10)
+    assert(p.x == 11)
+    return 1
+
+fn t38_field_arithmetic() -> i32:
+    let p = Point(x: 6, y: 7)
+    assert(p.x * p.y == 42)
+    return 1
+
+fn t39_f64_field() -> i32:
+    let m = Money(amount: 10.0)
+    assert(m.amount > 9.0)
+    return 1
+
+fn t40_str_field() -> i32:
+    let n = Named(label: "hi")
+    assert(n.label.len == 2)
+    return 1
+
+// ============================================================================
+// GROUP 5 — generics & collections
+// ============================================================================
+fn t41_generic_identity() -> i32:
+    assert(ident(99 as i64) == 99)
+    return 1
+
+fn t42_generic_struct() -> i32:
+    let b = Box[i32](value: 42)
+    assert(b.value == 42)
+    return 1
+
+fn t43_generic_fn_field() -> i32:
+    let p = Pair[i64, i64](key: 1, val: 2)
+    assert(pair_val(p) == 2)
+    return 1
+
+fn t44_multiple_generics() -> i32:
+    let p = Pair[str, i32](key: "age", val: 30)
+    assert(p.val == 30)
+    return 1
+
+fn t45_generic_inference() -> i32:
+    let b = Box(value: 88 as i64)
+    assert(b.value == 88)
+    return 1
+
+fn t46_nested_generic() -> i32:
+    let b = Box[Box[i64]](value: Box[i64](value: 10))
+    assert(b.value.value == 10)
+    return 1
+
+fn t47_monomorphization() -> i32:
+    let a = Box[i64](value: 1)
+    let c = Box[i32](value: 2)
+    assert(a.value == 1 and c.value == 2)
+    return 1
+
+fn t48_vec_push_index() -> i32:
+    mut v = Vec[i64].new()
+    v.push(70)
+    v.push(80)
+    v.push(90)
+    assert(v[0] == 70 and v[1] == 80 and v[2] == 90)
+    return 1
+
+fn t49_vec_map() -> i32:
+    let v = Vec[i64].new()
+    v.push(10)
+    v.push(30)
+    let w = v.map(|x: i64| -> i64 x + 1)
+    assert(w[0] == 11 and w[1] == 31)
+    return 1
+
+fn t50_vec_fold() -> i32:
+    let v = Vec[i64].new()
+    v.push(20)
+    v.push(22)
+    let s = v.fold(0, |acc: i64, x: i64| -> i64 acc + x)
+    assert(s == 42)
+    return 1
+
+// ============================================================================
+// GROUP 6 — sum types & error handling
+// ============================================================================
+fn t51_result_ok() -> i32:
+    match divide(10, 2):
+        Ok(v):
+            assert(v == 5)
+        Err(e):
+            assert(false)
+    return 1
+
+fn t52_result_err() -> i32:
+    match divide(10, 0):
+        Ok(v):
+            assert(false)
+        Err(e):
+            assert(e.len > 0)
+    return 1
+
+fn t53_option_some() -> i32:
+    let o: Option[i64] = Some(42)
+    match o:
+        Some(v):
+            assert(v == 42)
+        None:
+            assert(false)
+    return 1
+
+fn t54_option_none() -> i32:
+    let o: Option[i64] = None
+    match o:
+        Some(v):
+            assert(false)
+        None:
+            assert(true)
+    return 1
+
+fn t55_match_payload() -> i32:
+    assert(shape_area(Rect(4 as i64, 5 as i64)) == 20)
+    return 1
+
+fn t56_custom_sum() -> i32:
+    let total = shape_area(Circle(3 as i64)) + shape_area(Tag("hi"))
+    assert(total == 11)
+    return 1
+
+fn t57_option_unwrap() -> i32:
+    let o: Option[i64] = Some(42)
+    assert(o.unwrap() == 42)
+    return 1
+
+fn t58_nested_option_struct() -> i32:
+    let n = Node(val: 40, next: Some(2))
+    match n.next:
+        Some(x):
+            assert(n.val + x == 42)
+        None:
+            assert(false)
+    return 1
+
+fn t59_if_expression() -> i32:
+    // RFC 0023 value-form if-expression (mandatory else)
+    let r = if 5 > 3: 42 else: 0
+    assert(r == 42)
+    return 1
+
+fn t60_result_str_payload() -> i32:
+    match divide(9, 3):
+        Ok(v):
+            assert(v == 3)
+        Err(e):
+            assert(false)
+    return 1
+
+// ============================================================================
+// ENTRY POINT — sum every passing test; exit code == test count (60).
+// ============================================================================
+fn main() -> i32:
+    mut n := 0 as i32
+    n = n + t01_i32_decl()
+    n = n + t02_mut_assign()
+    n = n + t03_f64_float()
+    n = n + t04_bool_logic()
+    n = n + t05_string_len()
+    n = n + t06_block_string()
+    n = n + t07_const()
+    n = n + t08_type_inference()
+    n = n + t09_hex_bin_literals()
+    n = n + t10_digit_separator()
+    n = n + t11_if()
+    n = n + t12_if_elif_else()
+    n = n + t13_for_in_range()
+    n = n + t14_for_range_sum()
+    n = n + t15_match_basic()
+    n = n + t16_while_loop()
+    n = n + t17_nested_if()
+    n = n + t18_continue()
+    n = n + t19_break()
+    n = n + t20_early_return()
+    n = n + t21_function_call()
+    n = n + t22_scalar_param_byvalue()
+    n = n + t23_recursion()
+    n = n + t24_lambda_var()
+    n = n + t25_higher_order()
+    n = n + t26_tuple_destructure()
+    n = n + t27_fn_as_variable()
+    n = n + t28_two_lambdas()
+    n = n + t29_bool_lambda()
+    n = n + t30_mutual_recursion()
+    n = n + t31_struct_instantiation()
+    n = n + t32_mut_struct_field()
+    n = n + t33_struct_method()
+    n = n + t34_nested_struct()
+    n = n + t35_struct_param()
+    n = n + t36_struct_return()
+    n = n + t37_mut_self_method()
+    n = n + t38_field_arithmetic()
+    n = n + t39_f64_field()
+    n = n + t40_str_field()
+    n = n + t41_generic_identity()
+    n = n + t42_generic_struct()
+    n = n + t43_generic_fn_field()
+    n = n + t44_multiple_generics()
+    n = n + t45_generic_inference()
+    n = n + t46_nested_generic()
+    n = n + t47_monomorphization()
+    n = n + t48_vec_push_index()
+    n = n + t49_vec_map()
+    n = n + t50_vec_fold()
+    n = n + t51_result_ok()
+    n = n + t52_result_err()
+    n = n + t53_option_some()
+    n = n + t54_option_none()
+    n = n + t55_match_payload()
+    n = n + t56_custom_sum()
+    n = n + t57_option_unwrap()
+    n = n + t58_nested_option_struct()
+    n = n + t59_if_expression()
+    n = n + t60_result_str_payload()
+    return n

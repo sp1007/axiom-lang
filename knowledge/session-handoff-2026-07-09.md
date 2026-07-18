@@ -9,6 +9,22 @@ metadata:
 
 # HANDOFF phiên 2026-07-09 (đọc đầu tiên khi vào phiên mới)
 
+## ✅ CẬP NHẬT 2026-07-18 (autopilot) — M4 COMPLIANCE DỨT ĐIỂM + hướng do user chốt
+User chốt 3 hướng chiến lược ([[autopilot-direction-2026-07-18]]) rồi trao quyền tự chủ:
+(1) **M4 = rewrite suite bằng grammar thật**; (2) milestone kế = **M6 perf**; (3) **RFC 0015 P3
+CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
+- **M4 SHIPPED**: `bin/t_compliance.ax` — 60 test grammar THẬT (groups 1–6: primitives / control-flow
+  / functions+lambdas+tuples / structs+methods / generics+collections / sum-types+errors), mỗi test
+  assert giá trị đúng, **exit code == số test pass = 60**. Build sạch trên daily driver, chạy 60.
+  Gated `t_compliance|exit|60`. **Regression 401/401 (was 400) GREEN.** Test-only (KHÔNG đụng
+  compiler/stdlib source) → ko cần fixpoint. Aspirational suite giữ ở
+  `tests/axiom_compliance_suite_aspirational.ax`; `tests/axiom_compliance_suite.ax` = pointer doc.
+  Dialect gaps SIDESTEPPED: local const→module-const, match-expr→if-expr, `=>`→`Pattern:`,
+  interface/impl→struct/duck methods, capture→zero-capture lambda. Chi tiết [[m4-compliance-suite-spec-vs-impl-gap]].
+- **NEXT (đang làm)**: M6 perf — inline small fns + self-recursion→loop (fib 2.44x→≤1.05x clang).
+  Insertion point inliner = `ssa_opt.ax:1798` (module-level pre-pass trước per-fn loop). Cần RFC +
+  B==C gate (immediate-fold attempts trước đã revert vì miscompile — [[m6-perf-gate-fib-benchmark]]).
+
 ## ✅ CẬP NHẬT 2026-07-12 — RFC 0017 GLOBAL STORAGE HOÀN CHỈNH + probing
 `origin/main`=`ceceb7e`, 243/243, daily driver `bin/axc_native.exe` **A==B==C `81522e76`** (đổi ở `288c86a`=backend; sau đó chỉ test-only).
 **RFC 0017 storage COMPLETE mọi value category** (scalar const/non-const, aggregate struct/array, pointer-repr Option/Result/sum, 16B-inline str/bytes). Commit chain:
