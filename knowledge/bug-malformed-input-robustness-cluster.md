@@ -73,18 +73,46 @@ separate them (both NODE_VAR_DECL) — the real discriminator is **arity**: the 
 count (`fpc == argc` or `fpc == argc+1` for a self-method form). `helper(0)` (1 arg vs 0-param fn)
 → REJECT ✓; the 5 `len` sites (1 arg / 1-param) → spared, A==B `22DA5200`, 399/399. Oracle
 `t_shadowcall`.
-**STILL OPEN (deeper, rarer):** an arity-MATCHING shadow — `fn twice(n): …; let twice: i64 = 5;
-twice(20)` — is still accept-then-SIGSEGV: the arity guard conservatively spares it (a fn `twice`
-with matching arity exists), but air_builder here binds to the LOCAL (segfault), NOT the function
-(unlike the qualified-collapse `len` case which binds to the fn). The clean fix needs typecheck to
-know whether the callee was ORIGINALLY a qualified name that collapsed (bind to fn) vs a genuine
-bare shadow (reject) — info partly lost after import-strip. This is the "infer_node/resolver
-hardening" the m2 note always flagged as deep. LOW priority (deliberate fn-name/local collision
-with matching arity — very rare). Do not chase without mapping air_builder's bare-call binding. LOW priority: requires a deliberate
-fn-name/local-name collision — very rare in real code. Probe-banked repro `/tmp/pa_shadow.ax`.
-Boundary CONFIRMED elsewhere: const-call `K(1)` and param-call `n(2)` (no same-named fn) both
-REJECT correctly; single-primitive alias `type UserId = i64` is NOT mis-rejected (separate
-narrowing, commit 66a3f48).
+**STILL OPEN (deeper, rarer). ROOT CAUSE FULLY NAILED 2026-07-18 (autopilot) — the arity-spare is
+LOAD-BEARING and cannot simply be removed:** an arity-MATCHING shadow — `fn twice(n): …; let twice:
+i64 = 5; twice(20)` — is still accept-then-SIGSEGV. AIR dump confirms air_builder emits an INDIRECT
+`call %2` through the scalar local (value 5) → jump to address 5 → SIGSEGV. The clean-looking fix
+(reject regardless of arity in the NODE_IDENT-value guard, `typecheck.ax` ~L3949) **BREAKS
+self-build**: build B fails with `'len' is a local value shadowing a function... ×5` — i.e. the 5
+`len` sites the arity-spare protects are REAL. Mechanism, exactly: `let len = std.string.len(s)` —
+import-strip collapses `std.string.len` → a bare `len(s)` IN THE SAME statement's INITIALIZER, and
+the resolver binds that call to the **local `len` being defined** (a local is wrongly in scope during
+its OWN initializer) → typecheck sees callee = local SYM_VAR (arity-match → spared). air_builder,
+lowering the same initializer, binds `len(s)` to `fn len` (the local isn't materialized yet when its
+own initializer is lowered) → direct call, works. So **typecheck and air_builder disagree on scoping**
+at exactly these self-reference sites, and arity is the only thing separating them from the genuine
+`twice(20)` post-definition shadow (which IS a non-callable local) — but arity can't (both match).
+
+⚠️ **CRITICAL GATE LESSON (cost me the whole first attempt):** the reject-all edit's fast_fixpoint
+printed `SUCCESS: A==B` AND a standalone self-build of A "succeeded" — a **STALE-ARTIFACT ILLUSION**.
+`fast_fixpoint.ps1` does NOT delete `bin/axc_fpB.exe` first; when A's build of B silently FAILED
+(rejected the source), the script's `Test-Path` saw the LEFTOVER `fpB.exe` from a prior HEAD run and
+reported its hash. The tell: **B's hash == the seed hash EXACTLY** (here `49665AFD`) and the 3-hop was
+a 2-cycle (`B != C`, `C == A`). ALWAYS `Remove-Item bin/axc_fp{A,B,C}.exe` before trusting hashes, and
+grep the B build log for `aborting before code generation`. A frontend reject that rejects the
+compiler's own source produces a FAILED B build, not a real A!=B — don't misread it as backend
+non-determinism.
+
+**The two REAL fixes (each a dedicated, gated session — NOT a typecheck band-aid):**
+- **(a) Resolver hardening (the principled fix):** a `let x = <init>` binding must NOT be in scope
+  during its OWN initializer (standard lexical scoping). Then `len(s)` inside `let len = …` resolves
+  to `fn len` (FUNC branch, no guard, arity-spare becomes unnecessary) and `twice(20)` (post-def)
+  resolves to the local → clean REJECT. HIGH blast radius (touches every `let`/`mut` initializer's
+  scope) → full B==C-class risk on the self-hosting resolver; gate hard.
+- **(b) air_builder rebind (backend, narrower):** in the `is_var_or_param` indirect-call branch
+  (`air_builder.ax` ~L2033), when the callee var is NOT `TYPE_KIND_FUNC` but a same-named `SYM_FUNC`
+  with matching arity exists, emit a DIRECT call to that fn instead of the indirect call. Makes
+  `twice(20)` return 40 (no segfault); `len` unaffected (already direct). Backend change → B==C gate.
+  Semantically debatable (silently calls the shadowed fn rather than rejecting the shadow).
+LOW priority (needs a deliberate fn-name/local collision with matching arity — very rare). Verified
+this session: the segfault repro is `fn twice(n:i64)->i64: return n+n` / `let twice:i64=5; twice(20)`
+(AIR: `call %2` indirect). Boundary elsewhere: const-call `K(1)` and param-call `n(2)` (no same-named
+fn) both REJECT correctly; single-primitive alias `type UserId = i64` is NOT mis-rejected (66a3f48).
 
 ## (historical) m2 — the two failed attempts before the receiver-agnostic guard
 ❌ **Attempt 1 (2026-07-18, REVERTED):** reject when ident-callee payload is `SYM_VAR`/`SYM_PARAM`

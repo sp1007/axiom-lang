@@ -9,6 +9,27 @@ metadata:
 
 # M6 perf gate — Fib benchmark (measured 2026-07-17)
 
+## 🧭 DEFINITIVE DETERMINATION 2026-07-18 (autopilot) — fib tree-recursion→loop is DEFERRED (not the next task)
+Asked to "resolve definitively" the remaining M6 gate-blocker (fib tree-recursion→loop) or pivot.
+**Determination: DEFER it — do not attempt now.** Rationale, as a senior-engineer call under CLAUDE.md
+§10 ("DO NOT prematurely optimize; correctness > cleverness"):
+- fib (`return fib(n-1) + fib(n-2)`) is **tree-recursive**, categorically harder than the SHIPPED
+  tail-self-recursion→loop (§2b, `selfrec_to_loop`). It needs a genuine **accumulator/recurrence-
+  introduction transform**: recognize the associative binary self-call, synthesize an accumulator loop
+  that RETAINS one recursive call and iterates the other (clang's transform — halves frames, still
+  O(2^n) calls; ~2x, not a closed form).
+- **Soundness is the killer:** reassociating/reordering the two recursive calls is only valid for a
+  PROVABLY-PURE callee (no memory writes / I/O), and the transform must never fire on an impure or
+  differently-shaped self-call. A bug here passes A-only and **breaks the B==C self-host gate** — the
+  exact failure mode that reverted the imm-fold attempts twice (§ "ATTEMPT … REVERTED" below).
+- **ROI is narrow:** it helps only fib-shaped binary self-recursion on a single micro-benchmark; the
+  compiler is at a mature plateau and the M6 perf gate is a "nice-to-have," not a correctness gate.
+The RFC 0026 §6 principle applies: **a well-characterized deferral IS valid progress.** Next M6 perf
+lever, when a dedicated perf session is warranted, remains the ranked list below (all independent,
+hard, dedicated B==C sessions). This closes fib as an ambiguous recurring backlog line — it is not
+"todo," it is "deferred with rationale until a dedicated, user-prioritized perf session."
+
+
 ## ✅ 2026-07-18 (autopilot) — RFC 0026 P2 CONTROL-FLOW (multi-block) INLINER SHIPPED (`6b40dec`, B==C `4138AEB5`, 421/421)
 `inline_multiblock_func` (ssa_opt.ax) inlines a small MULTI-block callee (if/else, while) — clones
 the callee's blocks into the caller: split the caller block at the call, clone each callee block with
