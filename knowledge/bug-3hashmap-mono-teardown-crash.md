@@ -121,6 +121,21 @@ buffer-realloc boundary sooner. (8 distinct Vec still clean — the corrupting p
   their internal `keys`/`values`/`occupied` arrays are instantiated, for a held pointer / stale index
   across a typetable/symtable/tree realloc that triggers on the 3rd hash-container.
 
+## Element-size audit COMPLETE (2026-07-18) — every vector grow is correctly sized; OOB is NOT a wrong-elem-size
+Audited every `@alloc`/`@memcpy` element multiplier in the compiler's allocation surface that mono
+touches — all correct: **typetable.ax** all use `size_of[T]()` (robust); TypeTable `@alloc(120)` = exactly
+5×24-byte Vecs ✓. **resolver.ax** hardcodes verified: Symbol `*24` ✓ (4+1+1+2+4+4+4+4), Scope `*32` ✓
+(4/4/4/pad4/ptr8/4/4), ScopeEntry `*8` ✓, ModuleExport `*8` ✓, symbol_trees ptr `*8` ✓, generic-args
+`*4` ✓. **ast.ax** NodeVec `*24` ✓, TokenVec `*8` ✓, IntVec `*4` ✓. **mono.ax** TypeSubstVec `*8` ✓.
+=> the OOB heap write is NOT a wrong vector-element-size. Remaining candidates for the fix session:
+(a) an INDEXED write past a vector's cap without a grow (`vec.data[i]=x` with i≥cap) somewhere in the
+hash-container mono path, or (b) a `@memcpy` with a COMPUTED (not size_of) length that's wrong for a
+hash-container element, or (c) a hash-container-specific mono op. These need data-flow analysis or the
+canary — NOT another element-size pass (this one is exhaustive). One thing worth a `size_of` double-check
+if revisiting: Scope's `*32` hardcode vs the compiler's computed `size_of[Scope]` (if AXIOM packs to 28
+the STRIDE could mismatch — but that'd be universal, not hash-specific, and fast_fixpoint is reliable,
+so it's almost certainly consistent).
+
 ## RULED OUT by inspection (do NOT re-check these in the fix session)
 - **All growable-vector element sizes are CORRECT** → not a wrong-size memcpy/alloc overflow:
   `NodeVec.push` 24B (ast.ax:145/147, AstNode=24B), `TokenVec.push` 8B (lexer.ax:20/22, Token=8B),
