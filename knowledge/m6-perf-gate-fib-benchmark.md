@@ -38,8 +38,14 @@ INDEX) is kept verbatim (not a vreg); `src1` is offset-renamed. The inlined stru
 type via the param-copy's `type_id`. **Gate GREEN:** B==C `f286cac9`, regression **412/412**, daily
 driver promoted. **Win:** `benchmarks/getter` (hot loop calling `getx`) **185.6ms → 64.2ms = 2.89x**
 (O0 no-inline vs O1 inline); hotloop/fib/collatz unchanged. Oracle `t_inline4|exit|42`. The scoping
-note below is kept for history. NEXT beyond P1.5: multi-field/aggregate getters, `OP_INDEX` (array
-element getters), then P2 control-flow inliner.
+note below is kept for history. Also covers COMPUTED multi-field accessors for free (GET_FIELD +
+arithmetic already whitelisted: `area(r)=r.w*r.h`, oracle `t_inline5|exit|112`). Safety gate verified
+by negative probe (str-field 16B + Option-field pointer-sum getters correctly SKIPPED, `t_inline6|exit|47`).
+**NEXT beyond P1.5 (all viable, none blocked):** `OP_INDEX` array-element getters (`fn at(a:[i64;N],i)=a[i]`
+— array-value params + indexing WORK, confirmed 2026-07-18; my earlier "language gap" note was a test
+error, int-literal `[10..]` infers i32 vs an i64 param → annotate `let a:[i64;N]=..`. Add OP_INDEX to
+the whitelist gated to scalar elements; both src1/src2 are vregs so NO src2-exclusion needed;
+element-size via TypeTable). Then P2 control-flow inliner (collatz) + accumulator-recursion→loop (fib).
 
 **(historical) P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
 adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified constraints:
