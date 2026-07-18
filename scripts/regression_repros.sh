@@ -242,6 +242,7 @@ rows=(
   "t_foldi8wrap|exit|94"
   "t_u32fieldwrap|exit|205"
   "t_genswaphet|exit|42"
+  "t_deepnestmut|exit|42"
   "t_deepopt|exit|99"
   # RFC 0017 P2 — aggregate (struct/array/tuple) module-level globals
   "t_globstruct|exit|30"
