@@ -38,7 +38,10 @@ CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
   now inline. `SsaOptimizer.run`/`inline_func` take the `TypeTable` (threaded from main_air.ax:1085);
   `OP_GET_FIELD` whitelisted but gated to a scalar field of a param (field_size≤8, not aggregate/
   pointer-sum). **B==C `f286cac9`, 412/412**, daily driver promoted. Win: `benchmarks/getter`
-  **185→64ms = 2.89x**. Oracle `t_inline4`. `origin/main`=**`67a0bbe`**.
+  **185→64ms = 2.89x**. Also covers computed multi-field accessors (`area=w*h`). **7 inliner oracles**
+  banked (`t_inline`..`t_inline7`: pure-arith, edge cases, generics/loop/branch crosses, scalar/
+  multi-field getters, negative safety-gate for 16B/pointer-sum fields, mixed scalar/aggregate struct).
+  Multiple probe batches CLEAN (no inliner miscompile). Full suite **green** (`26c5425`). `origin/main`=**`26c5425`**.
 - **NEXT (dedicated-session backlog)**: (1) RFC 0026 P2 — control-flow inliner (catches collatz) +
   accumulator-recursion→loop (fib), higher bench leverage; also multi-field/aggregate getters +
   `OP_INDEX` (array-element getters) as further P1.x; (2) RFC 0015 P3 CTGC-free (high-risk,
