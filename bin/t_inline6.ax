@@ -1,0 +1,24 @@
+// Oracle (exit 47): RFC 0026 P1.5 SAFETY GATE guard — getters returning a
+// 16-byte str field or a pointer-sum Option field must NOT be inlined
+// (field_size>8 / field_is_pointer_sum) and must stay correct via a normal call.
+import std.string
+struct Named:
+    id: i64
+    label: str
+struct Box:
+    v: i64
+    opt: Option[i64]
+fn get_label(n: Named) -> str:
+    return n.label
+fn get_opt(b: Box) -> Option[i64]:
+    return b.opt
+fn main() -> i32:
+    let n = Named(id: 1, label: "hello")
+    let b = Box(v: 1, opt: Some(42))
+    mut r := get_label(n).len as i32       // 5
+    match get_opt(b):
+        Some(x):
+            r = r + x as i32                // + 42 = 47
+        None:
+            r = r + 0
+    return r
