@@ -449,6 +449,11 @@ rows=(
   "t_loopcross|exit|10"
   "t_licmchain|exit|123"
   "t_licmunroll|exit|18"
+  # union-of-bare-primitives `type ID = i32 | string` rejected at declaration
+  # (was accept-then-SEGFAULT on the payload-extracting match `i32(v)`)
+  "t_sumprimmatch|reject|"
+  # calling a plain value variable `x(3)` (x: i64) rejected (was accept-then-SIGSEGV)
+  "t_callnonfn|reject|"
 )
 
 for row in "${rows[@]}"; do

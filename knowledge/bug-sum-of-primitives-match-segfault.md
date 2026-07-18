@@ -1,12 +1,28 @@
 ---
 name: bug-sum-of-primitives-match-segfault
-description: "OPEN (found 2026-07-18 via M4 compliance group 6, test_057/058): `type ID = i32 | string` (a sum/union of BARE PRIMITIVE types) builds, but matching it with type-named variant patterns `i32(v)` / `string(s)` accept-then-SEGFAULTs (139) at BOTH O0 and O1. Decl-only and let-assign build & run fine; only the payload-extracting match crashes. BUG#53 class: must reject or work, not silent crash."
+description: "✅ FIXED (2026-07-18, A==B fixpoint EC01FECA, 398/398): `type ID = i32 | string` (a union whose variants are BARE PRIMITIVE types) now REJECTED at DECLARATION — was accept-then-SEGFAULT (139) on the payload-extracting match `i32(v)`. Reject via is_primitive_type_name() in pre_infer_type_alias. Oracle t_sumprimmatch (reject)."
 metadata:
   node_type: memory
   type: project
 ---
 
-# Sum-of-primitives union + variant-pattern match → accept-then-SEGFAULT (OPEN)
+# ✅ FIXED — Sum-of-primitives union rejected at declaration
+
+**FIXED 2026-07-18** (frontend-only, A==B fixpoint `EC01FECA`, regression 398/398).
+Attempt-2 succeeded via the **declaration-level** reject the refined direction (below)
+predicted. In `pre_infer_type_alias` (typecheck.ax ~2238), inside the per-variant loop
+(gated `not sum_is_builtin`, so Option/Result untouched), a new helper
+`is_primitive_type_name(vnm)` detects a "variant" whose NAME is a bare builtin/primitive
+type (`i32`/`string`/`bool`/…) and emits `error: sum type variant '%s' is a bare primitive
+type; a union of primitive types is not supported — use a named constructor …`, bumping
+`diags_count` (driver HALTs before codegen). This cleanly distinguishes the bug from valid
+payload-less constructors (`Nil`/`Empty`) and from Option/Result entirely, sidestepping the
+match-site `payload_type == TYPE_UNKNOWN` imprecision that sank attempt-1. Self-build-safe:
+grep confirmed ZERO sum/enum pipe declarations in bootstrap/stage1 + std. Oracle
+`t_sumprimmatch` (reject mode). Full union-of-primitives SUPPORT (tag + inline value, no box)
+remains a larger RFC-gated feature if ever wanted.
+
+# (historical) Sum-of-primitives union + variant-pattern match → accept-then-SEGFAULT
 
 **Found 2026-07-18** by the M4 compliance-suite measurement (group 6, tests 057/058 —
 "union ngầm định"). See [[m4-compliance-suite-spec-vs-impl-gap]].

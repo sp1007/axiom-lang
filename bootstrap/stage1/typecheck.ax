@@ -2196,6 +2196,12 @@ pub fn get_full_mangled_name(self: ptr[TypeChecker], sym_idx: u32) -> str:
             
     return sym_name
 
+// True when `name` is a bare builtin/primitive type name (i32, string, bool, …).
+// Used to reject `type ID = i32 | string` — a union whose "variants" are primitive
+// TYPES rather than named constructors (see pre_infer_type_alias).
+fn is_primitive_type_name(name: str) -> bool:
+    return name == "i8" or name == "i16" or name == "i32" or name == "i64" or name == "int" or name == "u8" or name == "u16" or name == "u32" or name == "u64" or name == "rune" or name == "f32" or name == "f64" or name == "bool" or name == "string" or name == "str" or name == "bytes" or name == "char8" or name == "void" or name == "isize" or name == "usize"
+
 pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
     let sym_idx = self.tree.nodes.data[node_idx].payload
     if sym_idx != 0 as u32:
@@ -2234,6 +2240,18 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                                 let vnm = self.intern.get(v_sym.name_id)
                                 if vnm == "Some" or vnm == "None" or vnm == "Ok" or vnm == "Err":
                                     ax_printf_local("error: sum variant '%s' shadows a builtin Option/Result variant; rename it (Some/None are reserved for Option, Ok/Err for Result)\n", get_str_ptr(vnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                    self.diags_count = self.diags_count + 1 as i64
+                                // A "variant" whose NAME is a bare primitive/builtin type
+                                // (`type ID = i32 | string`) is an aspirational union-of-primitives,
+                                // NOT a named constructor. It has no payload box, yet a match
+                                // pattern `i32(v)` binds a payload → deref of garbage → SIGSEGV
+                                // (accept-then-crash, BUG#53 class). Reject at the DECLARATION:
+                                // this distinguishes it cleanly from valid payload-less constructors
+                                // (`Nil`/`Empty`) and from Option/Result, and never fires on compiler
+                                // source (zero prim-named variants). Full union-of-primitives support
+                                // (tag + inline value, no box) is a larger RFC-gated feature.
+                                if is_primitive_type_name(vnm):
+                                    ax_printf_local("error: sum type variant '%s' is a bare primitive type; a union of primitive types is not supported — use a named constructor (e.g. `IntId(i32)`) instead\n", get_str_ptr(vnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                     self.diags_count = self.diags_count + 1 as i64
                             
                             mut payload_type := TYPE_UNKNOWN
@@ -3869,6 +3887,44 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
+                elif self.tree.nodes.data[callee].kind == NODE_IDENT:
+                    // `x(args)` where `x` is a plain VALUE (local/param/const) whose type is
+                    // NOT callable (i64, a struct, an array, ...). AXIOM has no first-class
+                    // fn-value call through a variable yet — a genuine fn pointer types as
+                    // TYPE_KIND_FUNC and is handled in the branch above. Previously this was
+                    // accepted with result_type UNKNOWN: air_builder's lower_call_expr fell
+                    // through to an INDIRECT `call reg` through the scalar value → SIGSEGV,
+                    // with no compile-time signal (accept-then-miscompile, BUG#53 class).
+                    // Reject cleanly. GATED to VALUE symbols (SYM_VAR/PARAM/CONST) so that
+                    // type-name conversion calls / constructor idents (SYM_STRUCT/TYPE_ALIAS/
+                    // BUILTIN_TYPE) are never touched, and self-build is safe (the compiler
+                    // never calls a value variable).
+                    let cvsym = self.tree.nodes.data[callee].payload
+                    if cvsym != 0 as u32 and (cvsym as i64) < self.symtable.symbols.len:
+                        let cvk = self.symtable.symbols.data[cvsym as i64].kind
+                        if cvk == SYM_VAR or cvk == SYM_PARAM or cvk == SYM_CONST:
+                            let cv_name_id = self.symtable.symbols.data[cvsym as i64].name_id
+                            // RECEIVER-AGNOSTIC guard (mirrors the FIELD_EXPR "no callable"
+                            // reject ~L4106): a bare ident can also resolve to a struct FIELD
+                            // symbol (also SYM_VAR) whose name coincides with a real free/UFCS
+                            // function — e.g. `len` names both a Vec `.len` field and the
+                            // stdlib `fn len(s: str)`. Only reject when NO SYM_FUNC of this
+                            // name exists ANYWHERE; if some function shares the name, defer to
+                            // normal resolution (which the compiler's own source relies on).
+                            // `x(3)` (x: i64, no `fn x` anywhere) is still rejected.
+                            let cvnm = self.intern.get(cv_name_id)
+                            mut fn_name_exists := false
+                            mut fsi := 0 as i64
+                            while fsi < self.symtable.symbols.len:
+                                let fssym = self.symtable.symbols.data[fsi]
+                                if fssym.kind == SYM_FUNC and self.intern.name_matches_method(fssym.name_id, cvnm):
+                                    fn_name_exists = true
+                                    break
+                                fsi = fsi + 1 as i64
+                            if not fn_name_exists:
+                                ax_printf_local("error: '%s' is not a function; it cannot be called\n", get_str_ptr(cvnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+                            safe_free_str(cvnm)
                 elif self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR:
                     // Diagnostic (was silent accept-then-miscompile, same class as
                     // BUG#53): `recv.name(...)` where `name` resolved to a genuine

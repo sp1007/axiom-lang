@@ -1,0 +1,13 @@
+// Oracle: `type ID = i32 | string` (a union whose "variants" are bare primitive
+// TYPES, not named constructors) must be REJECTED at declaration. Previously the
+// payload-extracting match `i32(v)` accept-then-SEGFAULTed (no payload box).
+// See knowledge/bug-sum-of-primitives-match-segfault.md
+type ID = i32 | string
+
+fn main() -> i32:
+    let my_id: ID = 100
+    match my_id:
+        i32(v):
+            return v
+        string(s):
+            return 0

@@ -1,6 +1,6 @@
 ---
 name: bug-malformed-input-robustness-cluster
-description: "Cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handled. m1 (self-recursive struct crash), m4 (match non-sum), m5 (str↔numeric let literal) all FIXED→reject. Only m2 (calling a non-fn → segfault) still OPEN (needs callable-form enumeration). All BUG#53-class: should REJECT with a diagnostic."
+description: "Cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handled. ALL FIXED→reject: m1 (self-recursive struct crash), m2 (calling a non-fn value → segfault), m4 (match non-sum), m5 (str↔numeric let literal). CLUSTER CLOSED. All BUG#53-class: REJECT with a diagnostic."
 metadata:
   node_type: memory
   type: project
@@ -40,9 +40,24 @@ A→B→A) and REJECT: "recursive struct 'S' has infinite size; use `ptr[S]` for
 Direct self-reference is the safe bounded first cut (the compiler's own structs never self-reference
 by value — they use ptr — so self-build is unaffected). Indirect cycles = follow-up.
 
-## m2 — calling a non-function → accept-then-SEGFAULT (OPEN — HARD, type-based reject is UNSOUND)
+## ✅ m2 — FIXED 2026-07-18 (A==B `EC01FECA`, 398/398, oracle t_callnonfn, reject mode)
+Calling a plain value variable `x(3)` (x: i64) now REJECTS: `error: '<name>' is not a function;
+it cannot be called`. Fix = a new `elif self.tree.nodes.data[callee].kind == NODE_IDENT` branch in
+the NODE_CALL_EXPR `if callee_type != TYPE_UNKNOWN` elif-chain (typecheck.ax ~L3886, AFTER
+FUNC/STRUCT/SUM/GENERIC_INST/OPTION/RESULT), gated: (1) callee symbol kind ∈ {SYM_VAR, SYM_PARAM,
+SYM_CONST} (a value, not a type/ctor), AND (2) **RECEIVER-AGNOSTIC guard** — NO `SYM_FUNC` of that
+name exists anywhere (scan `symbols` with `name_matches_method`). The guard is what made attempt-1
+land: the 5 false-positive sites all attribute to `len`, a bare ident that resolves to a struct
+`.len` FIELD (also SYM_VAR) whose name coincides with the stdlib `fn len(s: str)` — since a function
+`len` exists, those defer to normal resolution untouched. `x(3)` (no `fn x` anywhere) is rejected.
+A genuine fn pointer types as TYPE_KIND_FUNC and is handled in the branch above, so first-class
+fn-values are unaffected. Self-build-safe (A==B). **CLUSTER CLOSED** (m1/m2/m4/m5 all fixed).
+
+## (historical) m2 — the two failed attempts before the receiver-agnostic guard
 ❌ **Attempt 1 (2026-07-18, REVERTED):** reject when ident-callee payload is `SYM_VAR`/`SYM_PARAM`
 with a resolved type not `TYPE_KIND_FUNC` → over-rejected **5 valid compiler-source sites** → A!=B.
+(Root of the false positives: `len` field vs `fn len` — the receiver-agnostic function-existence
+guard added in the 2026-07-18 fix is exactly what distinguishes them.)
 
 🔬 **Attempt 2 enumeration (2026-07-18, traced, then reverted — NO fix shipped):** instrumented the
 NODE_CALL_EXPR fall-through (after the FUNC/STRUCT/SUM/GENERIC_INST/OPTION/RESULT/FIELD_EXPR elif
