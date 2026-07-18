@@ -49,17 +49,22 @@ to a resolved SCALAR element: `type_id != 0` (element type is carried there, x86
 `t_inline8|exit|60`. **The getter family is now COMPLETE: pure-arith + scalar field + computed
 multi-field + array-element.** (Array-value params + indexing confirmed working; earlier "language
 gap" was a test int-literal-i32-vs-i64-param mismatch.)
-**⚠️ ROI CORRECTION 2026-07-18 — the control-flow inliner is NOT the collatz-gate-closer:** the
-collatz benchmark is INNER-LOOP/arithmetic-dominated, not call-dominated — `collatz_len(i)` runs a
-while loop (~millions of total inner iterations) vs only ~300K outer calls, so inlining `collatz_len`
-removes negligible overhead relative to the inner-loop work. The collatz gap (3.24x) is DIV/MOD-BY-2
-([[perf-div-pow2-strength-reduction]] — the "biggest lever", 10.5x→3x, signed-path self-host-blocked),
-NOT call overhead. And fib (2.61x) needs ACCUMULATOR-RECURSION→LOOP (fib self-recurses → the inliner
-skips it). **So the real M6 gate-closers are: (1) fib accumulator→loop; (2) collatz signed div/mod-by-2
-strength reduction.** The general control-flow inliner (P2 §2a′) is still worth building for call-heavy
-code with control flow, but it is LOW benchmark-ROI and should be DEPRIORITIZED below the two real
-levers above. RFC 0026 P2 §2a′ has the full technical plan if/when it's built; both real levers are
-independent, hard, dedicated B==C sessions.
+**M6 gate-closer ROI map (2026-07-18, CORRECTED — supersedes an earlier overstated note):**
+- **Div/mod-by-2^k strength reduction is ALREADY SHIPPED for i64/u64 incl. the SIGNED path**
+  (`38a9d81`, [[perf-div-pow2-strength-reduction]]). collatz uses i64 → it ALREADY benefits
+  (was the 10.5x→2.89x win). So this is NOT a remaining collatz lever. The only strength-reduction
+  gap left is SUB-64-BIT signed (i8/i16/i32), gated out by `sel_type_is_8byte_int` (dirty-upper
+  hazard) — niche, collatz doesn't need it.
+- **collatz remaining gap (~3.2x):** loop quality + clang inlining `collatz_len` (which enables
+  cross-boundary register allocation / tighter merged code — [[perf-div-pow2-strength-reduction]]
+  line 49-50). So the **P2 control-flow inliner DOES help collatz** (not just call removal — it
+  unlocks optimization of the merged loop). It's genuinely relevant, though the inner loop still
+  bounds the total win — expect partial closure, not ≤1.05x alone.
+- **fib remaining gap (~2.6x):** ACCUMULATOR-RECURSION→LOOP (fib self-recurses → the linear inliner
+  skips it; needs the recurrence transform). This is the fib-specific closer.
+**Ranked next M6 levers:** (1) P2 control-flow inliner (helps collatz + general call-heavy code; full
+plan in RFC 0026 §2a′); (2) fib accumulator→loop; (3) sub-64-bit signed div/mod strength reduction
+(niche). All independent, hard, dedicated B==C sessions.
 
 **(historical) P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
 adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified constraints:
