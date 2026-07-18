@@ -174,6 +174,48 @@ pub fn mark_addr_taken_regs(f: ptr[AirFunc], max_reg: u32) -> ptr[bool]:
         i = i + 1 as i64
     return arr
 
+// Wrap a folded integer constant to the width of its AIR type so a compile-time
+// fold matches the runtime narrow-register op. `type_id` is the canonical
+// primitive id (i8=1,i16=2,i32=3,i64=4,u8=5,u16=6,u32=7,u64=8,bool=11,char8=13,
+// isize=15,usize=16). Only sub-64-bit integer types are masked; 8-byte ints,
+// unknown (0), and non-integer ids are returned unchanged (floats are already
+// excluded from folding by the has_flt guard). Signed narrow types sign-extend
+// to 64 bits; unsigned narrow types zero-extend. See
+// [[bug-const-fold-narrow-int-wrap]].
+pub fn fold_narrow_mask(type_id: u16, val: u64) -> u64:
+    let t = type_id as i64
+    mut wbytes := 0 as i64
+    mut signed := false
+    if t == 1 as i64:
+        wbytes = 1
+        signed = true
+    elif t == 2 as i64:
+        wbytes = 2
+        signed = true
+    elif t == 3 as i64:
+        wbytes = 4
+        signed = true
+    elif t == 5 as i64:
+        wbytes = 1
+    elif t == 6 as i64:
+        wbytes = 2
+    elif t == 7 as i64:
+        wbytes = 4
+    elif t == 11 as i64:
+        wbytes = 1
+    elif t == 13 as i64:
+        wbytes = 1
+    if wbytes == 0 as i64 or wbytes >= 8 as i64:
+        return val
+    let bits = (wbytes * 8 as i64) as u64
+    let mask = ((1 as u64) << bits) - 1 as u64
+    mut m := val & mask
+    if signed:
+        let sign_bit = (1 as u64) << (bits - 1 as u64)
+        if (m & sign_bit) != 0 as u64:
+            m = m | (mask ^ (0xFFFFFFFFFFFFFFFF as u64))
+    return m
+
 pub fn fold_func(f: ptr[AirFunc]) -> bool:
     let max_reg = max_reg_id(f)
     if max_reg == 0 as u32:
@@ -243,6 +285,21 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
             if src1_val.known and src2_val.known and not has_flt:
                 let ok = eval_binary(inst.opcode, src1_val.val, src2_val.val, out_val)
                 if ok:
+                    // Narrow-integer wrap: eval_binary computes in full 64-bit, but a
+                    // sub-64-bit result (u8/u16/u32/i8/i16/i32) must wrap to its type
+                    // width exactly as the runtime 32/16/8-bit register op does. Without
+                    // this, folding `u32 4000000000 + 500000000` kept 4_500_000_000 at
+                    // -O1 (runtime wraps to 205_032_704) — a silent O0-vs-O1 miscompile.
+                    // Signed narrow types sign-extend so the stored i64 constant matches
+                    // the runtime value.
+                    // GUARD: AIR type_id is NOT always the true value width (e.g. a
+                    // negated i64::MIN literal in to_str carries an i32 type_id); masking
+                    // such a mislabeled op would corrupt a full-width value (i64::MIN->0).
+                    // Only wrap when BOTH operands already fit the declared width — then
+                    // the type_id is consistent with the values and the wrap reflects a
+                    // genuine narrow-type overflow. See [[bug-const-fold-narrow-int-wrap]].
+                    if fold_narrow_mask(inst.type_id, src1_val.val) == src1_val.val and fold_narrow_mask(inst.type_id, src2_val.val) == src2_val.val:
+                        out_val[0] = fold_narrow_mask(inst.type_id, out_val[0])
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32
@@ -263,6 +320,12 @@ pub fn fold_func(f: ptr[AirFunc]) -> bool:
             if src1_val.known and not is_flt[inst.src1]:
                 let ok = eval_unary(inst.opcode, src1_val.val, out_val)
                 if ok:
+                    // Narrow-integer wrap (see the binary fold above): OP_NEG on an
+                    // i8/i16/i32/u8/u16/u32 must wrap to its width. Same operand-fit
+                    // GUARD: skip when the operand doesn't fit the declared width (a
+                    // mislabeled type_id, e.g. negated i64::MIN carrying an i32 type_id).
+                    if fold_narrow_mask(inst.type_id, src1_val.val) == src1_val.val:
+                        out_val[0] = fold_narrow_mask(inst.type_id, out_val[0])
                     inst.opcode = OP_ICONST
                     inst.src1 = (out_val[0] & 0xFFFFFFFF as u64) as u32
                     inst.src2 = ((out_val[0] >> 32 as u64) & 0xFFFFFFFF as u64) as u32

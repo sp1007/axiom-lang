@@ -238,6 +238,7 @@ rows=(
   "t_optveciter|exit|6"
   "t_optvecnest|exit|42"
   "t_vectupmix|exit|47"
+  "t_foldu32wrap|exit|205"
   "t_deepopt|exit|99"
   # RFC 0017 P2 — aggregate (struct/array/tuple) module-level globals
   "t_globstruct|exit|30"
@@ -463,6 +464,7 @@ done
 #   t_licmchain  two-link invariant chain -> both hoist (copy_prop before LICM)
 #   t_licmunroll const-trip accumulator loop -> sound full unroll (loop-carried)
 opt_rows=(
+  "t_foldu32wrap|205"
   "t_licm|44"
   "t_loopcall|140"
   "t_loopstruct|9"
