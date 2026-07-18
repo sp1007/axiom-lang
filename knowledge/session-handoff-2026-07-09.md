@@ -21,9 +21,18 @@ CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
   `tests/axiom_compliance_suite_aspirational.ax`; `tests/axiom_compliance_suite.ax` = pointer doc.
   Dialect gaps SIDESTEPPED: local const→module-const, match-expr→if-expr, `=>`→`Pattern:`,
   interface/impl→struct/duck methods, capture→zero-capture lambda. Chi tiết [[m4-compliance-suite-spec-vs-impl-gap]].
-- **NEXT (đang làm)**: M6 perf — inline small fns + self-recursion→loop (fib 2.44x→≤1.05x clang).
-  Insertion point inliner = `ssa_opt.ax:1798` (module-level pre-pass trước per-fn loop). Cần RFC +
-  B==C gate (immediate-fold attempts trước đã revert vì miscompile — [[m6-perf-gate-fib-benchmark]]).
+- **M6 GROUNDWORK SHIPPED** (`8d05f96`): benchmark harness `scripts/bench_perf.sh` +
+  `benchmarks/{fib,collatz}.{ax,c}` + **RFC 0026**. Baseline daily driver: fib **2.72x**, collatz
+  **3.19x** vs clang -O2. Inliner FULLY SPECed + staged (`1095b4d`, [[m6-perf-gate-fib-benchmark]]
+  "INLINER IMPLEMENTATION SPEC"). ⚠️ Safe pure-arith inliner = perf-NEUTRAL (fib recursive/collatz
+  multi-block both skipped) → next dedicated B==C session = **accumulator-recursion→loop (fib)** or
+  **control-flow inliner (collatz)**. Insertion `ssa_opt.ax:1798`.
+- **COMPLIANCE PART 2** (`d77813b`): `bin/t_compliance2.ax` = 28 more real-grammar tests (Vec HOFs/
+  HashMap/arrays/strings/formatting/control-flow). Combined M4 surface = **88 tests**. **Regression
+  402/402 GREEN.** `origin/main`=**`d77813b`**.
+- **NEXT (dedicated-session backlog)**: (1) M6 accumulator→loop for fib (highest bench leverage,
+  B==C-gated, use staged spec); (2) RFC 0015 P3 CTGC-free (high-risk, attempt-with-tight-gate per
+  user). Both need fresh budget + full B==C + -O2 regression + revert-on-red.
 
 ## ✅ CẬP NHẬT 2026-07-12 — RFC 0017 GLOBAL STORAGE HOÀN CHỈNH + probing
 `origin/main`=`ceceb7e`, 243/243, daily driver `bin/axc_native.exe` **A==B==C `81522e76`** (đổi ở `288c86a`=backend; sau đó chỉ test-only).
