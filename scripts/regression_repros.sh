@@ -466,6 +466,8 @@ rows=(
   "t_compliance2|exit|28"
   # RFC 0026 — inlining of small pure-arithmetic helpers (sum of squares 0..8 = 140)
   "t_inline|exit|140"
+  # RFC 0026 — inliner edge cases (0-arg / param-passthrough / nested calls / mixed)
+  "t_inline2|exit|8"
 )
 
 for row in "${rows[@]}"; do
@@ -507,6 +509,7 @@ done
 opt_rows=(
   "t_compliance|60"
   "t_compliance2|28"
+  "t_inline2|8"
   "t_foldu32wrap|205"
   "t_licm|44"
   "t_loopcall|140"

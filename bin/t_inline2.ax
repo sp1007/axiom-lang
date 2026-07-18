@@ -1,0 +1,60 @@
+// Oracle (exit 8): RFC 0026 inliner edge cases — 0-arg helper, param pass-through,
+// 2-arg helper, NESTED inlinable calls (sq(sq(x)), helper(helper(...))), variable
+// vs literal args, and inlined results used in further arithmetic. All must stay
+// correct whether or not inlining fires. 8 checks -> exit 8.
+fn const5() -> i64:
+    return 5
+
+fn id(x: i64) -> i64:
+    return x
+
+fn addmul(a: i64, b: i64) -> i64:
+    return a * b + a
+
+fn sq(x: i64) -> i64:
+    return x * x
+
+fn e1_zero_arg() -> i32:
+    assert(const5() == 5)
+    return 1
+
+fn e2_param_passthrough() -> i32:
+    assert(id(7) == 7)
+    return 1
+
+fn e3_two_arg() -> i32:
+    assert(addmul(3, 4) == 15)
+    return 1
+
+fn e4_nested_same() -> i32:
+    assert(sq(sq(3)) == 81)
+    return 1
+
+fn e5_variable_arg() -> i32:
+    let v = 6 as i64
+    assert(sq(v) == 36)
+    return 1
+
+fn e6_two_calls_arith() -> i32:
+    assert(sq(2) + sq(3) == 13)
+    return 1
+
+fn e7_nested_mixed() -> i32:
+    assert(id(const5()) == 5)
+    return 1
+
+fn e8_deep_mixed() -> i32:
+    assert(addmul(id(2), sq(2)) == 10)
+    return 1
+
+fn main() -> i32:
+    mut n := 0 as i32
+    n = n + e1_zero_arg()
+    n = n + e2_param_passthrough()
+    n = n + e3_two_arg()
+    n = n + e4_nested_same()
+    n = n + e5_variable_arg()
+    n = n + e6_two_calls_arith()
+    n = n + e7_nested_mixed()
+    n = n + e8_deep_mixed()
+    return n
