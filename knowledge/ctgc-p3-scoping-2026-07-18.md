@@ -78,3 +78,21 @@ escape-edge when a local is a by-value argument to a container mutator (`push`/`
 the report → the freeable set should shrink to only the truly-local scratch; (2) only then flip
 `-ctgc-free` on and require the `ctgc_free_check.sh` self-build fixpoint + full -O2 regression, revert
 on red. The report is the regression-free way to re-measure the set after each escape-analysis change.
+
+## ⭐⭐ STEP (1) SHIPPED — container-store escape fix, freeable set 6 → 1 (A==B `48E17C7B`, 434/434, CTGC_FREE_OK)
+Root of the missed-escape was NOT a subtle aliasing case — it was a plain **hole in escape.ax's
+statement dispatch**: a bare call statement (`(&mod.exports).push(v_exp)`) parses as an unwrapped
+`NODE_CALL_EXPR` at statement position (no NODE_EXPR_STMT wrapper — parser.ax:944 returns the expr
+directly), and `analyze_stmt` had NO case for it → fell to the `else` branch which recursed into the
+call's children **as statements** (`analyze_stmt`), so the argument idents were visited by a function
+with no NODE_IDENT case and never flowed to the escape node. Fix = one `elif kind == NODE_CALL_EXPR:`
+in `analyze_stmt` routing through `self.analyze_expr(stmt_idx, self.escape_node_idx)` (escape.ax, after
+NODE_RETURN_STMT) — analyze_expr's existing CALL_EXPR case already flows callee + every arg to escape.
+**Verified via the report: freeable set 6 → 1.** Dropped: `v_exp`,`exp` (push→mod.exports),
+`init_inst` (AirInst→insert), `subst`, `sup`. Remaining: `dst_alloc` (x86_regalloc.ax:1202) — genuine
+function-local `RegAllocation` scratch, passed to no call and stored in no container. Inert on the
+default build (SYM_FLAG_ESCAPES only consumed by the gated-off free pass) → A==B `48E17C7B`, 434/434,
+and the 9 `-ctgc-free` oracles still free their true ctor locals (CTGC_FREE_OK). **This closes the
+"un-enumerated pervasive aliasing" framing entirely: the real blocker was 5 container-store escapes
+from ONE dispatch hole, now fixed.** Remaining before activation: audit whether `dst_alloc` (and any
+future freeable) is truly single-owner, then the activation gate.

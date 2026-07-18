@@ -12071,6 +12071,20 @@ pub fn analyze_stmt(mut self: ptr[EscapeAnalyser], stmt_idx: u32):
         if val_idx != 0 as u32:
             self.analyze_expr(val_idx, self.escape_node_idx)
 
+    elif kind == NODE_CALL_EXPR:
+        // RFC 0015 P3 soundness (container-store escape): a bare call statement
+        // (`container.push(local)`, `vec.insert(x)`, `emit(inst)`) discards its value
+        // but may STORE an argument into a receiver that outlives the call. Route it
+        // through analyze_expr's CALL_EXPR case so the callee + every by-value argument
+        // flow to the escape node -> a ctor local handed to a container mutator is marked
+        // escaping and CTGC never frees memory the container still aliases. Without this
+        // the call sits at statement position and the else-branch (mis)visits its arg
+        // nodes as STATEMENTS (analyze_stmt has no NODE_IDENT case) so they never flow ->
+        // the missed-escape that made v_exp/exp/init_inst wrongly freeable (would UAF at
+        // -ctgc-free activation, e.g. `(&mod.exports).push(v_exp)`). Inert on the default
+        // build (SYM_FLAG_ESCAPES is only consumed by the gated-off CTGC free pass).
+        self.analyze_expr(stmt_idx, self.escape_node_idx)
+
     elif kind == NODE_IF_STMT:
         mut child_idx := node.first_child
         while child_idx != 0 as u32:
