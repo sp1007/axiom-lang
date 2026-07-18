@@ -43,6 +43,28 @@ whitelisted pure-scalar/control-flow body, no nested calls/memory/aggregates.
   **fib still needs accumulator-recursion→loop** (self-recursive → not inlinable) = the remaining P2 lever.
 - Oracle `t_inlinecf` (exit 17: if/else `absdiff` + while `sumloop` inlined). Gate cmd unchanged.
 
+## ✅ 2026-07-18 (autopilot) — RFC 0026 §2b TAIL-SELF-RECURSION → LOOP SHIPPED (`7b4aaa1`, B==C `ECABD5EF`, 427/427, tailrec 4.9x)
+`selfrec_to_loop` + `sr_is_tail_block` (ssa_opt.ax) rewrite `return self(args)` into staged param
+reassignment + `jump block_0` → tail recursion becomes an in-function loop (one activation, no
+per-iteration call/frame; also kills the deep-recursion stack-overflow risk). Gated -O1, runs LAST.
+Requires the **option-B codegen move**: `emit_param_prologue` now emitted BEFORE the `.L_b_0` entry
+label (x86_selector.ax) so block 0 is RE-ENTRANT — otherwise `jump block_0` re-materializes params
+from the incoming arg registers → resets the advanced args → infinite loop. (Option B alone is B==C
+stable, `41BBBCC2`.)
+- **Detection:** `%r = call self(args); ret %r` adjacent + block-terminating + direct + argc==nparams.
+- **Rewrite:** TWO-PHASE `temp_i=arg_i` then `param_i=temp_i` — required for SWAP-style tail calls
+  (`gcd(b, a%b)` reads both params); a naive `param_i=arg_i` clobbers. Then `jump block_0`, recompute_cfg.
+- **3 bring-up subtleties:** (1) run LAST — copy_prop would collapse `param=copy temp` (params carry
+  no other AIR def) and rewrite the entry's param reads to the loop-only temp → garbage on first
+  entry; (2) NO contiguity guard — the tail block commonly sits at a LOW index but is emitted LAST
+  (`if-return / else-tailcall`), so `inl_blocks_contiguous` is false; the rebuild re-lays-out
+  block_instrs in block order and (running last) that's fine; (3) non-tail (`n*fact(n-1)`) + mixed
+  tail/non-tail (ack) correctly untouched (per-call detection).
+- **Perf:** `benchmarks/tailrec` (deep tail sumto in a loop) OFF(recursion) 1214ms → ON(loop) 246ms
+  = **4.9x**. (clang 9.5ms = it closed-forms the arithmetic series — a separate hoisting gap, not
+  the transform's job.) Oracle `t_selfrec` (accumulator + swap gcd = 67). fib tree-recursion
+  (`return n*fib(n-1)`) still out of scope — needs a recurrence/accumulator-introduction transform.
+
 ## ⚠️ 2026-07-18 — multi-block GETTER/INDEX extension ATTEMPTED → REVERTED (deferred)
 Tried extending `inline_multiblock_func` to inline branchy callees that read a SCALAR FIELD/
 ELEMENT of an aggregate PARAM (add OP_GET_FIELD/OP_INDEX to the whitelist + the single-block
