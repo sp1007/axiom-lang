@@ -81,20 +81,23 @@ bounded task (RFC if syntax, else a plain fix). Groups 7-10 stay deferred (async
 gpu/quantum subsystems). First known gap to schedule: **RFC + impl for `const` declarations.**
 
 ### Running M4-core baseline (measured on axc_native `1C2E3D6A`, impl grammar rewrite)
-- **Group 1 (001-010): 9/10.** GAP: `const NAME = value` (syntax, RFC). Rest supported.
-- **Group 2 (011-020): 10/10.** All control flow works (if/elif/else, for-in-array, for-in-
-  range, match, break, continue, nested if, early `return`). `=>` match-arm is surface dialect
-  (impl uses `pattern:` block); a malformed `let arr =` in the suite itself (missing `[1,2,3]`).
-- **Group 3 (021-030): ~6/10 (feature-partial).** SUPPORTED: plain fn call, `mut` param
-  (by-value), recursion, higher-order via **named** fn-ptr param (BUG#49), `let op = named_fn`
-  (fn value), **tuple return `-> (i32,i32)` + destructuring `let (x,y) = f()`** (works, exit 30).
-  GAPS: (1) **anonymous lambda literal `fn(a:i32)->i32: ...`** fails to parse as an expression
-  in BOTH `let f = fn...` and argument position ("expected expression nud") — tests 024/025/029;
-  ⚠️ this CONTRADICTS [[next-step-16-fnptr-shipped]]/2cc67ed which claim inline lambda×generic
-  works, so there is a SPECIFIC working lambda form not yet re-found (reconcile before filing —
-  maybe single-line without `->`, or only in a Vec HOF call site). (2) **closure capture**
-  `fn(x): return x + outer` — test 030, expected gap (RFC 0008 closures NOT started).
-**Emerging pattern:** the core LANGUAGE is largely implemented; most M4-core gaps are (a)
-surface-syntax dialect (`const`, `=>`, brace blocks) = RFC grammar decisions, or (b) a few real
-unimplemented features (closure capture; possibly the lambda-literal-as-expression form). Groups
-4-6 (structs/ownership, interfaces/generics, error/sum) still to measure.
+⚠️ CRITICAL: the impl lambda syntax is **Rust-style pipes with an EXPRESSION body**:
+`|a: i64, b: i64| -> i64 a + b` (see bin/t_lambda.ax), NOT the spec's `fn(a)->T: return ...`.
+An interim note wrongly flagged lambdas as broken (I used spec syntax); CORRECTED below.
+- **Group 1 (001-010): 9/10.** GAP: **LOCAL `const NAME = value`** (const inside a fn body →
+  parse error). ✅ TOP-LEVEL `const X: T = v` WORKS (bin/t_closurecap.ax, exit verified). So the
+  gap is narrow: local-scope const. Rest of group 1 supported.
+- **Group 2 (011-020): 10/10.** All control flow works. `=>` match-arm is surface dialect
+  (impl uses `pattern:` block); the suite has a malformed `let arr =` (missing `[1,2,3]`).
+- **Group 3 (021-030): 9/10 (CORRECTED from a wrong ~6/10).** SUPPORTED: fn call, `mut` param
+  by-value, recursion, higher-order fn-ptr param (BUG#49), `let op = named_fn`, tuple return
+  `-> (i32,i32)` + destructuring `let (x,y)=f()`, **lambda literals `|x|-> T expr`** (impl
+  syntax — [[next-step-16-fnptr-shipped]]/2cc67ed CONFIRMED correct), **zero-capture closures**
+  (over globals/consts). GAP: **closure capturing a LOCAL var** (test_030 `outer`) → clean
+  REJECT "only zero-capture closures are currently supported (RFC 0008 P2 not yet implemented)".
+**Emerging pattern (updated):** the core LANGUAGE is MORE complete than first thought. Real
+feature gaps so far are only **local `const`** and **closure-capture-of-locals (RFC 0008 P2)** —
+both cleanly diagnosed, not silent. The rest are pure surface-syntax dialect (`fn(...)` lambdas,
+`=>` match arms, brace blocks) — a suite-rewrite (approach b) sidesteps them. Groups 4-6
+(structs/ownership, interfaces/generics, error/sum) still to measure. Bounded tasks surfaced:
+**local-const support** (parser, small) and **RFC 0008 P2 local capture** (larger, RFC exists).
