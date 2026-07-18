@@ -1,6 +1,6 @@
 ---
 name: bug-3hashmap-mono-teardown-crash
-description: "OPEN (low-severity): compiling a program with 3+ DISTINCT HashMap[K,V] monomorphizations intermittently (~8%) segfaults the compiler AT TEARDOWN (after Stage 6 self-linking). The OUTPUT exe is always produced and correct (exit 0) — only the compiler's process exit crashes. Flag-independent (not -ctgc-free). Heap corruption during multi-instantiation generic mono, surfacing when the heap is walked by the cleanup @frees. Minimal 9-line repro included. Needs ASAN/Linux to root-cause."
+description: "OPEN (low-severity): compiling a program with 3+ DISTINCT HASH-CONTAINER monomorphizations (HashMap and/or HashSet, cumulative) intermittently (~8%) segfaults the compiler AT TEARDOWN (after Stage 6 self-linking). OUTPUT exe is always produced and correct (exit 0) — only the compiler's process exit crashes. Flag-independent (not -ctgc-free). NOT clone-volume (8 distinct Vec = clean) — specific to hash containers' per-key-type hash/eq mono + occupied/keys arrays. Minimal repro included. Needs ASAN/Linux to root-cause."
 metadata:
   type: project
 ---
@@ -67,6 +67,21 @@ that only dangles once the buffers are large enough (3rd instantiation), or (b) 
 growth while registering the 3rd HashMap's monomorphized methods. **Confirming the exact line needs a
 memory sanitizer** (build the Linux ELF target, run the 9-line repro under valgrind → faulting free +
 the corrupting store). This localization + the minimal repro should make that a short tooled session.
+
+## REFINEMENT (2026-07-18) — it's HASH-CONTAINER mono, not HashMap-specific, not clone-volume
+- **HashSet is ALSO affected:** 3 distinct `HashSet[T]` (`hs3`) = 2/30; a MIX of 2 HashMap + 1 HashSet
+  (`mix`) = 2/30. So the trigger is the CUMULATIVE count (≥3) of distinct **hash-based container**
+  monomorphizations (HashMap and HashSet together), not HashMap alone.
+- **NOT clone-volume:** 8 distinct `Vec[T]` instantiations (`vec8`, far more total cloning than 3 hash
+  containers) = 0/30. So the big-template / many-reallocs theory is WRONG on its own — Vec has a big
+  template too and doesn't trip it.
+- **=> The corruption is specific to what HASH containers monomorphize that Vec does NOT:** a per-key-type
+  **hash function + equality** (and the `occupied`/probing internals + nested keys/occupied arrays).
+  The likely corruption site is the monomorphization of the hash/eq machinery (or nested-array type
+  registration) for the 3rd distinct hash-container key type — NOT the generic clone path in general.
+  This meaningfully narrows the fix search: look at how HashMap/HashSet's `hash`/`eq`/probe methods and
+  their internal `keys`/`values`/`occupied` arrays are instantiated, for a held pointer / stale index
+  across a typetable/symtable/tree realloc that triggers on the 3rd hash-container.
 
 ## RULED OUT by inspection (do NOT re-check these in the fix session)
 - **All growable-vector element sizes are CORRECT** → not a wrong-size memcpy/alloc overflow:
