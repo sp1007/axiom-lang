@@ -147,6 +147,31 @@ A fresh reject-vs-accept batch beyond the original m1–m6:
   Wrong generic arg count `Pair[i64]` → B inferred from field (lenient-correct, = m6). Duplicate
   struct-literal field (`P(x:5,x:7)`) → accepted first-wins; minor typo, low value, LEFT open.
 
+## Third malformed-input pass — 2026-07-18 (str↔numeric family closed + 3 OPEN candidates)
+Extended the str↔numeric mismatch reject to ALL common contexts (each literal-gated on the operand's
+str/int/float LITERAL node kind, so real coercions & value forms are untouched; all A==B, regression
+green): **let** (m5), **return** (t_retmismatch), **arithmetic binop** `"a"+5` (t_strnumop),
+**comparison** `s==5` (t_cmpstrnum), **call argument** `f("x")` (t_argstrnum), **assignment**
+`x="s"` (t_assignstrnum). Also **index-a-scalar-variable** `x[0]` where x:i64 → reject (t_scalaridx,
+GATED on collection==NODE_IDENT — infer_node returns i64 imprecisely for CALL collections, m2/m5 trap).
+
+### OPEN candidates (confirmed accept-then-miscompile, ready for a future session)
+Found in the 3rd bad-input batch, NOT yet fixed (each still builds+miscompiles today on `497465B0`):
+- **m3 — struct ctor field type mismatch**: `P(x: "hello")` where `P.x: i64` → accepted, garbage
+  (exit 168). The ctor-field analog of the str↔numeric family. Fix = match each ctor arg against the
+  struct's field types in the NODE_CALL_EXPR struct-ctor path (callee_type==TYPE_KIND_STRUCT, ~L3790
+  `try_instantiate_struct_ctor`) and apply the same literal-gated str↔numeric reject. More involved
+  (named/positional field matching) → deferred, not rushed.
+- **m2 — array literal mixed element types**: `[1, 2, "three"]` → accepted, exit 0. Should reject a
+  heterogeneous array literal (int elements + a str element). Fix = in the array-literal typecheck,
+  require all elements share a compatible type; reject a str-vs-numeric element mix (literal-gated).
+- **m5agg — return/assign an aggregate where a scalar is expected**: `return p` (p a struct) from a
+  `-> i64` fn → accepted, exit 8 (returns the struct address as an int). This is the aggregate↔scalar
+  branch of the return/let/assign mismatch (my fixes only cover str↔numeric *literals*). Fix = extend
+  the return/assign checks: if the value's inferred type is an aggregate (STRUCT/SUM/TUPLE/ARRAY) and
+  the target is a scalar (or vice versa), reject. Watch infer imprecision (gate on reliable forms).
+- NOT-bugs from this batch: `mut x:i64 = 5; x = 10` (valid), method-arg mismatch already parse/rejects.
+
 ## Gate & priority
 All FRONTEND (typecheck/struct-layout) → A==B. Each is a REJECT (adds a diagnostic + `diags_count`
 bump so the driver halts before codegen — same mechanism as the existing rejects, e.g. variant-shadow
