@@ -114,6 +114,18 @@ fib itself is accumulator-recursive, so the fib ratio is primarily closed by **i
 in this RFC; the pure tail-self-recursion transform benefits the many tail-recursive
 helpers in the compiler/stdlib.
 
+**FEASIBILITY CONFIRMED (2026-07-18, read-only):** the one hazard — does `jump entry` re-run
+the prologue and corrupt the stack? — is RESOLVED. `emit_function` (x86_asm_emitter.ax:512-527)
+emits `fn_name:` → the **prologue** (push rbp / sub rsp / callee-saves) → THEN the block insts,
+where the entry block carries its own label `.L_b_0:` (MACH_LABEL). So a jump to the entry block's
+label lands **after** the prologue — it does NOT re-run frame setup. The transform is therefore:
+(1) detect a self-`OP_CALL` whose result is immediately returned (tail position: `%r=call self; ret
+%r`, no post-call use of %r); (2) stage args into FRESH temps (an arg may reference a param being
+overwritten), copy temps→param vregs, replace the call+return with `jump block_0`; (3) add the
+block→entry back-edge and call `recompute_cfg` (already built for P2). Gate at -O2 per §5, B==C +
+-O2-built-compiler regression, + a tail-recursive benchmark. This is the recommended NEXT lever
+(more general + lower-risk than fib tree-recursion; directly reuses the P2 `recompute_cfg`).
+
 ## 3. Alternatives considered
 - **Immediate-operand folding** (`CMP/ADD reg,imm`) — attempted twice, both **reverted**:
   broke B==C on sub-64-bit spilled operands ([[m6-perf-gate-fib-benchmark]]). Orthogonal;
