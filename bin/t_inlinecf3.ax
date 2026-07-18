@@ -1,0 +1,18 @@
+// Oracle (exit 45): RFC 0026 — multi-block inlining of a callee that READS a
+// SCALAR FIELD of a struct PARAM inside branches (GET_FIELD in a multi-block body).
+struct Bounds:
+    lo: i64
+    hi: i64
+fn clampb(b: Bounds, x: i64) -> i64:
+    if x < b.lo:
+        return b.lo
+    if x > b.hi:
+        return b.hi
+    return x
+fn main() -> i32:
+    let bd = Bounds(lo: 10, hi: 20)
+    mut s := 0 as i64
+    s = s + clampb(bd, 5)     // 10
+    s = s + clampb(bd, 25)    // 20
+    s = s + clampb(bd, 15)    // 15
+    return s as i32           // 45

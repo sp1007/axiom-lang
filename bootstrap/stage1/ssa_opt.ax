@@ -2054,6 +2054,10 @@ fn inl_mb_op_ok(op: u16) -> bool:
         return true
     if op == OP_ICONST or op == OP_FCONST or op == OP_COPY:
         return true
+    if op == OP_GET_FIELD:      // gated to a scalar field of a param (see inl_multiblock_ok)
+        return true
+    if op == OP_INDEX:          // gated to a scalar element type (see inl_multiblock_ok)
+        return true
     if op >= 0x0201 as u16 and op <= 0x0223 as u16:
         return true
     return false
@@ -2140,18 +2144,10 @@ fn inl_multiblock_ok(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
         return false
     if callee.insts.len > INLINE_MB_INST_THRESHOLD:
         return false
-    // scalar params only (no by-address aggregate ABI in this increment)
-    mut pi := 0 as i64
-    while pi < callee.params.len:
-        let pty = callee.params.data[pi] as u32
-        if type_is_aggregate(table, pty):
-            return false
-        mut psz := 0 as u32
-        mut pal := 0 as u32
-        type_size_and_align(table, pty, &psz, &pal)
-        if psz > 8 as u32:
-            return false
-        pi = pi + 1 as i64
+    // Params may be aggregate (struct/array) — needed for getter/index bodies that
+    // read a scalar field/element of a param (single-block getter path already
+    // allows this). The GET_FIELD/INDEX scalar gates below ensure only SCALAR
+    // field/element VALUES are consumed.
     // scalar, non-void return
     if callee.ret_type == 0 as u32:
         return false
@@ -2177,6 +2173,28 @@ fn inl_multiblock_ok(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
                 if inst.src1 == 0 as u32:        // void return -> defer
                     return false
                 has_ret = true
+            elif inst.opcode == OP_GET_FIELD:
+                // single-level SCALAR field read of a PARAM (mirror single-block gate)
+                if inst.src1 < 1 as u32 or (inst.src1 as i64) > callee.params.len:
+                    return false
+                let struct_type = callee.params.data[(inst.src1 as i64) - 1 as i64] as u32
+                if field_is_aggregate(table, struct_type, inst.src2):
+                    return false
+                if field_is_pointer_sum(table, struct_type, inst.src2):
+                    return false
+                if field_size(table, struct_type, inst.src2) > 8 as u32:
+                    return false
+            elif inst.opcode == OP_INDEX:
+                if inst.type_id == 0 as u16:
+                    return false
+                let elem_ty = inst.type_id as u32
+                if type_is_aggregate(table, elem_ty):
+                    return false
+                mut esz := 0 as u32
+                mut eal := 0 as u32
+                type_size_and_align(table, elem_ty, &esz, &eal)
+                if esz > 8 as u32:
+                    return false
             k = k + 1 as i64
         bi = bi + 1 as i64
     return has_ret
@@ -2319,6 +2337,14 @@ pub fn inline_multiblock_func(mut caller: ptr[AirFunc], m: ptr[AirModule], table
                             let nc = AirInst(opcode: cin.opcode, type_id: cin.type_id, dest: nd, src1: cin.src1, src2: cin.src2)
                             let nci = new_insts.push(nc)
                             new_bi.push(nci)
+                        elif cin.opcode == OP_GET_FIELD:
+                            // src1 = struct-ptr vreg (rename); src2 = field INDEX (keep verbatim)
+                            mut ndg := cin.dest
+                            if cin.dest != 0 as u32:
+                                ndg = base + cin.dest
+                            let ng = AirInst(opcode: OP_GET_FIELD, type_id: cin.type_id, dest: ndg, src1: inl_rename(cin.src1, base), src2: cin.src2)
+                            let ngi = new_insts.push(ng)
+                            new_bi.push(ngi)
                         else:
                             mut nd2 := cin.dest
                             if cin.dest != 0 as u32:

@@ -1,0 +1,19 @@
+// M6 perf benchmark — hot loop calling a branchy callee that reads STRUCT PARAM
+// fields (b.lo/b.hi). Exercises RFC 0026 getter-in-multi-block inlining.
+struct Bounds:
+    lo: i64
+    hi: i64
+fn clampb(b: Bounds, x: i64) -> i64:
+    if x < b.lo:
+        return b.lo
+    if x > b.hi:
+        return b.hi
+    return x
+fn main() -> i32:
+    let bd = Bounds(lo: 10, hi: 150)
+    mut acc := 0 as i64
+    mut i := 0 as i64
+    while i < 200000000:
+        acc = acc + clampb(bd, (i % 250) - 50)
+        i = i + 1
+    return (acc % 1000) as i32
