@@ -454,6 +454,8 @@ rows=(
   "t_sumprimmatch|reject|"
   # calling a plain value variable `x(3)` (x: i64) rejected (was accept-then-SIGSEGV)
   "t_callnonfn|reject|"
+  # guard: a genuine fn POINTER call `f(3,4)` must still build+run (reject boundary)
+  "t_fnptrcall|exit|7"
 )
 
 for row in "${rows[@]}"; do

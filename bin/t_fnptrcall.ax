@@ -1,0 +1,10 @@
+// Guard oracle for the bug-2 "call a non-function" reject: a genuine fn POINTER
+// stored in a variable and called `f(3,4)` types as TYPE_KIND_FUNC and MUST still
+// build + run. Ensures the NODE_IDENT non-callable reject never touches first-class
+// fn values. See knowledge/bug-malformed-input-robustness-cluster.md (m2).
+fn add(a: i64, b: i64) -> i64:
+    return a + b
+
+fn main() -> i32:
+    let f = add
+    return f(3, 4) as i32
