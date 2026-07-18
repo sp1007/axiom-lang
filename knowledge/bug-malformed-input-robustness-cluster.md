@@ -70,7 +70,14 @@ distinguish "callee resolved to a genuine LOCAL/PARAM value that shadows a fn" (
 likely via the resolved value symbol's `decl_node` kind (NODE_LET/param decl vs NODE_FIELD_DECL)
 or scope depth. **NOT attempted** — the `len` false-positive mechanism (why a bare `len` ident
 callee resolves to a FIELD sym at all in compiler source) is not yet understood; touching the
-call-resolution path here risks the A==B fixpoint. LOW priority: requires a deliberate
+call-resolution path here risks the A==B fixpoint.
+**Lead for a future session (2026-07-18 read-only dig):** struct fields are defined as `SYM_VAR`
+with `decl_node = NODE_FIELD_DECL` (resolver.ax:932), whereas locals get NODE_LET / params get a
+param decl — so `symbols[cvsym].decl_node`'s node-kind is the candidate discriminator (reject when
+it's a LET/param decl, spare NODE_FIELD_DECL). BUT: grep found ZERO genuine bare `len(` calls in
+the concatenated source (only 3 hits, all inside comments), so where attempt-1's "5 sites, name=len,
+SYM_VAR" actually came from is unexplained — do NOT ship the decl_node discriminator until a
+build+trace confirms those 5 sites' decl_node kind (else risk A!=B again). LOW priority: requires a deliberate
 fn-name/local-name collision — very rare in real code. Probe-banked repro `/tmp/pa_shadow.ax`.
 Boundary CONFIRMED elsewhere: const-call `K(1)` and param-call `n(2)` (no same-named fn) both
 REJECT correctly; single-primitive alias `type UserId = i64` is NOT mis-rejected (separate
