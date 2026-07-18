@@ -96,8 +96,24 @@ Verified in code, so the next attempt skips re-deriving:
   `resolve_free_call_overload`'s return for them — hypothesis is it DOES resolve them to a real
   SYM_FUNC (so they'd be correctly spared), and only `x(3)` fails all avenues.
 - **Gate:** frontend reject → A==B + full regression + confirm the 5 compiler-source sites still
-  build (they were the canaries). Oracle `t_callnonfn` (reject mode). Self-host-risky → needs the
-  quiet box (Defender makes the gate multi-hour today).
+  build (they were the canaries). Oracle `t_callnonfn` (reject mode). Self-host-risky.
+
+  ❌ **CORRECTION 2026-07-18 (static read of resolve_free_call_overload, typecheck.ax:990-1015):**
+  the proposed predicate above is WRONG — `resolve_free_call_overload` is ONLY an overload
+  disambiguator, not a callability oracle. If the callee symbol has no `next_overload` (line 993)
+  it returns `sym_idx` **unchanged**, regardless of whether that symbol is a SYM_FUNC or a SYM_VAR.
+  So for `let x=5; x(3)` it returns the SYM_VAR untouched — it cannot distinguish callable from
+  non-callable. Do NOT key the reject on it.
+  🔬 **Refined open question for the NEXT attempt:** the 5 valid sites have callee.payload = a
+  SYM_VAR (i64, mis-attributed `name=len`) yet compile CORRECTLY, so air_builder must dispatch them
+  by some path that IGNORES the stale callee.payload (probably re-resolving the callee ident by NAME
+  to a SYM_FUNC). The real discriminator is therefore "**does a SYM_FUNC with the callee ident's
+  name exist/resolve in scope?**" (yes for the 5 → spare; no for `x` → reject). To implement safely
+  you must FIRST instrument air_builder's NODE_CALL_EXPR dispatch to see exactly how the 5 sites
+  resolve their function (by name? via a separate lookup table?), then replicate that lookup in the
+  typecheck reject. This needs an instrumented build+trace cycle (now cheap again — gate is fast
+  post-Defender-exclusion, see [[infra-defender-build-throttle]]), NOT more static reading.
+  Priority stays LOW (rare hand-typo) — do only if a session has spare low-risk budget.
 
 ## m2 (original report) — calling a non-function → accept-then-SEGFAULT
 ```
