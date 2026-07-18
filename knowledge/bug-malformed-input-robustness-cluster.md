@@ -1,6 +1,6 @@
 ---
 name: bug-malformed-input-robustness-cluster
-description: "OPEN cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handles instead of cleanly rejecting — a self-recursive struct CRASHES the compiler, and calling a non-fn / matching a non-sum / str→i64 assignment are all silently accepted then segfault or return garbage. All BUG#53-class: should REJECT with a diagnostic."
+description: "Cluster (probe batch 9, 2026-07-18): 4 malformed programs the compiler mis-handled. m1 (self-recursive struct crash), m4 (match non-sum), m5 (str↔numeric let literal) all FIXED→reject. Only m2 (calling a non-fn → segfault) still OPEN (needs callable-form enumeration). All BUG#53-class: should REJECT with a diagnostic."
 metadata:
   node_type: memory
   type: project
@@ -87,7 +87,21 @@ type 'i64' against variant pattern 'Some'". Relatedly, a non-exhaustive/foreign-
 already reject (cf. t_nonexhenum / accept-then-miscompile cluster) — this is the non-sum scrutinee
 gap.
 
-## m5 — annotated let with an incompatible RHS type → accept-then-MISCOMPILE (garbage)
+## ✅ m5 — FIXED 2026-07-18 (`6ab7c00`, A==B `F81E2A77`, oracle t_letstrmismatch, reject mode)
+Was: `let x: i64 = "hello"` accepted → garbage (exit 52, str {ptr,len} repr read as int).
+Now REJECTS: "type mismatch in `let`: a string and a numeric type are not compatible". Fix in the
+NODE_VAR_DECL handler (typecheck.ax ~L2720): when an explicit annotation is present, reject if the
+RHS **literal node kind** is NODE_STRING_LIT into a numeric-scalar T, or NODE_INT_LIT/NODE_FLOAT_LIT
+into a str/bytes T. ⚠️ KEY LESSON: a first attempt gated on `inferred` (the RHS's inferred type)
+OVER-REJECTED — infer_node reports **i64 for some str-returning CALLs**, so 3 valid `let s: str =
+<call>` sites in the compiler's OWN source were rejected → A!=B (B build failed with 3 spurious
+errors). Gating on the literal node kind (unambiguous type, no infer dependency) = zero over-rejection.
+Regression 372/372, self-build green. LIMITATION: catches str↔numeric *literal* mismatches only; a
+str *variable* assigned to a numeric annotation (`let x:i64 = some_str`) is not caught (would need a
+reliable assignability predicate — infer_node too imprecise today). The reported bug (a literal) is
+covered. **CLUSTER now: m1✅ m4✅ m5✅ fixed; only m2 OPEN** (call-non-fn, needs callable-form enum).
+
+## m5 (original report) — annotated let with an incompatible RHS type → accept-then-MISCOMPILE (garbage)
 ```
 fn main() -> i64:
     let x: i64 = "hello"    # str assigned to i64
