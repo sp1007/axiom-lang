@@ -9279,6 +9279,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
                     self.infer_node(lhs, t2)
 
+                // BUG#53: a comparison mixing a str/bytes operand and a numeric
+                // operand (`s == 5`) silently compares the str's {ptr,len} against an
+                // int -> meaningless/garbage result. Reject. str==str and numeric
+                // comparisons are untouched (only the incompatible mix is caught).
+                // Mirrors the arithmetic-binop str<->numeric reject.
+                let c_t1_str = t1 == TYPE_STRING or t1 == TYPE_BYTES
+                let c_t2_str = t2 == TYPE_STRING or t2 == TYPE_BYTES
+                if (c_t1_str and tc_is_numeric(t2)) or (tc_is_numeric(t1) and c_t2_str):
+                    let cbt = self.node_text(node_idx)
+                    ax_printf_local("error: comparison '%s' between a string and a numeric operand is not allowed\n", get_str_ptr(cbt) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    safe_free_str(cbt)
+                    self.diags_count = self.diags_count + 1 as i64
+
                 // Diagnostic: RFC 0007 lowers `a <op> b` on a STRUCT/SUM/GENERIC_INST
                 // lhs to a method call (a.eq(b)/a.lt(b)/...) ONLY IF a matching
                 // overload method is found; otherwise air_builder's lower_binary_expr
@@ -9884,6 +9897,29 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             if actual_args != fi.params.len:
                                 ax_printf_local("error: '%s' expects %d argument(s), found %d\n", get_str_ptr(fnm) as i64, fi.params.len, actual_args, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                 self.diags_count = self.diags_count + 1 as i64
+                            else:
+                                // BUG#53 (arg-path analog of m5): a str/numeric-LITERAL
+                                // argument passed where the param is the opposite kind
+                                // (`f("hi")` with `f(n:i64)`, or `f(42)` with `f(s:str)`)
+                                // was silently accepted then crashed/segfaulted (the
+                                // {ptr,len} str repr read as an int, or vice versa).
+                                // Reject. Gated on the arg being a str/int/float LITERAL
+                                // (unambiguous type) so real coercions & value args are
+                                // untouched. See [[bug-malformed-input-robustness-cluster]].
+                                mut pchk := 0 as i64
+                                mut anode := self.tree.nodes.data[callee].next_sibling
+                                while anode != 0 as u32 and pchk < fi.params.len:
+                                    let ak = self.tree.nodes.data[anode].kind
+                                    let pt = fi.params.data[pchk]
+                                    let p_str = pt == TYPE_STRING or pt == TYPE_BYTES
+                                    let p_num = pt >= TYPE_I8 and pt <= TYPE_USIZE and pt != TYPE_STRING and pt != TYPE_VOID
+                                    let a_strlit = ak == NODE_STRING_LIT
+                                    let a_numlit = ak == NODE_INT_LIT or ak == NODE_FLOAT_LIT
+                                    if (p_num and a_strlit) or (p_str and a_numlit):
+                                        ax_printf_local("error: argument type mismatch in call to '%s': a string and a numeric type are not compatible\n", get_str_ptr(fnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                        self.diags_count = self.diags_count + 1 as i64
+                                    pchk = pchk + 1 as i64
+                                    anode = self.tree.nodes.data[anode as i64].next_sibling
                         if fnm_owned:
                             safe_free_str(fnm)
 
