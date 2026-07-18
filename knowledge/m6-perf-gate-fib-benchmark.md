@@ -65,7 +65,19 @@ stable, `41BBBCC2`.)
   the transform's job.) Oracle `t_selfrec` (accumulator + swap gcd = 67). fib tree-recursion
   (`return n*fib(n-1)`) still out of scope — needs a recurrence/accumulator-introduction transform.
 
-## ⚠️ 2026-07-18 — multi-block GETTER/INDEX extension ATTEMPTED → REVERTED (deferred)
+## ✅ 2026-07-18 — multi-block GETTER/INDEX extension SHIPPED (`d94b3b3`, B==C `49665AFD`, 430/430, cfgetter +12%)
+**The earlier revert (below) was a DEFENDER MISDIAGNOSIS.** Re-attempted under settled build conditions:
+self-build 7.2s (fast), full regression 430/430 in 181s (rc=0), A==B==C==D `49665AFD`, correctness
+t_inlinecf3=45. Perf A/B: `benchmarks/cfgetter` (struct-field getter `clampb(b,x)` reading b.lo/b.hi
+in a 200M-iter loop) OFF(call) 2879ms → ON(inlined) 2530ms = **12% faster**. The "0-PASS after 5 min"
+stall that triggered the revert was Windows Defender throttling that window (builds were 25-50s each),
+NOT inlining bloat. **LESSON: when a gate STALLS (vs fails), check the environment (Defender/load)
+before concluding the change is at fault — re-run under fast-build conditions.** Shipped as: add
+OP_GET_FIELD/OP_INDEX to the multi-block whitelist + single-block-style scalar gates + relax the
+scalar-param restriction (aggregate params are by-reference; param-copy copies the pointer) + clone
+GET_FIELD keeping src2 (field index) verbatim.
+
+### (historical) ⚠️ 2026-07-18 — multi-block GETTER/INDEX extension ATTEMPTED → REVERTED (Defender misdiagnosis, now SHIPPED above)
 Tried extending `inline_multiblock_func` to inline branchy callees that read a SCALAR FIELD/
 ELEMENT of an aggregate PARAM (add OP_GET_FIELD/OP_INDEX to the whitelist + the single-block
 scalar gates + a GET_FIELD clone case that keeps src2=field-index verbatim + RELAX the scalar-param
