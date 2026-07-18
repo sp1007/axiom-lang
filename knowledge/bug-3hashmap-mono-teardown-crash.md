@@ -179,9 +179,13 @@ C-backend-specific limitation, not the hash-mono bug). So I could not produce a 
 compiler this way. The **self-link daily driver uses a different, freestanding allocator WITHOUT the
 axalloc canaries** — which is why the OOB write is a raw SIGSEGV instead of a clean canary panic.
 **Remaining fix approaches (pick one in a dedicated session):**
-1. Add a footer-canary / verify hook to the SELF-LINK allocator (find it: the bundled freestanding
-   runtime, bootstrap/runtime or the self-link object gen) so the daily driver catches the overflow
-   cleanly with the overflowed block's size → pins the alloc site. Most direct.
+1. Add a footer-canary / verify hook to the SELF-LINK allocator = **`bootstrap/runtime/axalloc.ax`**
+   (located 2026-07-18: a 553-line size-classed segment bump allocator; `@alloc`→OP_ALLOC→its ax_alloc;
+   `ax_os_alloc`/`ax_segment_bump_alloc`/size-class free lists). Adding a per-block footer canary +
+   a check-on-free that reports the overflowed block SIZE would pin the alloc site — BUT it is
+   size-class-aware and self-host-critical, so instrument carefully (behind a flag; verify the daily
+   self-build still reproduces) and rebuild axc_native (self-link) with it, then run on n4a. This is the
+   most direct path but a dedicated, careful session (do NOT rush — the compiler runs on this allocator).
 2. Repair the C backend enough to build the compiler, then use AX_ALLOC_DEBUG (bigger yak-shave).
 3. Source audit of `builder_type_size_and_align` (typetable/air_builder) for a generic-inst / nested
    hash-container-array size miscalc that under-sizes an `@alloc` → the overflow. Speculative w/o (1).
