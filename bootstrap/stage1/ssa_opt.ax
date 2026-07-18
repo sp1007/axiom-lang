@@ -2087,10 +2087,54 @@ fn inl_rpo_dfs(callee: ptr[AirFunc], b: u32, mut visited: ptr[bool], mut post: p
             inl_rpo_dfs(callee, t.dest, visited, post)
     post.push(b)
 
+// DFS from `b` detecting a BACK-EDGE (an edge to a node currently on the DFS
+// path = a loop). color: 0=white 1=gray(on-path) 2=black(done). A gray successor
+// => the callee has a loop. Index order is NOT a reliable loop signal (a callee's
+// merge/exit block can sit at a low index with forward edges into it — e.g.
+// floorf), so proper coloring is required.
+fn inl_loop_dfs(callee: ptr[AirFunc], b: u32, mut color: ptr[u8]) -> bool:
+    color[b] = 1 as u8
+    let t = inl_block_term(callee, b)
+    let nb = callee.blocks.len
+    if t.opcode == OP_JUMP:
+        if (t.src1 as i64) < nb:
+            if color[t.src1] == 1 as u8:
+                return true
+            if color[t.src1] == 0 as u8 and inl_loop_dfs(callee, t.src1, color):
+                return true
+    elif t.opcode == OP_BRANCH:
+        if (t.src2 as i64) < nb:
+            if color[t.src2] == 1 as u8:
+                return true
+            if color[t.src2] == 0 as u8 and inl_loop_dfs(callee, t.src2, color):
+                return true
+        if (t.dest as i64) < nb:
+            if color[t.dest] == 1 as u8:
+                return true
+            if color[t.dest] == 0 as u8 and inl_loop_dfs(callee, t.dest, color):
+                return true
+    color[b] = 2 as u8
+    return false
+
+// True if the callee's CFG contains a loop (any back-edge from the entry).
+fn inl_has_loop(callee: ptr[AirFunc]) -> bool:
+    let n = callee.blocks.len
+    let color = @alloc(n) as ptr[u8]
+    @memset(color as ptr[void], 0 as u8, n)
+    let r = inl_loop_dfs(callee, 0 as u32, color)
+    @free(color as ptr[u8])
+    return r
+
 fn inl_multiblock_ok(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
     if callee.is_extern or callee.is_async:
         return false
     if callee.blocks.len < 2 as i64:            // single-block handled by inline_func
+        return false
+    // A callee with its OWN loop pessimizes when inlined into a loop: the call is
+    // amortized over the callee's iterations, so removing it saves little, while
+    // the merged loop raises register pressure (measured: collatz +11%). Only
+    // inline branchy (loop-free) multi-block callees — the call-dominated wins.
+    if inl_has_loop(callee):
         return false
     if callee.blocks.len > INLINE_MB_BLOCK_THRESHOLD:
         return false

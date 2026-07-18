@@ -28,11 +28,19 @@ whitelisted pure-scalar/control-flow body, no nested calls/memory/aggregates.
   DFS from callee entry, remap targets via RPO position map). LESSON reinforced: **B==C is necessary
   but NOT sufficient — the full USER-program regression is what caught this** (self-build never hit
   the float-fn shape). Always run the full regression, not just fixpoint.
-- **Perf:** collatz UNCHANGED at -O1 (its inner while-loop dominates; call removal negligible, and
-  strength-reduction is -O2-only). The clear P2 win is **call-dominated** multi-block code: new bench
-  `cfhot` (200M calls to `classify()` w/ 2 ifs) = 2511→2205ms = **12% faster** with the inliner (main
-  has 0 calls vs 1). Bench A/B via a temporary `if false` gate on the inliner call. **fib still needs
-  accumulator-recursion→loop** (self-recursive → not inlinable) = the remaining P2 lever.
+- **⚠️ LOOP-GUARD refinement (`C22EED17`, same session):** A/B measurement caught that inlining a
+  callee WITH ITS OWN LOOP *pessimizes*: collatz +11% at BOTH -O1/-O2 (OFF 189/168 → ON 210/187ms).
+  Reason: the call is amortized over the callee's loop iterations, so removing it saves ~nothing, while
+  the merged loop raises register pressure. Fix = **`inl_has_loop` (white/gray/black DFS back-edge
+  detection) skips loopy callees**; index-order is NOT a reliable loop signal (floorf's exit block is
+  at index 1 with forward edges into it → would be a false back-edge). After the guard: cfhot still
+  inlines (2723→2306 = **15% faster**), collatz no longer inlined → NO regression (180→176ms). So the
+  P2 inliner is now STRICTLY beneficial: inlines branchy leaf fns (call-dominated wins), skips loopy
+  ones. LESSON: a correct+self-host-safe optimization can still be a net perf LOSS — always A/B the
+  actual benchmark (temporary `if false` gate), never assume inlining helps.
+- **Perf:** the clear P2 win is **call-dominated** loop-free multi-block code: `cfhot` (200M calls to
+  `classify()` w/ 2 ifs) 15% faster. collatz UNCHANGED (collatz_len now correctly skipped as loopy).
+  **fib still needs accumulator-recursion→loop** (self-recursive → not inlinable) = the remaining P2 lever.
 - Oracle `t_inlinecf` (exit 17: if/else `absdiff` + while `sumloop` inlined). Gate cmd unchanged.
 
 ## ✅ 2026-07-18 (autopilot) — RFC 0026 P1 INLINER SHIPPED (B==C, 407/407, hotloop 2.57x)
