@@ -411,6 +411,7 @@ rows=(
   "t_uninferreject|reject|"
   "t_recstructreject|reject|"
   "t_matchnonsum|reject|"
+  "t_letstrmismatch|reject|"
   "t_genfloatret|exit|42"
   "t_genmethodfloat|exit|42"
   "t_floatcvt|exit|10"

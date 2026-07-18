@@ -2718,6 +2718,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 
         if init_expr != 0 as u32:
             let inferred := self.infer_node(init_expr, exp_type)
+            // BUG#53 (m5): an explicit `let x: T = <literal>` whose literal is a
+            // string but T is a numeric scalar (or a numeric literal assigned to a
+            // str/bytes T) is silently accepted, then miscompiled to garbage (the
+            // {ptr,len} str repr reinterpreted as an int, or vice-versa). Reject
+            // that genuinely-incompatible pair. Gated on the RHS LITERAL node kind
+            // (a string/int/float literal has an unambiguous type) rather than the
+            // inferred type, because infer_node is imprecise for some str-returning
+            // CALLs (reports i64) and trusting it over-rejected valid compiler
+            // source. The language's real literal/width coercions (int-lit -> any
+            // int width, float-lit -> f32/f64) stay untouched. See
+            // [[bug-malformed-input-robustness-cluster]] (m5).
+            if type_node != 0 as u32 and exp_type != TYPE_UNKNOWN:
+                let rhs_kind = self.tree.nodes.data[init_expr].kind
+                let exp_is_str = exp_type == TYPE_STRING or exp_type == TYPE_BYTES
+                let exp_is_num = exp_type >= TYPE_I8 and exp_type <= TYPE_USIZE and exp_type != TYPE_STRING and exp_type != TYPE_VOID
+                let rhs_is_strlit = rhs_kind == NODE_STRING_LIT
+                let rhs_is_numlit = rhs_kind == NODE_INT_LIT or rhs_kind == NODE_FLOAT_LIT
+                if (exp_is_num and rhs_is_strlit) or (exp_is_str and rhs_is_numlit):
+                    ax_printf_local("error: type mismatch in `let`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             if exp_type != TYPE_UNKNOWN:
                 result_type = exp_type
             else:
