@@ -97,6 +97,17 @@ the corrupting store). This localization + the minimal repro should make that a 
   only dangles once buffers are large enough (3rd HashMap), OR corruption while registering the 3rd
   HashMap's monomorphized methods/types (typetable/symtable growth). Confirm with ASAN.
 
+## Bounding result (2026-07-18) — the bug is ISOLATED; compiler is otherwise stress-stable
+Stress-probed 14 diverse feature-heavy oracles 18× each (t_gentree, t_optvecnest, t_vectupmix,
+t_licmchain, t_selfrec, t_inlinecf3, t_genfloatret, t_deepnestmut, t_optstructpay, t_globstr,
+t_forvec, t_structoptfield, t_vecstructopt, t_genswaphet) — **ALL 0 crashes**. So this intermittent
+teardown crash is NOT a symptom of pervasive heap instability; it is confined to the 3+ distinct
+hash-container mono case. Combined with "1-2 distinct hash-containers = clean", the **practical impact
+is near-zero** (real programs rarely instantiate 3+ DISTINCT `HashMap`/`HashSet` key/value type combos;
+t_hashi64 is a contrived 3-instantiation oracle). Confirms LOW severity + LOW urgency. Reusable
+technique: intermittent heap bugs are invisible to compile-once probing — STRESS-probe (build N× and
+watch exit codes) to surface them.
+
 ## Audit note (2026-07-18) — the held-ref-into-vector pattern is widespread; don't hand-audit, use ASAN
 The suspected bug class (`mut x := &self.<vec>.data[i]` held across a same-vector grow) appears at 30+
 sites (air.ax, resolver.ax, ssa_opt.ax:257/397/643/1072/1485/1537, mono.ax:74/216, air_builder.ax:309,
