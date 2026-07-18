@@ -148,6 +148,7 @@ rows=(
   "t_matchret|exit|30"
   "t_missingret|reject|"
   "t_partialmatch|reject|"
+  "t_undefname|reject|"
   "t_forvec|exit|60"
   "t_rune|exit|65"
   "t_bytesview|exit|204"

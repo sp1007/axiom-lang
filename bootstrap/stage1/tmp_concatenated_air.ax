@@ -4853,6 +4853,16 @@ pub fn resolve_node(mut self: ptr[NameResolver], node_idx: u32):
                     self.tree.nodes.data[node_idx].payload = sym_idx
                     self.tree.nodes.data[node_idx].flags = self.tree.nodes.data[node_idx].flags & (65535 as u16 ^ FLAG_IS_SUBSTITUTED)
                     self.symtable.symbols.data[sym_idx].flags = self.symtable.symbols.data[sym_idx].flags | SYM_FLAG_USED
+                else:
+                    // Undefined name: the resolver found no binding for this bare
+                    // value-position identifier. Force payload to 0 (a definitive "no
+                    // symbol") so the typechecker can REJECT it -- previously the raw
+                    // name_id was left as payload, accidentally indexing an unrelated
+                    // symbol -> silent garbage/0 at runtime (BUG#53 class). The
+                    // compiler's own source has ZERO unresolved bare idents (verified
+                    // by trace), so this is self-build-safe. Builtin TYPE names used in
+                    // value position still recover their type in typecheck via node_text.
+                    self.tree.nodes.data[node_idx].payload = 0 as u32
         self.resolve_children(node_idx)
         // @free(get_str_ptr(name))
 
@@ -10299,6 +10309,22 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let sub_tid = self.tree.nodes.data[node_idx].extra_idx
             if sub_tid != 0 as u32:
                 result_type = sub_tid as u32
+
+        // BUG#53: a bare value-position identifier the resolver could NOT bind (it
+        // forced payload to 0) and that did not recover as a builtin type name is an
+        // UNDEFINED name. Previously its raw name_id was left as payload, accidentally
+        // indexing an unrelated symbol -> silent garbage/0 at runtime. Reject cleanly
+        // (bumps diags_count; the driver halts before codegen). Gated on payload==0
+        // (only the resolver's unresolved path produces this) AND result_type still
+        // UNKNOWN AND not substituted -- a type name used as a value already set
+        // result_type above, so it is never hit here. Self-build safe: the compiler's
+        // own source has zero unresolved bare idents. See [[bug-undefined-name-accept]].
+        if result_type == TYPE_UNKNOWN and not is_substituted and self.tree.nodes.data[node_idx].payload == 0 as u32:
+            let uname = self.node_text(node_idx)
+            if uname != "":
+                ax_printf_local("error: undefined name '%s'\n", get_str_ptr(uname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.diags_count = self.diags_count + 1 as i64
+            safe_free_str(uname)
 
     elif kind == NODE_TYPE_EXPR:
         let sym_idx = self.tree.nodes.data[node_idx].payload
