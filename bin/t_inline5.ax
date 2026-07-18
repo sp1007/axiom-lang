@@ -1,0 +1,18 @@
+// Oracle (exit 112): RFC 0026 P1.5 covers COMPUTED multi-field accessors — small
+// functions that read several scalar struct fields and combine them with
+// arithmetic (area = w*h, perim = (w+h)*2). A very common inlinable class.
+struct Rect:
+    w: i64
+    h: i64
+fn area(r: Rect) -> i64:
+    return r.w * r.h
+fn perim(r: Rect) -> i64:
+    return (r.w + r.h) * 2
+fn main() -> i32:
+    let r = Rect(w: 5, h: 6)
+    mut s := 0 as i64
+    mut i := 0 as i64
+    while i < 3:
+        s = s + area(r)               // 30 * 3 = 90
+        i = i + 1
+    return (s + perim(r)) as i32       // 90 + 22 = 112

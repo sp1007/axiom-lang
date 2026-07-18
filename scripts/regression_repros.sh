@@ -472,6 +472,8 @@ rows=(
   "t_inline3|exit|53"
   # RFC 0026 P1.5 — inlining of scalar-field getters (return p.x)
   "t_inline4|exit|42"
+  # RFC 0026 P1.5 — computed multi-field accessors (area = w*h)
+  "t_inline5|exit|112"
 )
 
 for row in "${rows[@]}"; do
@@ -514,6 +516,7 @@ opt_rows=(
   "t_compliance|60"
   "t_compliance2|28"
   "t_inline2|8"
+  "t_inline5|112"
   "t_foldu32wrap|205"
   "t_licm|44"
   "t_loopcall|140"
