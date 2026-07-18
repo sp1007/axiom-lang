@@ -8,8 +8,13 @@
 # build (CPU ~0, pure scan). That is NOT a hang — keep the per-build timeout >=120s.
 set -u
 cd "$(dirname "$0")/.."
-AXC="${AXC:-bin/axc_stage1.exe}"
+AXC="${AXC:-bin/axc_native.exe}"
 TIMEOUT="${TIMEOUT:-150}"
+# Build test exes here. Default /tmp; override REGTMP to an AV-excluded dir on a
+# Defender-throttled box (e.g. REGTMP=bin/_regtmp, since bin/ is excluded) to keep
+# per-build time ~1s instead of ~99s. See knowledge/infra-defender-build-throttle.
+REGTMP="${REGTMP:-/tmp}"
+mkdir -p "$REGTMP" 2>/dev/null || true
 pass=0; fail=0; failed=""
 
 # rows: name | cmp(out|exit) | expected
@@ -450,7 +455,7 @@ for row in "${rows[@]}"; do
   IFS='|' read -r name cmp want <<< "$row"
   src="bin/${name}.ax"
   [ -f "$src" ] || { echo "SKIP $name (no $src)"; continue; }
-  out_exe="/tmp/reg_${name}.exe"
+  out_exe="$REGTMP/reg_${name}.exe"
   rm -f "$out_exe"
   timeout "$TIMEOUT" "$AXC" build "$src" -o "$out_exe" -O1 >/dev/null 2>&1
   if [ "$cmp" = "reject" ]; then
@@ -497,7 +502,7 @@ for opt in O2 O3; do
     IFS='|' read -r oname owant <<< "$orow"
     osrc="bin/${oname}.ax"
     [ -f "$osrc" ] || continue
-    oe="/tmp/reg_${oname}_${opt}.exe"; rm -f "$oe"
+    oe="$REGTMP/reg_${oname}_${opt}.exe"; rm -f "$oe"
     timeout "$TIMEOUT" "$AXC" build "$osrc" -o "$oe" -${opt} >/dev/null 2>&1
     if [ ! -f "$oe" ]; then
       echo "FAIL ${oname}@-${opt} (compiler produced no exe — crash?)"; fail=$((fail+1)); failed="$failed ${oname}@-${opt}"
