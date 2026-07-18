@@ -135,6 +135,14 @@ buffer-realloc boundary sooner. (8 distinct Vec still clean — the corrupting p
   only dangles once buffers are large enough (3rd HashMap), OR corruption while registering the 3rd
   HashMap's monomorphized methods/types (typetable/symtable growth). Confirm with ASAN.
 
+## Scope is FULLY bounded (2026-07-18) — no other generic type can be affected
+Enumerated every generic type in std/: the only COMPILABLE complex generics are `Vec[T]`, `HashMap[K,V]`,
+`HashSet[T]` (std/collections.ax). All others — `iter` (Map/Filter/Take…), `sync` (Atomic/Mutex/Channel…),
+`gpu` GpuBuffer, `mem` Box — use brace-`{}` spec-dialect syntax that DOESN'T parse, or are
+threading/aspirational-blocked. Vec is stress-clean (even 8 distinct instantiations); both hash
+containers crash. => the bug is provably confined to HashMap/HashSet and there is no further generic
+surface to test — the stress-probe avenue for this bug is exhausted.
+
 ## Bounding result (2026-07-18) — the bug is ISOLATED; compiler is otherwise stress-stable
 Stress-probed 14 diverse feature-heavy oracles 18× each (t_gentree, t_optvecnest, t_vectupmix,
 t_licmchain, t_selfrec, t_inlinecf3, t_genfloatret, t_deepnestmut, t_optstructpay, t_globstr,
