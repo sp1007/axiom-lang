@@ -192,3 +192,20 @@ crash (reproduce with a 1-line HashMap program under `-ctgc-free`, trace the fai
 decide the safe criterion (synthesised free-glue for owned nested heap, vs a correct "owns-no-nested-
 heap" predicate that must inspect `ptr`/container fields, not just `field_is_aggregate`). The
 escape-analysis half remains complete + validated; this is the true blocker for the activation half.
+
+### ⚠️⚠️ MAJOR CORRECTION (2026-07-18) — the sweep crash was NOT a free-glue bug; it's a pre-existing unrelated flake
+Investigated the `t_hashi64` sweep crash properly (throwaway activated compiler `28DCDE0A`, repro +
+narrow). **The crash is PRE-EXISTING and FLAG-INDEPENDENT: `t_hashi64` segfaults ~15% on a NORMAL
+`-self-link -O1` build with NO `-ctgc-free`.** Root: it has THREE distinct `HashMap[K,V]`
+monomorphizations, and 3+ HashMap instantiations intermittently corrupt the heap, which faults at
+TEARDOWN (after Stage 6 self-linking) — **the output exe is always produced and correct (exit 0)**.
+Minimal 9-line repro + full isolation in [[bug-3hashmap-mono-teardown-crash]]. **So everything above
+that attributes the activation blocker to "OP_DESTROY-on-container free-glue codegen" is WRONG** — that
+crash had nothing to do with CTGC free. The general-free **activation's real status is INCONCLUSIVE,
+not blocked**: it passed every deterministic gate (A==B==C `28DCDE0A`, compiler freeable=0, regression
+435/435, ctgc_free_check 10/10); its only broad-sweep red-flag was this unrelated pre-existing flake.
+**To cleanly finish activation:** first fix (or discount) the 3-HashMap teardown crash, then re-run the
+broad `-ctgc-free` sweep comparing against the clean compiler (only flag crashes that do NOT occur
+without the flag). The escape-soundness half stands. NOTE: the OP_DESTROY selector (x86_selector.ax:
+1867) is a trivial `mov arg0,ptr; call free` — there is no evidence it is unsound for containers;
+the "container free-glue" concern was inferred from a misdiagnosed crash and is NOT substantiated.
