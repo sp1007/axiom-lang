@@ -27,12 +27,16 @@ CTGC-free = attempt có gate chặt** (session riêng, B==C + revert-on-red).
   "INLINER IMPLEMENTATION SPEC"). ⚠️ Safe pure-arith inliner = perf-NEUTRAL (fib recursive/collatz
   multi-block both skipped) → next dedicated B==C session = **accumulator-recursion→loop (fib)** or
   **control-flow inliner (collatz)**. Insertion `ssa_opt.ax:1798`.
-- **COMPLIANCE PART 2** (`d77813b`): `bin/t_compliance2.ax` = 28 more real-grammar tests (Vec HOFs/
-  HashMap/arrays/strings/formatting/control-flow). Combined M4 surface = **88 tests**. **Regression
-  402/402 GREEN.** `origin/main`=**`d77813b`**.
-- **NEXT (dedicated-session backlog)**: (1) M6 accumulator→loop for fib (highest bench leverage,
-  B==C-gated, use staged spec); (2) RFC 0015 P3 CTGC-free (high-risk, attempt-with-tight-gate per
-  user). Both need fresh budget + full B==C + -O2 regression + revert-on-red.
+- **COMPLIANCE PART 2** (`d77813b`) + **cross-opt guard** (`94e1379`): `bin/t_compliance2.ax` = 28
+  more real-grammar tests; both compliance suites now gated at -O2/-O3 too. Combined M4 surface = **88 tests**.
+- ✅ **RFC 0026 P1 INLINER SHIPPED** (`d64a68d`): pure-scalar single-block inliner in `ssa_opt.ax`
+  (`inline_func`, level≥1). **B==C bit-identical `aae2ea1f`, regression 407/407**, daily driver
+  promoted (fixpoint now `aae2ea1f`). Win: `benchmarks/hotloop` **185→72ms = 2.57x**; fib/collatz
+  unchanged (skipped). 2 bring-up bugs fixed (AirInst aliasing via `mut nn:=cin`; params.data=TYPE
+  ids not vregs). Oracle `t_inline`. Details [[m6-perf-gate-fib-benchmark]]. `origin/main`=**`d64a68d`**.
+- **NEXT (dedicated-session backlog)**: (1) RFC 0026 P2 — control-flow inliner (catches collatz) +
+  accumulator-recursion→loop (fib), higher bench leverage, same B==C gate; (2) RFC 0015 P3 CTGC-free
+  (high-risk, attempt-with-tight-gate per user). Both need full B==C + -O2 regression + revert-on-red.
 
 ## ✅ CẬP NHẬT 2026-07-12 — RFC 0017 GLOBAL STORAGE HOÀN CHỈNH + probing
 `origin/main`=`ceceb7e`, 243/243, daily driver `bin/axc_native.exe` **A==B==C `81522e76`** (đổi ở `288c86a`=backend; sau đó chỉ test-only).
