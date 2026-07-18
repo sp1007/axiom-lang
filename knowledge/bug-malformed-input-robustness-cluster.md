@@ -62,11 +62,18 @@ chain, `typecheck.ax` ~L3676) with a NON-fatal trace over every NODE_IDENT calle
 `infer_node(callee)`) returns i64 for ≥5 valid call sites, indistinguishable from the genuine bug
 `let x=5; x(3)` (also i64 SYM_VAR). Neither symbol-kind nor callee_type separates them. Also note the
 TypeChecker struct has **no `tokens`/source field**, so pinning offsets needs extra plumbing.
-**A real fix needs either** (a) a proper fn-pointer TYPE in the type system so callable values are
-reliably kinded (RFC-level), or (b) hardening `infer_node`'s callee path so it never spuriously
-returns i64 for a valid call (then a scalar-callee reject becomes safe). Both are larger than a
-bounded bugfix and self-host-risky. **Deferred as a hard blocker** (needs the fn-ptr-type/inference
-design). Priority: low — a rare hand-written typo, and the safe fix is a design change.
+**A real fix needs (b) hardening `infer_node`'s callee path** so it never spuriously returns i64 for
+a valid call (then a scalar-callee reject becomes safe). ⚠️ **CORRECTION 2026-07-18:** the earlier
+"option (a) = add a proper fn-pointer TYPE (RFC-level)" is a DEAD END — fn-pointers are ALREADY
+shipped (BUG#49, `964fcba`, [[next-step-16-fnptr-shipped]]) and are correctly kinded `TYPE_KIND_FUNC`
+(the `let f=add; f(20,22)` control proves it). So there is NO fn-ptr-type design gap and NO RFC to
+write; do NOT draft a fn-pointer RFC (nearly done in error this session). The ONLY viable path is (b):
+find WHY `infer_node(callee)` returns i64 for the 5 valid sites (mis-attributed `name=len`) and make
+that path return the true type / a reliable "is-callable" answer — likely at the RESOLVER (live
+scopes were the reliable oracle for [[bug-undefined-name-accept]]) rather than typecheck's imprecise
+infer_node. This is an implementation-hardening task (needs build + A==B gate + full regression;
+self-host-risky), NOT a design change. **Deferred** — priority low (rare hand-written typo `let x=5;
+x(3)`), blocked on the infer_node/resolver hardening + a quiet box for the gate.
 
 ## m2 (original report) — calling a non-function → accept-then-SEGFAULT
 ```
@@ -176,7 +183,10 @@ GATED on collection==NODE_IDENT — infer_node returns i64 imprecisely for CALL 
   vs C-like truthy). **Deferred — needs user/spec decision, not an autonomous change.** A NARROWER
   future option: reject only str/aggregate/Option conditions (never meaningfully truthy; the 11
   compiler sites are all int so it'd be self-build-safe) — catches `if <Option>` (forgot .is_some())
-  and `if <str>`; left as a candidate if a decision is made to tighten.
+  and `if <str>`. ✅ **SHIPPED 2026-07-18 `216d0a4`** (A==B `1C2E3D6A`, 396th oracle t_condagg):
+  helper `check_cond_type` rejects string/bytes or aggregate-kind (struct/sum/Option/Result/array)
+  conditions at NODE_IF/ELIF/WHILE; scalar-truthy preserved so self-build stays safe. The bool-only
+  full enforcement (migrating the 11 truthy-int sites) remains the deferred design decision above.
 - **Literal out of range for its type** (`let x:u8 = 300` → 44; `let x:u8 = -5` → 251): ACCEPTED,
   DETERMINISTIC WRAP (two's-complement). Consistent with AXIOM's narrow-int wrap semantics (cf.
   [[bug-const-fold-narrow-int-wrap]]). Rust rejects these as a strictness choice; AXIOM wrapping is a
