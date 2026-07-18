@@ -41,11 +41,17 @@ driver promoted. **Win:** `benchmarks/getter` (hot loop calling `getx`) **185.6m
 note below is kept for history. Also covers COMPUTED multi-field accessors for free (GET_FIELD +
 arithmetic already whitelisted: `area(r)=r.w*r.h`, oracle `t_inline5|exit|112`). Safety gate verified
 by negative probe (str-field 16B + Option-field pointer-sum getters correctly SKIPPED, `t_inline6|exit|47`).
-**NEXT beyond P1.5 (all viable, none blocked):** `OP_INDEX` array-element getters (`fn at(a:[i64;N],i)=a[i]`
-— array-value params + indexing WORK, confirmed 2026-07-18; my earlier "language gap" note was a test
-error, int-literal `[10..]` infers i32 vs an i64 param → annotate `let a:[i64;N]=..`. Add OP_INDEX to
-the whitelist gated to scalar elements; both src1/src2 are vregs so NO src2-exclusion needed;
-element-size via TypeTable). Then P2 control-flow inliner (collatz) + accumulator-recursion→loop (fib).
+### ✅ OP_INDEX SHIPPED 2026-07-18 — scalar array-element getter inlining (B==C `343fa03b`, 418/418)
+`fn at(a:[i64;N],i)=a[i]` now inlines. `OP_INDEX` added to the whitelist, gated in `inl_is_inlinable`
+to a resolved SCALAR element: `type_id != 0` (element type is carried there, x86_selector.ax:542) and
+`not type_is_aggregate(table, type_id)` and `type_size_and_align(...) <= 8`. The clone needed NO change
+(OP_INDEX isn't GET_FIELD → both operands rename normally; type_id copied verbatim). Oracle
+`t_inline8|exit|60`. **The getter family is now COMPLETE: pure-arith + scalar field + computed
+multi-field + array-element.** (Array-value params + indexing confirmed working; earlier "language
+gap" was a test int-literal-i32-vs-i64-param mismatch.)
+**NEXT = the real fib/collatz-gate closers:** P2 control-flow inliner (multi-block clone + block-id
+remap + CFG rebuild → catches collatz_len) + accumulator-recursion→loop (fib). Both large, high-risk,
+dedicated B==C sessions.
 
 **(historical) P1.5 candidate — getter inlining (`fn read_x(p)=return p.x`), scoped 2026-07-18 (do NOT rush):**
 adding `OP_GET_FIELD` to the whitelist is MORE than one opcode — verified constraints:

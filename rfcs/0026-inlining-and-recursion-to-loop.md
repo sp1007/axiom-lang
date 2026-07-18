@@ -1,9 +1,11 @@
 # RFC 0026 — Function Inlining & Self-Recursion→Loop (M6 perf)
 
-- Status: **P1 + P1.5 SHIPPED** — pure-scalar single-block inliner (`d64a68d`, hotloop 2.57x) +
-  scalar-field getter inlining (TypeTable-gated, B==C `f286cac9`, 412/412, getter bench 2.89x). See
-  [[m6-perf-gate-fib-benchmark]]. Groundwork harness/baseline in `8d05f96`. P2 (control-flow inliner
-  for collatz; accumulator-recursion→loop for fib) remains, each a dedicated B==C-gated session.
+- Status: **P1 + P1.5 + OP_INDEX SHIPPED** — pure-scalar single-block inliner (`d64a68d`, hotloop
+  2.57x) + scalar-field/multi-field getter inlining (`f286cac9`, getter 2.89x) + scalar array-element
+  getter inlining (`343fa03b`, 418/418). The getter family is complete (field + index). See
+  [[m6-perf-gate-fib-benchmark]]. Groundwork in `8d05f96`. P2 (control-flow inliner for collatz;
+  accumulator-recursion→loop for fib) remains — the real fib/collatz-gate closers, each a dedicated
+  B==C-gated session.
 - Author: autopilot (2026-07-18), per user direction [[autopilot-direction-2026-07-18]]
 - Affected: `bootstrap/stage1/ssa_opt.ax` (optimizer pipeline), AIR only. No syntax,
   no ABI, no linker, no runtime changes.

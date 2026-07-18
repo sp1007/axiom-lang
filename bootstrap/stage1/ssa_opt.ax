@@ -1812,6 +1812,8 @@ fn inline_op_ok(op: u16) -> bool:
         return true
     if op == OP_GET_FIELD:      // gated further to scalar fields of a param (see inl_is_inlinable)
         return true
+    if op == OP_INDEX:          // gated further to a scalar element type (see inl_is_inlinable)
+        return true
     if op >= 0x0201 as u16 and op <= 0x0223 as u16:
         return true
     return false
@@ -1853,6 +1855,21 @@ fn inl_is_inlinable(callee: ptr[AirFunc], table: ptr[TypeTable]) -> bool:
             if field_is_pointer_sum(table, struct_type, inst.src2):
                 return false
             if field_size(table, struct_type, inst.src2) > 8 as u32:
+                return false
+        elif inst.opcode == OP_INDEX:
+            // Array/collection element read. The element type is carried in
+            // `type_id` (x86_selector.ax:542); require it resolved (nonzero) and
+            // scalar (<=8B, not aggregate) so the inlined index loads a value, not
+            // a by-address aggregate. Both operands (array ptr, index) are vregs.
+            if inst.type_id == 0 as u16:
+                return false
+            let elem_ty = inst.type_id as u32
+            if type_is_aggregate(table, elem_ty):
+                return false
+            mut esz := 0 as u32
+            mut eal := 0 as u32
+            type_size_and_align(table, elem_ty, &esz, &eal)
+            if esz > 8 as u32:
                 return false
         i = i + 1 as i64
     if nret != 1 as i64:

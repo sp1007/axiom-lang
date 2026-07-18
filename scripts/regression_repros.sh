@@ -478,6 +478,8 @@ rows=(
   "t_inline6|exit|47"
   # RFC 0026 P1.5 — getter of a scalar field on a struct that ALSO has an aggregate field
   "t_inline7|exit|37"
+  # RFC 0026 — inlining a scalar array-element getter (at(a,i)=a[i], OP_INDEX)
+  "t_inline8|exit|60"
 )
 
 for row in "${rows[@]}"; do
