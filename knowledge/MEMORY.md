@@ -26,6 +26,7 @@
 - [🤖 HARNESS autopilot](harness-autopilot.md) — `.claude/` có agent+skill tự chủ; "tiếp tục"→`axiom-autopilot` tự chọn task→gate→auto-commit. CLAUDE.md §24.
 - [✅ CSE redef-operand miscompile](bug-cse-redef-operand-miscompile.md) — cse_func reuse expr qua redefinition operand → `x=x op x` sai ở -O1; AIR non-SSA. Fix scan-down-stop-at-redef. `f65addb` B==C.
 - [📋 Backlog OPEN items](backlog-open-items.md) — danh sách task còn mở đã đối soát (next-step-15 + RFC follow-ups); ĐỪNG làm lại phần đã ship.
+- [🔍 Probe 2026-07-18 CLEAN (0 bugs)](probe-batch-1012-clean-2026-07-18.md) — 3 batch ~22 feature-cross (O0-O3) KHÔNG bug thật; mọi mismatch = lỗi tự viết test (`#`≠comment dùng `//`; sum=`type T=A|B`; inline match-arm cấm). Banked oracle t_optvecnest(42). Yield≈0 → dừng probe, re-plan milestones. ĐỪNG lặp lại crosses này.
 - [✅ RFC 0019 multi-field variant SHIPPED](rfc0019-multifield-variant-shipped.md) — `Rect(i64,i64)` (desugar→synth-struct); ĐÓNG BUG#81. `59bc731`, A==B==C, 125/125.
 - [✅ BUG#91 FIXED generic-sum match](bug91-generic-sum-ctor-inference-open.md) — unannotated `let p = One(42)` cho `Opt[T]` trả 0: match GENERIC_INST-of-sum không lower. Fix `resolve_sum_type`. `57b2218`.
 - [✅ BUG#93 silent-segfault FIXED](bug93-qualified-str-call-segfault.md) — unresolved module-qualified call (`std.math.gcd` typo) giờ REJECT sạch (gốc=native strip-import bundling). `468f581`. CÒN: import-driven bundling.

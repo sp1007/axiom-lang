@@ -236,6 +236,7 @@ rows=(
   "t_hashstrkey|exit|30"
   "t_u64cmp|exit|7"
   "t_optveciter|exit|6"
+  "t_optvecnest|exit|42"
   "t_deepopt|exit|99"
   # RFC 0017 P2 — aggregate (struct/array/tuple) module-level globals
   "t_globstruct|exit|30"
