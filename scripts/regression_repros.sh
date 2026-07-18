@@ -468,6 +468,8 @@ rows=(
   "t_inline|exit|140"
   # RFC 0026 — inliner edge cases (0-arg / param-passthrough / nested calls / mixed)
   "t_inline2|exit|8"
+  # RFC 0026 — inliner crossed with generics / loops / branches (self-host paths)
+  "t_inline3|exit|53"
 )
 
 for row in "${rows[@]}"; do

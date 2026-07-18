@@ -1,0 +1,19 @@
+// Oracle (exit 53): RFC 0026 inliner crossed with generics, loops, and branches
+// (self-host-critical paths). Inlined helper feeds a generic arg, arithmetic, and
+// a loop-body branch. Must stay correct with inlining on/off.
+fn inc(x: i64) -> i64:
+    return x + 1
+fn dbl(x: i64) -> i64:
+    return x + x
+fn pick[T](a: T) -> T:
+    return a
+fn main() -> i32:
+    let a = pick[i64](inc(20))          // 21
+    let b = dbl(inc(9))                  // dbl(10) = 20
+    mut c := 0 as i64
+    mut i := 0 as i64
+    while i < 5:
+        if dbl(i) >= 4:                  // i >= 2
+            c = c + inc(i)               // i=2,3,4 -> 3+4+5 = 12
+        i = i + 1
+    return (a + b + c) as i32            // 21 + 20 + 12 = 53
