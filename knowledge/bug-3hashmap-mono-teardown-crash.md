@@ -168,6 +168,24 @@ The gate builds each program ONCE and checks the OUTPUT exe's exit code; the exe
 a 1-in-~12 teardown crash rarely hits on a single build. The fixpoint checks output determinism (holds
 — the crash is post-output). So this slipped through as a rare, output-invisible teardown flake.
 
+## Debug-allocator path is BLOCKED (checked 2026-07-18) — C backend can't build the compiler
+Tried to catch the OOB write with the C runtime's canary allocator: `runtime/axalloc/axalloc_compiled.c`
+has `AX_ALLOC_DEBUG` (header+footer magics, `verify_all_allocations` on every alloc/free, `ax_free`
+footer-canary check is even UNCONDITIONAL). It's linked by the **C backend** (`-use-gcc`, main_air.ax:
+1301), NOT the self-link path. BUT: **`-use-gcc` build of the whole compiler crashes DETERMINISTICALLY
+at typecheck (3/3), even WITHOUT the debug allocator** — the C backend is broken/unmaintained for a
+program the size of the compiler (fast_fixpoint's `-self-link` build is reliable, so this is a
+C-backend-specific limitation, not the hash-mono bug). So I could not produce a canary-instrumented
+compiler this way. The **self-link daily driver uses a different, freestanding allocator WITHOUT the
+axalloc canaries** — which is why the OOB write is a raw SIGSEGV instead of a clean canary panic.
+**Remaining fix approaches (pick one in a dedicated session):**
+1. Add a footer-canary / verify hook to the SELF-LINK allocator (find it: the bundled freestanding
+   runtime, bootstrap/runtime or the self-link object gen) so the daily driver catches the overflow
+   cleanly with the overflowed block's size → pins the alloc site. Most direct.
+2. Repair the C backend enough to build the compiler, then use AX_ALLOC_DEBUG (bigger yak-shave).
+3. Source audit of `builder_type_size_and_align` (typetable/air_builder) for a generic-inst / nested
+   hash-container-array size miscalc that under-sizes an `@alloc` → the overflow. Speculative w/o (1).
+
 ## Tooling reality (checked 2026-07-18) — why the fix is a real session, not a tick
 WSL2 (Ubuntu 26.04) IS available, but `valgrind`/`gdb` are NOT installed, and — decisively — the
 self-hosted compiler binary carries NO debug symbols (no DWARF), so a sanitizer would report raw
