@@ -1,6 +1,6 @@
 ---
 name: bug-3hashmap-mono-teardown-crash
-description: "OPEN (low-severity): compiling a program with 3+ DISTINCT HASH-CONTAINER monomorphizations (HashMap and/or HashSet, cumulative) intermittently (~8%) segfaults the compiler AT TEARDOWN (after Stage 6 self-linking). OUTPUT exe is always produced and correct (exit 0) — only the compiler's process exit crashes. Flag-independent (not -ctgc-free). NOT clone-volume (8 distinct Vec = clean) — specific to hash containers' per-key-type hash/eq mono + occupied/keys arrays. Minimal repro included. Needs ASAN/Linux to root-cause."
+description: "OPEN (low-severity): compiling a program whose HASH-CONTAINER (HashMap/HashSet) monomorphization WORK crosses a cumulative threshold intermittently (~10%) segfaults the compiler AT TEARDOWN (after Stage 6). Trigger is cumulative mono complexity, not a fixed count: 3 distinct scalar-value maps OR just 2 distinct STRUCT-value maps. OUTPUT exe always correct (exit 0) — only the compiler's process exit crashes. Flag-independent. NOT clone-volume (8 Vec clean) — hash-container-mono-specific. Minimal repro included. Needs ASAN/Linux to pin (binary unsymbolized)."
 metadata:
   type: project
 ---
@@ -67,6 +67,19 @@ that only dangles once the buffers are large enough (3rd instantiation), or (b) 
 growth while registering the 3rd HashMap's monomorphized methods. **Confirming the exact line needs a
 memory sanitizer** (build the Linux ELF target, run the 9-line repro under valgrind → faulting free +
 the corrupting store). This localization + the minimal repro should make that a short tooled session.
+
+## REFINEMENT 2 (2026-07-18) — trigger is a CUMULATIVE hash-container mono-complexity threshold, not a fixed count of 3
+Stress-probing novel combos revised the "3+ distinct" framing: **2 distinct HashMaps with a STRUCT
+(aggregate) value type crash** — `HashMap[i64,P]` + `HashMap[str,P]` where `struct P{x,y}` (n4a) = 3/20,
+even with NO get/match (n4b, one struct-value map + get + match = 0/20, so the Option/match path is NOT
+the trigger). Yet 2 distinct SCALAR-value maps (c_2map) = 0/20 and 3 scalar maps = crash. So the trigger
+is the **cumulative hash-container monomorphization WORK crossing a threshold**, not a literal count:
+aggregate value types (or richer K/V) do more mono work per instantiation, tipping it at 2 instead of 3.
+**This raises reachability**: just 2 `HashMap`/`HashSet` with struct values (a plausible real pattern)
+can hit it — still LOW severity (correct output, teardown-only) but more reachable than first thought.
+Consistent with the held-ptr-across-realloc theory: more per-instantiation mono nodes/types cross the
+buffer-realloc boundary sooner. (8 distinct Vec still clean — the corrupting path is hash-container-mono
+-specific, and struct values add work WITHIN that path, not general mono volume.)
 
 ## REFINEMENT (2026-07-18) — it's HASH-CONTAINER mono, not HashMap-specific, not clone-volume
 - **HashSet is ALSO affected:** 3 distinct `HashSet[T]` (`hs3`) = 2/30; a MIX of 2 HashMap + 1 HashSet
