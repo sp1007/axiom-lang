@@ -68,6 +68,20 @@ growth while registering the 3rd HashMap's monomorphized methods. **Confirming t
 memory sanitizer** (build the Linux ELF target, run the 9-line repro under valgrind → faulting free +
 the corrupting store). This localization + the minimal repro should make that a short tooled session.
 
+## RULED OUT by inspection (do NOT re-check these in the fix session)
+- **All growable-vector element sizes are CORRECT** → not a wrong-size memcpy/alloc overflow:
+  `NodeVec.push` 24B (ast.ax:145/147, AstNode=24B), `TokenVec.push` 8B (lexer.ax:20/22, Token=8B),
+  `IntVec` 4B (lexer.ax:43/45), `TypeSubstVec.push` 8B (mono.ax:28). Each frees the old buffer after
+  memcpy correctly.
+- `clone_subtree_from` extracts the source node's fields to SCALARS (ast.ax:243-248) before `add_node`,
+  and re-indexes `src_tree.nodes.data[...]` fresh in its child loop → no stale-pointer there.
+- `substitute_type_params` holds `&self.tree.nodes.data[node_idx]` (mono.ax:74) but does NOT grow the
+  tree within its own body → that held pointer is stable during the call.
+- The intermittency rules out a deterministic fixed-capacity overflow. Remaining hypothesis = a held
+  pointer into `self.src`/`self.tokens`/`self.nodes` across one of `clone_subtree_from`'s reallocs that
+  only dangles once buffers are large enough (3rd HashMap), OR corruption while registering the 3rd
+  HashMap's monomorphized methods/types (typetable/symtable growth). Confirm with ASAN.
+
 ## Suspected root cause (NOT confirmed — needs tooling)
 Heap corruption introduced while monomorphizing the 3rd HashMap instantiation (mono.ax / typetable /
 the generic-instance size+align machinery), latent until the cleanup `@free` chain at the end of the
