@@ -52,3 +52,29 @@ That is the correct kickoff for the future dedicated activation session.
 Gate scripts for the eventual activation: `scripts/ctgc_free_check.sh` (`CTGC_FREE_OK`), oracles
 `bin/t_ctgcfree.ax` (42), `bin/t_drop.ax`, `bin/t_escape.ax`. See [[bug69-ctgc-ownership-escape-noop]],
 [[rfc0014-drop-glue-blocked]], [[backlog-open-items]].
+
+## ⭐ MEASUREMENT RESULT (2026-07-18, via `-ctgc-free-report` `d18bc4f`) — blocker now ENUMERATED + root-caused
+Ran the shipped report against the whole self-host source:
+`bin/axc_native.exe build bootstrap/stage1/tmp_concatenated_air.ax -o … -self-link -O1 -ctgc-free-report`.
+**The freeable set is only SIX locals across the ENTIRE compiler** (not "pervasive"):
+`v_exp`, `exp` (both `main_air.ax` ~1634/1666), `init_inst` (`ssa_opt.ax:1108`), `subst`
+(`mono.ax:454`), `dst_alloc` (`x86_regalloc.ax:1202`), `sup` (`std/scheduler.ax:495`, concurrency).
+All are ctor-literal locals (ModuleExport / AirInst / TypeSubstVec / RegAllocation / AxSupervisor).
+
+**Root cause of the `-ctgc-free` self-build UAF is now PRECISE, not vague:** at least
+`v_exp`/`exp` are immediately `(&mod.exports).push(v_exp)` — a **container store that ESCAPES**,
+yet the escape analyser marks them freeable. Under activation, block-end free would destroy a
+`ModuleExport` still aliased inside `mod.exports`, UAF'd later at link/emit. `init_inst` is the same
+class (AirInst ctor then inserted into the function's inst list). So the blocker = **the escape
+analyser does not treat "a ctor local passed by value into a container `.push()`/store method" as
+escaping** (escape.ax:156-166 handles struct/array/index/field origins + assignments, but NOT
+by-value method-arg-into-container). That is a **bounded escape-analysis improvement** (mark a local
+escaping when it flows as a by-value arg to a `push`/insert/store method whose receiver outlives it),
+MUCH more tractable than "pervasive aliasing". `subst`/`dst_alloc` are likely function-local scratch
+(safe to free) — the container-store trio is the danger.
+
+**Next dedicated activation session, concrete plan:** (1) extend the escape analyser to add an
+escape-edge when a local is a by-value argument to a container mutator (`push`/`insert`/`set`), re-run
+the report → the freeable set should shrink to only the truly-local scratch; (2) only then flip
+`-ctgc-free` on and require the `ctgc_free_check.sh` self-build fixpoint + full -O2 regression, revert
+on red. The report is the regression-free way to re-measure the set after each escape-analysis change.
