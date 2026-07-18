@@ -56,9 +56,18 @@ rebuild) must be extended with CFG surgery:
    emission order; preds in block-visit order). `recompute_cfg` MUST reproduce that exact ordering or
    a -O2-built compiler diverges. Verify by asserting recompute_cfg == the as-built CFG on every
    function before trusting it for inlined ones.
-4. Gate: build the OP_BRANCH target encoding first (which of dest/src1/src2 hold the two block ids),
-   then the split, then recompute_cfg, then the full B==C + -O2 regression + collatz benchmark.
+4. **Terminator encoding (found 2026-07-18, x86_selector.ax:1563-1569):** `OP_JUMP` target block id
+   = `src1` (1 succ). `OP_BRANCH` cond = `src1` (vreg), TRUE-target (JCC-NE) = `src2`, FALSE-target
+   (fall-through) = `dest` (2 succs). `OP_RETURN` = exit (no succ). So `recompute_cfg` per block:
+   JUMP→succ[src1]; BRANCH→succ[src2,dest] with UNIQUE append (BRANCH where src2==dest = 1 succ);
+   preds built by scanning source blocks in block order (matches add_edge's build order). The
+   then/else succ ORDER (src2-first vs dest-first) must be validated empirically against B==C — flip
+   if a -O2-built compiler diverges.
+5. Gate: the split, then recompute_cfg, then the full B==C + -O2 regression + collatz benchmark.
 This is milestone-scale (~200 lines + the ordering-exact recompute_cfg); do it in a dedicated session.
+NOTE: `recompute_cfg` cannot be validated/committed standalone — unconditionally recomputing an
+identical CFG is pure overhead (§10 dead code) — so it must land TOGETHER with the multi-block inliner
+that calls it. All technical unknowns are now resolved; the implementation is mechanical + gate-heavy.
 
 ### 2a. Inlining (`inline_module`)
 For each `OP_CALL` to a **directly-resolvable, non-extern, non-recursive** callee whose
