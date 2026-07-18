@@ -43,6 +43,23 @@ whitelisted pure-scalar/control-flow body, no nested calls/memory/aggregates.
   **fib still needs accumulator-recursion→loop** (self-recursive → not inlinable) = the remaining P2 lever.
 - Oracle `t_inlinecf` (exit 17: if/else `absdiff` + while `sumloop` inlined). Gate cmd unchanged.
 
+## ⚠️ 2026-07-18 — multi-block GETTER/INDEX extension ATTEMPTED → REVERTED (deferred)
+Tried extending `inline_multiblock_func` to inline branchy callees that read a SCALAR FIELD/
+ELEMENT of an aggregate PARAM (add OP_GET_FIELD/OP_INDEX to the whitelist + the single-block
+scalar gates + a GET_FIELD clone case that keeps src2=field-index verbatim + RELAX the scalar-param
+restriction to allow struct/array params, mirroring the single-block getter path). **Correctness was
+FINE** (oracle t_inlinecf3 struct-field-getter=45, array-index-getter=14, all O0==O1==O2==O3; getter
+callee inlined) and **B==C stayed stable** (`2E316035`). BUT the full regression **stalled at 0-PASS
+after 5 min** — abnormal for the fast early tests. Root cause NOT confirmed (self-build slowness that
+session was ENVIRONMENTAL — Defender/load, clean C22EED17 rebuild was ALSO ~25s, so the getter ext did
+NOT slow the self-build). Prime suspect: a specific regression program with struct/array-field-heavy
+branchy code triggers pathological inlining bloat → slow O(n²)-ish value passes, OR an infinite
+loop/hang in the inliner on some CFG. **REVERTED (uncommitted)** — marginal ROI (getters aren't in the
+benchmarks; would need a struct-field-getter-in-loop bench to justify per gate #3), and it needs a
+proper investigation under non-Defender conditions. **Before retrying:** (1) add a per-caller inlining
+BUDGET (cap total inlined insts) to bound bloat; (2) bisect which regression program stalled (build
+each with the getter-ext compiler, `timeout 20`); (3) confirm it's bloat not a hang. Deferred.
+
 ## ✅ 2026-07-18 (autopilot) — RFC 0026 P1 INLINER SHIPPED (B==C, 407/407, hotloop 2.57x)
 The pure-scalar single-block inliner is IMPLEMENTED, gated, and shipped in `ssa_opt.ax`
 (`inline_func` + helpers, wired in `SsaOptimizer.run` at level≥1 before the per-fn passes).
