@@ -79,3 +79,22 @@ line); `.length()` doesn't exist (`.len` is a field).
 rewrite+run) to produce the full M4-core (001-060) baseline + gap list. Each gap is then a
 bounded task (RFC if syntax, else a plain fix). Groups 7-10 stay deferred (async/comptime/
 gpu/quantum subsystems). First known gap to schedule: **RFC + impl for `const` declarations.**
+
+### Running M4-core baseline (measured on axc_native `1C2E3D6A`, impl grammar rewrite)
+- **Group 1 (001-010): 9/10.** GAP: `const NAME = value` (syntax, RFC). Rest supported.
+- **Group 2 (011-020): 10/10.** All control flow works (if/elif/else, for-in-array, for-in-
+  range, match, break, continue, nested if, early `return`). `=>` match-arm is surface dialect
+  (impl uses `pattern:` block); a malformed `let arr =` in the suite itself (missing `[1,2,3]`).
+- **Group 3 (021-030): ~6/10 (feature-partial).** SUPPORTED: plain fn call, `mut` param
+  (by-value), recursion, higher-order via **named** fn-ptr param (BUG#49), `let op = named_fn`
+  (fn value), **tuple return `-> (i32,i32)` + destructuring `let (x,y) = f()`** (works, exit 30).
+  GAPS: (1) **anonymous lambda literal `fn(a:i32)->i32: ...`** fails to parse as an expression
+  in BOTH `let f = fn...` and argument position ("expected expression nud") — tests 024/025/029;
+  ⚠️ this CONTRADICTS [[next-step-16-fnptr-shipped]]/2cc67ed which claim inline lambda×generic
+  works, so there is a SPECIFIC working lambda form not yet re-found (reconcile before filing —
+  maybe single-line without `->`, or only in a Vec HOF call site). (2) **closure capture**
+  `fn(x): return x + outer` — test 030, expected gap (RFC 0008 closures NOT started).
+**Emerging pattern:** the core LANGUAGE is largely implemented; most M4-core gaps are (a)
+surface-syntax dialect (`const`, `=>`, brace blocks) = RFC grammar decisions, or (b) a few real
+unimplemented features (closure capture; possibly the lambda-literal-as-expression form). Groups
+4-6 (structs/ownership, interfaces/generics, error/sum) still to measure.
