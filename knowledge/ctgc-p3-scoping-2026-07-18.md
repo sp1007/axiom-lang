@@ -96,3 +96,21 @@ and the 9 `-ctgc-free` oracles still free their true ctor locals (CTGC_FREE_OK).
 "un-enumerated pervasive aliasing" framing entirely: the real blocker was 5 container-store escapes
 from ONE dispatch hole, now fixed.** Remaining before activation: audit whether `dst_alloc` (and any
 future freeable) is truly single-owner, then the activation gate.
+
+## DIAGNOSTIC (2026-07-18, no source change) — `-ctgc-free` self-build now REPRODUCES fixpoint
+Built the compiler with itself under `-ctgc-free` twice (B then C): both hops exit 0, no
+abort/panic, and **B==C == the normal fixpoint hash `48E17C7B`** (byte-identical). The identity is
+because the compiler's ONLY freeable local is `dst_alloc` (a `RegAllocation`), which declares no
+`drop(self)`, and the backend narrowing (`air_builder.ax:4225`, `resolve_drop_method != 0`) emits
+`OP_DESTROY` only for drop-typed locals -- nothing is actually freed -- identical binary. So
+`-ctgc-free` is currently a **safe no-op on the self-host build** (matches RFC 0014 `c149872`). The
+RFC's "`-ctgc-free` self-build UAF-segfaults" referred to GENERAL free (removing the drop-narrowing).
+That true-activation step is now **bounded to a single compiler local**: removing the
+`air_builder.ax:4225` narrowing would make the compiler free exactly `dst_alloc` on self-build (plus
+each regression program's own freeable set -- re-measure with `-ctgc-free-report` before flipping).
+**Next dedicated session** = (a) audit `dst_alloc` single-ownership + run `-ctgc-free-report` over
+every regression program to enumerate their freeable sets, (b) remove the drop-narrowing, (c) gate =
+`-ctgc-free` self-build B==C + FULL regression built by the `-ctgc-free` compiler + ctgc_free_check,
+revert-on-red. High enough risk (changes free behavior for ALL user programs) that it is its own
+deliberate increment, not a tail-of-session change -- but now de-risked from "pervasive" to "one
+compiler local + measurable per-program sets".
