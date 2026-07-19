@@ -3214,7 +3214,10 @@ pub fn try_lower_match_bsearch(mut self: ptr[FuncLowering], scrutinee_idx: u32, 
                 let body = pn.next_sibling
                 if pn.kind == NODE_LITERAL_PAT:
                     let ltext = self.mb.get_token_text(pn.token_idx)
-                    values[fi] = parse_int_from_str(ltext)
+                    mut lv := parse_int_from_str(ltext)
+                    if pn.payload == 1 as u32:  // negative literal pattern (`-5`)
+                        lv = 0 as i64 - lv
+                    values[fi] = lv
                     @free(get_str_ptr(ltext))
                     bodies[fi] = body
                     fi = fi + 1 as i64
@@ -3357,6 +3360,8 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             // C-switch case: compare the scrutinee value against this literal.
             let ltext = self.mb.get_token_text(pat_node.token_idx)
             variant_tag = parse_int_from_str(ltext)
+            if pat_node.payload == 1 as u32:  // negative literal pattern (`-5`)
+                variant_tag = 0 as i64 - variant_tag
             @free(get_str_ptr(ltext))
         elif pat_node.kind == NODE_VARIANT_PAT:
             let vsi = pat_node.payload
@@ -3397,7 +3402,11 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                 self.fb.add_edge(self.fb.current_block(), merge_block)
             done = true
         else:
-            if variant_tag < 0 as i64:
+            // A sum tag that never resolved stays at the -1 default; clamp it to 0 so the
+            // ICONST split is well-formed. But an INT literal pattern may LEGITIMATELY be
+            // negative (`match n: -5:` — RFC: negative match-arm literals), so never clamp
+            // in the int case (positive int literals were never < 0 before this feature).
+            if not is_int and variant_tag < 0 as i64:
                 variant_tag = 0 as i64
             mut const_type := 4 as u32   // i64 tag (sum)
             if is_int:

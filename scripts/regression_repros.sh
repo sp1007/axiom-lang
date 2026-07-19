@@ -506,6 +506,8 @@ rows=(
   "t_selfrec2|exit|21"
   # RFC 0026 — multi-block inlining of a struct-field GETTER body (GET_FIELD in branches)
   "t_inlinecf3|exit|45"
+  # Negative match-arm literals (`match n: -5:`) — sign carried in NODE_LITERAL_PAT payload
+  "t_negmatch|exit|70"
 )
 
 for row in "${rows[@]}"; do
@@ -563,6 +565,7 @@ opt_rows=(
   "t_selfrec2|21"
   "t_inlinecf3|45"
   "t_shiftloop|63"
+  "t_negmatch|70"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

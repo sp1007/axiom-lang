@@ -1,0 +1,46 @@
+// Oracle (exit 70): negative match-arm literals (`match n: -5: ...`).
+// The lexer emits `-` as a separate TK_MINUS token; parse_pattern now folds it into
+// the following numeric literal pattern and carries the sign in the NODE_LITERAL_PAT
+// PAYLOAD (payload==1 => negate the token value at lowering) — there is no spare u16
+// flag bit. `classify` exercises the linear i64-switch lowering site; `wide` has >=4
+// signed literal arms (the jump-table/bsearch candidate shape) so both value-reading
+// lowering sites stay correct with negative literals.
+// See knowledge/backlog-open-items.md "Negative match-arm literals".
+fn classify(n: i64) -> i64:
+    match n:
+        -5:
+            return 1
+        -1:
+            return 2
+        0:
+            return 3
+        7:
+            return 4
+        _:
+            return 0
+
+fn wide(n: i64) -> i64:
+    match n:
+        -100:
+            return 10
+        -50:
+            return 20
+        -1:
+            return 30
+        50:
+            return 40
+        100:
+            return 50
+        _:
+            return 99
+
+fn main() -> i32:
+    mut acc := 0 as i64
+    acc = acc + classify(-5)     // 1
+    acc = acc + classify(-1)     // 2
+    acc = acc + classify(0)      // 3
+    acc = acc + classify(7)      // 4
+    acc = acc + wide(-100)       // 10
+    acc = acc + wide(-50)        // 20
+    acc = acc + wide(-1)         // 30
+    return acc as i32            // 70

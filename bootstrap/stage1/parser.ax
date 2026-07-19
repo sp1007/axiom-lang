@@ -906,6 +906,24 @@ pub fn parse_pattern(mut self: ptr[Parser]) -> u32:
           tok.kind == TK_CHAR_LIT or tok.kind == TK_TRUE or tok.kind == TK_FALSE or tok.kind == TK_NIL):
         self.consume()
         return self.tree.add_node(NODE_LITERAL_PAT, self.token_idx(tok))
+    elif tok.kind == TK_MINUS:
+        // Negative numeric literal pattern (`match n: -5: ...`). The lexer emits `-` as a
+        // separate TK_MINUS token; parse_pattern must fold it into the following numeric
+        // literal. There is no spare u16 flag bit for "negative", so the sign is carried in
+        // the node PAYLOAD (payload==1 => negate the token value at lowering); NODE_LITERAL_PAT
+        // otherwise leaves payload unused. Only INT/FLOAT literals may be negated.
+        let nxt = self.peek_at(1 as i64)
+        if nxt.kind == TK_INT_LIT or nxt.kind == TK_FLOAT_LIT:
+            self.consume() // '-'
+            let lit = self.peek()
+            self.consume() // the numeric literal
+            let node = self.tree.add_node(NODE_LITERAL_PAT, self.token_idx(lit))
+            self.set_payload(node, 1 as u32)
+            return node
+        else:
+            self.errorf(tok, "expected pattern")
+            self.consume()
+            return 0 as u32
     elif tok.kind == TK_L_PAREN:
         self.consume()
         let node = self.tree.add_node(NODE_TUPLE_PAT, self.token_idx(tok))
