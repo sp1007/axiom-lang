@@ -3318,10 +3318,12 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         ))
         match_reg = tag_reg
 
-    // RFC 0028 (opt-in `-jumptable`): a dense i64 `match` -> balanced O(log N) compare tree.
-    // Gated to i64 (scrut_type 4) so the signed sort matches the signed OP_LT; falls back to
-    // the linear chain below on any non-qualifying shape. Default off -> linear -> A==B.
-    if self.mb.jumptable_enabled and is_int and scrut_type == 4 as u32:
+    // RFC 0028 (opt-in `-jumptable`): a dense SIGNED-int `match` -> balanced O(log N) compare
+    // tree. Gated to signed integer scrutinees (i8=1/i16=2/i32=3/i64=4/isize=15) so the i64
+    // (signed) arm-value sort matches the signed OP_LT ordering; unsigned/bool/char stay on the
+    // linear chain (their order would differ). Falls back to linear on any non-qualifying shape.
+    // Default off -> linear -> self-build A==B.
+    if self.mb.jumptable_enabled and is_int and (scrut_type == 1 as u32 or scrut_type == 2 as u32 or scrut_type == 3 as u32 or scrut_type == 4 as u32 or scrut_type == 15 as u32):
         if self.try_lower_match_bsearch(scrutinee_idx, match_reg, scrut_type):
             return
 

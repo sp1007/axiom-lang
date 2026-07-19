@@ -1,0 +1,25 @@
+// Oracle (exit 28): i32 (narrow signed) dense match -> compare tree under -jumptable (RFC
+// 0028). Validates the extension beyond i64. 5 arms (0,1,2,5,7) + default; the i32 signed
+// sort/compare must match linear. 10+30+60+80 + 99(gap 3) = 279; 279 % 251 = 28.
+fn cls(n: i32) -> i32:
+    match n:
+        0:
+            return 10
+        1:
+            return 20
+        2:
+            return 30
+        5:
+            return 60
+        7:
+            return 80
+        _:
+            return 99
+fn main() -> i64:
+    mut s: i32 = 0
+    s = s + cls(0)
+    s = s + cls(2)
+    s = s + cls(5)
+    s = s + cls(7)
+    s = s + cls(3)
+    return (s % 251) as i64
