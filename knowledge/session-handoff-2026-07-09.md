@@ -7,11 +7,21 @@ metadata:
   originSessionId: 044ec622-2518-45eb-9368-07febdfca8f1
 ---
 
-# 🟢 STATE 2026-07-19 (autopilot) — READ FIRST
-HEAD=**`5003876`** (pushed to origin/main), daily driver `bin/axc_native.exe` = **`9A178747`**
-(CTGC-activated + container free-glue), **436/436**, ctgc_free_check **12/12**. Tree CLEAN.
-⚠️ Rebuild the daily driver first thing next session: `& scripts/build_native.ps1` (bin/*.exe are
-gitignored — regenerated from committed sources; the fixpoint hash to expect is `9A178747`).
+# 🟢 STATE 2026-07-19b (autopilot) — READ FIRST
+HEAD=**`5a22500`** (pushed to origin/main), daily driver `bin/axc_native.exe` = **`af3ba8e3`**
+(shift-in-loop fix on top of CTGC + container free-glue), **439/439**, ctgc_free_check **12/12**.
+Tree CLEAN (except pre-existing untracked `scratch/self_linked_concatenated.ax` artifact +
+user's `.claude/settings.json`). ⚠️ Rebuild the daily driver first thing next session:
+`& scripts/build_native.ps1` (bin/*.exe gitignored — regenerated; expect fixpoint `af3ba8e3`).
+⭐ **This session (2026-07-19b): FIXED a load-bearing variable-shift-in-loop codegen miscompile
+`5a22500`** — `x << k`/`x >> k` with a loop-induction-variable count computed `x << 0` (count
+frozen at loop-entry value); root = `const_shift_amount` missing the non-SSA def-count guard its
+twin `const_divisor_pow2` already had. Backend change, B==C=`af3ba8e3`, A!=B (compiler's own
+source hit it). Surfaced by autopilot bug-probing (hand-oracle caught an O-level-consistent wrong
+answer, invisible to O0-vs-O1). Oracle `t_shiftloop`(63). Full detail [[bug-variable-shift-in-loop]].
+Backlog unchanged below (all dedicated-session scale). Probe batch also cleared 7 novel crosses
+CLEAN (HashMap-valued-Vec, mixed-width-sum-payload, HOF map→filter→fold chain, mutual-recursion
+struct return, nested Option[Result], array-of-struct index+field mutation) — bank if useful.
 Session cleared the two remaining OPEN bugs + the inflight CTGC P3, then COMPLETED the CTGC free story:
 0. ⭐⭐ **RFC 0027 CONTAINER FREE-GLUE SHIPPED `10eceb6`** — closes the P3-activation container leak.
    `air_builder.ax::emit_container_buffer_frees` frees a non-escaping `Vec`/`HashMap`/`HashSet` local's

@@ -98,6 +98,9 @@
 - [BUG#87 FIXED](bug87-for-range-loop-var.md) — ✅ 694da03 (A==B): `for i in a..b` loop var đọc 0/rác — lower_for key local_map sai (name_id vs sym_idx). Oracle t_forrange(28).
 - [BUG#86 FIXED](bug86-short-circuit-open.md) — 755d7b8 (RFC 0016 P2'+P3, B==C): short-circuit `and`/`or`; cần nền P2' CFG-aware liveness [[rfc0016-p2prime-cfg-liveness]]. Bài học: -O0 pass/-O1 fail ⇒ soi ssa_opt.
 
+## Codegen miscompiles (non-SSA class)
+- [✅ variable-shift-in-loop miscompile FIXED `5a22500` (B==C af3ba8e3)](bug-variable-shift-in-loop.md) — `x << k`/`x >> k` with a loop-induction-variable count computed `x << 0` (count frozen at loop-ENTRY value); `const_shift_amount` lacked the non-SSA def-count guard its twin `const_divisor_pow2` had. LOAD-BEARING (A!=B, compiler's own source hit it). Surfaced by autopilot probing; O-level-INDEPENDENT so O0-vs-O1 blind — hand-oracle caught it. Oracle t_shiftloop(63). Same class as [[bug-cse-redef-operand-miscompile]].
+
 ## OPEN
 - [🐛 OPEN (low-sev): 3+ HashMap monomorphizations → intermittent TEARDOWN segfault](bug-3hashmap-mono-teardown-crash.md) — compiling a program with 3 distinct `HashMap[K,V]` instantiations crashes the compiler ~8% AT EXIT (after Stage 6), but **output exe is always correct (exit 0)**. Flag-independent (NOT -ctgc-free). Heap corruption in multi-HashMap generic mono, faults at cleanup @frees. Minimal 9-line repro banked. Needs ASAN/Linux. **Corrects the CTGC "free-glue crash" misattribution** — that sweep crash was THIS bug; CTGC activation status is actually INCONCLUSIVE (passed all deterministic gates), not blocked.
 - [✅ narrowing-cast compare width — FIXED `aede254`](bug-narrowing-cast-compare-width.md) — `300 as u8` left DIRTY upper bits (scalar OP_CAST skipped wrap) → 64-bit `==` read 300; fix normalize after cast. Oracle t_castwidth.
