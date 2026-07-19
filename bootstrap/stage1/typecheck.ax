@@ -1885,6 +1885,37 @@ pub fn stmt_terminates(self: ptr[TypeChecker], node_idx: u32) -> bool:
         return any_arm and all_term
     return false
 
+// A `defer Expr` is registered STATICALLY at lowering time (air_builder self.defers, in
+// textual order) and flushed at function exit. That is correct ONLY for an unconditional,
+// straight-line defer that executes exactly once per call. Inside an `if`/`while`/`for`/
+// `match` body the static model MISCOMPILES: the defer runs even when its branch is not
+// taken (confirmed: a `defer` under `if false:` still ran), and runs only ONCE regardless
+// of loop iteration count. Until a dynamic (per-execution) defer model exists (would need
+// an RFC + a runtime defer stack), REJECT a `defer` nested in control flow rather than
+// silently miscompile (BUG#53 accept-then-miscompile convention). Recursion stops at a
+// nested NODE_FUNC_DECL so each function's defers are judged in their own scope. `defer` is
+// unused in the compiler/std sources, so this reject is self-build-safe (A==B).
+pub fn check_defer_placement(mut self: ptr[TypeChecker], node_idx: u32, in_cf: bool):
+    if node_idx == 0 as u32:
+        return
+    let node = self.tree.nodes.data[node_idx]
+    let kind = node.kind
+    if kind == NODE_FUNC_DECL:
+        return
+    if kind == NODE_DEFER_STMT:
+        if in_cf:
+            ax_printf_local("error: `defer` inside a loop or conditional is not supported (static registration would run it when the branch is not taken, or only once in a loop); move it to the function body's top level\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            self.diags_count = self.diags_count + 1 as i64
+        return
+    mut child_cf := in_cf
+    if kind == NODE_IF_STMT or kind == NODE_WHILE_STMT or kind == NODE_FOR_STMT or kind == NODE_MATCH_STMT:
+        child_cf = true
+    mut c := node.first_child
+    while c != 0 as u32:
+        let nxt = self.tree.nodes.data[c].next_sibling
+        self.check_defer_placement(c, child_cf)
+        c = nxt
+
 pub fn tc_func_body(self: ptr[TypeChecker], func_idx: u32) -> u32:
     mut child := self.tree.nodes.data[func_idx].first_child
     while child != 0 as u32:
@@ -2715,6 +2746,10 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let next_sibling = child_node.next_sibling
             if child_node.kind != NODE_PARAM_DECL and child_node.kind != NODE_TYPE_EXPR:
                 self.infer_node(child, TYPE_UNKNOWN)
+                // #38.4: reject a `defer` nested in control flow (static registration is
+                // only sound for an unconditional top-level defer). This body statement is
+                // at the function's top level (in_cf=false); the walk flags nested defers.
+                self.check_defer_placement(child, false)
             child = next_sibling
 
         self.current_return = prev_ret

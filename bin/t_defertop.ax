@@ -1,0 +1,14 @@
+// Oracle (exit 2): an UNCONDITIONAL top-level `defer` still works after the reject was
+// added. Two defers run LIFO at function exit AFTER the return value is captured, so f()
+// returns g=0, then both defers bump g -> g=2. main returns r*10 + g = 0 + 2 = 2.
+mut g: i64 = 0
+fn bump() -> i64:
+    g = g + 1
+    return 0
+fn f() -> i64:
+    defer bump()
+    defer bump()
+    return g
+fn main() -> i64:
+    let r = f()
+    return r * 10 + g

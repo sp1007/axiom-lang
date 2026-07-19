@@ -1,0 +1,17 @@
+// Oracle (reject): `defer` inside an `if` must be REJECTED. AXIOM registers a defer
+// STATICALLY at lowering (air_builder self.defers, textual order) and flushes at function
+// exit, so a defer under a non-taken branch would run anyway (confirmed: exit 1 with the
+// branch not taken), and a defer in a loop would run once regardless of iterations. Until a
+// dynamic defer model exists, this is rejected (check_defer_placement) rather than silently
+// miscompiled (BUG#53 convention).
+mut c: i64 = 0
+fn bump() -> i64:
+    c = c + 1
+    return 0
+fn f(cond: bool) -> i64:
+    if cond:
+        defer bump()
+    return 0
+fn main() -> i64:
+    f(false)
+    return c

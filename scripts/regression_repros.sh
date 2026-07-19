@@ -443,6 +443,8 @@ rows=(
   "t_castwidth|exit|15"
   "t_divpow2|exit|16"
   "t_shiftloop|exit|63"
+  "t_deferctrl|reject|"
+  "t_defertop|exit|2"
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
