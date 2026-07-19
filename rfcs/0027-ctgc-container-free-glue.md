@@ -1,6 +1,10 @@
 # RFC 0027 — CTGC free-glue for nested-heap containers
 
-- Status: PROPOSED (2026-07-19)
+- Status: SHIPPED (2026-07-19, `10eceb6`) — path C implemented in `air_builder.ax::
+  emit_container_buffer_frees`. Gate GREEN: fixpoint A==B `9A178747`, regression 436/436,
+  ctgc_free_check 12/12 (+`t_ctgccont`), broad sweep 419 checked/0 crashes/only intended
+  `t_drop` diff, 8 aliasing/escape probes correct. D (field-ownership annotations) remains the
+  long-term general successor.
 - Depends on: RFC 0014 (drop-glue), RFC 0015 (CTGC free), the P3 general-free activation (`18db268`)
 - Related memory: [[ctgc-p3-scoping-2026-07-18]], [[bug-3hashmap-mono-teardown-crash]]
 

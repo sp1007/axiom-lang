@@ -33,6 +33,21 @@ general free emits `OP_DESTROY` on the HEADER only → the inner keys/values/occ
 leak (strictly no worse than the pre-activation "never free"). General-free of FLAT non-drop
 aggregates is complete and sound.
 
+## ⭐⭐⭐⭐⭐ CONTAINER FREE-GLUE SHIPPED (2026-07-19, `10eceb6`, RFC 0027 path C) — leak CLOSED
+The nested-heap-container leak is now closed. `air_builder.ax::emit_container_buffer_frees`
+(called from lower_destroy's non-drop free branch) recognizes a `Vec`/`HashMap`/`HashSet`
+generic-inst local by base name and emits `OP_GET_FIELD`+`OP_FREE` for each owned buffer field
+(`data`/`keys`/`values`/`hashes`/`occupied`) BEFORE the header `OP_DESTROY`. `ax_free(null)` is a
+no-op → unallocated containers safe. Reached only under opt-in `-ctgc-free` → self-host byte-
+identical (fixpoint A==B `9A178747`). Gate GREEN: regression 436/436, ctgc_free_check 12/12
+(+`t_ctgccont`: scratch container buffers freed, returned/aliased survive), broad sweep 419 checked
+/0 crashes/only intended t_drop diff, and 8 aliasing/escape probes correct (returned Vec/HashMap,
+stored Vec, direct alias `let v2=v`, loop-scratch-freed-outer-survives — escape analysis spares
+every escaping/aliased container, NO UAF). **This resolves the "container inner-heap leak" caveat of
+the P3 activation.** The mono-integration path (A) was NOT needed — recognizing the 3 core containers
+in the backend (path C) is simpler and fixpoint-safe. Remaining: RFC 0027 path D (field-ownership
+annotations + general recursive free) for USER containers — a future language-level increment.
+
 ## ⭐ NEXT INCREMENT (scoped 2026-07-19, read-only) — close the container leak WITHOUT new codegen
 The stdlib containers ALREADY have buffer-freeing methods, just under the wrong name:
 `std/collections.ax` has `pub fn destroy[T](mut self: Vec[T])` (frees `self.data`, L50),
