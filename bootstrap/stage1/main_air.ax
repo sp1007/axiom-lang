@@ -255,6 +255,11 @@ fn strip_package_prefixes(s: str) -> str:
 
 
 extern "C" fn GetCommandLineA() -> ptr[u8]
+// Linux argv acquisition (RFC 0009 P3): the ELF `main` IS the entry, so the kernel's
+// stack-passed argc/argv is clobbered by main's prologue before get_freestanding_args
+// runs. Read /proc/self/cmdline instead (NUL-separated argv). syscall is already bundled
+// (std/os.ax); redeclared here so this module typechecks the Linux else branch.
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
 fn local_slice_to_ptr(data: ptr[u8], len: i64) -> ptr[u8]:
     let res = @alloc(len + 1) as ptr[u8]
@@ -333,7 +338,27 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
                 populate_str_in_place(s_ptr, final_len, ((args as i64) + count * 16) as ptr[str])
                 count = count + 1
     else:
-        let dummy = 0
+        // Linux: read /proc/self/cmdline (NUL-separated argv). SYS_open=2 (O_RDONLY=0),
+        // SYS_read=0, SYS_close=3. Mirrors std/os.ax::linux_read_file. "/proc/self/cmdline"
+        // is 18 bytes; local_slice_to_ptr NUL-terminates it for the open() path arg.
+        let path_c = local_slice_to_ptr(get_str_ptr("/proc/self/cmdline"), 18 as i64)
+        let fd = syscall(2 as u64, path_c as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        @free(path_c)
+        if fd >= 0:
+            let buf = @alloc(8192) as ptr[u8]
+            let n = syscall(0 as u64, fd as u64, buf as u64, 8192 as u64, 0 as u64, 0 as u64, 0 as u64)
+            syscall(3 as u64, fd as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+            if n > 0 as i64:
+                mut start := 0 as i64
+                mut p := 0 as i64
+                while p < n and count < 64:
+                    if buf[p] == 0 as u8:
+                        if p > start:
+                            let s_ptr = local_slice_to_ptr(((buf as i64) + start) as ptr[u8], p - start)
+                            populate_str_in_place(s_ptr, p - start, ((args as i64) + count * 16 as i64) as ptr[str])
+                            count = count + 1 as i64
+                        start = p + 1 as i64
+                    p = p + 1 as i64
     out_argc[0] = count as i32
     return args
 
