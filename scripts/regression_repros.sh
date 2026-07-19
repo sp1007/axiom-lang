@@ -515,6 +515,8 @@ rows=(
   # bool/char literal-pattern match: true/false/'x' compare values (pat_literal_value)
   "t_boolmatch|exit|12"
   "t_charmatch|exit|15"
+  # RFC 0029 interface dynamic dispatch (BUG#71): 2 structs, 1 interface param, per-type vtable
+  "t_ifacedispatch|exit|37"
 )
 
 for row in "${rows[@]}"; do

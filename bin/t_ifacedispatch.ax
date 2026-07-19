@@ -1,0 +1,22 @@
+// Oracle (exit 37): RFC 0029 interface dynamic dispatch (closes BUG#71). Two distinct
+// structs behind ONE interface param, each dispatching to ITS OWN method — proves the
+// per-value inline vtable is per-concrete-type, not miscompiled to a single impl.
+// Square.area = 5*5 = 25; Circle.area = 2*2*3 = 12; 25 + 12 = 37.
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Square:
+    side: i64
+    fn area(self: Square) -> i64:
+        return self.side * self.side
+
+struct Circle:
+    r: i64
+    fn area(self: Circle) -> i64:
+        return self.r * self.r * 3
+
+fn total(s: Shape) -> i64:
+    return s.area()
+
+fn main() -> i64:
+    return total(Square(side: 5)) + total(Circle(r: 2))

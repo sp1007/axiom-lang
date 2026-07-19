@@ -495,13 +495,17 @@ pub fn register_interface(self: ptr[TypeTable], name_id: u32) -> u32:
             return i as u32
         i = i + 1
 
+    // RFC 0029: an interface VALUE is an 8-byte pointer to a heap box {data, m0..m(N-1)}
+    // (the inline per-value vtable). size 8/align 8 → it passes/returns/stores as a plain
+    // 8-byte pointer (scalar ABI); the box's field layout lives in a separate synthesized
+    // struct type (ensure_iface_box_type). Was 0/0 (BUG#71 minimal reject era).
     return (&self.entries).push(TypeEntry(
         kind: TYPE_KIND_INTERFACE,
         padding: 0 as u8,
         flags: 0 as u16,
         name_id: name_id,
-        size: 0 as u32,
-        align: 0 as u32,
+        size: 8 as u32,
+        align: 8 as u32,
         extra: 0 as u32,
     ))
 

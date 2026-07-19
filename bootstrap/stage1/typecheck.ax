@@ -1333,6 +1333,36 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
 // matching method (matched by name + receiver type, exactly like air_builder's
 // method dispatch) WITHOUT mutating any node/flag/payload — it never changes how
 // the method is resolved or called, only the type recorded for the call result.
+// RFC 0029: the DECLARED return type of interface `iface_type`'s method `method_name_id`,
+// read from the interface's NODE_INTERFACE_DECL (found by matching name_id). Dynamic dispatch
+// resolves the call's result type from the interface contract, not a concrete impl (which is
+// unknown at the dispatch site). Returns 0 if not found.
+pub fn interface_method_ret_type(mut self: ptr[TypeChecker], iface_type: u32, method_name_id: u32) -> u32:
+    if (iface_type as i64) >= self.types.entries.len:
+        return 0 as u32
+    let iname = self.types.entries.data[iface_type as i64].name_id
+    if iname == 0 as u32:
+        return 0 as u32
+    mut di := 0 as i64
+    while di < self.tree.nodes.len:
+        let dn = self.tree.nodes.data[di]
+        if dn.kind == NODE_INTERFACE_DECL and dn.payload == iname:
+            mut ch := dn.first_child
+            while ch != 0 as u32:
+                let cn = self.tree.nodes.data[ch as i64]
+                if cn.kind == NODE_METHOD_SIG and cn.payload == method_name_id:
+                    mut mc := cn.first_child
+                    mut ret := 0 as u32
+                    while mc != 0 as u32:
+                        let mcn = self.tree.nodes.data[mc as i64]
+                        if is_type_annotation_node(mcn.kind):
+                            ret = self.infer_node(mc, TYPE_UNKNOWN)
+                        mc = mcn.next_sibling
+                    return ret
+                ch = cn.next_sibling
+        di = di + 1 as i64
+    return 0 as u32
+
 pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
     let field_name = self.intern.get(field_name_id)
     mut unwrapped_rec := rec_type
@@ -3492,10 +3522,13 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             rec_unwrapped = rue.extra as u32
                             rue = self.types.entries.data[rec_unwrapped as i64]
                         if rue.kind == TYPE_KIND_INTERFACE:
-                            let fname = self.intern.get(field_name_id)
-                            ax_printf_local("error: dynamic dispatch through an interface-typed value is not yet supported ('%s')\n", get_str_ptr(fname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                            safe_free_str(fname)
-                            self.diags_count = self.diags_count + 1 as i64
+                            // RFC 0029: dynamic dispatch through an interface-typed receiver.
+                            // Resolve the call's result type from the interface method contract
+                            // (the concrete impl is unknown here — that's the point of dynamic
+                            // dispatch). air_builder lowers `iface.m()` to a vtable-box indirect
+                            // call. Closes BUG#71. Downstream result_type recovery only fires when
+                            // still UNKNOWN, so this value stands.
+                            result_type = self.interface_method_ret_type(rec_unwrapped, field_name_id)
 
                     mut sym_idx := self.resolve_method_sym(field_name_id, rec_type)
                     if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
