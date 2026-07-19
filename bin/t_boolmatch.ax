@@ -1,0 +1,12 @@
+// Oracle (exit 12): `match` on a bool scrutinee with true/false literal patterns.
+// Previously BOTH arms lowered via parse_int_from_str("true")/("false") == 0, so both
+// compared the scrutinee against 0 -> false matched arm1 (wrong body) and true fell
+// through to garbage. Fixed by pat_literal_value (true->1, false->0). f(true)=5, f(false)=7.
+fn f(b: bool) -> i64:
+    match b:
+        true:
+            return 5
+        false:
+            return 7
+fn main() -> i32:
+    return (f(true) + f(false)) as i32

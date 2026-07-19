@@ -1,0 +1,16 @@
+// Oracle (exit 15): `match` on a char scrutinee with char-literal patterns, including an
+// ESCAPE ('\n'). Previously parse_int_from_str("'a'") == 0 for every char arm, so all arms
+// compared against 0 -> silent miscompile. Fixed by pat_literal_value (char codepoint incl.
+// escapes). f('a')=1, f('b')=2, f('\n')=3, f('z')=9(default) -> 1+2+3+9 = 15.
+fn f(c: char) -> i64:
+    match c:
+        'a':
+            return 1
+        'b':
+            return 2
+        '\n':
+            return 3
+        _:
+            return 9
+fn main() -> i32:
+    return (f('a') + f('b') + f('\n') + f('z')) as i32

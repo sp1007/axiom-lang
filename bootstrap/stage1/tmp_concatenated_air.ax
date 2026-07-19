@@ -13302,6 +13302,48 @@ pub fn parse_int_from_str(s: str) -> i64:
 
     return val * sign
 
+// Convert a match LITERAL-pattern token's TEXT to its i64 compare value. A NODE_LITERAL_PAT
+// carries only a token_idx (no typed literal sub-node), so discriminate by text shape:
+// bool "true"/"false" -> 1/0, a char literal 'x' (incl. escapes) -> its codepoint, everything
+// else is an integer literal (decimal/hex/oct/bin) via parse_int_from_str. Fixes the silent
+// miscompile where the switch lowering did parse_int_from_str("true")/("'a'") == 0 for BOTH
+// arms of a bool/char match (arms then compared against 0 -> wrong branch / fall-through garbage).
+pub fn pat_literal_value(s: str) -> i64:
+    let len = std.string.len(s)
+    if len == 0:
+        return 0 as i64
+    if s == "true":
+        return 1 as i64
+    if s == "false":
+        return 0 as i64
+    if s[0] as u8 == '\'' as u8:
+        // char literal: 'x' or '\n'-style escape, with surrounding single quotes.
+        if len >= 3 and s[len - 1 as i64] as u8 == '\'' as u8:
+            if s[1] as u8 == '\\' as u8 and len >= 4:
+                let esc = s[2] as u8
+                if esc == 'n' as u8:
+                    return 10 as i64
+                elif esc == 't' as u8:
+                    return 9 as i64
+                elif esc == 'r' as u8:
+                    return 13 as i64
+                elif esc == '\'' as u8:
+                    return 39 as i64
+                elif esc == '\\' as u8:
+                    return 92 as i64
+                elif esc == '0' as u8:
+                    return 0 as i64
+                elif esc == 'b' as u8:
+                    return 8 as i64
+                elif esc == 'f' as u8:
+                    return 12 as i64
+                else:
+                    return esc as i64
+            else:
+                return s[1] as i64
+        return 0 as i64
+    return parse_int_from_str(s)
+
 pub fn map_binary_op(op: str) -> u16:
     if op == "+":
         return OP_IADD
@@ -16332,7 +16374,7 @@ pub fn try_lower_match_bsearch(mut self: ptr[FuncLowering], scrutinee_idx: u32, 
                 let body = pn.next_sibling
                 if pn.kind == NODE_LITERAL_PAT:
                     let ltext = self.mb.get_token_text(pn.token_idx)
-                    mut lv := parse_int_from_str(ltext)
+                    mut lv := pat_literal_value(ltext)
                     if pn.payload == 1 as u32:  // negative literal pattern (`-5`)
                         lv = 0 as i64 - lv
                     values[fi] = lv
@@ -16477,7 +16519,7 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         elif pat_node.kind == NODE_LITERAL_PAT:
             // C-switch case: compare the scrutinee value against this literal.
             let ltext = self.mb.get_token_text(pat_node.token_idx)
-            variant_tag = parse_int_from_str(ltext)
+            variant_tag = pat_literal_value(ltext)
             if pat_node.payload == 1 as u32:  // negative literal pattern (`-5`)
                 variant_tag = 0 as i64 - variant_tag
             @free(get_str_ptr(ltext))

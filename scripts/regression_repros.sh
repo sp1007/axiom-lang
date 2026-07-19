@@ -512,6 +512,9 @@ rows=(
   # Literal-pattern match on float/string scrutinee = accept-then-miscompile -> REJECT (BUG#53)
   "t_floatmatchlit|reject|"
   "t_strmatchlit|reject|"
+  # bool/char literal-pattern match: true/false/'x' compare values (pat_literal_value)
+  "t_boolmatch|exit|12"
+  "t_charmatch|exit|15"
 )
 
 for row in "${rows[@]}"; do
