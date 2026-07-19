@@ -30,10 +30,36 @@ session and FIXED (commit `cebea3f`, [[bug-3hashmap-mono-teardown-crash]]). With
 
 **Scope / caveat (documented follow-up):** for a container that owns nested heap (HashMap/Vec),
 general free emits `OP_DESTROY` on the HEADER only → the inner keys/values/occupied buffers still
-leak (strictly no worse than the pre-activation "never free"). Fully reclaiming them needs
-**synthesised recursive free-glue** for nested-heap aggregate types (compiler-generated analog of
-RFC 0014 user `drop`). That is the remaining CTGC increment; general-free of FLAT non-drop
-aggregates is now complete and sound. Everything below is the pre-activation investigation.
+leak (strictly no worse than the pre-activation "never free"). General-free of FLAT non-drop
+aggregates is complete and sound.
+
+## ⭐ NEXT INCREMENT (scoped 2026-07-19, read-only) — close the container leak WITHOUT new codegen
+The stdlib containers ALREADY have buffer-freeing methods, just under the wrong name:
+`std/collections.ax` has `pub fn destroy[T](mut self: Vec[T])` (frees `self.data`, L50),
+`destroy[K,V](HashMap)` (frees keys/values/hashes/occupied, L457-462), `destroy[T](HashSet)` (L496).
+The CTGC drop path (`air_builder.ax::resolve_drop_method`, L1077) resolves a method named **`drop`**,
+NOT `destroy` — so these are never auto-called. **So the leak fix is NOT a new synthesised-free-glue
+mechanism; it's wiring the existing `destroy` bodies as `drop(self)` methods** so the already-shipped,
+validated drop-glue path (call `drop` then `OP_DESTROY`) reclaims the inner buffers for a non-escaping
+container local. Reuses infra — no codegen change.
+**Two things to verify FIRST (why it's a dedicated increment, not a tail-of-session tweak):**
+1. **resolve_drop_method needs the MONOMORPHIZED drop instance** (CONFIRMED the gap, air_builder.ax:
+   1083-1090): it matches a `drop` SYM_FUNC whose single unwrapped param type EQUALS the unwrapped
+   receiver (`fp == unwrapped`). For `Vec[i64]` that requires a concrete `drop[i64](Vec[i64])` instance
+   to exist in the symbol table — but `drop` is COMPILER-INJECTED (CTGC), never user-called, so the
+   monomorphizer never instantiates it → resolve_drop_method returns 0 → falls to header-only free
+   (leak). **So the real work is mono-integration: when CTGC decides to free a generic-inst container
+   local, force-instantiate its `drop[…]` for that concrete type, then resolve+call it.** This is the
+   non-trivial core of the increment (not the destroy→drop rename).
+2. **Aliasing soundness under aggregate=reference semantics** ([[axiom-struct-reference-semantics]]):
+   `let v2 = v1` ALIASES the same buffer. If v1 is deemed non-escaping but v2 aliases it, dropping v1
+   frees the shared buffer → UAF via v2. The escape analyser's reassign/alias edges (68d2c78) must mark
+   v1 escaping on any such alias. TEST an aliased-container program under `-ctgc-free`+drop before trust.
+**Plan:** add `drop` to Vec first (single buffer, simplest), gate = fixpoint + regression + the broad
+`-ctgc-free` sweep (`scratch/ctgc_sweep.sh`) + an aliased-container stress oracle, revert-on-red; then
+HashMap/HashSet. Start `-ctgc-free` OFF-by-default stays, so risk is contained to the opt-in flag.
+
+Everything below is the pre-activation investigation.
 
 ---
 
