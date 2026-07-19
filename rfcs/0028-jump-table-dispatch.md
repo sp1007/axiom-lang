@@ -182,6 +182,19 @@ compare-tree needs no new opcode.
 - A natural higher-value follow-up: also recognize the compiler's `if op==OP_* elif ...` CHAINS
   (not just `match`) as bsearch candidates — that WOULD speed the compiler's own hot dispatch.
 
+### Post-ship findings (2026-07-19, negative arms + edge equivalence)
+
+- **Negative match-arm literals now supported** (`cbc4fdd`, see backlog) — the bsearch value
+  collection reads the NODE_LITERAL_PAT payload-sign, so `-jumptable` correctly handles negative
+  arms through its signed insertion sort. Oracle t_negmatch covers it.
+- **Edge-case equivalence probing = CLEAN** (moves default-on closer): built the same `match` both
+  linear and `-jumptable` and compared exit codes across the three flagged default-on blockers plus
+  more — i8/i16/i32 narrow types, mixed negative/positive arms, wide i64 ranges (±30000, ±i8 extremes),
+  a deep 9-arm balanced tree, all-negative arms, and unsigned u32 (correctly STAYS linear). **All
+  identical, all correct.** Banked the deepest case as oracle **t_jumptable3** (9-arm mixed-sign, exit
+  27, run linear AND `-jumptable` at O0/O1/O2). The remaining gate before flipping the default is a
+  deliberate product/policy decision (opt-in vs on-by-default codegen), not a correctness gap.
+
 ## 8. Implementation order (dedicated session)
 
 1. `OP_JUMP_TABLE` opcode + verifier (inert; A==B).

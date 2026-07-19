@@ -449,6 +449,7 @@ rows=(
   "t_nestmatch|exit|15"
   "t_jumptable|exit|226"
   "t_jumptable2|exit|28"
+  "t_jumptable3|exit|27"
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
@@ -586,7 +587,7 @@ done
 # --- RFC 0028 jump-table (opt-in `-jumptable`): dense i64 match -> balanced compare tree ---
 # The main rows build WITHOUT the flag (linear path). This block exercises the TREE path and
 # checks it matches the linear result (226) at every opt level. Guards lower_match_bsearch.
-for jt in "t_jumptable:226" "t_jumptable2:28"; do
+for jt in "t_jumptable:226" "t_jumptable2:28" "t_jumptable3:27"; do
   jname="${jt%%:*}"; jwant="${jt##*:}"
   for opt in O0 O1 O2; do
     je="$REGTMP/reg_${jname}_jt_${opt}.exe"; rm -f "$je"

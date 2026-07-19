@@ -1,0 +1,31 @@
+// Oracle (exit 27): RFC 0028 jump-table with a DEEP balanced compare tree (9 literal arms)
+// that MIXES negative and positive i64 arms — the deepest tree the suite exercises, and the
+// only jumptable oracle covering negative match-arm literals (payload-sign path) through the
+// bsearch value collection + signed sort. Built WITHOUT -jumptable (linear) by the main rows
+// and WITH -jumptable by the RFC 0028 block; both must yield 27.
+fn f(n: i64) -> i64:
+    match n:
+        -50:
+            return 1
+        -20:
+            return 2
+        -7:
+            return 3
+        -1:
+            return 4
+        0:
+            return 5
+        3:
+            return 6
+        11:
+            return 7
+        40:
+            return 8
+        99:
+            return 9
+        _:
+            return 0
+fn main() -> i32:
+    mut a := 0 as i64
+    a = a + f(-50) + f(-1) + f(0) + f(40) + f(99) + f(7)  // 1+4+5+8+9+0 = 27
+    return a as i32
