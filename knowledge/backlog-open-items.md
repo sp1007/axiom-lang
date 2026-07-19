@@ -10,6 +10,16 @@ metadata:
 Reconciled 2026-07-09 from `docs/next-step-15.md` + `docs/next-step-15-sub-1.md` (dated 2026-06-26, user flagged as "dang dở") against MEMORY.md. **Most of those queues already SHIPPED** (RFC 0002–0007, ADT v1 codegen). Do NOT redo shipped work — verify against git/memory before starting.
 
 ## Genuinely OPEN (feature backlog)
+- **Negative match-arm literals** (`match n: -5: ...`) — DON'T PARSE (2026-07-19c): `parse_pattern`
+  (parser.ax:876) only accepts TK_INT_LIT/FLOAT/STRING/CHAR/TRUE/FALSE/NIL for a NODE_LITERAL_PAT;
+  a leading `-` (TK_MINUS) → "expected pattern" (both native AND C paths reject, so it's a parser
+  gap, not a codegen bug — and RFC 0028's jump-table bsearch never sees them, so it's safe there).
+  Fix needs: (1) parse `-` + INT/FLOAT literal in parse_pattern → NODE_LITERAL_PAT carrying the
+  SIGN; (2) negate the value at BOTH native lowering sites (air_builder.ax lower_match ~L3190
+  `parse_int_from_str(ltext)` AND try_lower_match_bsearch's value collection); (3) maybe cgen.
+  BLOCKER on a clean impl: **all 16 u16 flag bits are used** (ast.ax:101-116) so there is NO free
+  flag bit for "negative" — either contextually reuse a decl-only bit (e.g. FLAG_IS_MUT) on a
+  LITERAL_PAT, or carry the value another way. Modest value; bounded but multi-site.
 - ~~**BUG#82 globals**~~ — ✅ RFC 0017 P1 (scalar storage) + P2 non-const scalar init + P2 aggregate (struct/array/tuple) `6264ff6` + **P2 pointer-repr (Option/Result/sum) globals SHIPPED `3a44577`** (A==B==C `dc6a18a5`, 236/236; 8B box-ptr slot + store_is_ptr_sum, scoped annotation resolution). See [[bug82-global-var-semantics-open]]. **RFC 0017 storage surface COMPLETE for all value categories.** Còn defer (low value): uninit-decl (`mut g: S` no-init = parse error), .bss, ELF `.data`.
 - **`for x in <collection>`** iteration — **fixed arrays ✓ (P1 `96dd586`), Vec[T] ✓, string ✓, HashMap ✓ (`4b1a8f4`)**. `for k in m` iterates occupied KEYS: air_builder lower_for walks 0..cap, body guarded by `occupied[i]`, binds `keys[i]`; A==B (compiler ko iterate hashmap, shared for-path byte-identical). Oracle `t_hashiter(15)`. **DONE** — no remaining for-in gaps. (HashMap VALUES/entries iteration = future if needed.)
 - ~~**Multi-field variant** `Rect(i64,i64)`~~ — ✅ **SHIPPED** RFC 0019 `59bc731` [[rfc0019-multifield-variant-shipped]] (desugar-to-synth-struct). Closes BUG#81. Robust: scalar/mixed/aggregate fields, 2-3 fields, arrays+for. DONE.
