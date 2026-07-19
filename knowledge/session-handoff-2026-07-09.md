@@ -8,8 +8,10 @@ metadata:
 ---
 
 # 🟢 STATE 2026-07-19 (autopilot) — READ FIRST
-HEAD=**`ccfd062`**, daily driver `bin/axc_native.exe` = **`9A178747`** (CTGC-activated + container
-free-glue), **436/436**, ctgc_free_check **12/12**.
+HEAD=**`5003876`** (pushed to origin/main), daily driver `bin/axc_native.exe` = **`9A178747`**
+(CTGC-activated + container free-glue), **436/436**, ctgc_free_check **12/12**. Tree CLEAN.
+⚠️ Rebuild the daily driver first thing next session: `& scripts/build_native.ps1` (bin/*.exe are
+gitignored — regenerated from committed sources; the fixpoint hash to expect is `9A178747`).
 Session cleared the two remaining OPEN bugs + the inflight CTGC P3, then COMPLETED the CTGC free story:
 0. ⭐⭐ **RFC 0027 CONTAINER FREE-GLUE SHIPPED `10eceb6`** — closes the P3-activation container leak.
    `air_builder.ax::emit_container_buffer_frees` frees a non-escaping `Vec`/`HashMap`/`HashSet` local's
@@ -35,15 +37,19 @@ Session cleared the two remaining OPEN bugs + the inflight CTGC P3, then COMPLET
    teardown flake above (now fixed) — DEBUNKED (t_hashi64 `-ctgc-free` 0/30 crashes). Gate GREEN:
    A==B `40BC8158` (inert self-host, freeable=0), 435/435, ctgc_free_check 10/10, broad 455-program
    `-ctgc-free` sweep (`scratch/ctgc_sweep.sh`): 0 flag-crashes, 1 intended diff (t_drop 0→42).
-   Caveat/next: nested-heap containers (HashMap/Vec) free header only (inner leaks) → needs
-   **synthesised recursive free-glue** (compiler analog of RFC 0014 drop). [[ctgc-p3-scoping-2026-07-18]]
+   (The container inner-heap-leak caveat noted here was RESOLVED by item 0 above.)
+   [[ctgc-p3-scoping-2026-07-18]]
 3. **m2b arity-match shadow — DEFERRED (documented `b97b1b3`)**: dropping the arity-spare RE-CONFIRMED
    to break self-build (compiler A rejects its own `let len = std.string.len(s)` sites → fixpoint RED;
    an A-only build misleadingly succeeds — ALWAYS gate reject-tightening with fast_fixpoint). Real fix
    = resolver (a qualified module path must not resolve to a same-named local); HIGH risk/LOW reward.
    [[bug-malformed-input-robustness-cluster]]
-**Gate cmd** unchanged (see 2026-07-18 STATE below). Backlog now: synthesised free-glue for CTGC
-containers, m2b resolver fix, plus the pre-existing large items (async, macOS, perf).
+**Gate cmd** unchanged (see 2026-07-18 STATE below). **Backlog now (all dedicated-session scale):**
+RFC 0027 **path D** (field-ownership annotations → general free for USER containers, `rfcs/0027`),
+**m2b resolver fix** (qualified path must not resolve to a same-named local), true **root-cause** of
+the 3-hashmap corruption (flip `AX_CANARY=true` in std/mem/alloc.ax + WSL/valgrind), and the standing
+large items: **async/spawn-await**, **macOS/Mach-O**, **M6 perf**. Nothing tick-sized remains
+(probing this session found 0 real bugs — mature plateau). Pick one per user priority.
 
 ---
 
