@@ -155,8 +155,47 @@ Cost vs static: a few stores at startup (negligible) + the vtable lives in writa
 
 1. ✅ Interface method table in typetable (build from NODE_METHOD_SIG); inert (A==B). — DONE `B540FB12`.
 2. Structural impl-matching + the missing-method diagnostic at coercion sites; inert-ish.
-3. `.rodata` vtable emission + code-address reloc (COFF+ELF) — shared with RFC 0028; validate
-   with a hand-built vtable before wiring dispatch.
+3. **[SUPERSEDED by §8b — no linker step]** ~~`.rodata` vtable emission + code-address reloc~~ →
+   instead: **synthesize a vtable global + runtime-init** per (T,I). See the ready-to-execute plan
+   below.
 4. Fat-pointer T→I coercion + 16-byte-aggregate ABI wiring.
-5. `iface.m()` indirect dispatch codegen (reuse the fn-pointer/OP_CALL_INDIRECT path).
+5. `iface.m()` indirect dispatch codegen (reuse the `OP_CALL callee_reg` fn-pointer path).
 6. Gate as §7. Then rewrite std/log (the first real consumer) as the end-to-end proof.
+
+## 8c. Ready-to-execute plan (runtime-init, execution-ready 2026-07-19b)
+
+**Gate profile:** the compiler's OWN source has no dynamic interface dispatch (BUG#71 rejected it),
+so EVERY new code path below is inert on the self-build → the compiler binary stays byte-identical
+→ **gate = A==B** (not B==C) + a user-program oracle `t_ifacedispatch` + full regression. Same
+favorable profile as the negative-match feature. Guard every new path so it only fires for a real
+interface coercion/dispatch (`entry.kind == TYPE_KIND_INTERFACE`), keeping self-build inert.
+
+Building blocks CONFIRMED to exist (2026-07-19b investigation):
+- Method table + slot order: `TypeTable.iface_methods` / `interface_method_list` (step 1, shipped).
+- Function address into a reg: `OP_FUNC_ADDR` (air_builder.ax:537; x86_selector.ax:1853). BUG#49.
+- Global storage + runtime store: `AirGlobal` (air.ax:231) + main-entry init loop
+  (air_builder.ax:4598) + `OP_GLOBAL_ADDR`/`OP_STORE`. RFC 0017.
+- Indirect call: `OP_CALL` with a non-zero `callee_reg` (air_builder.ax:2106-2168). BUG#49.
+- 16-byte fat-pointer value: mirror `str` (`{ptr,len}` 16B, x86_selector.ax:1077 by-address agg ABI).
+
+Concrete steps for the focused session:
+1. **Fat-pointer sizing (P1):** in `register_interface` (typetable.ax) set user-interface entries to
+   `size:16, align:8` (built-ins already are). ⚠️ this ALONE changes the "pass struct to interface
+   param" behavior (case c of BUG#71) — must land WITH P2 in the same gate.
+2. **Coercion T→I (P2):** at call-arg lowering (and let/return) in air_builder, when the target type
+   is `TYPE_KIND_INTERFACE` and the source value is a concrete struct T: build a 16-byte fat pointer
+   `{ data = &struct, vtable = &vtable_T_I }` (struct is already by-address under RFC 0001, so `data`
+   = the struct's address value). Ensure `vtable_T_I` exists (P3). Emit as a 16B aggregate value.
+3. **Vtable synth + init (P3):** maintain a (T,I)→global registry on the module builder. First time a
+   pair is coerced, push an `AirGlobal` of `size = 8*N` (zero init), and record N `OP_FUNC_ADDR`
+   stores to run at main-init: for slot k, resolve T's method whose name = `iface_methods[I][k]`,
+   `OP_FUNC_ADDR &T.method_k` → `OP_STORE [OP_GLOBAL_ADDR vtable_T_I + 8*k]`. Hook the existing
+   main-entry init loop (air_builder.ax:4598) to also emit these vtable-init stores.
+4. **Dispatch (P4):** replace the BUG#71 reject (typecheck.ax ~3495) — for `iface.m(args)` where
+   `iface : I`: slot `k = index of m in interface_method_list(I)`; load `vtable = word1(iface)`
+   (offset 8), `fptr = load [vtable + 8*k]`, `data = word0(iface)` (offset 0); `OP_CALL callee_reg=fptr`
+   with `(data, args...)`. Structural conformance (step 2) = check every slot resolves to a real T
+   method at P3; missing → clean diagnostic (BUG#53 convention).
+5. **Oracle + gate:** `t_ifacedispatch` = ≥2 distinct structs behind one interface param, each
+   dispatching to its own method (proves per-concrete-type vtables, not one impl). A==B + full
+   regression + -O2 acceptance + ELF/Linux smoke. Then rewrite std/log's `Box[LogSink]` as proof.
