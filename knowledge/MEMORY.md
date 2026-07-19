@@ -99,6 +99,9 @@
 - [BUG#87 FIXED](bug87-for-range-loop-var.md) — ✅ 694da03 (A==B): `for i in a..b` loop var đọc 0/rác — lower_for key local_map sai (name_id vs sym_idx). Oracle t_forrange(28).
 - [BUG#86 FIXED](bug86-short-circuit-open.md) — 755d7b8 (RFC 0016 P2'+P3, B==C): short-circuit `and`/`or`; cần nền P2' CFG-aware liveness [[rfc0016-p2prime-cfg-liveness]]. Bài học: -O0 pass/-O1 fail ⇒ soi ssa_opt.
 
+## Language-feature correctness (accept-then-miscompile → reject)
+- [✅ `defer` in control flow REJECTED `dcac520` (A==B 1a934e34)](bug-defer-in-control-flow.md) — `defer` registered STATICALLY at lowering (self.defers, textual order) → ran under a non-taken `if` branch, and once-regardless-of-iterations in a loop. Reject nested defer (typecheck check_defer_placement); top-level unconditional defer still works. Found via probing (F3/G1). Dynamic defer = future RFC. Oracles t_deferctrl(reject)/t_defertop(2).
+
 ## Codegen miscompiles (non-SSA class)
 - [✅ variable-shift-in-loop miscompile FIXED `5a22500` (B==C af3ba8e3)](bug-variable-shift-in-loop.md) — `x << k`/`x >> k` with a loop-induction-variable count computed `x << 0` (count frozen at loop-ENTRY value); `const_shift_amount` lacked the non-SSA def-count guard its twin `const_divisor_pow2` had. LOAD-BEARING (A!=B, compiler's own source hit it). Surfaced by autopilot probing; O-level-INDEPENDENT so O0-vs-O1 blind — hand-oracle caught it. Oracle t_shiftloop(63). Same class as [[bug-cse-redef-operand-miscompile]].
 

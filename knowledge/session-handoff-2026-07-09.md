@@ -8,8 +8,13 @@ metadata:
 ---
 
 # 🟢 STATE 2026-07-19c (autopilot) — READ FIRST
-HEAD=**`c93446f`+** (pushed), daily driver `bin/axc_native.exe` = **`f0885975`**
-(Linux self-hosting + shift-in-loop fix + CTGC + container free-glue), **439/439**, ctgc 12/12.
+HEAD=**`dcac520`+** (pushed), daily driver `bin/axc_native.exe` = **`1a934e34`**
+(defer-reject + Linux self-hosting + shift-in-loop fix + CTGC + container free-glue),
+**441/441**, ctgc 12/12. Session shipped 3 fixes + RFC 0028 + Linux self-hosting. Latest:
+(3) ⭐ **`defer` in control flow REJECTED `dcac520`** (A==B 1a934e34) — static defer
+registration silently miscompiled: ran under a non-taken `if`, once-regardless in a loop;
+found via probing [[bug-defer-in-control-flow]]. Oracles t_deferctrl/t_defertop.
+Prior in this session (older detail below):
 ⭐ **User greenlit a 7-task RFC/language-feature backlog (2026-07-19c); executing highest-value
 first.** DONE: (1) shift-in-loop miscompile `5a22500`; (2) ⭐ **RFC 0009 P3 — compiler SELF-HOSTS
 ON LINUX `c93446f`** (argv via /proc/self/cmdline; A==B==C f0885975; validated under WSL:
