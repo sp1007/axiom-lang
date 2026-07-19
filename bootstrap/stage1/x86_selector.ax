@@ -919,6 +919,21 @@ pub fn const_shift_amount(fn_ptr: ptr[AirFunc], vreg: u32) -> i64:
     while depth < 16 as i64:
         if cur == 0 as u32:
             return -1 as i64
+        // NON-SSA GUARD (variable-shift-in-loop miscompile): AIR is non-SSA, so a count
+        // vreg can have MORE THAN ONE definition. A loop induction var (`mut k := 0` then
+        // `k = k + 1`) is defined by an init ICONST AND the increment; a first-match scan
+        // would find the init ICONST and mis-classify `1 << k` as a CONSTANT shift by k's
+        // loop-ENTRY value, emitting `SHL dst,imm8` with the stale immediate (so every
+        // `1 << k` in a loop computed `1 << 0`). Only accept a vreg with EXACTLY ONE def.
+        // Mirrors const_divisor_pow2's identical guard.
+        mut def_count := 0 as i64
+        mut dscan := 0 as i64
+        while dscan < fn_ptr.insts.len:
+            if fn_ptr.insts.data[dscan].dest == cur:
+                def_count = def_count + 1 as i64
+            dscan = dscan + 1
+        if def_count != 1 as i64:
+            return -1 as i64
         mut found := false
         mut i := 0 as i64
         while i < fn_ptr.insts.len:

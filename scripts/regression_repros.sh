@@ -442,6 +442,7 @@ rows=(
   "t_shapehof|exit|33"
   "t_castwidth|exit|15"
   "t_divpow2|exit|16"
+  "t_shiftloop|exit|63"
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
@@ -555,6 +556,7 @@ opt_rows=(
   "t_selfrec|67"
   "t_selfrec2|21"
   "t_inlinecf3|45"
+  "t_shiftloop|63"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

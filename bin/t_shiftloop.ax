@@ -1,0 +1,25 @@
+// Oracle (exit 63): variable-amount shift whose COUNT is a loop induction variable.
+// AIR is non-SSA; const_shift_amount (x86_selector.ax) must NOT treat a MULTIPLY-defined
+// count vreg (init ICONST from `mut k := 0` + the `k = k + 1` increment def) as a constant
+// shift. Before the def-count guard, a first-match scan found the init ICONST and
+// mis-classified `1 << k` in the loop as a CONSTANT shift by k's loop-ENTRY value (0),
+// emitting `SHL dst,imm8` with the stale immediate -> every `1 << k` computed `1 << 0` = 1,
+// so the sum collapsed to 6 (six 1s) instead of 63. Right-shift shares the same path.
+// 1<<0 + 1<<1 + ... + 1<<5 = 1+2+4+8+16+32 = 63.
+fn main() -> i64:
+    mut s := 0
+    mut k := 0
+    while k < 6:
+        s = s + (1 << k)
+        k = k + 1
+    // right-shift with a loop-variant count too: 256>>0 ... but fold into a check that
+    // keeps the exit code deterministic. r ends at 256>>5 = 8 on the last iteration.
+    mut r := 0
+    mut j := 0
+    while j < 6:
+        r = 256 >> j
+        j = j + 1
+    // r == 256>>5 == 8; s == 63; require both correct via s only (8 already exercised).
+    if r == 8:
+        return s
+    return 0
