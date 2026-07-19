@@ -168,6 +168,20 @@ compare tree** (§4 alternative) FIRST — it captures most of the value at a fr
 occupies `0x0308`–`0x030B`, `OP_FUNC_ADDR`=`0x030D`) — use `0x030E` for `OP_JUMP_TABLE`. The
 compare-tree needs no new opcode.
 
+## 7e. Post-ship findings (2026-07-19c)
+
+- **Extended to all signed int types** (`89afa72`): i8/i16/i32/i64/isize (was i64-only). Unsigned
+  stays linear (a signed sort would mis-order). 451/451, A==B=f132faed.
+- **Inert on the compiler's own source:** building the compiler WITH `-jumptable` produces a
+  BYTE-IDENTICAL binary (f132faed) and self-hosts to a fixpoint (JT==JT2), because the compiler's
+  dense dispatch is `if op==OP_*` CHAINS (not `match`) and its `match`es are on sum tags / narrow
+  kinds, not i64+≥4-literal-arms. So the feature's value today is USER programs with dense signed
+  matches, and — usefully — **enabling `-jumptable` BY DEFAULT would be A==B for the self-build**
+  (low self-host risk). Default-on is deferred only for USER-program edge coverage (negative arms,
+  narrow-type ICONST encoding, very wide ranges) — broaden the oracle set first, then flip default.
+- A natural higher-value follow-up: also recognize the compiler's `if op==OP_* elif ...` CHAINS
+  (not just `match`) as bsearch candidates — that WOULD speed the compiler's own hot dispatch.
+
 ## 8. Implementation order (dedicated session)
 
 1. `OP_JUMP_TABLE` opcode + verifier (inert; A==B).
