@@ -1,0 +1,109 @@
+# RFC 0029 — Interface vtable dynamic dispatch
+
+- Status: DRAFT (2026-07-19c) — investigation complete, design decisions made. User greenlit
+  (2026-07-19c backlog, the real remaining chunk of "Self + vtable"). Implementation is a
+  dedicated codegen+type-system session.
+- Depends on: typetable.ax (interface method table + vtable registry), typecheck.ax
+  (impl-matching, fat-pointer typing), air_builder.ax + x86_selector.ax (fat-pointer repr +
+  indirect dispatch), resolver.ax (interface method resolution).
+- Closes: BUG#71 (method call through an interface-typed value segfaults → currently rejected).
+- Unblocks: std-module rewrite (std/log's `Box[LogSink]`, std/iter, etc. need `Box[Interface]`).
+
+## 1. Motivation
+
+AXIOM has `interface X:` declarations (parsed to NODE_INTERFACE_DECL with method-signature
+children) and a distinct `TYPE_KIND_INTERFACE` (size already 16 — fat-pointer capable), but
+**interfaces carry no runtime representation**: no method table, no vtable, no fat pointer.
+Calling a method through an interface-TYPED value (`s: Shape; s.area()`) has no concrete
+receiver at compile time → BUG#71 rejects/segfaults it. This blocks all open polymorphism:
+`Box[LogSink]`, heterogeneous collections, plugin-style APIs, and the aspirational std modules
+(std/log, std/iter, std/net) that are written against `Box[Interface]`.
+
+Self-return, Self-as-param, and static/UFCS method dispatch all already work — **dynamic
+dispatch through an interface value is the one missing piece.**
+
+## 2. Current state (investigation 2026-07-19c)
+
+- `parse_interface_decl` (parser.ax:1177) parses methods as NODE_METHOD_SIG children — the
+  signatures are in the AST but nowhere else.
+- `register_interface` (typetable.ax:485) stores ONLY a name_id + kind (no method list); the
+  comment explicitly says "No method-signature side table … nothing else to store here."
+- `TYPE_KIND_INTERFACE` entries have size 16, align 8 — already sized for a `{data, vtable}`
+  fat pointer.
+- Methods are free functions resolved by name+receiver-type (static). There is no indirect
+  call opcode used for method dispatch today (OP_CALL takes a resolved symbol).
+
+## 3. Design (decisions made per §20 — safest minimal)
+
+### 3a. Interface method table (typetable)
+Add a side table: for each `TYPE_KIND_INTERFACE`, an ordered `Vec[MethodSig]` (name_id +
+param types + ret type) built from the NODE_METHOD_SIG children. Method **slot index** = its
+position in this ordered list — the vtable layout. Stored as a new `TypeTable.iface_methods`
+registry (a single-instance TypeTable field → NO per-element struct size change, avoiding the
+StructField/StructInfo size-machinery risk).
+
+### 3b. Impl-matching (typecheck)
+AXIOM uses STRUCTURAL conformance (no explicit `impl Interface for T` — matches the existing
+duck-typed method model, RFC 0002). A struct `T` implements interface `I` iff for every method
+in I, `T` has a method of that name with a compatible signature (self + params). Checked at the
+COERCION site (assigning a `T` value to an `I`-typed slot: let/param/return/`Box[I]`). On
+success, ensure a vtable for (T, I) exists; on failure, a clear diagnostic (BUG#53 convention).
+
+### 3c. Vtable construction
+For each (concrete struct T, interface I) pair that is actually coerced, emit a static vtable
+in `.rodata`: an array of function pointers to T's methods in I's slot order. Deduplicated by
+(T, I). Each slot is a code-address relocation (same reloc machinery RFC 0028 needs — build
+0028's `.rodata` code-address relocation FIRST, then 0029 reuses it, on both COFF and ELF).
+
+### 3d. Fat-pointer representation
+An interface-typed value is a 16-byte `{ data: ptr, vtable: ptr[fn] }`. Coercing `T → I`:
+`data = &t` (address of the struct; T already by-address under RFC 0001 aggregate=reference),
+`vtable = &vtable_T_I`. This fits the existing 16-byte interface type slot (§2). Passing/return
+uses the existing 16-byte-aggregate ABI path (like `str`).
+
+### 3e. Dynamic dispatch codegen
+`iface.m(args)` where iface : I → look up m's slot index k in I's method table; emit
+`fptr = vtable[k]; call fptr(data, args...)` — the receiver is `data`. Needs an indirect-call
+lowering (`OP_CALL_INDIRECT` on a reg holding the fn ptr; x86 `call rax`). Add `OP_CALL_INDIRECT`
+if absent (fn-pointer calls already work — BUG#49 — so an indirect-call path likely exists;
+reuse it).
+
+## 4. Alternatives
+
+- **Closed sum-type dispatch** (tag + `match`) — already available via sum types; gives no OPEN
+  polymorphism (must know all impls), so it does not substitute for interfaces. Rejected.
+- **Monomorphize per concrete type** (generics instead of dynamic dispatch) — works when the
+  type is statically known, already supported; interfaces are for when it is NOT. Complementary.
+
+## 5. Drawbacks / risk
+
+- Largest type-system + codegen surface of the greenlit features: method table + structural
+  impl-matching + vtable emission (with code-address relocations) + fat-pointer ABI + indirect
+  dispatch. Monolithic — no feature value until all pieces land, so it CANNOT be shipped in
+  inert increments; it needs a focused session, not autopilot ticks.
+- Shares the `.rodata` code-address relocation need with RFC 0028 — do 0028's reloc kind first.
+- Backend/ABI change → **B==C mandatory + full regression + -O2 acceptance + ELF (Linux) parity**.
+
+## 6. Migration / compatibility
+
+No change to existing static/UFCS dispatch (unaffected). Interface-typed values become usable
+where they were rejected (BUG#71). No syntax change (structural conformance, no `impl` block).
+`Box[I]` becomes a fat pointer. ABI: interface values join the 16-byte-aggregate convention.
+
+## 7. Gate (before commit, when implemented)
+
+Structural-conformance diagnostic tested (missing method → clean reject, not segfault). Dynamic
+dispatch oracle: ≥2 distinct structs behind one interface param, each dispatching to its own
+method (proves the vtable is per-concrete-type, not miscompiled to one impl). `Box[I]` in a Vec
+(heterogeneous). B==C fixpoint; full regression; -O2-built-compiler regression; ELF/Linux smoke
+(the compiler self-hosts on Linux now — verify the vtable relocations resolve there too).
+
+## 8. Implementation order (dedicated session)
+
+1. Interface method table in typetable (build from NODE_METHOD_SIG); inert (A==B).
+2. Structural impl-matching + the missing-method diagnostic at coercion sites; inert-ish.
+3. `.rodata` vtable emission + code-address reloc (COFF+ELF) — shared with RFC 0028; validate
+   with a hand-built vtable before wiring dispatch.
+4. Fat-pointer T→I coercion + 16-byte-aggregate ABI wiring.
+5. `iface.m()` indirect dispatch codegen (reuse the fn-pointer/OP_CALL_INDIRECT path).
+6. Gate as §7. Then rewrite std/log (the first real consumer) as the end-to-end proof.
