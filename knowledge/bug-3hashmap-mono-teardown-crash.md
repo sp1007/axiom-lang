@@ -1,11 +1,49 @@
 ---
 name: bug-3hashmap-mono-teardown-crash
-description: "OPEN (low-severity): compiling a program whose HASH-CONTAINER (HashMap/HashSet) monomorphization WORK crosses a cumulative threshold intermittently (~10%) segfaults the compiler AT TEARDOWN (after Stage 6). Trigger is cumulative mono complexity, not a fixed count: 3 distinct scalar-value maps OR just 2 distinct STRUCT-value maps. OUTPUT exe always correct (exit 0) — only the compiler's process exit crashes. Flag-independent. NOT clone-volume (8 Vec clean) — hash-container-mono-specific. Minimal repro included. ROOT CAUSE = an OUT-OF-BOUNDS HEAP WRITE during hash-container mono that corrupts allocator free-list metadata (crash is at the FIRST heap op after Stage 6, before any resource-free — proven by teardown instrumentation), NOT a held-pointer. Likely a size-miscalc for a hash-container internal array (keys/values/occupied). Fixable via C-backend + gcc -fsanitize=address (allocator is C, symbolizable) — no WSL needed."
+description: "MITIGATED (crash eliminated) 2026-07-19: compiling a program that monomorphizes 3+ distinct hash containers (or 2 struct-value ones) intermittently (~10-23%) segfaulted the compiler AT TEARDOWN (after Stage 6). OUTPUT exe was ALWAYS correct (exit 0) — only the compiler's own process exit crashed. FIX = skip the teardown free-chain on a successful self-link build (main_air.ax early-exit; OS reclaims memory) → 0 crashes in 160 stress runs, fixpoint 84D204E8, 435/435. Root cause (heap-pointer corruption during hash-container generic mono) NOT fully pinned — needs symbolized ASAN — but this session RULED OUT the two leading hypotheses (adjacent ≤16B overflow AND free-list-link corruption) via a size-classed AX_CANARY allocator (committed, disabled). Remaining suspect: an OOB/indexed write clobbering a POINTER field in a compiler data structure. Unblocks CTGC P3 re-validation."
 metadata:
   type: project
 ---
 
-# OPEN bug — intermittent teardown segfault: 3+ HashMap monomorphizations
+# MITIGATED 2026-07-19 (crash eliminated; root-cause narrowed, not fully pinned)
+
+**Fix shipped:** on a successful `-self-link` build, the driver now flushes and returns
+immediately after the output is written, **skipping the teardown free-chain**
+(main_air.ax, end of the self-link branch). The teardown was the only place the
+corrupted compiler-heap pointer got walked; skipping it (a standard compiler pattern —
+the OS reclaims all memory at exit) makes the exit code reliably 0. **Verified: 0 crashes
+in 160 stress runs** (n4a 0/60, c_3map 0/60, t_hashi64 0/40; baseline ~23%/~12%/~15%),
+fixpoint A==B `84D204E8`, regression 435/435. Also removed a dead post-Stage-6
+`temp_obj_nt` alloc+free (its file-removal was commented out) = the first suspected
+post-Stage-6 heap op.
+
+**Diagnosis advanced this session (AX_CANARY allocator experiment, committed disabled in
+std/mem/alloc.ax):** built a size-classed footer-canary + whole-heap sweep + free-list
+integrity verifier + per-pop guard into the compiler's own AXIOM allocator (the running
+Windows compiler's `ax_alloc` is bundled from `std/mem/alloc.ax`, NOT the C
+`ax_runtime.dll` — the DLL only provides global-state/panic/string helpers; `ax_alloc` is
+compiled INTO the exe). Findings:
+- **NOT a contiguous ≤16-byte adjacent overflow:** adding +16 bytes of slack to every
+  block only HALVED the crash rate (23%→~7%, layout perturbation like gdb), and a
+  block-END footer sweep never tripped.
+- **NOT free-list-link corruption:** a per-pop guard validating every `ax_free_list_pop`
+  head (alignment/range + block `gen_id==0`) and a free-list integrity sweep BOTH never
+  tripped, yet the SEGV persisted.
+- **=> Remaining suspect:** an OOB/indexed write clobbering a POINTER field inside a
+  compiler data structure (Vec `.data`, a tree/node index, etc.) during hash-container
+  generic mono, which only faults when a later deref/free touches it. Pinning the exact
+  write needs a memory watchpoint / symbolized ASAN (still blocked: self-host binary has
+  no DWARF). The AX_CANARY infra (const `AX_CANARY=false` in std/mem/alloc.ax) is
+  committed for that future session — flip it true, rebuild, and extend the sweep.
+- **Incidental discovery:** the compiler routinely writes INTO the size-class slack beyond
+  its requested `@alloc(sz)` size (benign rounding-reliance) — a near-`sz` footer collided
+  with it; that's why the footer had to sit at the block END.
+
+Everything below is the pre-mitigation investigation (kept for the ASAN session).
+
+---
+
+# (historical) OPEN bug — intermittent teardown segfault: 3+ HashMap monomorphizations
 
 ## Symptom
 Compiling a program that instantiates **three or more distinct `HashMap[K,V]` types** intermittently
