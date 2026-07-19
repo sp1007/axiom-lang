@@ -34,6 +34,19 @@ All in loop contexts (the fruitful neighborhood), driver af3ba8e3:
   mutual-recursion struct return, nested `Option[Result[i64,i64]]` double-match,
   array-of-struct index+field mutation.
 
+## Session 2026-07-19c continuation — 2nd find (defer) + more clean batches
+- **2nd real find:** `defer` in control flow silently miscompiled (static registration) →
+  REJECTED `dcac520`. See [[bug-defer-in-control-flow]]. Found via F3 (defer in loop ran once)
+  + G1 (defer under `if false:` ran anyway).
+- **Clean batches after the defer find (don't re-probe):** short-circuit reachability
+  (`false and side()` / `true or side()` do NOT run RHS; while-cond short-circuit), nested
+  break/continue (exit/skip only inner loop), integer boundary (near i64::MAX/MIN, O0==O1
+  const-fold vs runtime), match wildcard `_` + nested match + match-on-sum-inside-match,
+  Option `.unwrap_or`. All O0==O1==O2, hand-oracle matched.
+- **Self-as-param CONFIRMED WORKING** (SP6/SP8/SP9 →42): not a gap; see [[backlog-open-items]].
+  Grammar notes banked: `defer Expr` only (assignment isn't an expr); untyped `self` needs a
+  struct body (RFC 0002), top-level free-fn method needs `self: Type`.
+
 ## Conclusion
 1 real bug per ~18 programs at this plateau — probing still pays (this find was load-bearing),
 but the loop-codegen surface is now well-covered. Future probing should target GENUINELY new
