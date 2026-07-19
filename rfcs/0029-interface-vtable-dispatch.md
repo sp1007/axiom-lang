@@ -111,9 +111,26 @@ method (proves the vtable is per-concrete-type, not miscompiled to one impl). `B
 (heterogeneous). B==C fixpoint; full regression; -O2-built-compiler regression; ELF/Linux smoke
 (the compiler self-hosts on Linux now — verify the vtable relocations resolve there too).
 
+## 8a. Implementation progress (2026-07-19b focused session)
+
+- **✅ Step 1 SHIPPED** (`feat(rfc0029): step 1`, A==B `B540FB12`, 462/462): `TypeTable.iface_methods`
+  (U32VecVec) + `register_interface_methods`/`interface_method_list`; each interface's `extra` =
+  (iface_methods index + 1). Ordered method-name list built from NODE_METHOD_SIG children in Phase-0
+  typecheck. Inert (nothing consumes it yet). `new_type_table` alloc switched to `size_of` (was
+  hardcoded 120) so the added 6th Vec field can't desync the allocation.
+- **Step 3 reloc scoping (read-only):** the reloc PRIMITIVES exist — `OP_FUNC_ADDR`
+  (x86_selector.ax:1853) → `MACH_MOV_IMM` vreg=3 → `lea reg,[rip+func]` + `RELOC_PC32` on a **.text**
+  symbol; `OP_GLOBAL_ADDR` → vreg=4 → same on a **.data** symbol. What's MISSING for a vtable: a
+  **static data blob whose individual slots are function-symbol relocations** (a `.rodata`/`.data`
+  array where slot k = &method_k, resolved by the linker). That is new object-file emission on BOTH
+  COFF (x86_coff.ax) and ELF (elf emitter) — the architecturally-significant, B==C-critical piece.
+  Start it from the globals/.data emission path (RFC 0017) extended to write a per-offset function
+  relocation, mirroring how `OP_FUNC_ADDR` names a .text symbol. **⚠️ CHECKPOINT: linker/object-file
+  relocation changes (§16) need user visibility before proceeding — high-risk, hard-to-reverse.**
+
 ## 8. Implementation order (dedicated session)
 
-1. Interface method table in typetable (build from NODE_METHOD_SIG); inert (A==B).
+1. ✅ Interface method table in typetable (build from NODE_METHOD_SIG); inert (A==B). — DONE `B540FB12`.
 2. Structural impl-matching + the missing-method diagnostic at coercion sites; inert-ish.
 3. `.rodata` vtable emission + code-address reloc (COFF+ELF) — shared with RFC 0028; validate
    with a hand-built vtable before wiring dispatch.
