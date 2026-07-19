@@ -1,0 +1,17 @@
+// RFC 0015 P3 general-free oracle: with -ctgc-free active (18db268), a NON-drop owned
+// aggregate that is RETURNED (escapes on every path) must NOT be freed. pick() returns
+// its P local; freeing it would dangle the returned value -> wrong result / UAF. on==off
+// ==16 proves general free correctly spares escaping aggregates (escape analysis sound
+// under the activated free path, not just the drop-narrowed one).
+struct P:
+    x: i64
+fn pick(cond: bool) -> P:
+    let a = P(x: 7)
+    if cond:
+        return a
+    let b = P(x: 9)
+    return b
+fn main() -> i64:
+    let r = pick(true)
+    let r2 = pick(false)
+    return r.x + r2.x

@@ -264,6 +264,8 @@ rows=(
   "t_ucmphighbit|exit|42"
   "t_vecofvec|exit|42"
   "t_deepopt|exit|99"
+  # RFC 0015 P3 general-free activation: default build of the escape-under-free oracle
+  "t_ctgcfreeesc|exit|16"
   # RFC 0017 P2 — aggregate (struct/array/tuple) module-level globals
   "t_globstruct|exit|30"
   "t_globarr|exit|80"

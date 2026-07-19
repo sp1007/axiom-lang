@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # RFC 0014/0015 `-ctgc-free` regression (the normal suite only exercises the flag OFF).
-# With -ctgc-free, CTGC calls `drop(self)` and frees the block for every non-escaping,
-# owned local WHOSE TYPE DECLARES `drop` (general free of non-drop types is deferred as
-# unsound on alias-heavy code -- RFC 0015 §5). So:
+# With -ctgc-free, CTGC calls `drop(self)` then frees the block for every non-escaping,
+# owned local. As of RFC 0015 P3 activation (18db268) this ALSO frees non-drop aggregates
+# (a plain OP_DESTROY, no drop call) -- so the flag must still be behaviour-preserving for
+# correct programs. So:
 #   * a program with NO drop type must be UNCHANGED by the flag (on == off), and
 #   * a drop program must run its drop(s) exactly when the flag is on.
 # A crash or wrong result under -ctgc-free means the escape analysis freed/dropped
@@ -31,6 +32,8 @@ rows=(
   # escape fix regresses, `it` becomes wrongly freeable -> freed -> the Vec dangles ->
   # on != off / crash. on==off==33 proves the escaped local is retained.
   "t_ctgcescape|33|33"
+  # general-free (activated) escape oracle: a returned non-drop aggregate must NOT be freed
+  "t_ctgcfreeesc|16|16"
 )
 
 for row in "${rows[@]}"; do
