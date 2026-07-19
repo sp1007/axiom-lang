@@ -1,0 +1,21 @@
+// RFC 0027 container free-glue oracle: under -ctgc-free the buffers of a NON-escaping
+// scratch container are freed (no crash), while a RETURNED/aliased container's buffers
+// must survive (no UAF). build() returns a Vec (escapes -> data kept); the loop's `tmp`
+// Vec is non-escaping -> its data buffer is freed each iteration. on==off==42 proves the
+// free-glue frees only the truly-owned scratch and never the escaping/aliased buffers.
+import std.collections
+fn build() -> Vec[i64]:
+    mut v = Vec[i64].new()
+    v.push(20)
+    v.push(22)
+    return v
+fn main() -> i64:
+    mut i = 0
+    while i < 4:
+        mut tmp = Vec[i64].new()   // non-escaping -> data freed each iter
+        tmp.push(i)
+        tmp.push(i + 1)
+        i = i + 1
+    let r = build()                // escapes -> data must survive
+    let v2 = r                     // alias -> still must not be freed
+    return v2[0] + v2[1]           // 42

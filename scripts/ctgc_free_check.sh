@@ -34,6 +34,8 @@ rows=(
   "t_ctgcescape|33|33"
   # general-free (activated) escape oracle: a returned non-drop aggregate must NOT be freed
   "t_ctgcfreeesc|16|16"
+  # RFC 0027 container free-glue: scratch container buffers freed, escaping/aliased survive
+  "t_ctgccont|42|42"
 )
 
 for row in "${rows[@]}"; do

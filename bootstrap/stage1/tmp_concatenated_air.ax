@@ -14130,6 +14130,43 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
 // so a stray `drop(self, x)` never matches. Called from lower_destroy: when CTGC
 // injects an OP_DESTROY for a non-escaping owned local (RFC 0015 P3, `-ctgc-free`),
 // the drop method runs on that instance right before its block is freed.
+// RFC 0027 (CTGC container free-glue, path C): before freeing the HEADER of a
+// non-drop, non-escaping owned CONTAINER local (Vec/HashMap/HashSet generic-inst),
+// free the owned heap BUFFERS it points at (data / keys/values/hashes/occupied) so
+// they are not leaked. Recognizes the three core stdlib containers by base name and
+// their buffer fields by name (kept in sync with std/collections.ax). ax_free(null)
+// is a no-op, so an unallocated container (cap 0, null buffers) is safe. Reached only
+// under -ctgc-free (OP_DESTROY is injected only then), so the self-host build â€” which
+// never uses the flag â€” is byte-identical (fixpoint-neutral).
+fn emit_container_buffer_frees(mut self: ptr[FuncLowering], reg: u32, type_id: u32):
+    let ut = self.op_unwrap_type(type_id)
+    if (ut as i64) >= self.mb.typetable.entries.len:
+        return
+    let entry = self.mb.typetable.entries.data[ut as i64]
+    if entry.kind != TYPE_KIND_GENERIC_INST:
+        return
+    let vec_id = self.mb.pool.intern("Vec")
+    let hm_id = self.mb.pool.intern("HashMap")
+    let hs_id = self.mb.pool.intern("HashSet")
+    if entry.name_id != vec_id and entry.name_id != hm_id and entry.name_id != hs_id:
+        return
+    if (entry.extra as i64) >= self.mb.typetable.structs.len:
+        return
+    let si = self.mb.typetable.structs.data[entry.extra as i64]
+    let f_data = self.mb.pool.intern("data")
+    let f_keys = self.mb.pool.intern("keys")
+    let f_values = self.mb.pool.intern("values")
+    let f_hashes = self.mb.pool.intern("hashes")
+    let f_occ = self.mb.pool.intern("occupied")
+    mut fi := 0 as i64
+    while fi < si.fields.len:
+        let f = si.fields.data[fi]
+        if f.name_id == f_data or f.name_id == f_keys or f.name_id == f_values or f.name_id == f_hashes or f.name_id == f_occ:
+            let fptr = self.fb.fresh_reg()
+            self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: f.type_id, dest: fptr, src1: reg, src2: fi as u32))
+            self.fb.emit(AirInst(opcode: OP_FREE, type_id: 0 as u32, dest: 0 as u32, src1: fptr, src2: 0 as u32))
+        fi = fi + 1 as i64
+
 pub fn resolve_drop_method(self: ptr[FuncLowering], rec_type: u32) -> u32:
     let method_id = self.mb.pool.intern("drop")
     let unwrapped = self.op_unwrap_type(rec_type)
@@ -17305,8 +17342,10 @@ pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     // is inert there â€” A==B) and validated on the aggregate-escape corpus.
                     // For a container that owns nested heap (HashMap/Vec) this frees the
                     // header only (inner buffers leak until synthesised free-glue lands) â€”
-                    // strictly no worse than the pre-activation "never free". No double-free/
-                    // UAF: escape analysis guarantees the local is not moved/returned/stored.
+                    // RFC 0027: for a Vec/HashMap/HashSet local, free its owned inner
+                    // buffers (data/keys/values/hashes/occupied) BEFORE the header, so the
+                    // nested heap is reclaimed rather than leaked. No-op for other types.
+                    self.emit_container_buffer_frees(reg, sym.type_id)
                     self.fb.emit(AirInst(
                         opcode: OP_DESTROY,
                         type_id: 0 as u32,
