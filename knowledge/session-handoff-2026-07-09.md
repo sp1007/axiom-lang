@@ -8,9 +8,15 @@ metadata:
 ---
 
 # 🟢 STATE 2026-07-19c (autopilot) — READ FIRST
-HEAD=**`9e810ef`+** (pushed), daily driver `bin/axc_native.exe` = **`1a934e34`**, **441/441**,
-ctgc 12/12, tree clean. ⭐ **User greenlit a 7-item RFC/language-feature backlog; worked it
-highest-value-first.** SHIPPED this session (all pushed):
+HEAD=**`d85ec48`+** (pushed), daily driver `bin/axc_native.exe` = **`0b82e972`**, **447/447**
+(Windows), Linux ELF **10/10**, ctgc 12/12, tree clean. ⭐ **User greenlit a 7-item RFC/
+language-feature backlog; worked it highest-value-first.** SHIPPED this session (all pushed):
+0. ⭐ **RFC 0028 JUMP-TABLE SHIPPED `d85ec48`** — opt-in `-jumptable` lowers a dense i64 `match`
+   to an O(log N) balanced compare tree (air_builder `try_lower_match_bsearch`/`emit_bsearch_range`;
+   pure air-level, no new opcode/encoding/linker-reloc). A==B=0b82e972 (opt-in→self-build inert).
+   Bring-up lesson: never switch AWAY from the entry block and back before emitting into it — the
+   func builder mis-attributes instructions (entry got the default's `ret`); emit the tree in
+   entry FIRST, lower default after. Follow-ups: extend beyond i64, enable by default, O(1) table.
 1. **shift-in-loop miscompile `5a22500`** (load-bearing codegen, B==C) [[bug-variable-shift-in-loop]]
 2. ⭐ **RFC 0009 P3: compiler SELF-HOSTS ON LINUX `c93446f`** (argv via /proc/self/cmdline;
    A==B==C f0885975; validated under WSL) [[rfc0009-p3-elf-linux-target-wip]]

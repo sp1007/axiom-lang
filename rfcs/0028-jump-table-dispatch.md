@@ -1,7 +1,11 @@
 # RFC 0028 — Jump-table dispatch for dense integer/tag chains
 
-- Status: DRAFT (2026-07-19c) — investigation complete; implementation is a dedicated
-  backend+linker session. User greenlit (2026-07-19c backlog).
+- Status: **SHIPPED (compare-tree variant) 2026-07-19c `d85ec48`** — the §7d balanced compare
+  tree (O(log N), pure air-level, opt-in `-jumptable`) is implemented in air_builder.ax
+  (`try_lower_match_bsearch`/`emit_bsearch_range`), gated to i64 scrutinees. A==B=0b82e972,
+  447/447. The O(1) `.rodata`/inline-table variant (§3–§7c) remains a future follow-up only if
+  profiling shows the log-factor matters; extending beyond i64 + enabling by default are also
+  follow-ups. Original DRAFT design below.
 - Depends on: air.ax (new opcode), x86_selector/emitter (codegen), linker.ax (new
   relocation kind for a code-address table), ssa_opt.ax (recognition pass).
 - Related: [[m6-perf-gate-fib-benchmark]] (perf work), the self-host dispatch hot paths.
