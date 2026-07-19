@@ -17297,6 +17297,23 @@ pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                         src1: reg,
                         src2: 0 as u32,
                     ))
+                else:
+                    // RFC 0015 P3 GENERAL FREE (activation): a non-escaping owned local
+                    // whose type declares NO drop still gets its heap block freed with a
+                    // plain OP_DESTROY (no drop call). Sound because the escape analyser is
+                    // proven conservative on the self-host build (freeable set = 0, so this
+                    // is inert there â€” A==B) and validated on the aggregate-escape corpus.
+                    // For a container that owns nested heap (HashMap/Vec) this frees the
+                    // header only (inner buffers leak until synthesised free-glue lands) â€”
+                    // strictly no worse than the pre-activation "never free". No double-free/
+                    // UAF: escape analysis guarantees the local is not moved/returned/stored.
+                    self.fb.emit(AirInst(
+                        opcode: OP_DESTROY,
+                        type_id: 0 as u32,
+                        dest: 0 as u32,
+                        src1: reg,
+                        src2: 0 as u32,
+                    ))
 
 // RFC 0006 (#38.4): a `defer expr` registers the expression to run at scope
 // exit instead of executing it now (the old stub ran it immediately, which was

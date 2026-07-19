@@ -1,8 +1,40 @@
 ---
 name: ctgc-p3-scoping-2026-07-18
-description: "CTGC P3 (general compile-time free) scoping (2026-07-18 investigation): general-free activation is TOO RISKY for a single session (un-enumerated missed borrow-locals UAF-segfault a -ctgc-free self-build); the inert marking substrate already shipped (P2.1). The one safe direction-aligned increment = a dump-only freeable-set REPORT flag. Kickoff note for the future dedicated activation session."
+description: "CTGC P3 general-free ACTIVATED & SHIPPED 2026-07-19 (commit after the 3-hashmap teardown flake was fixed). lower_destroy now emits a plain OP_DESTROY for a non-escaping owned NON-drop local (else-branch of the drop-narrowing). Behind the opt-in -ctgc-free flag → default builds untouched. Gate GREEN: A==B 40BC8158 (inert on self-host, freeable=0), regression 435/435, t_hashi64 -ctgc-free 0/30 crashes (the old 'container free-glue crash' was the teardown flake, now DEBUNKED), broad 417-program sweep clean (only diff = t_drop 0→42, the intended drop side-effect). Remaining: nested-heap containers (HashMap/Vec) free header only (inner leaks) — needs synthesised free-glue, a documented follow-up."
 metadata:
   type: project
+---
+
+# ⭐⭐⭐⭐ CTGC P3 GENERAL-FREE ACTIVATED & SHIPPED (2026-07-19)
+
+**What shipped:** `air_builder.ax::lower_destroy` now has an `else` on the drop-narrowing —
+a non-escaping owned local whose type declares NO `drop` is freed with a plain `OP_DESTROY`
+(no drop call). This is the activation that was ATTEMPTED→REVERTED 2026-07-18 as INCONCLUSIVE.
+
+**Why it's now shippable:** the sole 2026-07-18 red-flag (the broad `-ctgc-free` sweep caught
+`t_hashi64` crashing) was the **3-hashmap teardown flake**, NOT a free-glue bug — proven this
+session and FIXED (commit `cebea3f`, [[bug-3hashmap-mono-teardown-crash]]). With it gone,
+`t_hashi64` under `-ctgc-free` is **0/30 compiler crashes** (deterministically clean), so the
+"OP_DESTROY-on-container-local crashes codegen" concern is DEFINITIVELY DEBUNKED.
+
+**Gate (GREEN):**
+- Fixpoint **A==B `40BC8158`** — activation is inert on the self-host source (escape analyser
+  freeable set = 0, proven earlier this cluster), so the compiler reproduces itself byte-identically.
+- Full regression **435/435** (default builds, unaffected — the flag is opt-in).
+- Container programs under `-ctgc-free` correct: t_forvec 60, t_vecstructopt 42, t_hashvecval 42,
+  t_hashiter 15, t_hashi64 42; ctgc_free_check 10/10.
+- **Broad `-ctgc-free` sweep** (`scratch/ctgc_sweep.sh`, 455 programs WITH vs WITHOUT the flag):
+  417 checked, 38 reject-oracles skipped, **0 flag-crashes, exactly 1 output-diff = `t_drop`
+  0→42 which is the INTENDED drop side-effect** (its own comment: "42 with -ctgc-free, 0 without").
+  So no unsound free across the whole corpus — escape soundness holds program-wide, not just self-host.
+
+**Scope / caveat (documented follow-up):** for a container that owns nested heap (HashMap/Vec),
+general free emits `OP_DESTROY` on the HEADER only → the inner keys/values/occupied buffers still
+leak (strictly no worse than the pre-activation "never free"). Fully reclaiming them needs
+**synthesised recursive free-glue** for nested-heap aggregate types (compiler-generated analog of
+RFC 0014 user `drop`). That is the remaining CTGC increment; general-free of FLAT non-drop
+aggregates is now complete and sound. Everything below is the pre-activation investigation.
+
 ---
 
 # CTGC P3 / RFC 0014 drop-glue — scoping (2026-07-18, read-only investigation)
