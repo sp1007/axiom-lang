@@ -7,6 +7,38 @@ metadata:
   originSessionId: 044ec622-2518-45eb-9368-07febdfca8f1
 ---
 
+# 🟢 STATE 2026-07-19 (autopilot) — READ FIRST
+HEAD=**`18db268`**, daily driver `bin/axc_native.exe` = **`40BC8158`** (CTGC-activated), **435/435**.
+Session cleared the two remaining OPEN bugs + the inflight CTGC P3:
+1. ⭐ **3+ hash-container teardown SIGSEGV — FIXED `cebea3f`** (self-link early-exit mitigation:
+   skip the teardown free-chain on a successful `-self-link` build; OS reclaims memory). **0 crashes
+   in 160 stress runs** (baseline ~23%), fixpoint `84D204E8`, 435/435. Root cause not fully pinned
+   (needs symbolized ASAN) but RULED OUT the two leading hypotheses via a size-classed **AX_CANARY**
+   allocator built into `std/mem/alloc.ax` (committed **disabled**, `AX_CANARY=false`): NOT a
+   contiguous ≤16B adjacent overflow (+16 slack only halved it; block-end footer sweep clean) and NOT
+   free-list-link corruption (per-pop guard + free-list integrity sweep never tripped). Remaining
+   suspect = an OOB/indexed write clobbering a POINTER field in a compiler struct. Flip AX_CANARY=true
+   to resume the hunt. [[bug-3hashmap-mono-teardown-crash]] Discovery: the running Windows compiler's
+   `ax_alloc` is bundled from `std/mem/alloc.ax` (NOT the C `ax_runtime.dll` — that only provides
+   global-state/panic/string helpers).
+2. ⭐⭐⭐⭐ **CTGC P3 general-free ACTIVATED & SHIPPED `18db268`** — `lower_destroy` else-branch frees
+   non-escaping owned NON-drop locals with a plain `OP_DESTROY`. Behind the **opt-in `-ctgc-free`**
+   flag → default builds byte-identical. The 2026-07-18 "container free-glue crash" blocker was the
+   teardown flake above (now fixed) — DEBUNKED (t_hashi64 `-ctgc-free` 0/30 crashes). Gate GREEN:
+   A==B `40BC8158` (inert self-host, freeable=0), 435/435, ctgc_free_check 10/10, broad 455-program
+   `-ctgc-free` sweep (`scratch/ctgc_sweep.sh`): 0 flag-crashes, 1 intended diff (t_drop 0→42).
+   Caveat/next: nested-heap containers (HashMap/Vec) free header only (inner leaks) → needs
+   **synthesised recursive free-glue** (compiler analog of RFC 0014 drop). [[ctgc-p3-scoping-2026-07-18]]
+3. **m2b arity-match shadow — DEFERRED (documented `b97b1b3`)**: dropping the arity-spare RE-CONFIRMED
+   to break self-build (compiler A rejects its own `let len = std.string.len(s)` sites → fixpoint RED;
+   an A-only build misleadingly succeeds — ALWAYS gate reject-tightening with fast_fixpoint). Real fix
+   = resolver (a qualified module path must not resolve to a same-named local); HIGH risk/LOW reward.
+   [[bug-malformed-input-robustness-cluster]]
+**Gate cmd** unchanged (see 2026-07-18 STATE below). Backlog now: synthesised free-glue for CTGC
+containers, m2b resolver fix, plus the pre-existing large items (async, macOS, perf).
+
+---
+
 # HANDOFF phiên 2026-07-09 (đọc đầu tiên khi vào phiên mới)
 
 ## ✅ CẬP NHẬT 2026-07-18 (autopilot) — M4 COMPLIANCE DỨT ĐIỂM + hướng do user chốt
