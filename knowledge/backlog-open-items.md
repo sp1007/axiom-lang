@@ -24,6 +24,14 @@ Reconciled 2026-07-09 from `docs/next-step-15.md` + `docs/next-step-15-sub-1.md`
   ~5 rebuilds): `is_verbose_debug` (print_helpers.ax:96) SILENTLY SUPPRESSES any `ax_printf_local`
   whose format starts with `[D`/`[M`/`[T`/`[C`/`[f` — use an UNBRACKETED debug prefix (e.g. `NEGDBG`)
   or your trace vanishes and you chase a phantom "unreachable code path".
+- ✅ **Literal-pattern match on FLOAT/STRING scrutinee → REJECT** (`07139af`, A==B `3453BD82`, 460/460):
+  found while probing the negative-match feature. `match x(f64): 2.0:` / `match s: "hi":` silently
+  lowered to NOTHING (switch lowering is int/bool/char only) → function returned garbage RAX (a
+  pre-existing accept-then-miscompile, BUG#53 class). Now rejected in the NODE_MATCH_ARM typechecker
+  (typecheck.ax ~L2961, beside the non-sum-variant-pattern reject), gated to concrete primitive ids
+  f32/f64/string/bytes so generic/unknown scrutinees are unaffected. Float/string equality-match stays
+  a FUTURE feature (per-arm value comparison in lowering) — this only converts silent garbage into a
+  diagnostic. Oracles t_floatmatchlit / t_strmatchlit (reject).
 - ~~**BUG#82 globals**~~ — ✅ RFC 0017 P1 (scalar storage) + P2 non-const scalar init + P2 aggregate (struct/array/tuple) `6264ff6` + **P2 pointer-repr (Option/Result/sum) globals SHIPPED `3a44577`** (A==B==C `dc6a18a5`, 236/236; 8B box-ptr slot + store_is_ptr_sum, scoped annotation resolution). See [[bug82-global-var-semantics-open]]. **RFC 0017 storage surface COMPLETE for all value categories.** Còn defer (low value): uninit-decl (`mut g: S` no-init = parse error), .bss, ELF `.data`.
 - **`for x in <collection>`** iteration — **fixed arrays ✓ (P1 `96dd586`), Vec[T] ✓, string ✓, HashMap ✓ (`4b1a8f4`)**. `for k in m` iterates occupied KEYS: air_builder lower_for walks 0..cap, body guarded by `occupied[i]`, binds `keys[i]`; A==B (compiler ko iterate hashmap, shared for-path byte-identical). Oracle `t_hashiter(15)`. **DONE** — no remaining for-in gaps. (HashMap VALUES/entries iteration = future if needed.)
 - ~~**Multi-field variant** `Rect(i64,i64)`~~ — ✅ **SHIPPED** RFC 0019 `59bc731` [[rfc0019-multifield-variant-shipped]] (desugar-to-synth-struct). Closes BUG#81. Robust: scalar/mixed/aggregate fields, 2-3 fields, arrays+for. DONE.
