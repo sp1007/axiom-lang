@@ -6,6 +6,24 @@ metadata:
   type: project
 ---
 
+## m2b arity-MATCH shadow — RE-CONFIRMED load-bearing (2026-07-19), still DEFERRED
+Re-attempted the "just drop the arity-spare" fix (make the NODE_IDENT value-call reject
+unconditional). **Confirmed it breaks self-build** — but note the trap that fooled the
+attempt: building A with the OLD daily driver SUCCEEDS (rc=0) because the old compiler has
+the spare; only the FIXPOINT catches it — compiler **A** (which now has the tightened
+reject) rejects the compiler's own 5 `let len = std.string.len(s)` sites with
+`'len' is not a function` → **B build fails**. So the spare is genuinely load-bearing.
+Mechanism (unchanged): the qualified `std.string.len(s)` callee ends up as a NODE_IDENT
+whose payload is the LOCAL `len` var (a qualified name resolving to a local — the real
+bug), so typecheck's value-call reject branch fires on it; air_builder still calls the fn
+correctly, so it's a typecheck FALSE-POSITIVE that the arity-spare suppresses. Since the
+spare can't tell `std.string.len` (arity-match, benign) from `twice(20)` (arity-match,
+genuine bug) by arity alone, the true fix is a RESOLVER change: a qualified module path
+must never resolve to a same-named local. That's self-build-critical (HIGH risk) for a
+LOW-priority contrived pattern → DEFERRED to a dedicated resolver session. **Do NOT retry
+the spare-removal — it is proven to break the fixpoint.** ALWAYS run fast_fixpoint (A==B),
+not just an A build, to test a reject-tightening change. [[fast-fixpoint-workflow]]
+
 # Malformed-input robustness cluster — compiler crash / accept-then-miscompile (OPEN, 4 items)
 
 Found by the FIRST malformed-input probe pass this session (all prior probing used VALID programs
