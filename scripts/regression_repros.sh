@@ -445,6 +445,8 @@ rows=(
   "t_shiftloop|exit|63"
   "t_deferctrl|reject|"
   "t_defertop|exit|2"
+  "t_scand|exit|0"
+  "t_nestmatch|exit|15"
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
