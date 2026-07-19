@@ -8,8 +8,16 @@ metadata:
 ---
 
 # 🟢 STATE 2026-07-19 (autopilot) — READ FIRST
-HEAD=**`18db268`**, daily driver `bin/axc_native.exe` = **`40BC8158`** (CTGC-activated), **435/435**.
-Session cleared the two remaining OPEN bugs + the inflight CTGC P3:
+HEAD=**`ccfd062`**, daily driver `bin/axc_native.exe` = **`9A178747`** (CTGC-activated + container
+free-glue), **436/436**, ctgc_free_check **12/12**.
+Session cleared the two remaining OPEN bugs + the inflight CTGC P3, then COMPLETED the CTGC free story:
+0. ⭐⭐ **RFC 0027 CONTAINER FREE-GLUE SHIPPED `10eceb6`** — closes the P3-activation container leak.
+   `air_builder.ax::emit_container_buffer_frees` frees a non-escaping `Vec`/`HashMap`/`HashSet` local's
+   owned buffers (data/keys/values/hashes/occupied) before the header OP_DESTROY, under opt-in
+   `-ctgc-free`. Byte-identical self-host (A==B `9A178747`), 436/436, sweep clean (0 crashes, only
+   intended t_drop diff), 8 aliasing/escape probes correct (escaping/aliased containers spared → no
+   UAF). [[ctgc-p3-scoping-2026-07-18]] RFC 0027 path D (field-ownership annotations, general/user
+   containers) = future.
 1. ⭐ **3+ hash-container teardown SIGSEGV — FIXED `cebea3f`** (self-link early-exit mitigation:
    skip the teardown free-chain on a successful `-self-link` build; OS reclaims memory). **0 crashes
    in 160 stress runs** (baseline ~23%), fixpoint `84D204E8`, 435/435. Root cause not fully pinned
