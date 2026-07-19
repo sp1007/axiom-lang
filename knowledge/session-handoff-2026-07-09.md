@@ -8,13 +8,27 @@ metadata:
 ---
 
 # 🟢 STATE 2026-07-19c (autopilot) — READ FIRST
-HEAD=**`dcac520`+** (pushed), daily driver `bin/axc_native.exe` = **`1a934e34`**
-(defer-reject + Linux self-hosting + shift-in-loop fix + CTGC + container free-glue),
-**441/441**, ctgc 12/12. Session shipped 3 fixes + RFC 0028 + Linux self-hosting. Latest:
-(3) ⭐ **`defer` in control flow REJECTED `dcac520`** (A==B 1a934e34) — static defer
-registration silently miscompiled: ran under a non-taken `if`, once-regardless in a loop;
-found via probing [[bug-defer-in-control-flow]]. Oracles t_deferctrl/t_defertop.
-Prior in this session (older detail below):
+HEAD=**`9e810ef`+** (pushed), daily driver `bin/axc_native.exe` = **`1a934e34`**, **441/441**,
+ctgc 12/12, tree clean. ⭐ **User greenlit a 7-item RFC/language-feature backlog; worked it
+highest-value-first.** SHIPPED this session (all pushed):
+1. **shift-in-loop miscompile `5a22500`** (load-bearing codegen, B==C) [[bug-variable-shift-in-loop]]
+2. ⭐ **RFC 0009 P3: compiler SELF-HOSTS ON LINUX `c93446f`** (argv via /proc/self/cmdline;
+   A==B==C f0885975; validated under WSL) [[rfc0009-p3-elf-linux-target-wip]]
+3. **`defer` in control flow REJECTED `dcac520`** (static registration silently miscompiled;
+   found via probing) [[bug-defer-in-control-flow]]
+4. **RFC 0028 (jump-table)** + **RFC 0029 (interface vtable dispatch)** — design-complete drafts
+5. Extensive probing (~46 programs, 2 real bugs found) + backlog clarifications:
+   **Self-as-param CONFIRMED WORKING** (only interface-vtable-dispatch open); **std-rewrite
+   BLOCKED on vtable** (std/log needs Box[interface]); **valgrind 3-hashmap hunt = dead end**
+   (Windows-heap-specific, Linux 0/30 masks it).
+**REMAINING greenlit backlog = ALL monolithic-or-low-value** (verified 2026-07-19c): interface
+vtable (RFC 0029), jump-table (RFC 0028) — both need a NEW `.rodata` code-address linker reloc
+(COFF+ELF) that can't be validated in isolation → **focused implementation session each, NOT
+autopilot ticks**; async (needs await/result semantics design); RFC 0027 **path D** (low value:
+sugar over `drop`; medium risk: parser lookahead + typetable + escape + B==C) and **m2b resolver**
+(low reward/high risk) — §10 argues against both. **Next focused session: implement the shared
+`.rodata` code-address reloc + RFC 0028 jump-table end-to-end (B==C + -O2 + ELF gate).** Older
+per-fix detail below.
 ⭐ **User greenlit a 7-task RFC/language-feature backlog (2026-07-19c); executing highest-value
 first.** DONE: (1) shift-in-loop miscompile `5a22500`; (2) ⭐ **RFC 0009 P3 — compiler SELF-HOSTS
 ON LINUX `c93446f`** (argv via /proc/self/cmdline; A==B==C f0885975; validated under WSL:
