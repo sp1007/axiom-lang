@@ -101,6 +101,26 @@ new oracles: a dense `match`/if-chain returning the right arm for every value in
 above-max / gap values (default path), + the compiler's own selector dispatch exercised. Verify
 the `.rodata` table relocations on BOTH COFF (Windows) and ELF (Linux, now self-hostable).
 
+## 7b. De-risking findings (2026-07-19c investigation)
+
+- **No new LINKER relocation is actually required** (corrects §3c). A `match`/if-chain
+  dispatches only to blocks WITHIN THE SAME FUNCTION, so emit the table **INLINE in `.text`**
+  (a trailing data block after the function body) storing **intra-function 32-bit offsets**
+  `target_label - table_label`. Both the table and its targets are local labels in the same
+  `.text` region, resolved at the existing function-assembly/label-fixup phase — no link-time
+  reloc, no `.rodata`. Dispatch: `lea rBase,[rip+Ltable]; movsxd rOff,[rBase+idx*4]; add
+  rBase,rOff; jmp rBase`. This is significantly lower-risk than the original `.rodata`+reloc
+  plan and does NOT block on RFC 0029's shared reloc.
+- **Codegen infra present:** `MACH_JMP`(19) exists but takes an OPND_LABEL; a **register-
+  indirect `jmp rBase`** variant must be added (x86 `FF /4`). `MACH_CALL_INDIRECT`(22) already
+  exists (fn-pointer calls, BUG#49) — mirror its encoding for the indirect jmp. The table's
+  32-bit label-difference entries need a new emitter fixup kind (data word = `Ltarget -
+  Ltable`), analogous to the existing rel32 branch fixup but written into a `.text` data slot.
+- **Self-host safety:** gate the recognition pass behind an opt-in `-jumptable` flag (like
+  `-ctgc-free`). Default self-build never emits OP_JUMP_TABLE → **A==B** (the new opcode +
+  codegen sit as dead code on the self-build), so the change is self-host-inert until validated
+  and later enabled by default. This removes the main stability risk.
+
 ## 8. Implementation order (dedicated session)
 
 1. `OP_JUMP_TABLE` opcode + verifier (inert; A==B).
