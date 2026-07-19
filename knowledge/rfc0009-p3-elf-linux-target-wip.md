@@ -7,6 +7,21 @@ metadata:
   originSessionId: 3228306b-52d7-4378-bb1c-a0b6cef57eba
 ---
 
+# ⭐ COMPILER SELF-HOSTS ON LINUX — SHIPPED 2026-07-19b (`c93446f`)
+
+The compiler now **RUNS as a compiler on Linux**, not just cross-compiles to it. Blocker was
+`get_freestanding_args` (main_air.ax): the ELF `main` IS the entry, so main's prologue clobbers
+the kernel's stack-passed argc/argv before the arg reader runs, and the Linux `else` branch was
+empty (`let dummy = 0`) → argc 0 → the Linux binary always printed usage. Fix: on Linux read
+`/proc/self/cmdline` (NUL-separated argv) via SYS_open/read/close, splitting into the freestanding
+args array (mirrors std/os.ax::linux_read_file). Inert on Windows (is_windows folds true → dead
+branch) → **A==B==C=`f0885975`**, full Windows regression 439/439. Validated under WSL: a
+Linux-built compiler parses `build … --target linux -self-link -O1`, reads source, self-links, and
+emits a runnable ELF whose output runs correctly (HashMap → 35). Remaining P3 refinements (split
+PT_LOAD RX/RW, DT_INIT/fini, static ELF) are non-blocking. NB: this UNBLOCKED but did NOT crack the
+3-hashmap teardown bug — that's Windows-heap-specific and Linux masks it (0/30), see
+[[bug-3hashmap-mono-teardown-crash]].
+
 # Linux ELF64 target — SHIPPED milestone (2026-07-17)
 
 `axc build prog.ax --target linux -self-link -O1` produces a **runnable Linux ELF64

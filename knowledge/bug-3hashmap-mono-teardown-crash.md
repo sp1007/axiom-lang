@@ -5,6 +5,31 @@ metadata:
   type: project
 ---
 
+# ⛔ VALGRIND HUNT BLOCKED 2026-07-19b — bug is WINDOWS-heap-specific; Linux MASKS it
+
+User installed valgrind in WSL to enable the sanitizer hunt. RFC 0009 P3 Linux self-hosting
+was completed this session (`c93446f`), so the compiler now RUNS on Linux and CAN be driven
+under valgrind. **But the bug does not reproduce on Linux.** Built a mitigation-OFF debug
+compiler (teardown free-chain re-enabled) for BOTH targets and stress-ran the c_3map repro:
+- **Windows debug (mitigation off): 5/30 crashes** (~17%, matches the historical ~15% rate) —
+  reproduces reliably.
+- **Linux debug (mitigation off): 0/30 crashes** — does NOT reproduce.
+
+The corruption is **heap-layout-dependent**: Linux's mmap allocator lays memory out differently
+(different base/alignment vs Windows VirtualAlloc), so the OOB write lands on different adjacent
+data and does not clobber the load-bearing pointer that faults on Windows. The corruption likely
+still HAPPENS on Linux but silently (writes a harmless location) — consistent with "output always
+correct". **Consequence: valgrind (Linux-only) cannot catch this bug** — the tool the user
+installed doesn't apply, because the manifestation is Windows-specific. Windows-side page-heap
+(gflags) also can't help: the AXIOM allocator uses VirtualAlloc, not the C HeapAlloc that gflags
+page-heap instruments. So the ONLY viable tool remains the in-allocator **AX_CANARY** (already
+built, in std/mem/alloc.ax, works on Windows where the bug reproduces) — and the remaining
+suspect (a pointer-field clobber in a compiler struct, which the canary can't easily catch) still
+needs a memory-watchpoint / custom-allocator-block-tracking session. **The hunt is NOT advanced by
+valgrind; status unchanged (mitigated, low-sev, root cause = future AX_CANARY-watchpoint session).**
+
+---
+
 # MITIGATED 2026-07-19 (crash eliminated; root-cause narrowed, not fully pinned)
 
 **Fix shipped:** on a successful `-self-link` build, the driver now flushes and returns

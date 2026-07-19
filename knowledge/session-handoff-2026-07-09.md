@@ -7,8 +7,18 @@ metadata:
   originSessionId: 044ec622-2518-45eb-9368-07febdfca8f1
 ---
 
-# 🟢 STATE 2026-07-19b (autopilot) — READ FIRST
-HEAD=**`5a22500`** (pushed to origin/main), daily driver `bin/axc_native.exe` = **`af3ba8e3`**
+# 🟢 STATE 2026-07-19c (autopilot) — READ FIRST
+HEAD=**`c93446f`+** (pushed), daily driver `bin/axc_native.exe` = **`f0885975`**
+(Linux self-hosting + shift-in-loop fix + CTGC + container free-glue), **439/439**, ctgc 12/12.
+⭐ **User greenlit a 7-task RFC/language-feature backlog (2026-07-19c); executing highest-value
+first.** DONE: (1) shift-in-loop miscompile `5a22500`; (2) ⭐ **RFC 0009 P3 — compiler SELF-HOSTS
+ON LINUX `c93446f`** (argv via /proc/self/cmdline; A==B==C f0885975; validated under WSL:
+Linux-built compiler compiles+links+runs, HashMap→35). Valgrind 3-hashmap hunt = BLOCKED (bug is
+Windows-heap-specific, Linux 0/30 masks it — [[bug-3hashmap-mono-teardown-crash]]). IN PROGRESS:
+Task 2 RFC 0027 path D. QUEUE: Self+vtable → std-module rewrite → jump-table → async → m2b resolver.
+Older STATE below.
+
+# 🟢 STATE 2026-07-19b — HEAD `5a22500`, driver `af3ba8e3`
 (shift-in-loop fix on top of CTGC + container free-glue), **439/439**, ctgc_free_check **12/12**.
 Tree CLEAN (except pre-existing untracked `scratch/self_linked_concatenated.ax` artifact +
 user's `.claude/settings.json`). ⚠️ Rebuild the daily driver first thing next session:
