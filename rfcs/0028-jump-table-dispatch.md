@@ -144,6 +144,26 @@ one new instruction encoding (indirect jmp), and the `lea`-to-local-label. Confi
 the risk is purely getting the encodings + fixup arithmetic right, so validate with a
 `-jumptable`-built dense-match oracle at O0/O1/O2 on BOTH COFF and ELF before enabling by default.
 
+## 7d. RECOMMENDED FIRST IMPLEMENTATION — balanced compare tree (2026-07-19c)
+
+Before the full `.rodata`/inline-table jump table, implement the **balanced binary-search
+compare tree** (§4 alternative) FIRST — it captures most of the value at a fraction of the risk:
+- Turns an N-way integer `match`/if-chain from O(N) linear compares into **O(log N)** (≈7
+  compares for the compiler's ~80-arm selector switch vs 80) — nearly the O(1) win.
+- Uses ONLY existing `OP_ICONST`/`OP_BRANCH`/`OP_JUMP` + fresh blocks. **No new opcode, no
+  novel x86 encoding, no emitter/linker changes** — pure `air_builder` work. Far lower risk.
+- Implement as an isolated `lower_match_bsearch` gated behind `-jumptable` (default off → A==B
+  self-host), leaving the proven linear `lower_match` path untouched. It collects the int-literal
+  arms (value→body block) + default, lowers each body into its own block, then emits a recursive
+  `if v < mid: <lower half> else: if v == mid: <block> else <upper half>` tree.
+- Gate: A==B default + regression + a dense-match oracle (right arm for every value incl.
+  below-min/above-max/gaps) at O0/O1/O2. Once this ships, the O(1) table (§3-§7c) is a follow-up
+  only if profiling shows the log-factor matters.
+
+**Opcode note:** if the table version is later built, `0x0308` is TAKEN (`OP_SPAWN`; async
+occupies `0x0308`–`0x030B`, `OP_FUNC_ADDR`=`0x030D`) — use `0x030E` for `OP_JUMP_TABLE`. The
+compare-tree needs no new opcode.
+
 ## 8. Implementation order (dedicated session)
 
 1. `OP_JUMP_TABLE` opcode + verifier (inert; A==B).
