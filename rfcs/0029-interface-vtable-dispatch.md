@@ -33,6 +33,19 @@ dispatch through an interface value is the one missing piece.**
 - Methods are free functions resolved by name+receiver-type (static). There is no indirect
   call opcode used for method dispatch today (OP_CALL takes a resolved symbol).
 
+### ⚠️ Correction (2026-07-19b) — the "reuse RFC 0028's `.rodata` reloc" premise is FALSE
+This RFC (§3c/§5/§8-step-3) assumed RFC 0028 would build a `.rodata` **code-address relocation**
+that 0029 could reuse. **RFC 0028 SHIPPED as a balanced COMPARE-TREE** (`emit_bsearch_range`,
+air_builder.ax:3163 — recursive OP_ICONST/OP_EQ/OP_LT/OP_BRANCH), which needs **no rodata table
+and no relocation at all** (the RFC 0028 spec itself notes "the compare-tree needs no new
+opcode"; there is no `OP_JUMP_TABLE` in the codebase). So there is **no 0028 prerequisite to do
+first** — the vtable session must build the `.rodata` **code-address relocation from scratch**
+(a static array of function-pointer entries in `.rodata`, each a code-address reloc, on BOTH
+COFF and ELF). Note the existing `OP_GLOBAL_ADDR` path already emits *data*-address rip-relative
+relocations (air_builder.ax ~L792); the new need is a relocation whose target is a FUNCTION
+symbol/offset — closer to how `OP_FUNC_ADDR` (BUG#49 fn-pointers) resolves a code address. Start
+step 3 from `OP_FUNC_ADDR`'s reloc emission, not from a (non-existent) 0028 rodata table.
+
 ## 3. Design (decisions made per §20 — safest minimal)
 
 ### 3a. Interface method table (typetable)
