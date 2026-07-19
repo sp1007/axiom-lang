@@ -247,14 +247,19 @@ pub struct TypeTable:
     pub funcs: FuncInfoVec
     pub sumtypes: SumInfoVec
     pub generic_insts: U32VecVec
+    // RFC 0029: per-interface ordered method-name list (vtable slot layout). A
+    // TYPE_KIND_INTERFACE entry's `extra` field holds (iface_methods index + 1); 0 = none.
+    pub iface_methods: U32VecVec
 
 pub fn new_type_table() -> ptr[TypeTable]:
-    let tt = @alloc(120) as ptr[TypeTable]
+    // size_of (not a hardcoded byte count) so adding a field can't desync the alloc.
+    let tt = @alloc(@compiler_intrinsic("size_of")[TypeTable]()) as ptr[TypeTable]
     tt.entries = TypeEntryVec(data: null as ptr[TypeEntry], len: 0, cap: 0)
     tt.structs = StructInfoVec(data: null as ptr[StructInfo], len: 0, cap: 0)
     tt.funcs = FuncInfoVec(data: null as ptr[FuncInfo], len: 0, cap: 0)
     tt.sumtypes = SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
     tt.generic_insts = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+    tt.iface_methods = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
     
     // 0: Unknown sentinel
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
@@ -499,6 +504,26 @@ pub fn register_interface(self: ptr[TypeTable], name_id: u32) -> u32:
         align: 0 as u32,
         extra: 0 as u32,
     ))
+
+// RFC 0029 step 1: attach an interface's ordered method-name list (its vtable slot
+// layout) to its type entry. `extra` stores (iface_methods index + 1) so that 0 keeps
+// meaning "no method list" (built-in interface placeholders leave extra=0). Idempotent-ish:
+// only call once per interface, at first registration (guarded by sym.type_id==0 caller-side).
+pub fn register_interface_methods(self: ptr[TypeTable], iface_type_id: u32, methods: U32Vec):
+    if iface_type_id == 0 as u32 or (iface_type_id as i64) >= self.entries.len:
+        return
+    let idx = self.iface_methods.len as u32
+    (&self.iface_methods).push(methods)
+    self.entries.data[iface_type_id as i64].extra = idx + 1 as u32
+
+// RFC 0029: return the ordered method-name list for an interface type (or an empty list
+// if none was registered). Slot index = position in this list.
+pub fn interface_method_list(self: ptr[TypeTable], iface_type_id: u32) -> U32Vec:
+    if iface_type_id != 0 as u32 and (iface_type_id as i64) < self.entries.len:
+        let ex = self.entries.data[iface_type_id as i64].extra
+        if ex != 0 as u32 and ((ex - 1 as u32) as i64) < self.iface_methods.len:
+            return self.iface_methods.data[(ex - 1 as u32) as i64]
+    return U32Vec(data: null as ptr[u32], len: 0, cap: 0)
 
 pub fn register_generic_inst(self: ptr[TypeTable], name_id: u32, args: U32Vec) -> u32:
     mut i := 0 as i64

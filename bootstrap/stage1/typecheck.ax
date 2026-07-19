@@ -2060,6 +2060,18 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
                 if sym.type_id == 0 as u32:
                     let iface_type_id = self.types.register_interface(sym.name_id)
                     self.symtable.symbols.data[sym_idx].type_id = iface_type_id
+                    // RFC 0029 step 1: record the ordered method-name list (vtable slot
+                    // layout). Walk NODE_METHOD_SIG children in declaration order; the
+                    // slot index of each method is its position here. Inert for now —
+                    // nothing consumes iface_methods until impl-matching/dispatch land.
+                    mut ifm := new_u32_vec()
+                    mut mch := node.first_child
+                    while mch != 0 as u32:
+                        let mcn = self.tree.nodes.data[mch]
+                        if mcn.kind == NODE_METHOD_SIG:
+                            (&ifm).push(mcn.payload)
+                        mch = mcn.next_sibling
+                    self.types.register_interface_methods(iface_type_id, ifm)
         i = i + 1
 
     // Phase 0.1: Register all Type Aliases / Sum Types (struct type_ids now exist,
