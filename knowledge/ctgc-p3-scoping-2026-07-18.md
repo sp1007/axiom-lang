@@ -48,9 +48,14 @@ container local. Reuses infra — no codegen change.
    receiver (`fp == unwrapped`). For `Vec[i64]` that requires a concrete `drop[i64](Vec[i64])` instance
    to exist in the symbol table — but `drop` is COMPILER-INJECTED (CTGC), never user-called, so the
    monomorphizer never instantiates it → resolve_drop_method returns 0 → falls to header-only free
-   (leak). **So the real work is mono-integration: when CTGC decides to free a generic-inst container
-   local, force-instantiate its `drop[…]` for that concrete type, then resolve+call it.** This is the
-   non-trivial core of the increment (not the destroy→drop rename).
+   (leak). **So the real work is mono-integration.** PASS ORDER CONFIRMED (main_air.ax:1017-1039):
+   mono is TYPECHECK-driven (`instantiate_function` from typecheck.ax:2602/3769/5105 on real source
+   calls) and runs BEFORE Ownership→Escape→CTGC-Injector→AIR-Builder — so CTGC (post-mono) can't lazily
+   request a drop instance. **Fix = EAGER drop instantiation during mono: when the monomorphizer creates
+   a container generic-inst (Vec[i64]/HashMap[K,V]) whose template has a `drop`, also instantiate its
+   `drop[…]` up-front** so the concrete drop SYM_FUNC exists for resolve_drop_method at CTGC/air time.
+   Bounded monomorphizer change (watch bloat + ordering); this is the non-trivial core, not the
+   destroy→drop rename.
 2. **Aliasing soundness under aggregate=reference semantics** ([[axiom-struct-reference-semantics]]):
    `let v2 = v1` ALIASES the same buffer. If v1 is deemed non-escaping but v2 aliases it, dropping v1
    frees the shared buffer → UAF via v2. The escape analyser's reassign/alias edges (68d2c78) must mark
