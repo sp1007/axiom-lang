@@ -13200,6 +13200,10 @@ pub struct AirModuleBuilder:
     // Default true (Windows/COFF) so the self-host build stays byte-identical; the driver
     // flips it to false only under `--target linux`.
     pub target_is_windows: bool
+    // RFC 0028 (opt-in `-jumptable`): lower a dense integer `match` to an O(log N)
+    // balanced compare tree (lower_match_bsearch) instead of the O(N) linear chain.
+    // Default false â†’ linear path unchanged â†’ self-build byte-identical (A==B).
+    pub jumptable_enabled: bool
 
 pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typetable: ptr[TypeTable], pool: ptr[InternPool], node_types: ptr[u32]) -> ptr[AirModuleBuilder]:
     let amb = @alloc(@compiler_intrinsic("size_of")[AirModuleBuilder]()) as ptr[AirModuleBuilder]
@@ -13210,6 +13214,7 @@ pub fn new_air_module_builder(tree: ptr[AstTree], symbols: ptr[SymbolTable], typ
     amb.module = AirModule(funcs: new_air_func_vec(), globals: new_air_global_vec())
     amb.node_types = node_types
     amb.target_is_windows = true
+    amb.jumptable_enabled = false
     return amb
 
 pub fn free_air_module_builder(self: ptr[AirModuleBuilder]):
@@ -16198,6 +16203,160 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
     self.fb.switch_to(merge_block)
     self.terminated = false
 
+// RFC 0028 (opt-in `-jumptable`): recursively emit a BALANCED compare tree over the
+// SORTED arm values[lo..hi]. Operates in the already-switched-to current block. Each node:
+// `if scrut == values[mid]: <body[mid]> elif scrut < values[mid]: <left> else <right>`.
+// Leaves lower each arm body exactly once; an out-of-range value falls to default_block.
+// O(log N) compares vs the linear chain's O(N). Gated to i64 scrutinees so the i64 (signed)
+// sort matches the signed OP_LT ordering.
+pub fn emit_bsearch_range(mut self: ptr[FuncLowering], match_reg: u32, scrut_type: u32, values: ptr[i64], bodies: ptr[u32], lo: i64, hi: i64, default_block: u32, merge_block: u32):
+    if lo > hi:
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: default_block, src2: 0 as u32))
+        self.fb.add_edge(self.fb.current_block(), default_block)
+        return
+    let mid = (lo + hi) / 2 as i64
+    let v = values[mid]
+    let v_lo = (v & (0xFFFFFFFF as i64)) as u32
+    let v_hi = ((v >> (32 as i64)) & (0xFFFFFFFF as i64)) as u32
+    // equality test against the median
+    let eq_const = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: scrut_type, dest: eq_const, src1: v_lo, src2: v_hi))
+    let eq_reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_EQ, type_id: 11 as u32, dest: eq_reg, src1: match_reg, src2: eq_const))
+    let hit_block = self.fb.new_block()
+    let miss_block = self.fb.new_block()
+    // OP_BRANCH: dest = false-target, src1 = cond, src2 = true-target
+    self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: miss_block, src1: eq_reg, src2: hit_block))
+    let cur0 = self.fb.current_block()
+    self.fb.add_edge(cur0, hit_block)
+    self.fb.add_edge(cur0, miss_block)
+    // hit: lower this arm's body, then jump to merge
+    self.fb.switch_to(hit_block)
+    self.terminated = false
+    let body = bodies[mid]
+    if body != 0 as u32:
+        let bn = self.mb.tree.nodes.data[body as i64]
+        if bn.kind == NODE_BLOCK:
+            self.lower_block(body)
+        else:
+            self.lower_expr(body)
+    if not self.terminated:
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+        self.fb.add_edge(self.fb.current_block(), merge_block)
+    // miss: order test -> recurse into the lower or upper half
+    self.fb.switch_to(miss_block)
+    self.terminated = false
+    let lt_const = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: scrut_type, dest: lt_const, src1: v_lo, src2: v_hi))
+    let lt_reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_LT, type_id: 11 as u32, dest: lt_reg, src1: match_reg, src2: lt_const))
+    let left_block = self.fb.new_block()
+    let right_block = self.fb.new_block()
+    // lt true -> left (lower half), lt false -> right (upper half)
+    self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: right_block, src1: lt_reg, src2: left_block))
+    let cur1 = self.fb.current_block()
+    self.fb.add_edge(cur1, left_block)
+    self.fb.add_edge(cur1, right_block)
+    self.fb.switch_to(left_block)
+    self.terminated = false
+    self.emit_bsearch_range(match_reg, scrut_type, values, bodies, lo, mid - 1 as i64, default_block, merge_block)
+    self.fb.switch_to(right_block)
+    self.terminated = false
+    self.emit_bsearch_range(match_reg, scrut_type, values, bodies, mid + 1 as i64, hi, default_block, merge_block)
+
+// RFC 0028: try to lower an i64 `match` as a balanced compare tree. Returns true if it did
+// (caller returns), false to fall back to the linear chain. Collects the literal arms +
+// a single default (wildcard or bare-ident catch-all), requires >= 4 literal arms (below
+// that the linear chain is as fast), sorts by value, and emits the tree. Bails (false) on
+// any non-literal/non-default pattern (e.g. a stray variant pattern) â€” soundness first.
+pub fn try_lower_match_bsearch(mut self: ptr[FuncLowering], scrutinee_idx: u32, match_reg: u32, scrut_type: u32) -> bool:
+    // Count literal arms first.
+    mut n := 0 as i64
+    mut a := self.mb.tree.nodes.data[scrutinee_idx as i64].next_sibling
+    while a != 0 as u32:
+        let an = self.mb.tree.nodes.data[a as i64]
+        if an.kind == NODE_MATCH_ARM:
+            let p = an.first_child
+            if p != 0 as u32:
+                let pk = self.mb.tree.nodes.data[p as i64].kind
+                if pk == NODE_LITERAL_PAT:
+                    n = n + 1 as i64
+                elif pk == NODE_WILDCARD_PAT or pk == NODE_BINDING_PAT:
+                    a = a  // default â€” handled below
+                else:
+                    return false  // unexpected pattern in an i64 match -> linear
+        a = an.next_sibling
+    if n < 4 as i64:
+        return false
+    // Allocate parallel value/body arrays and fill them.
+    let values = @alloc(n * 8 as i64) as ptr[i64]
+    let bodies = @alloc(n * 4 as i64) as ptr[u32]
+    mut default_body := 0 as u32
+    mut default_bind := 0 as u32
+    mut have_default := false
+    mut fi := 0 as i64
+    a = self.mb.tree.nodes.data[scrutinee_idx as i64].next_sibling
+    while a != 0 as u32:
+        let an = self.mb.tree.nodes.data[a as i64]
+        if an.kind == NODE_MATCH_ARM:
+            let p = an.first_child
+            if p != 0 as u32:
+                let pn = self.mb.tree.nodes.data[p as i64]
+                let body = pn.next_sibling
+                if pn.kind == NODE_LITERAL_PAT:
+                    let ltext = self.mb.get_token_text(pn.token_idx)
+                    values[fi] = parse_int_from_str(ltext)
+                    @free(get_str_ptr(ltext))
+                    bodies[fi] = body
+                    fi = fi + 1 as i64
+                elif pn.kind == NODE_WILDCARD_PAT or pn.kind == NODE_BINDING_PAT:
+                    if not have_default:
+                        default_body = body
+                        default_bind = pn.payload
+                        have_default = true
+        a = an.next_sibling
+    // Insertion sort by value (signed i64; arms are few).
+    mut i := 1 as i64
+    while i < n:
+        let kv = values[i]
+        let kb = bodies[i]
+        mut j := i - 1 as i64
+        while j >= 0 as i64 and values[j] > kv:
+            values[j + 1 as i64] = values[j]
+            bodies[j + 1 as i64] = bodies[j]
+            j = j - 1 as i64
+        values[j + 1 as i64] = kv
+        bodies[j + 1 as i64] = kb
+        i = i + 1 as i64
+    let merge_block = self.fb.new_block()
+    mut default_block := merge_block
+    if have_default:
+        default_block = self.fb.new_block()
+    // Emit the tree in the CURRENT (entry) block FIRST. Do NOT switch to another block
+    // before this: switching AWAY from entry and back mis-attributes instructions in the
+    // func builder (the entry ended up with the default body's `ret`). The tree only
+    // references default_block by id, so lowering the default body AFTER is fine.
+    self.emit_bsearch_range(match_reg, scrut_type, values, bodies, 0 as i64, n - 1 as i64, default_block, merge_block)
+    if have_default:
+        self.fb.switch_to(default_block)
+        self.terminated = false
+        if default_bind != 0 as u32:
+            self.locals.local_map_put(default_bind, match_reg)
+        if default_body != 0 as u32:
+            let dbn = self.mb.tree.nodes.data[default_body as i64]
+            if dbn.kind == NODE_BLOCK:
+                self.lower_block(default_body)
+            else:
+                self.lower_expr(default_body)
+        if not self.terminated:
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), merge_block)
+    @free(values as ptr[u8])
+    @free(bodies as ptr[u8])
+    self.fb.switch_to(merge_block)
+    self.terminated = false
+    return true
+
 pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let scrutinee_idx = node.first_child
     if scrutinee_idx == 0 as u32:
@@ -16249,6 +16408,13 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             src2: 0 as u32,
         ))
         match_reg = tag_reg
+
+    // RFC 0028 (opt-in `-jumptable`): a dense i64 `match` -> balanced O(log N) compare tree.
+    // Gated to i64 (scrut_type 4) so the signed sort matches the signed OP_LT; falls back to
+    // the linear chain below on any non-qualifying shape. Default off -> linear -> A==B.
+    if self.mb.jumptable_enabled and is_int and scrut_type == 4 as u32:
+        if self.try_lower_match_bsearch(scrutinee_idx, match_reg, scrut_type):
+            return
 
     let merge_block = self.fb.new_block()
 
@@ -34973,6 +35139,7 @@ pub fn main() -> i32:
                           // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
                           // (may collide/need stdlib) from a standalone library.
     mut ctgc_free := false // RFC 0015 P3: -ctgc-free â€” inject OP_DESTROY (compile-time free)
+    mut jumptable := false // RFC 0028: -jumptable â€” dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report â€” dump the freeable
                              // set (print, no OP_DESTROY, byte-identical output). Measurement only.
@@ -35066,6 +35233,8 @@ pub fn main() -> i32:
             show_time = true
         elif opt == "-ctgc-free" or opt == "--ctgc-free":
             ctgc_free = true
+        elif opt == "-jumptable" or opt == "--jumptable":
+            jumptable = true
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
         opt_idx = opt_idx + 1
@@ -35274,6 +35443,7 @@ pub fn main() -> i32:
     // Linux target: drive the compile-time `is_windows`/`is_linux`/`os_name` fold so the
     // bundled platform runtime picks the syscall path. Set BEFORE build_module().
     air_builder.target_is_windows = not target_linux
+    air_builder.jumptable_enabled = jumptable
     air_builder.build_module()
     
     // Build AIR for all lazy loaded modules and append their functions

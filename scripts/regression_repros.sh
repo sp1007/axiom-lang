@@ -447,6 +447,7 @@ rows=(
   "t_defertop|exit|2"
   "t_scand|exit|0"
   "t_nestmatch|exit|15"
+  "t_jumptable|exit|226"
   "t_immfold|exit|42"
   "t_noneinfer|exit|42"
   "t_uninferreject|reject|"
@@ -576,6 +577,20 @@ for opt in O2 O3; do
       if [ "$ge" = "$owant" ]; then echo "PASS ${oname}@-${opt} (exit=$ge)"; pass=$((pass+1)); else echo "FAIL ${oname}@-${opt} (exit: got '$ge' want '$owant')"; fail=$((fail+1)); failed="$failed ${oname}@-${opt}"; fi
     fi
   done
+done
+
+# --- RFC 0028 jump-table (opt-in `-jumptable`): dense i64 match -> balanced compare tree ---
+# The main rows build WITHOUT the flag (linear path). This block exercises the TREE path and
+# checks it matches the linear result (226) at every opt level. Guards lower_match_bsearch.
+for opt in O0 O1 O2; do
+  je="$REGTMP/reg_jumptable_${opt}.exe"; rm -f "$je"
+  timeout "$TIMEOUT" "$AXC" build bin/t_jumptable.ax -o "$je" -jumptable -${opt} >/dev/null 2>&1
+  if [ ! -f "$je" ]; then
+    echo "FAIL t_jumptable@-jumptable-${opt} (no exe)"; fail=$((fail+1)); failed="$failed t_jumptable@jt-${opt}"
+  else
+    "$je" >/dev/null 2>&1; je_exit=$?
+    if [ "$je_exit" = "226" ]; then echo "PASS t_jumptable@-jumptable-${opt} (exit=226)"; pass=$((pass+1)); else echo "FAIL t_jumptable@-jumptable-${opt} (exit: got '$je_exit' want 226)"; fail=$((fail+1)); failed="$failed t_jumptable@jt-${opt}"; fi
+  fi
 done
 
 echo "=== regression: $pass passed, $fail failed ==="

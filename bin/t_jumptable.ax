@@ -1,0 +1,28 @@
+// Oracle (exit 226): dense i64 match -> balanced compare tree under -jumptable (RFC 0028).
+// 5 literal arms (0,1,2,5,7) + default. Exercises exact hits, an interior gap (3), above-max
+// (100), and below-min (-5) — all defaulting. Must match the linear lowering exactly.
+// 10+30+60+80 + 99+99+99 = 477; 477 % 251 = 226.
+fn classify(n: i64) -> i64:
+    match n:
+        0:
+            return 10
+        1:
+            return 20
+        2:
+            return 30
+        5:
+            return 60
+        7:
+            return 80
+        _:
+            return 99
+fn main() -> i64:
+    mut s := 0
+    s = s + classify(0)
+    s = s + classify(2)
+    s = s + classify(5)
+    s = s + classify(7)
+    s = s + classify(3)
+    s = s + classify(100)
+    s = s + classify(0 - 5)
+    return s % 251

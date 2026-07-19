@@ -769,6 +769,7 @@ pub fn main() -> i32:
                           // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
                           // (may collide/need stdlib) from a standalone library.
     mut ctgc_free := false // RFC 0015 P3: -ctgc-free — inject OP_DESTROY (compile-time free)
+    mut jumptable := false // RFC 0028: -jumptable — dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report — dump the freeable
                              // set (print, no OP_DESTROY, byte-identical output). Measurement only.
@@ -862,6 +863,8 @@ pub fn main() -> i32:
             show_time = true
         elif opt == "-ctgc-free" or opt == "--ctgc-free":
             ctgc_free = true
+        elif opt == "-jumptable" or opt == "--jumptable":
+            jumptable = true
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
         opt_idx = opt_idx + 1
@@ -1070,6 +1073,7 @@ pub fn main() -> i32:
     // Linux target: drive the compile-time `is_windows`/`is_linux`/`os_name` fold so the
     // bundled platform runtime picks the syscall path. Set BEFORE build_module().
     air_builder.target_is_windows = not target_linux
+    air_builder.jumptable_enabled = jumptable
     air_builder.build_module()
     
     // Build AIR for all lazy loaded modules and append their functions
