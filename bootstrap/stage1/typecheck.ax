@@ -2959,6 +2959,15 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if not (s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT or s_entry.kind == TYPE_KIND_SUM or s_entry.kind == TYPE_KIND_GENERIC_INST):
                     ax_printf_local("error: cannot match a value of a non-sum type against a variant pattern (Some/None/Ok/Err/...)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+            // A LITERAL pattern is lowered as a C-`switch` and only supports integer/bool/char
+            // scrutinees (air_builder lower_match). On a FLOAT (f32=9/f64=10), STRING (12) or
+            // BYTES (22) scrutinee the `match` silently lowered to NOTHING (the function then
+            // returned garbage) — accept-then-miscompile. Reject those precise primitive types
+            // (float/string equality-match is a future feature, not a silent no-op). BUG#53 class.
+            if pattern != 0 as u32 and self.tree.nodes.data[pattern].kind == NODE_LITERAL_PAT:
+                if scrutinee_type == TYPE_F32 or scrutinee_type == TYPE_F64 or scrutinee_type == TYPE_STRING or scrutinee_type == TYPE_BYTES:
+                    ax_printf_local("error: match with a literal pattern requires an integer/bool/char scrutinee; float/string literal matches are not supported\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             if s_entry.kind == TYPE_KIND_OPTION or s_entry.kind == TYPE_KIND_RESULT:
                 // OPTION/RESULT (kind 11/12) have NO sumtypes entry -- `.extra` is the
                 // inner/ok TYPE id, not a sumtypes index -- so the SUM path below would

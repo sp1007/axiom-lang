@@ -1,0 +1,12 @@
+// Oracle (reject): a literal-pattern `match` on a STRING scrutinee is lowered as a
+// C-switch (int/bool/char only), so it previously silently lowered to nothing and
+// returned garbage (accept-then-miscompile, BUG#53 class). Must now REJECT cleanly.
+// String equality-match is a future feature, not a silent no-op.
+fn f(s: str) -> i64:
+    match s:
+        "hi":
+            return 3
+        _:
+            return 9
+fn main() -> i32:
+    return f("hi") as i32

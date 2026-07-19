@@ -1,0 +1,12 @@
+// Oracle (reject): a literal-pattern `match` on a FLOAT scrutinee is lowered as a
+// C-switch that only supports int/bool/char, so it previously silently lowered to
+// nothing and the function returned garbage (accept-then-miscompile, BUG#53 class).
+// Must now REJECT cleanly. Float equality-match is a future feature, not a silent no-op.
+fn f(x: f64) -> i64:
+    match x:
+        2.0:
+            return 2
+        _:
+            return 9
+fn main() -> i32:
+    return f(2.0) as i32

@@ -509,6 +509,9 @@ rows=(
   "t_inlinecf3|exit|45"
   # Negative match-arm literals (`match n: -5:`) — sign carried in NODE_LITERAL_PAT payload
   "t_negmatch|exit|70"
+  # Literal-pattern match on float/string scrutinee = accept-then-miscompile -> REJECT (BUG#53)
+  "t_floatmatchlit|reject|"
+  "t_strmatchlit|reject|"
 )
 
 for row in "${rows[@]}"; do
