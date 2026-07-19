@@ -128,7 +128,30 @@ method (proves the vtable is per-concrete-type, not miscompiled to one impl). `B
   relocation, mirroring how `OP_FUNC_ADDR` names a .text symbol. **⚠️ CHECKPOINT: linker/object-file
   relocation changes (§16) need user visibility before proceeding — high-risk, hard-to-reverse.**
 
-## 8. Implementation order (dedicated session)
+## 8b. ⭐ DESIGN REFINEMENT (2026-07-19b) — runtime-init vtables, NO linker changes
+
+The original §3c/§8-step-3 plan (static `.rodata` vtable with per-slot **function-symbol
+relocations**) requires new COFF+ELF object-file emission — the architecturally-significant §16
+risk. **This is avoidable.** RFC 0017's runtime global-init (air_builder.ax:4598, "at the top of
+`main`, evaluate each global's init_node and OP_STORE it into the global's storage") already runs
+arbitrary init code before user code. So build vtables at **runtime-init** instead of statically:
+
+- Each (concrete T, interface I) pair gets a **global byte array** `vtable_T_I` of `8*N` bytes
+  (N = methods in I), zero-initialized in `.data` (RFC 0017 aggregate globals — already supported).
+- At main-entry init, for each method slot k: `OP_FUNC_ADDR &T.method_k` → `OP_STORE` into
+  `vtable_T_I + 8*k` (via `OP_GLOBAL_ADDR vtable_T_I`). **All three are proven primitives**
+  (`OP_FUNC_ADDR` BUG#49, `OP_GLOBAL_ADDR`+`OP_STORE` RFC 0017). No new opcode, **no relocation
+  machinery, NO COFF/ELF changes, NO §16 linker work** — the entire feature becomes typecheck +
+  air_builder, gateable at B==C without touching the linker. This SUPERSEDES §3c/§5/§8-step-3's
+  static-reloc plan and removes the linker checkpoint.
+- Indirect dispatch reuses the existing `OP_CALL` with a `callee_reg` (air_builder.ax:2106-2168,
+  the BUG#49 fn-pointer-through-a-variable path): load `vtable` (fat-ptr word 1), load slot k,
+  `OP_CALL callee_reg=slot(data, args...)`.
+
+Cost vs static: a few stores at startup (negligible) + the vtable lives in writable `.data` not
+`.rodata` (acceptable). Trade a one-time init for zero linker risk — clearly right per §20.
+
+## 8. Implementation order (dedicated session) — REVISED per §8b
 
 1. ✅ Interface method table in typetable (build from NODE_METHOD_SIG); inert (A==B). — DONE `B540FB12`.
 2. Structural impl-matching + the missing-method diagnostic at coercion sites; inert-ish.
