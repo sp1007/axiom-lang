@@ -121,6 +121,29 @@ the `.rodata` table relocations on BOTH COFF (Windows) and ELF (Linux, now self-
   codegen sit as dead code on the self-build), so the change is self-host-inert until validated
   and later enabled by default. This removes the main stability risk.
 
+## 7c. Emitter fixup mechanism (2026-07-19c — path fully confirmed)
+
+The inline-table entries reuse the EXISTING `Fixup` machinery (x86_emitter.ax:38
+`Fixup{offset,label_id,inst_size,pad0}`; resolved in `emitter_resolve_fixups`:494). Today a
+local-label fixup patches `rel = target - (offset+4)` (rel32 to the next instruction, line 528).
+For a **table entry** the wanted value is `target - table_base` (int32, position-independent).
+Concrete plan:
+- Place a local label `Ltable` at the table start; record it in `e.labels`.
+- Emit each 4-byte entry as a placeholder `0` and push a `Fixup` with `pad0 = Ltable's byte
+  offset` (currently pad0 is unused/spare). In `emitter_resolve_fixups`, add a branch: if
+  `pad0 != 0`, patch `target - pad0` (no `-4`) as the int32 — i.e. offset-from-table-base.
+- Dispatch code (selector → MACH): `lea rBase,[rip+Ltable]` (RIP-relative to a local label —
+  reuse the same rel32-to-label fixup path as MACH_JMP, but for `lea`), `movsxd rOff,
+  [rBase+idx*4]`, `add rBase,rOff`, `jmp rBase` (register-indirect = `FF /4`; ADD this encoding —
+  MACH_JMP currently only does rel32-to-label).
+- `OP_JUMP_TABLE` operands via the `emit_extra` side array (like OP_CALL args):
+  `[default_block, min_value, count, blk0..blk_{count-1}]`; src1 = the (already `- min`,
+  bounds-checked-unsigned `< count`) index vreg.
+So NO new struct fields and NO new linker reloc — one new emitter branch (pad0-based fixup),
+one new instruction encoding (indirect jmp), and the `lea`-to-local-label. Confirmed tractable;
+the risk is purely getting the encodings + fixup arithmetic right, so validate with a
+`-jumptable`-built dense-match oracle at O0/O1/O2 on BOTH COFF and ELF before enabling by default.
+
 ## 8. Implementation order (dedicated session)
 
 1. `OP_JUMP_TABLE` opcode + verifier (inert; A==B).
