@@ -1,11 +1,30 @@
 ---
 name: rfc0029-vtable-progress
-description: "RFC 0029 interface vtable dynamic dispatch — IN FLIGHT. Step 1 (method table) SHIPPED B540FB12. Key breakthrough: runtime-init vtables reuse RFC 0017 global-init + OP_FUNC_ADDR + OP_STORE, so the feature needs NO linker/COFF/ELF relocation changes (§16 risk removed) — it's pure typecheck+air_builder, gated A==B (compiler uses no dynamic dispatch → inert on self-build). Remaining P1-P4 codegen slice is execution-ready in rfcs/0029 §8c."
+description: "RFC 0029 interface vtable dynamic dispatch — ✅ SHIPPED af26946 (closes BUG#71). `fn f(s: Shape): s.area()` dispatches through a per-value inline vtable: interface value = 8-byte ptr to heap box {data, m0..m(N-1)}, built at T→I coercion (OP_ALLOC+OP_SET_FIELD+OP_FUNC_ADDR), dispatched via OP_GET_FIELD+OP_CALL callee_reg. NO linker/reloc changes. A==B c8910d77, 463/463, oracle t_ifacedispatch(37), multi-method+args(51), O0-O3 clean. Optional follow-ups: shared static vtables, conformance diagnostic, std/log Box[LogSink]."
 metadata:
   type: project
 ---
 
-# RFC 0029 — interface vtable dynamic dispatch (IN FLIGHT, 2026-07-19b session)
+# ✅ SHIPPED af26946 (2026-07-19b) — closes BUG#71
+
+Dynamic dispatch through an interface-typed value WORKS. Actual impl matched the §8c plan
+but with an even simpler representation than the runtime-init global vtables: **per-value
+INLINE vtable** — the interface value is an 8-byte pointer to a heap box
+`{data, m0..m(N-1)}` where the method code-addresses are stored INLINE at the coercion site
+(OP_FUNC_ADDR &T.method_k → OP_SET_FIELD). No global vtable, no runtime-init, no synthesized
+global symbols — even simpler than planned. Coercion = coerce_interface_arg (wired beside
+coerce_float_arg in the call-arg loop). Dispatch = interception in lower_call_expr reading
+data (field 0) + method ptr (field slot+1) then OP_CALL callee_reg. typecheck:
+interface_method_ret_type resolves the result type from the interface method contract; the
+BUG#71 reject is gone. interface size set 8/8; box layout = ensure_iface_box_type (synthesized
+struct reusing step-1 iface_methods slot order). Gate A==B (inert on self-build), 463/463.
+**Optional follow-ups (NOT shipped):** dedup vtables into shared statics (per-value alloc is
+slightly wasteful), structural-conformance diagnostic (missing method → clean reject vs
+find_struct_method_sym returning 0), std/log `Box[LogSink]` rewrite as the real consumer.
+
+---
+
+# RFC 0029 — interface vtable dynamic dispatch (implementation history)
 
 Greenlit feature (BUG#71's real fix). Closes: method call through an interface-typed value
 (`fn f(s: Shape): s.area()`), currently a clean reject. Unblocks `Box[Interface]` (std/log, iter, net).
