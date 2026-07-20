@@ -6625,6 +6625,31 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
     // identical to the prior behaviour.
     mut exp_args := self.get_generic_args(expected)
 
+    // When `expected` is a CONCRETE monomorphized SUM (kind 6) rather than a GENERIC_INST,
+    // get_generic_args often returns EMPTY -- a Vec-element sum's generic_args is never
+    // populated and the mangled-name fallback can't recover a nested tuple payload. Recover
+    // the payload coercion hint DIRECTLY from the matching variant's concrete payload_type in
+    // the sum, so `Vec[Option[(i64,i64)]].push(Some((20,22)))` widens its inner tuple. Only
+    // used as a fallback when exp_args yields nothing for a param, and only for a SINGLE-payload
+    // variant (its payload_type is the actual type; a multi-field RFC 0019 variant carries a
+    // flagged synth struct, left to the exp_args path). The __tup coercion self-guards, so this
+    // is inert unless the arg is genuinely an under-widened aggregate literal.
+    mut concrete_variant_payload := TYPE_UNKNOWN
+    if expected != TYPE_UNKNOWN and (expected as i64) < self.types.entries.len:
+        let xe = self.types.entries.data[expected as i64]
+        if xe.kind == TYPE_KIND_SUM and (xe.extra as i64) < self.types.sumtypes.len:
+            let xsi = self.types.sumtypes.data[xe.extra as i64]
+            mut vvi := 0 as i64
+            while vvi < xsi.variants.len:
+                if xsi.variants.data[vvi as i64].name_id == vsym.name_id:
+                    let cp = xsi.variants.data[vvi as i64].payload_type
+                    if cp != TYPE_UNKNOWN and (cp as i64) < self.types.entries.len:
+                        // Exclude a flagged (RFC 0019 multi-field / str-wrap) synth struct.
+                        if not (self.types.entries.data[cp as i64].kind == TYPE_KIND_STRUCT and (self.types.entries.data[cp as i64].flags & 1 as u16) != 0 as u16):
+                            concrete_variant_payload = cp
+                    break
+                vvi = vvi + 1
+
     mut bound_any := false
     mut payload_node := variant_tree.nodes.data[vsym.decl_node].first_child
     mut call_arg := first_call_arg
@@ -6638,6 +6663,8 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
                 mut exp_hint := TYPE_UNKNOWN
                 if gi < exp_args.len and exp_args.data[gi] != TYPE_UNKNOWN and not self.is_generic(exp_args.data[gi]):
                     exp_hint = exp_args.data[gi]
+                if exp_hint == TYPE_UNKNOWN and concrete_variant_payload != TYPE_UNKNOWN and not self.is_generic(concrete_variant_payload):
+                    exp_hint = concrete_variant_payload
                 let concrete = self.infer_node(call_arg, exp_hint)
                 if concrete != TYPE_UNKNOWN and not self.is_generic(concrete):
                     args.data[gi] = concrete
@@ -10139,6 +10166,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                             // instantiates no generic with f32, so fixpoint-safe.
                                             // [[bug-f32-boundary-abi-open]]
                                             elif et == TYPE_F32:
+                                                self.infer_node(ap, et)
+                                            // RFC 0022 follow-up: a VARIANT CTOR arg
+                                            // (`Vec[Option[(i64,i64)]].push(Some((20,22)))`) whose
+                                            // bare-generic param resolved to an Option/Result/sum
+                                            // element type. The inner aggregate literal was inferred
+                                            // with UNKNOWN during arg_types collection -> defaulted
+                                            // to {i32,i32} (8B) even though the receiver fixed the
+                                            // element type. Re-infer with the resolved element type;
+                                            // try_instantiate_variant_call recovers the payload hint
+                                            // from the concrete sum's variant payload_type and
+                                            // coerces the inner tuple/struct literal to real widths.
+                                            // Gated to a ctor CALL arg; idents/None unaffected.
+                                            elif arg_n.kind == NODE_CALL_EXPR and (et as i64) < self.types.entries.len and (self.types.entries.data[et as i64].kind == TYPE_KIND_OPTION or self.types.entries.data[et as i64].kind == TYPE_KIND_RESULT or self.types.entries.data[et as i64].kind == TYPE_KIND_GENERIC_INST or self.types.entries.data[et as i64].kind == TYPE_KIND_SUM):
                                                 self.infer_node(ap, et)
                                             break
                                         gk = gk + 1 as i64

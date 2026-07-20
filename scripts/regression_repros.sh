@@ -388,6 +388,9 @@ rows=(
   # struct field Option[(i64,i64)] init'd with unannotated Some((a,b)) -> tuple coerces to
   # the field's element widths (not {i32,i32} into a 16B slot)
   "t_ctorfieldopt|exit|43"
+  # Vec[Option/Result[agg]].push(Some/Err((a,b))) — unannotated ctor arg's inner tuple coerces
+  # to the element widths via the generic-method-arg re-infer + concrete-sum payload hint
+  "t_vecoptpush|exit|42"
   # Vec.map producing a tuple element type (closure x generic-HOF x aggregate element)
   "t_hoftup|exit|44"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))

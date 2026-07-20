@@ -1,0 +1,58 @@
+// Oracle (exit=42): pushing an UNANNOTATED variant ctor carrying an aggregate literal into a
+// Vec whose element type is Option/Result[...] -- `Vec[Option[(i64,i64)]].push(Some((20,22)))`.
+// The inner tuple was inferred with UNKNOWN during generic-arg collection and defaulted to
+// {i32,i32} (8B), then stored into the 16B element payload -> field1 read 0. Fix (option B):
+// the generic-method-arg re-inference re-infers the ctor arg with the resolved element type,
+// and try_instantiate_variant_call recovers the coercion hint from the concrete sum's matching
+// variant payload_type when get_generic_args is empty. Covers Option single+multi push and
+// Result Err-payload tuple.
+import std.collections
+
+fn opt_single() -> i64:
+    mut v = Vec[Option[(i64, i64)]].new()
+    v.push(Some((20, 22)))
+    v.push(None)
+    let x = v[0]
+    match x:
+        Some(p):
+            return p.0 + p.1       // 42
+        None:
+            return 0
+
+fn opt_multi() -> i64:
+    mut v = Vec[Option[(i64, i64)]].new()
+    v.push(Some((10, 15)))
+    v.push(Some((3, 14)))
+    mut s = 0
+    let a = v[0]
+    match a:
+        Some(p):
+            s = s + p.0 + p.1
+        None:
+            s = s
+    let b = v[1]
+    match b:
+        Some(p):
+            s = s + p.0 + p.1
+        None:
+            s = s
+    return s                       // 25 + 17 = 42
+
+fn res_err() -> i64:
+    mut v = Vec[Result[i64, (i64, i64)]].new()
+    v.push(Err((20, 22)))
+    let x = v[0]
+    match x:
+        Ok(o):
+            return -1
+        Err(p):
+            return p.0 + p.1       // 42
+
+fn main() -> i64:
+    if opt_single() != 42:
+        return 1
+    if opt_multi() != 42:
+        return 2
+    if res_err() != 42:
+        return 3
+    return 42
