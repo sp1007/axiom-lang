@@ -394,6 +394,8 @@ rows=(
   # inline variant ctor with an aggregate literal passed to an Option/Result-typed fn param
   # coerces its inner tuple to the param payload widths (use_it(Some((20,22))))
   "t_optparamcoerce|exit|42"
+  # pushing an ANNOTATED Option variable (correct 16B payload) into Vec[Option[(i64,i64)]]
+  "t_vecoptvar|exit|42"
   # Vec.map producing a tuple element type (closure x generic-HOF x aggregate element)
   "t_hoftup|exit|44"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))

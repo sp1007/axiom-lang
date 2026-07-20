@@ -170,3 +170,27 @@ param (`Vec[Result[(i64,i64),i64]].push(Ok((20,22)))`, vp_res) stays 20 — for 
 and Option both work. Likely a get_generic_args ORDERING mismatch for a 2-param Result mono; a
 small follow-up (trace exp_args order vs gp_name_ids for Result). The **param-passing context**
 (pp: pass an already-built Option[{i32,i32}] value to a 16B param) remains a REJECT follow-up.
+
+### ✅ Residuals #1/#2/#3 resolved 2026-07-20 (driver DF48C954, 470/470)
+- **#1 Result-Ok-tuple FIXED** `3f7c171`: `Vec[Result[(i64,i64),i64]].push(Ok((20,22)))` (tuple in
+  FIRST param) read field1=0 because get_generic_args on the 2-param Result mono sum returns an
+  INCOMPLETE `[i64]` (mangled parse drops the nested tuple), so exp_args[0]=i64 was picked for Ok(T)
+  and bypassed the authoritative concrete-variant-payload. Fix: PREFER `concrete_variant_payload`
+  (read directly from the concrete sum's matching variant) over exp_args in try_instantiate_variant_
+  call. Whole Vec-push aggregate family now correct (Option/Result, Ok/Err, i32/i64). Oracle t_vecoptpush.
+- **#2 param-passing — inline half FIXED** `f509506`: `use_it(Some((20,22)))` with param
+  `o: Option[(i64,i64)]` now coerces (extended the free-fn arg loop to thread OPTION/RESULT/SUM param
+  types to a variant-ctor arg). Oracle t_optparamcoerce. **Variable half (pp_var) NOT fixed — reject
+  DEFERRED**: `let x = Some((3,4)); use_it(x)` (x already built {i32,i32} 8B) still returns 3 (silent).
+  A broad reject over-rejected because the same logical `Option[i64]` has MULTIPLE type_ids
+  (GENERIC_INST vs mono SUM vs OPTION-kind 11), so `arg_type != param_type` fired on CORRECT
+  `Option[i64]`/i64-tuple variables too (pp_var64, pp_scalar wrongly rejected). A sound reject needs
+  payload-SIZE comparison (8B vs 16B), not type_id equality — a typecheck-side size helper is needed
+  (builder_type_size lives in air_builder). Workaround: annotate the let or pass the ctor inline.
+- **#3 g_annot ALREADY FIXED** (collateral, no new code): pushing an ANNOTATED Option VARIABLE
+  (`let e: Option[(i64,i64)] = Some((20,22)); v.push(e)`) into `Vec[Option[(i64,i64)]]` now = 42
+  (was 20 before the Vec-push option-B work `f301ae9`). Banked oracle t_vecoptvar.
+**Net: the unannotated-aggregate-match + width-coerce family is essentially closed** — match-payload
+(both paths), struct-field, Vec-push (Option+Result, both param positions), inline-param-coerce, and
+annotated-var-push all fixed. The ONLY remaining hole is the pp_var VARIABLE width-mismatch reject
+(needs payload-size compare); low severity (annotate to avoid).

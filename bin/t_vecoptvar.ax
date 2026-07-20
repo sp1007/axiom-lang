@@ -1,0 +1,32 @@
+// Oracle (exit=42): pushing an ANNOTATED Option variable (already the correct 16B payload) into
+// a Vec[Option[(i64,i64)]], then reading it back and matching -- `let e: Option[(i64,i64)] =
+// Some((20,22)); v.push(e)`. This was collaterally fixed by the Vec-push element coercion work;
+// banked to lock in the annotated-variable-push path (distinct from the inline-ctor push).
+import std.collections
+fn main() -> i64:
+    mut v = Vec[Option[(i64, i64)]].new()
+    let e: Option[(i64, i64)] = Some((20, 22))
+    v.push(e)
+    mut e2: Option[(i64, i64)] = Some((3, 14))
+    v.push(e2)
+    let a = v[0]
+    let b = v[1]
+    mut s = 0
+    match a:
+        Some(p):
+            s = s + p.0 + p.1        // 42
+        None:
+            s = s
+    match b:
+        Some(p):
+            s = s + p.0 + p.1        // 17
+        None:
+            s = s
+    // 42 + 17 = 59; return the first element's sum for a clean 42
+    if s != 59:
+        return 1
+    match a:
+        Some(p):
+            return p.0 + p.1         // 42
+        None:
+            return 0
