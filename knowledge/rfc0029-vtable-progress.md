@@ -18,9 +18,12 @@ data (field 0) + method ptr (field slot+1) then OP_CALL callee_reg. typecheck:
 interface_method_ret_type resolves the result type from the interface method contract; the
 BUG#71 reject is gone. interface size set 8/8; box layout = ensure_iface_box_type (synthesized
 struct reusing step-1 iface_methods slot order). Gate A==B (inert on self-build), 463/463.
-**Optional follow-ups (NOT shipped):** dedup vtables into shared statics (per-value alloc is
-slightly wasteful), structural-conformance diagnostic (missing method → clean reject vs
-find_struct_method_sym returning 0), std/log `Box[LogSink]` rewrite as the real consumer.
+**Follow-ups:** ✅ structural-conformance diagnostic SHIPPED `7858aa5` (struct missing an
+interface method → clean REJECT instead of null-pointer dispatch; struct_has_method +
+interface_missing_method in typecheck; oracle t_ifacenoconf; A==B 6bf63abd, 464/464). STILL
+optional: dedup vtables into shared statics (per-value alloc is slightly wasteful); std/log
+`Box[LogSink]` rewrite as the real consumer; conformance at let/return coercion sites (only
+call-arg covered so far — the demonstrated hole).
 
 ---
 
