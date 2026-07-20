@@ -473,11 +473,18 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
         mut gi := 0 as i64
         while gi < gp_name_ids.len:
             if gp_name_ids.data[gi] == payload_name_id:
+                // Prefer concrete_variant_payload (the matching variant's payload_type read
+                // DIRECTLY from the concrete monomorphized sum) over exp_args: for a nested
+                // tuple payload the mangled-name-derived exp_args can be INCOMPLETE/mis-ordered
+                // (Result[(i64,i64),i64] parses to just [i64], so exp_args[0] wrongly gives i64
+                // for the Ok(T) param and drops the tuple). cvp is authoritative for the
+                // single-payload variant being constructed. Fall back to exp_args only when cvp
+                // is unavailable (generic-inst expected, or a multi-field synth-struct payload).
                 mut exp_hint := TYPE_UNKNOWN
-                if gi < exp_args.len and exp_args.data[gi] != TYPE_UNKNOWN and not self.is_generic(exp_args.data[gi]):
-                    exp_hint = exp_args.data[gi]
-                if exp_hint == TYPE_UNKNOWN and concrete_variant_payload != TYPE_UNKNOWN and not self.is_generic(concrete_variant_payload):
+                if concrete_variant_payload != TYPE_UNKNOWN and not self.is_generic(concrete_variant_payload):
                     exp_hint = concrete_variant_payload
+                elif gi < exp_args.len and exp_args.data[gi] != TYPE_UNKNOWN and not self.is_generic(exp_args.data[gi]):
+                    exp_hint = exp_args.data[gi]
                 let concrete = self.infer_node(call_arg, exp_hint)
                 if concrete != TYPE_UNKNOWN and not self.is_generic(concrete):
                     args.data[gi] = concrete

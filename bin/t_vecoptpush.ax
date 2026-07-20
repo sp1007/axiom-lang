@@ -48,6 +48,18 @@ fn res_err() -> i64:
         Err(p):
             return p.0 + p.1       // 42
 
+fn res_ok() -> i64:
+    // tuple in the FIRST type param -- exercises the concrete-variant-payload preference
+    // over the (incomplete) mangled-parsed exp_args for a 2-param Result.
+    mut v = Vec[Result[(i64, i64), i64]].new()
+    v.push(Ok((20, 22)))
+    let x = v[0]
+    match x:
+        Ok(p):
+            return p.0 + p.1       // 42
+        Err(e):
+            return -1
+
 fn main() -> i64:
     if opt_single() != 42:
         return 1
@@ -55,4 +67,6 @@ fn main() -> i64:
         return 2
     if res_err() != 42:
         return 3
+    if res_ok() != 42:
+        return 4
     return 42
