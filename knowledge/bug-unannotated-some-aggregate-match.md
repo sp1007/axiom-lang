@@ -51,6 +51,15 @@ is not width-coerced and field1 reads past-end (0):
   (probe `scratch/probe_gen3.ax` returns 20 not 42).
 - passing unannotated `let x = Some((3,4))` to a param `o: Option[(i64,i64)]` → returns 3 not 43
   (`scratch/narrow/pp.ax`).
+- `Box(v: Some((3,4)))` where field `v: Option[(i64,i64)]`, then `match b.v` → 3 not 43
+  (`scratch/p2/q3.ax`). Expected type IS threaded to the field-init inference
+  (typecheck.ax:4937 passes `einfo.fields.data[j].type_id`), and the coerced TYPE reaches the
+  match — but the tuple VALUE is still built `{i32,i32}` (air-build tuple-literal element
+  coercion does not reach the nested `Some(tuple)`). Confirmed 3 contexts (Vec element / fn
+  param / struct field) all fail identically; `as i64` elements or a width-matching field type
+  fix all three (q3b/q3c). NOTE the confirmed-clean nearby combos (do NOT re-probe): Result
+  `Err((i64,i64))` match, nested `Some(Some(tuple))`, `[Some(tuple),None]` array element,
+  aggregate bound + mutated in a match arm — all correct post-56cab6e.
 Same class as the known "tuple ARG width ≠ tuple PARAM width" reject/coerce gap
 ([[backlog-open-items]] RFC 0022 note) but routed THROUGH `Some()`, so neither the coercion
 nor the BUG#53 reject fires. Fix direction: coerce the ctor's aggregate-literal element widths
