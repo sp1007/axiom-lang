@@ -10729,6 +10729,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     mut pexp := TYPE_UNKNOWN
                     mut param_is_arr := false
                     mut param_is_tup := false
+                    mut param_is_optlike := false
                     if fp_data != null as ptr[u32] and apos < fp_len:
                         let cand = fp_data[apos]
                         if cand != TYPE_UNKNOWN and (cand as i64) < self.types.entries.len:
@@ -10754,6 +10755,17 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     pexp = cand
                                     param_is_tup = true
                                 safe_free_str(cnm)
+                            elif ck == TYPE_KIND_OPTION or ck == TYPE_KIND_RESULT or ck == TYPE_KIND_GENERIC_INST or ck == TYPE_KIND_SUM:
+                                // A param typed Option/Result/sum: pass its type so an INLINE
+                                // variant-ctor arg carrying an aggregate literal
+                                // (`use_it(Some((3,4)))`, param o: Option[(i64,i64)]) coerces its
+                                // inner tuple to the param's payload widths via try_instantiate_
+                                // variant_call, instead of defaulting to {i32,i32} (8B) stored
+                                // into a 16B payload slot (silent field-1=0). Harmless when the
+                                // arg is already concrete or None. `param_is_optlike` also drives
+                                // the width-mismatch reject below for an already-built value arg.
+                                pexp = cand
+                                param_is_optlike = true
                     let at = self.infer_node(arg, pexp)
                     if param_is_arr and at != pexp and at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and self.types.entries.data[at as i64].kind == TYPE_KIND_ARRAY:
                         ax_printf_local("error: array argument type mismatch: this argument is a different fixed-array type than the parameter (different element type or length); annotate the local `let x: [T;N] = ..` or cast the elements to match\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)

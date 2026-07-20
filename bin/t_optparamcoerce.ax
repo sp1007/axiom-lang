@@ -1,0 +1,27 @@
+// Oracle (exit=42): an INLINE variant ctor carrying an aggregate literal, passed to a plain
+// (non-generic) fn parameter typed Option/Result[...] -- `use_it(Some((20,22)))` where the
+// param is `o: Option[(i64,i64)]`. The inner tuple must coerce to the param's payload widths
+// (via threading the param type as the arg's expected + the concrete-sum payload hint), not
+// default to {i32,i32} (8B) into a 16B payload slot (field-1=0). Covers Option + Result params.
+fn use_opt(o: Option[(i64, i64)]) -> i64:
+    match o:
+        Some(p):
+            return p.0 + p.1
+        None:
+            return 0
+
+fn use_res(r: Result[(i64, i64), i64]) -> i64:
+    match r:
+        Ok(p):
+            return p.0 + p.1
+        Err(e):
+            return -1
+
+fn main() -> i64:
+    if use_opt(Some((20, 22))) != 42:
+        return 1
+    if use_res(Ok((20, 22))) != 42:
+        return 2
+    if use_opt(None) != 0:
+        return 3
+    return 42
