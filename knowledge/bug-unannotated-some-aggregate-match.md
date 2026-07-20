@@ -131,3 +131,23 @@ was inert: A==B `DE4B6230`, but gen3 stayed 20 — ineffective, not shipped). Fi
 - **NOT conflated**: `g_annot` (push an ANNOTATED Option variable `let e: Option[(i64,i64)]=…; v.push(e)`)
   → 20 too — a SEPARATE issue (pushing a 16B-payload Option *variable*, distinct from the inline-ctor
   width path). Investigate independently.
+
+### Option A ATTEMPTED 2026-07-20 — INSUFFICIENT (reverted)
+Tried option A: in `finish_generic_instantiation` (typecheck.ax ~L2849), set the result SUM's
+`generic_args` whenever it's a concrete SUM with empty generic_args (not only `fresh_type_alias_inst`),
+idempotent + empty-guarded. Re-added the variant-ctor re-infer branch to consume it. **A==B `3AEF2FB2`
+(inert), but gen3 STILL 20.** Trace confirmed `get_generic_args(et=463)` remained `ega_len=0` — so the
+Vec-element mono SUM (463) is NOT created via `finish_generic_instantiation`; it is instantiated by a
+DIFFERENT path (likely during Vec-annotation type resolution / the initial `pre_infer_type_alias` pass
+at L2220, which calls `register_sum_type` at L2502 and never sets generic_args). Reverted (revert-on-red).
+**Remaining approaches for the focused session (both real changes to shared generic code, mandatory
+O0==O1 gate):**
+  (A') find the ACTUAL creation path of the Vec-element sum (trace `register_sum_type` callers for a
+       concrete Option/Result arg) and call `set_sum_generic_args` there; OR
+  (B)  in `try_instantiate_variant_call` (typecheck.ax ~L439), when `get_generic_args(expected)` is empty
+       AND `expected` is a concrete SUM, derive `exp_args` from the sum's VARIANT payload_types (for
+       Option: `exp_args[0]` = the Some variant's payload_type = the concrete tuple). Needs the
+       variant→param ordinal mapping (Result has T,E). This is creation-path-independent, so likely the
+       more robust route. NOTE the re-infer branch DID run (rr changed 463→468), so on re-visit the Some
+       call is NOT flag-2048-skipped — the only missing piece is the exp_hint, so (B) should suffice.
+The struct-field context (`6132b15`) stays fixed; only Vec-push + param remain.
