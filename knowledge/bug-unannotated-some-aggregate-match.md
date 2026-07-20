@@ -151,3 +151,22 @@ O0==O1 gate):**
        more robust route. NOTE the re-infer branch DID run (rr changed 463→468), so on re-visit the Some
        call is NOT flag-2048-skipped — the only missing piece is the exp_hint, so (B) should suffice.
 The struct-field context (`6132b15`) stays fixed; only Vec-push + param remain.
+
+### ✅ Vec-push context FIXED `f301ae9` (option B) — the flagged-hard case is SOLVED
+Option B worked (after option A / plain re-infer were reverted). Two parts, frontend-only
+(A==B `61D345BD`, 468/468, oracle t_vecoptpush=42):
+1. The existing generic-method-arg phase-2 re-infer loop (typecheck.ax, `is_generic_call` branch,
+   already handles `__tup`/`f32` args) now also re-infers a variant-CTOR arg (`NODE_CALL_EXPR`)
+   with the receiver-resolved element type once `inferred[]` is final.
+2. `try_instantiate_variant_call` (typecheck.ax ~L439): when `get_generic_args(expected)` is empty
+   AND `expected` is a concrete monomorphized SUM, recover the coercion hint DIRECTLY from the
+   matching variant's concrete `payload_type` (single-payload variants only; flagged RFC 0019
+   multi-field synth structs excluded; `__tup` coercion self-guards → inert otherwise).
+This is the creation-path-independent route — it sidesteps the elusive mono-sum-args gap entirely.
+Fixes `Vec[Option[(i64,i64)]].push(Some((20,22)))` (gen3: 20→42), Option multi-push, and Result
+**Err**-payload tuple. **NARROW residual still open**: Result with the tuple in the FIRST type
+param (`Vec[Result[(i64,i64),i64]].push(Ok((20,22)))`, vp_res) stays 20 — for the Ok payload param
+(gi=0) `exp_args[0]` comes back non-UNKNOWN-but-wrong (bypassing the fallback), whereas Err (gi=1)
+and Option both work. Likely a get_generic_args ORDERING mismatch for a 2-param Result mono; a
+small follow-up (trace exp_args order vs gp_name_ids for Result). The **param-passing context**
+(pp: pass an already-built Option[{i32,i32}] value to a 16B param) remains a REJECT follow-up.
