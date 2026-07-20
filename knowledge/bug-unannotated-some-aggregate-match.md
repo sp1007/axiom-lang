@@ -99,3 +99,35 @@ Three probe batches (13 programs) beyond the aggregate-match fix were all correc
 Corroborates the mature plateau: the ONE real find this session was the generic-inst
 match-payload bug (fixed both tagged+linear paths); everything else in aggregate/HOF/generic/
 integer land is sound. Remaining known gap = the width-coerce residual above.
+
+## 🔬 Vec-push context — DEEP DIAGNOSIS 2026-07-20 (dedicated session, ATTEMPTED→REVERTED, root pinpointed)
+Attempted the Vec-push coercion (`Vec[Option[(i64,i64)]].push(Some((20,22)))` → gen3=20). Traced
+it to the exact blocker; the fix touches self-host-critical mono code so it was REVERTED (change
+was inert: A==B `DE4B6230`, but gen3 stayed 20 — ineffective, not shipped). Findings:
+- **Fix lever CONFIRMED**: `push(Some((20 as i64, 22 as i64)))` (explicit i64) → 42 ✓ (`g_i64`).
+  So making the inner tuple {i64,i64} fully fixes it — it IS a tuple-element-width coercion.
+- **Where to coerce**: the existing phase-2 re-infer loop (typecheck.ax ~L3905-3959, inside the
+  `is_generic_call` branch) already re-infers `NODE_TUPLE_EXPR`→`__tup` and `f32` args after
+  `inferred[]` is resolved. Added an `elif arg_n.kind==NODE_CALL_EXPR and et is Option/Result/
+  GENERIC_INST/SUM: self.infer_node(ap, et)` to re-infer the variant-ctor arg with the resolved
+  element type. It FIRES (traced) but does NOT coerce.
+- **ROOT BLOCKER (traced)**: `inferred[T]` for the push = the receiver's element type = a
+  MONOMORPHIZED SUM (kind 6, e.g. type 463), NOT a GENERIC_INST. `get_generic_args(463)` returns
+  **EMPTY** (`ega_len=0`), so `try_instantiate_variant_call`'s hint extraction (`exp_args =
+  get_generic_args(expected)`) gets nothing → the inner tuple keeps its {i32,i32} default. The
+  mono element SUM lacks `generic_args` because `set_sum_generic_args` is only called for
+  `fresh_type_alias_inst` (typecheck.ax:2850); the Vec-element sum is monomorphized via a
+  DIFFERENT path that skips it.
+- **Two fix options for the focused session** (both touch shared/mono code — gate hard, revert-on-red,
+  the prior 2026-07-13 attempt caused O0/O1 DIVERGENCE, so O0==O1 cross-check is mandatory):
+  (A) populate `generic_args` on the Vec-element mono sum at its creation path (find where the
+  Vec-arg Option[(i64,i64)] sum 463 is registered and add `set_sum_generic_args`), so the existing
+  coercion works; OR (B) a fallback in `try_instantiate_variant_call`: when `expected` is a concrete
+  SUM with empty `generic_args`, extract the matching variant's `payload_type` from the sum's
+  variants directly as the `exp_hint`. (A) is more principled (helps any get_generic_args caller);
+  (B) is more localized. Watch: on re-visit the Some call may already be flag-2048 resolved and skip
+  try_instantiate_variant_call — verify the coercion path still runs (option-B may need the first
+  visit to carry the hint, i.e. derive T from the receiver BEFORE the arg_types loop at L3823).
+- **NOT conflated**: `g_annot` (push an ANNOTATED Option variable `let e: Option[(i64,i64)]=…; v.push(e)`)
+  → 20 too — a SEPARATE issue (pushing a 16B-payload Option *variable*, distinct from the inline-ctor
+  width path). Investigate independently.
