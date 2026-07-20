@@ -1,0 +1,12 @@
+// Oracle (exit=44): Vec.map producing a TUPLE element type -- `map(|x| -> (i64,i64) (x, x*10))`
+// builds a Vec[(i64,i64)] (16B boxed elements), then index + tuple field read must give
+// distinct fields. Crosses closure x generic-HOF x aggregate-element. Banked from an
+// autopilot probe batch (2026-07-20) alongside the generic-inst match-payload fix.
+import std.collections
+fn main() -> i64:
+    mut v = Vec[i64].new()
+    v.push(3)
+    v.push(4)
+    let pairs = v.map(|x: i64| -> (i64, i64) (x, x * 10))
+    let p = pairs[1]
+    return p.0 + p.1
