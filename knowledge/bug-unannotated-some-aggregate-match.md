@@ -70,3 +70,15 @@ nor the BUG#53 reject fires. Fix direction: coerce the ctor's aggregate-literal 
 to the expected container/param element type (thread the expected type through the Vec-push /
 call-arg mono path), or reject on width mismatch. Deferred — needs the mono/coercion flow, not a
 match tweak. Related: [[bug-vec-generic-tuple-element-mono-open]], [[bug-tuple-generic-payload-unwrap-open]].
+
+## Clean probe coverage 2026-07-20 (do NOT re-probe these axes — all correct O0+O1 on driver 93D1B4B1)
+Three probe batches (13 programs) beyond the aggregate-match fix were all correct:
+- **integer/cast/if-expr**: generic `max` chained, u8 wraparound-in-loop (300→44), signed
+  div/mod negatives, `if..elif..else` value-expr, variable-shift bit-OR loop.
+- **Vec HOF chains**: map→fold, filter→fold, all-predicate, find→Option-match, map.filter.fold.
+- **HOF × aggregates / strings**: `map(|x|->(i64,i64))` producing tuple elements (banked as
+  oracle **t_hoftup**=44), `Vec[(i64,i64)].filter` by tuple field, string slice `s[0..5]` +
+  byte-index loop, `map(|x|->Option[i64])` + Some-match.
+Corroborates the mature plateau: the ONE real find this session was the generic-inst
+match-payload bug (fixed both tagged+linear paths); everything else in aggregate/HOF/generic/
+integer land is sound. Remaining known gap = the width-coerce residual above.
