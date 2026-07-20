@@ -63,6 +63,24 @@ fn t_tup3() -> i64:
         None:
             return 0
 
+// User generic sum via the LINEAR match path (not the Option/Result tagged path) --
+// same generic-inst payload-substitution requirement, both 8B and 16B payloads.
+type UBox[T] = UW(T) | UE
+fn t_usersum8() -> i64:
+    let x = UW((3, 4))                     // 8-byte {i32,i32}
+    match x:
+        UW(p):
+            return (p.0 as i64) + (p.1 as i64) * 10   // 43
+        UE:
+            return 0
+fn t_usersum16() -> i64:
+    let x = UW((3 as i64, 4 as i64))       // 16-byte
+    match x:
+        UW(p):
+            return p.0 + p.1 * 10          // 43
+        UE:
+            return 0
+
 fn main() -> i64:
     // 43 == each aggregate-payload case; verify all agree, then fold in the 3-tuple.
     if t_tup16() != 43:
@@ -75,5 +93,9 @@ fn main() -> i64:
         return 4
     if t_res() != 43:
         return 5
+    if t_usersum8() != 43:
+        return 6
+    if t_usersum16() != 43:
+        return 7
     // 43 + 14 = 57 (t_tup3 folds in the 3-field-tuple case)
     return t_tup16() + t_tup3()

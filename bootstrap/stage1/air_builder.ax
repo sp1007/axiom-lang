@@ -3651,8 +3651,23 @@ pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                         bp = self.mb.tree.nodes.data[bp as i64].next_sibling
                         bfi = bfi + 1 as u32
                 else:
+                    // GENERIC_INST scrutinee (unannotated `let x = Wrap((a,b))` on a user
+                    // generic sum): find_variant_info returned the template variant's
+                    // generic param `T`, which reads a <=8B aggregate payload into a
+                    // register where field1 is unaddressable (reads 0). The typechecker
+                    // typed the pattern var concretely (subst_variant_payload_type); prefer
+                    // that so the payload loads by-address. Mirror of the tagged-path fix.
+                    mut lp_type := payload_type
+                    mut lp_generic := false
+                    if lp_type != 0 as u32 and (lp_type as i64) < self.mb.typetable.entries.len:
+                        if self.mb.typetable.entries.data[lp_type as i64].kind == TYPE_KIND_GENERIC:
+                            lp_generic = true
+                    if (lp_type == 0 as u32 or lp_generic) and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
+                        let lbt = self.mb.symbols.symbols.data[payload_bind_sym as i64].type_id
+                        if lbt != 0 as u32 and (lbt as i64) < self.mb.typetable.entries.len and self.mb.typetable.entries.data[lbt as i64].kind != TYPE_KIND_GENERIC:
+                            lp_type = lbt
                     let pl_reg = self.fb.fresh_reg()
-                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: payload_type, dest: pl_reg, src1: scrut_reg, src2: 1 as u32))
+                    self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: lp_type, dest: pl_reg, src1: scrut_reg, src2: 1 as u32))
                     self.locals.local_map_put(payload_bind_sym, pl_reg)
             if body != 0 as u32:
                 let bn = self.mb.tree.nodes.data[body as i64]
