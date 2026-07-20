@@ -517,6 +517,8 @@ rows=(
   "t_charmatch|exit|15"
   # RFC 0029 interface dynamic dispatch (BUG#71): 2 structs, 1 interface param, per-type vtable
   "t_ifacedispatch|exit|37"
+  # RFC 0029 structural conformance: struct missing an interface method -> REJECT (BUG#53)
+  "t_ifacenoconf|reject|"
 )
 
 for row in "${rows[@]}"; do
