@@ -47,7 +47,24 @@ aggregate happened to work by-address once the bound-var offsets were fixed.
 **t_optmatchagg (57)** O0+O1 (covers 16B/8B tuple + 16B/8B struct + Result Ok + 3-field tuple,
 each needing field1 ≠ field0). Daily driver `axc_native` = `05E08D93`.
 
-## ⚠️ RESIDUAL follow-up (separate, pre-existing, NOT a regression) — OPEN
+## ⚠️ RESIDUAL follow-up — struct-field context FIXED `6132b15`; Vec-push + param contexts still OPEN
+**Struct-field context CLOSED (`6132b15`, A==B `8C63A414`, 467/467, oracle t_ctorfieldopt=43):**
+`Box(v: Some((3,4)))` with field `v: Option[(i64,i64)]` now coerces the tuple to the field's
+element widths. Fix = extend the struct-ctor arg coercion (typecheck.ax ~L4446) to thread the
+declared field type as expected for OPTION/RESULT/GENERIC_INST/SUM fields (it already did so
+for ARRAY/F32/__tup), so try_instantiate_variant_call propagates the concrete payload to the
+literal. The two contexts below remain, each harder for a distinct reason:
+- **Vec.push(Some((a,b)))** into `Vec[Option[(i64,i64)]]` (probe_gen3=20) — the expected
+  ELEMENT type must thread through the GENERIC METHOD ARG (`ax_push`) to the inline ctor. This
+  is the mono/generic-call-arg coercion path that was ATTEMPTED+REVERTED before (arg re-infer
+  runs after/independently of mono instantiation). Still needs the deep mono-flow session.
+- **passing `let x = Some((3,4))` to a param `o: Option[(i64,i64)]`** (pp=3) — DIFFERENT: `x` is
+  a VARIABLE already built as Option[{i32,i32}] (8B). Threading the param's expected type to the
+  arg does NOT rebuild an ident's value, so coercion cannot help. Correct fix = REJECT the
+  Option[(i32,i32)]→Option[(i64,i64)] width mismatch (BUG#53 convention), a conservative
+  diagnostic rather than a silent miscompile. A separate, careful reject (watch self-host).
+
+## ⚠️ RESIDUAL follow-up (separate, pre-existing, NOT a regression) — OPEN (original note)
 An unannotated `Some((int, int))` builds an `{i32,i32}` **8-byte** payload (tuple int-literal
 elements default to i32). When that VALUE later crosses into a **16-byte-expecting** context it
 is not width-coerced and field1 reads past-end (0):
