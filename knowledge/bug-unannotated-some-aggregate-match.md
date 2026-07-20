@@ -1,6 +1,6 @@
 ---
 name: bug-unannotated-some-aggregate-match
-description: "FIXED 56cab6e (A==B==C 05E08D93, 465/465). Unannotated `let x = Some(<aggregate>)` + match read only field 0 of the payload — the GENERIC_INST scrutinee bound the pattern var to the TEMPLATE variant's generic param T. Two-part fix (typecheck subst + air_builder deref-type). Residual width-mismatch follow-up open."
+description: "FIXED 56cab6e + a5c410f (A==B==C 93D1B4B1, 465/465). Unannotated `let x = Some(<aggregate>)`/user-generic-sum `Wrap(agg)` + match read only field 0 — GENERIC_INST scrutinee bound the pattern var to the TEMPLATE generic param T. Fix: typecheck subst + air_builder deref-type on BOTH tagged (Option/Result) and linear (user sum) paths. Residual width-mismatch follow-up open."
 metadata:
   type: project
 ---
@@ -38,6 +38,10 @@ aggregate happened to work by-address once the bound-var offsets were fixed.
 2. `air_builder.ax` tagged-match deref (`lower_match_tagged`): when `find_variant_info` yields
    0 OR a bare generic param (kind 7), prefer the bound var's now-concrete `type_id` for the
    deref, so a ≤8B aggregate payload is loaded by-address (fields addressable), not into a reg.
+3. `air_builder.ax` LINEAR-match single-binding OP_GET_FIELD (`lower_match`, `a5c410f`): the
+   SAME fix — a USER generic sum (`type Box[T] = Wrap(T) | Empty`) matched unannotated goes
+   through the linear path, not the Option/Result tagged path, and had the identical ≤8B gap
+   (`Wrap((3,4))` → 3). 16B user-sum payloads already worked via the typecheck half.
 
 **Gate (backend change → B==C):** A==B==C **`05E08D93`**, regression **465/465**, oracle
 **t_optmatchagg (57)** O0+O1 (covers 16B/8B tuple + 16B/8B struct + Result Ok + 3-field tuple,
