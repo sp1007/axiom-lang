@@ -385,6 +385,9 @@ rows=(
   # unannotated `let x = Some(<aggregate>)` match: payload var must get the concrete
   # generic-inst arg (not template param T) so .N/.field read distinct fields (8B+16B)
   "t_optmatchagg|exit|57"
+  # struct field Option[(i64,i64)] init'd with unannotated Some((a,b)) -> tuple coerces to
+  # the field's element widths (not {i32,i32} into a 16B slot)
+  "t_ctorfieldopt|exit|43"
   # Vec.map producing a tuple element type (closure x generic-HOF x aggregate element)
   "t_hoftup|exit|44"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))

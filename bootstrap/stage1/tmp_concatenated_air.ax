@@ -10641,6 +10641,17 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     if std.string.starts_with(fnm, "__tup"):
                                         vexp = fty
                                     safe_free_str(fnm)
+                                elif fk == TYPE_KIND_OPTION or fk == TYPE_KIND_RESULT or fk == TYPE_KIND_GENERIC_INST or fk == TYPE_KIND_SUM:
+                                    // RFC 0022 follow-up: a field typed Option/Result/sum whose
+                                    // value is an unannotated variant ctor carrying an aggregate
+                                    // literal (`Box(v: Some((3,4)))`, field v: Option[(i64,i64)]).
+                                    // Pass the field type as expected so try_instantiate_variant_call
+                                    // threads the concrete payload type down to the tuple/struct
+                                    // literal, coercing it to the field's element widths instead of
+                                    // defaulting to {i32,i32} (8B) stored into a 16B slot (silent
+                                    // field-1=0 miscompile). Harmless when the value is already
+                                    // concrete or None (infer_node ignores an unused expected).
+                                    vexp = fty
                         if vnode != 0 as u32:
                             self.infer_node(vnode, vexp)
                         carg = self.tree.nodes.data[carg as i64].next_sibling

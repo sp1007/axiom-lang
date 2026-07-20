@@ -1,0 +1,30 @@
+// Oracle (exit=43): a struct field typed Option[(i64,i64)] initialized with an UNANNOTATED
+// variant ctor carrying an aggregate literal -- `Box(v: Some((3,4)))`. The tuple literal
+// must coerce to the field's element widths ({i64,i64}), not default to {i32,i32} (8B) into
+// the 16B field slot (which read field-1 as 0). Fix = thread the declared field type as the
+// expected type to the variant-ctor field value in the struct-ctor arg coercion so
+// try_instantiate_variant_call propagates the concrete payload down to the tuple. Covers
+// Option tuple field + a struct-payload field variant.
+struct Box:
+    v: Option[(i64, i64)]
+
+struct Holder:
+    o: Option[i64]
+
+fn main() -> i64:
+    let b = Box(v: Some((3, 4)))
+    mut r = 0
+    match b.v:
+        Some(p):
+            r = p.0 + p.1 * 10       // 43
+        None:
+            r = -1
+    // an Option[scalar] field must still work (no regression on the scalar path)
+    let h = Holder(o: Some(99))
+    match h.o:
+        Some(x):
+            if x != 99:
+                return 1
+        None:
+            return 2
+    return r
