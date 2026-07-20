@@ -6659,6 +6659,72 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 
     return self.types.register_generic_inst(entry.name_id, args)
 
+// Substitute a template variant's generic payload param against the concrete
+// type-args carried by a GENERIC_INST match scrutinee. An UNANNOTATED
+// `let x = Some((a,b))` types as a GENERIC_INST (`Option[(i64,i64)]`) rather than a
+// monomorphized SUM, so the match arm reads the TEMPLATE sum's `Some` payload -- the
+// generic param `T` -- and binds the pattern var to a generic single-slot type. Every
+// `.N` field access on such a var then collapses to offset 0 (all fields read field 0),
+// a silent miscompile. This maps the generic payload param back to the concrete arg the
+// generic-inst carries (by matching the param NAME against the alias's ordered generic
+// params, exactly as try_instantiate_variant_call binds them). Returns `payload_type`
+// unchanged when it is not a generic param, the scrutinee is not a generic-inst, or the
+// param cannot be mapped -- so it is inert on the already-correct concrete-SUM path.
+fn subst_variant_payload_type(mut self: ptr[TypeChecker], scrutinee_type: u32, payload_type: u32) -> u32:
+    if payload_type == TYPE_UNKNOWN or not self.is_generic(payload_type):
+        return payload_type
+    if (scrutinee_type as i64) >= self.types.entries.len or (payload_type as i64) >= self.types.entries.len:
+        return payload_type
+    let s_entry = self.types.entries.data[scrutinee_type as i64]
+    if s_entry.kind != TYPE_KIND_GENERIC_INST or s_entry.name_id == 0 as u32:
+        return payload_type
+    let pe = self.types.entries.data[payload_type as i64]
+    if pe.kind != TYPE_KIND_GENERIC or pe.name_id == 0 as u32:
+        return payload_type
+    mut alias_sym_idx := self.symtable.resolve(s_entry.name_id)
+    if alias_sym_idx == 0 as u32:
+        alias_sym_idx = self.symtable.resolve_global_fallback(s_entry.name_id)
+    if alias_sym_idx == 0 as u32 or (alias_sym_idx as i64) >= self.symtable.symbols.len:
+        return payload_type
+    let alias_sym = self.symtable.symbols.data[alias_sym_idx as i64]
+    if alias_sym.decl_node == 0 as u32:
+        return payload_type
+    mut alias_tree := self.tree
+    if (alias_sym_idx as i64) < self.symtable.symbol_trees.len:
+        let at = self.symtable.symbol_trees.data[alias_sym_idx as i64]
+        if at != null as ptr[AstTree]:
+            alias_tree = at
+    // Ordinal of this payload param among the alias's ordered generic params.
+    mut ordinal := -1 as i64
+    mut pos := 0 as i64
+    mut c := alias_tree.nodes.data[alias_sym.decl_node].first_child
+    while c != 0 as u32:
+        let cn = alias_tree.nodes.data[c]
+        if cn.kind == NODE_GENERIC_PARAMS:
+            mut gp := cn.first_child
+            while gp != 0 as u32:
+                let gp_name = self.node_text_in_tree(alias_tree, gp)
+                let gp_id = self.intern.intern(gp_name)
+                safe_free_str(gp_name)
+                if gp_id == pe.name_id:
+                    ordinal = pos
+                    break
+                pos = pos + 1 as i64
+                gp = alias_tree.nodes.data[gp].next_sibling
+            break
+        c = cn.next_sibling
+    if ordinal < 0 as i64:
+        return payload_type
+    mut inst_args := self.get_generic_args(scrutinee_type)
+    mut result := payload_type
+    if ordinal < inst_args.len:
+        let cand = inst_args.data[ordinal]
+        if cand != TYPE_UNKNOWN and not self.is_generic(cand):
+            result = cand
+    if inst_args.data != null as ptr[u32]:
+        @free(inst_args.data as ptr[u8])
+    return result
+
 // BUG#74: `GenericStruct(field: v, ...)` constructed with NO explicit type args,
 // relying on field-value inference. The struct-sibling of try_instantiate_variant_
 // call: infer the concrete type-args from the field-init values, then run the SAME
@@ -9302,7 +9368,15 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     found = true
                                     break
                                 j = j + 1
-                            
+
+                            // GENERIC_INST scrutinee (unannotated `let x = Some((a,b))`):
+                            // the template variant's payload is the generic param `T`, which
+                            // would bind the pattern var to a single-slot generic type and
+                            // collapse every `.N` field access to offset 0. Substitute back the
+                            // concrete arg the generic-inst carries. Inert for a concrete SUM
+                            // scrutinee (payload already concrete -> helper returns it as-is).
+                            payload_type = self.subst_variant_payload_type(scrutinee_type, payload_type)
+
                             // Now assign payload type to binding patterns (which are children of NODE_VARIANT_PAT)
                             let arg = pat_node.first_child
                             // RFC 0019: a synthesized (flagged) payload struct â€” multi-field OR a
@@ -16505,9 +16579,20 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
                             pl_type = se.name_id
                         else:
                             pl_type = se.extra
-                if pl_type == 0 as u32 and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
+                // A GENERIC_INST scrutinee (unannotated `let x = Some((a,b))`) makes
+                // find_variant_info return the TEMPLATE variant's generic param `T`
+                // (kind 7). Deref'ing a small (<=8B) aggregate payload with a generic
+                // scalar type loads it into a register where the 2nd+ field is not
+                // addressable (reads 0). The typechecker already typed the pattern var
+                // concretely (subst_variant_payload_type), so prefer that concrete type
+                // whenever find_variant_info yielded 0 or a bare generic param.
+                mut pl_is_generic := false
+                if pl_type != 0 as u32 and (pl_type as i64) < self.mb.typetable.entries.len:
+                    if self.mb.typetable.entries.data[pl_type as i64].kind == TYPE_KIND_GENERIC:
+                        pl_is_generic = true
+                if (pl_type == 0 as u32 or pl_is_generic) and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
                     let bt = self.mb.symbols.symbols.data[payload_bind_sym as i64].type_id
-                    if bt != 0 as u32:
+                    if bt != 0 as u32 and (bt as i64) < self.mb.typetable.entries.len and self.mb.typetable.entries.data[bt as i64].kind != TYPE_KIND_GENERIC:
                         pl_type = bt
                 // A str payload is stored INLINE as a 16-byte str: the constructor
                 // (Some/Ok/Err, ~line 1656) uses store_t=12 whenever the payload EXPR is

@@ -1,0 +1,79 @@
+// Oracle (exit=57): an UNANNOTATED `let x = Some(<aggregate>)` binds the match-arm
+// payload var to the TEMPLATE variant's generic param `T`, which used to collapse every
+// `.N`/`.field` access to offset 0 (all fields read field 0 -- a silent miscompile that
+// varied by payload size: 16B tuples read field1==field0, 8B multi-field payloads read
+// field1==0). Fix has two halves: (1) typecheck subst_variant_payload_type maps the
+// generic payload param back to the generic-inst's concrete arg so the pattern var is
+// typed with correct field offsets; (2) air_builder prefers that concrete type over a
+// bare generic param when deref'ing the payload (so a <=8B aggregate is not loaded into a
+// register where its 2nd field is unaddressable). Covers: 16B tuple, 8B (2xi32) tuple,
+// 16B struct, 8B (2xi32) struct, Result Ok, 3-field tuple -- each needs field1 != field0.
+
+fn t_tup16() -> i64:
+    let x = Some((3 as i64, 4 as i64))     // 16-byte tuple
+    match x:
+        Some(p):
+            return p.0 + p.1 * 10          // 43
+        None:
+            return 0
+
+fn t_tup8() -> i64:
+    let x = Some((3, 4))                   // 8-byte {i32,i32} tuple (default width)
+    match x:
+        Some(p):
+            return (p.0 as i64) + (p.1 as i64) * 10   // 43
+        None:
+            return 0
+
+struct P16:
+    a: i64
+    b: i64
+fn t_struct16() -> i64:
+    let x = Some(P16(a: 3, b: 4))
+    match x:
+        Some(p):
+            return p.a + p.b * 10          // 43
+        None:
+            return 0
+
+struct P8:
+    a: i32
+    b: i32
+fn t_struct8() -> i64:
+    let x = Some(P8(a: 3, b: 4))
+    match x:
+        Some(p):
+            return (p.a as i64) + (p.b as i64) * 10   // 43
+        None:
+            return 0
+
+fn t_res() -> i64:
+    let x = Ok((3, 4))                     // unannotated Result, Ok payload tuple
+    match x:
+        Ok(p):
+            return (p.0 as i64) + (p.1 as i64) * 10   // 43
+        Err(e):
+            return -1
+
+fn t_tup3() -> i64:
+    let x = Some((1, 2, 3))                // 3-field tuple, each field distinct
+    match x:
+        Some(p):
+            return (p.0 as i64) + (p.1 as i64) * 2 + (p.2 as i64) * 3   // 1+4+9 = 14
+        None:
+            return 0
+
+fn main() -> i64:
+    // 43 == each aggregate-payload case; verify all agree, then fold in the 3-tuple.
+    if t_tup16() != 43:
+        return 1
+    if t_tup8() != 43:
+        return 2
+    if t_struct16() != 43:
+        return 3
+    if t_struct8() != 43:
+        return 4
+    if t_res() != 43:
+        return 5
+    // 43 + 14 = 57 (t_tup3 folds in the 3-field-tuple case)
+    return t_tup16() + t_tup3()

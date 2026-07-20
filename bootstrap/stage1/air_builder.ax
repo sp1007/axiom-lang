@@ -3255,9 +3255,20 @@ pub fn lower_match_tagged(mut self: ptr[FuncLowering], scrutinee_idx: u32, scrut
                             pl_type = se.name_id
                         else:
                             pl_type = se.extra
-                if pl_type == 0 as u32 and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
+                // A GENERIC_INST scrutinee (unannotated `let x = Some((a,b))`) makes
+                // find_variant_info return the TEMPLATE variant's generic param `T`
+                // (kind 7). Deref'ing a small (<=8B) aggregate payload with a generic
+                // scalar type loads it into a register where the 2nd+ field is not
+                // addressable (reads 0). The typechecker already typed the pattern var
+                // concretely (subst_variant_payload_type), so prefer that concrete type
+                // whenever find_variant_info yielded 0 or a bare generic param.
+                mut pl_is_generic := false
+                if pl_type != 0 as u32 and (pl_type as i64) < self.mb.typetable.entries.len:
+                    if self.mb.typetable.entries.data[pl_type as i64].kind == TYPE_KIND_GENERIC:
+                        pl_is_generic = true
+                if (pl_type == 0 as u32 or pl_is_generic) and (payload_bind_sym as i64) < self.mb.symbols.symbols.len:
                     let bt = self.mb.symbols.symbols.data[payload_bind_sym as i64].type_id
-                    if bt != 0 as u32:
+                    if bt != 0 as u32 and (bt as i64) < self.mb.typetable.entries.len and self.mb.typetable.entries.data[bt as i64].kind != TYPE_KIND_GENERIC:
                         pl_type = bt
                 // A str payload is stored INLINE as a 16-byte str: the constructor
                 // (Some/Ok/Err, ~line 1656) uses store_t=12 whenever the payload EXPR is

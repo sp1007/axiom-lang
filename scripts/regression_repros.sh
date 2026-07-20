@@ -382,6 +382,9 @@ rows=(
   # tuple type flowing through a generic fn param (mono substitution + name mangling)
   "t_gentuple|exit|42"
   "t_tupctor|exit|60"
+  # unannotated `let x = Some(<aggregate>)` match: payload var must get the concrete
+  # generic-inst arg (not template param T) so .N/.field read distinct fields (8B+16B)
+  "t_optmatchagg|exit|57"
   # tuple LITERAL pushed through a generic method arg: Vec[(i64,i64)].push((10,20))
   "t_vectup|exit|42"
   # Vec whose element is a tuple containing a generic param: Vec[(i64,T)] in a generic fn
