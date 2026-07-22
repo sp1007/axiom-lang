@@ -22,28 +22,33 @@ tuple payload (43 → 50), which the `t_optupclobber` oracle does not cover.
 `Result` Ok/Err 16B tuple payload · `Option[(f64,f64)]` · plain arrays · plain tuples ·
 user sum with a **struct** payload · RFC 0019 `Pair(x, y)` two-name pattern.
 
-## OPEN #1 — `Option[[T; N]]` array payload: element reads are wrong
+## ✅ MOSTLY FIXED #1 — array payload element reads (i32-element residual OPEN)
 
-**NOT the same root cause as #2** (checked): an explicitly-i64 array literal
-(`Some([3 as i64, ...])`) IS correct, but unlike the tuple case, declaring the payload
-`[i32; 3]` does **not** make plain literals work — it still returns 8. So an element-width
-component exists, plus a second mechanism that is still unidentified.
+**Fix `7bb826f`** — an array literal used as a variant-ctor payload is inferred TWICE:
+once with the concrete expected array type, then again with UNKNOWN. A trace showed the
+same node id twice — `expected=481 elem=4` (i64) then `expected=0 elem=3` (i32). The
+hint-less re-visit re-registered `[i32; N]` and that write landed LAST, so elements stored
+4 bytes wide while reads used the declared stride. `NODE_TUPLE_EXPR` already had a sticky
+guard for exactly this double-visit; arrays had none. Added the analogue (recover the
+element hint from the type a prior visit pinned on the node). Fixes user-sum AND builtin-
+Option payloads, for indexed / single-element / loop reads. A==B `EB02B23D`, 497/497,
+oracle `t_arrpayload(232)`.
+
+A plain annotated `let v: [i64;3] = [..]` is visited once and was never affected — that
+asymmetry is what made the bug look payload-specific.
+
+### 🔴 RESIDUAL still OPEN — i32-ELEMENT array payload
 
 ```axiom
-fn main() -> i64:
-    let a: Option[[i64; 3]] = Some([3, 40, 5])
-    match a:
-        Some(arr):
-            return arr[0] + arr[1] + arr[2]   // 8, want 48  (element 1 reads 0)
-        None:
-            return 0
+let a: Option[[i32; 3]] = Some([3, 40, 5])
+match a:
+    Some(arr):
+        return (arr[0] + arr[1] + arr[2]) as i64   // still 8, want 48
 ```
 
-Reading `arr[1]` **alone** returns **5** — element 2's value — so the wrong value is
-context-dependent (register allocation), not a fixed zero. A loop-indexed read gives the
-same 8. A 2-element array is equally wrong (3, want 43). Needs no function call; plain
-arrays outside a payload are fine. Smells like the payload base address being off by an
-element, or the array payload being treated as inline where it is a reference.
+Here the declared and inferred types already AGREE (both `[i32;3]`), so the double-visit
+is not the cause — this is a separate narrow-element stride problem reading through the
+box. Do not assume the sticky guard covers it.
 
 ## ✅ FIXED #2 — a TUPLE payload in a USER sum read field 1 as 0
 
