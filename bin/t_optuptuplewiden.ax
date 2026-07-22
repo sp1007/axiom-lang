@@ -1,0 +1,42 @@
+// Regression for the "unannotated Some((int,int)) does not width-coerce" residual
+// (exit 42). The note carried it as an OPEN silent miscompile: an unannotated tuple
+// literal inside Some(..) inferred {i32,i32} (8 bytes) and, crossing into a 16-byte
+// Option[(i64,i64)] context, read field 1 as 0.
+//
+// Re-probed 2026-07-23 at O0-O3: all three shapes are correct now. Two of them
+// compute the right value, and the third -- the one that genuinely cannot be
+// inferred -- is a clean REJECT with an actionable diagnostic rather than a wrong
+// answer. Closed by the Option/Result payload-width work (171ea83).
+//
+// This oracle pins the two RUNNING shapes so they cannot silently regress back to
+// field1 = 0. The rejecting shape is deliberately not here: a program that must
+// fail to compile cannot also be an exit-code oracle.
+//
+//   direct    -- constructor passed straight into a typed parameter
+//   vecelem   -- constructor pushed into Vec[Option[(i64,i64)]], read back by index
+//
+// Each contributes 21; 21 + 21 = 42. Element values differ between the two so a
+// cross-wired read cannot accidentally produce the right total.
+
+fn take(o: Option[(i64, i64)]) -> i64:
+    match o:
+        Some(t):
+            return t.0 + t.1
+        None:
+            return -1 as i64
+
+fn main() -> i64:
+    // 5 + 16 = 21, straight into the parameter
+    let direct = take(Some((5, 16)))
+
+    // 9 + 12 = 21, through a Vec element
+    mut v: Vec[Option[(i64, i64)]] = Vec.new()
+    v.push(Some((9, 12)))
+    mut vecelem = 0 as i64
+    match v[0 as i64]:
+        Some(t):
+            vecelem = t.0 + t.1
+        None:
+            vecelem = -1 as i64
+
+    return direct + vecelem
