@@ -1,0 +1,28 @@
+// Oracle (exit 77): std.string.to_hex_upper — i64 -> UPPERCASE hex string.
+// Mirrors to_hex (unsigned 64-bit interpretation, no "0x", no leading zeros)
+// but with the 'A'..'F' alphabet. Also checks that to_hex stays lowercase and
+// that the numeric UFCS form `n.to_hex_upper()` dispatches to the free fn.
+import std.string
+fn main() -> i64:
+    mut acc := 0 as i64
+    // "ABC" content check
+    let h = to_hex_upper(2748)
+    let hp = h.ptr
+    if h.len == 3 as i64 and hp[0] == 'A' as u8 and hp[1] == 'B' as u8 and hp[2] == 'C' as u8:
+        acc = acc + 40 as i64
+    // "FF" content check
+    let f = to_hex_upper(255)
+    let fp = f.ptr
+    if f.len == 2 as i64 and fp[0] == 'F' as u8 and fp[1] == 'F' as u8:
+        acc = acc + 20 as i64
+    // to_hex must stay LOWERCASE (no accidental shared-alphabet regression)
+    let l = to_hex(2748)
+    let lp = l.ptr
+    if l.len == 3 as i64 and lp[0] == 'a' as u8:
+        acc = acc + 10 as i64
+    // zero + negative (two's-complement) widths, via numeric UFCS receiver
+    let n = 0 as i64
+    let m = -1 as i64
+    if n.to_hex_upper().len == 1 as i64 and m.to_hex_upper().len == 16 as i64:
+        acc = acc + 7 as i64
+    return acc

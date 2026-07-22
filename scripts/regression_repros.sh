@@ -180,6 +180,8 @@ rows=(
   "t_tostrf|exit|91"
   "t_tohex|exit|123"
   "t_toradix|exit|99"
+  "t_tohexup|exit|77"
+  "t_strenc|exit|70"
   "t_numufcs|exit|11"
   "t_numufcsneg|reject|"
   "t_numufcswide|exit|7"

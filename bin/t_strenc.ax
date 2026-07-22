@@ -1,0 +1,63 @@
+// Oracle (exit 70): RFC 0020 §4 follow-up in std.string — ASCII predicates,
+// char_indices, and UTF-16/UTF-32 transcoding (plain stdlib fns, no new types).
+//
+// The sample string is built from CODEPOINTS (not a source literal) so the test
+// does not depend on the encoding of this file: U+0061 'a' (1 byte), U+00E9 'e-acute'
+// (2), U+20AC euro (3), U+1D11E G-clef (4) => 10 UTF-8 bytes, 4 codepoints,
+// 5 UTF-16 code units (the last scalar is a surrogate PAIR).
+import std.string
+import std.collections
+
+fn main() -> i64:
+    mut acc := 0 as i64
+
+    mut cps := new_vec[i64]()
+    cps.push(97 as i64)
+    cps.push(233 as i64)
+    cps.push(8364 as i64)
+    cps.push(119070 as i64)
+    let s = from_utf32(cps)
+    if s.len == 10 as i64:
+        acc = acc + 10 as i64
+
+    // char_indices: 4 pairs at byte offsets 0,1,3,6; last codepoint round-trips.
+    let ci = char_indices(s)
+    if ci.len == 4 as i64:
+        let p0 = ci.data[0]
+        let p1 = ci.data[1]
+        let p2 = ci.data[2]
+        let p3 = ci.data[3]
+        if p0.0 == 0 as i64 and p1.0 == 1 as i64 and p2.0 == 3 as i64 and p3.0 == 6 as i64:
+            if p0.1 == 97 as i64 and p3.1 == 119070 as i64:
+                acc = acc + 10 as i64
+
+    // UTF-32 view
+    let u32v = to_utf32(s)
+    if u32v.len == 4 as i64 and u32v.data[3] == 119070 as i64:
+        acc = acc + 10 as i64
+
+    // UTF-16: surrogate pair for the astral scalar
+    let u16v = to_utf16(s)
+    if u16v.len == 5 as i64 and u16v.data[3] == 55348 as i64 and u16v.data[4] == 56606 as i64:
+        acc = acc + 10 as i64
+
+    // round trips back to the same 10 UTF-8 bytes
+    if from_utf16(u16v).len == 10 as i64:
+        acc = acc + 10 as i64
+    if from_utf32(u32v).len == 10 as i64:
+        acc = acc + 10 as i64
+
+    // ASCII predicates
+    if is_ascii("hello") and not is_ascii(s):
+        acc = acc + 5 as i64
+
+    // ASCII-only case mapping (length preserved, non-letters untouched)
+    let up = to_ascii_upper("aB c1")
+    let lo = to_ascii_lower("Ab C1")
+    let upp = up.ptr
+    let lop = lo.ptr
+    if up.len == 5 as i64 and upp[0] == 'A' as u8 and upp[1] == 'B' as u8 and upp[3] == 'C' as u8 and upp[4] == '1' as u8:
+        if lo.len == 5 as i64 and lop[0] == 'a' as u8 and lop[1] == 'b' as u8 and lop[3] == 'c' as u8:
+            acc = acc + 5 as i64
+
+    return acc

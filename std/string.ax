@@ -84,6 +84,190 @@ pub fn char_at(s: str, n: i64) -> rune:
         i = i + 1 as i64
     return 0 as rune
 
+// ---------------------------------------------------------------------------
+// RFC 0020 §4 follow-up — ASCII predicates, `char_indices`, UTF-16/UTF-32
+// transcoding, shipped as PLAIN STDLIB FUNCTIONS.
+//
+// RFC 0020 §4 deferred the `ascii` / `utf16` / `utf32` *TYPES* (a new type with a
+// validation invariant + a `char8` element largely duplicating `bytes`). That
+// decision stands — nothing below adds a type, changes the grammar, or touches the
+// compiler. These are pure-AXIOM functions over the existing `str`/`bytes`/`Vec[T]`
+// surface, so the deferred type work remains a future RFC amendment, unblocked.
+//
+// Representation choice (§20 — documented, minimal): code units and codepoints are
+// carried as `i64` in a `Vec[i64]` rather than a new `utf16`/`utf32` type. `i64`
+// holds every UTF-16 code unit (0..0xFFFF) and every Unicode scalar (0..0x10FFFF)
+// exactly, needs no new type, and matches `utf8_decode`'s packed-i64 convention.
+// ---------------------------------------------------------------------------
+
+/// True if every byte of `s` is 7-bit ASCII (< 0x80). An empty string is ASCII.
+/// O(n); for an ASCII string this is also exactly `s.len == char_count(s)`.
+pub fn is_ascii(s: str) -> bool:
+    let sp = s.ptr
+    mut i := 0 as i64
+    while i < s.len:
+        if sp[i] >= 0x80 as u8:
+            return false
+        i = i + 1 as i64
+    return true
+
+/// ASCII-only lowercase: maps 'A'..'Z' to 'a'..'z' and leaves every other byte
+/// (including all non-ASCII UTF-8 bytes) untouched. Never changes the byte length,
+/// so the result stays valid UTF-8. Non-ASCII case mapping is a Unicode-table
+/// problem and is deliberately out of scope (hence the `ascii_` prefix).
+pub fn to_ascii_lower(s: str) -> str:
+    let sp = s.ptr
+    let buf = malloc((s.len + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < s.len:
+        let c = sp[i]
+        if c >= 'A' as u8 and c <= 'Z' as u8:
+            buf[i] = c + 32 as u8
+        else:
+            buf[i] = c
+        i = i + 1 as i64
+    buf[s.len] = 0 as u8
+    return buf as str
+
+/// ASCII-only uppercase: maps 'a'..'z' to 'A'..'Z', leaving every other byte
+/// untouched. See `to_ascii_lower` for the scope rationale.
+pub fn to_ascii_upper(s: str) -> str:
+    let sp = s.ptr
+    let buf = malloc((s.len + 1 as i64) as u64) as ptr[u8]
+    mut i := 0 as i64
+    while i < s.len:
+        let c = sp[i]
+        if c >= 'a' as u8 and c <= 'z' as u8:
+            buf[i] = c - 32 as u8
+        else:
+            buf[i] = c
+        i = i + 1 as i64
+    buf[s.len] = 0 as u8
+    return buf as str
+
+/// RFC 0020 §4 — `(byte_offset, codepoint)` pairs, one per UTF-8 codepoint, in
+/// order. This is the pairing `for c in s` drops: the offset is what you need to
+/// slice at a codepoint boundary (`slice(s, off, off + width)`), since `s[i]` is a
+/// BYTE index. Materialized as a `Vec` (AXIOM has no lazy iterator protocol), so
+/// it allocates; for pure sequential reads prefer `for c in s`.
+pub fn char_indices(s: str) -> Vec[(i64, i64)]:
+    mut out := new_vec[(i64, i64)]()
+    mut off := 0 as i64
+    while off < s.len:
+        let dec = utf8_decode(s, off)
+        let cp = dec & 4294967295
+        out.push((off, cp))
+        // width is packed in the HIGH 32 bits (see utf8_decode).
+        off = off + (dec >> 32)
+    return out
+
+/// RFC 0020 §4 — UTF-32: the string's Unicode scalars, in order, one per element.
+/// Equivalent to the second component of `char_indices`.
+pub fn to_utf32(s: str) -> Vec[i64]:
+    mut out := new_vec[i64]()
+    mut off := 0 as i64
+    while off < s.len:
+        let dec = utf8_decode(s, off)
+        out.push(dec & 4294967295)
+        off = off + (dec >> 32)
+    return out
+
+/// Number of UTF-8 bytes needed to encode Unicode scalar `cp` (1..4). Out-of-range
+/// or surrogate values are encoded as U+FFFD (3 bytes) by `from_utf32`.
+pub fn utf8_encode_len(cp: i64) -> i64:
+    if cp < 0x80:
+        return 1 as i64
+    if cp < 0x800:
+        return 2 as i64
+    if cp < 0x10000:
+        return 3 as i64
+    return 4 as i64
+
+/// RFC 0020 §4 — UTF-32 -> UTF-8. Invalid scalars (negative, > U+10FFFF, or in the
+/// surrogate range U+D800..U+DFFF, which cannot appear in UTF-8) are replaced with
+/// U+FFFD REPLACEMENT CHARACTER rather than producing invalid UTF-8.
+pub fn from_utf32(cps: Vec[i64]) -> str:
+    // Worst case 4 bytes per scalar, plus the NUL terminator.
+    let buf = malloc((cps.len * 4 as i64 + 1 as i64) as u64) as ptr[u8]
+    mut n := 0 as i64
+    mut i := 0 as i64
+    while i < cps.len:
+        mut cp := cps.data[i]
+        if cp < 0 or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF):
+            cp = 0xFFFD
+        if cp < 0x80:
+            buf[n] = cp as u8
+            n = n + 1 as i64
+        elif cp < 0x800:
+            buf[n] = (0xC0 | (cp >> 6)) as u8
+            buf[n + 1 as i64] = (0x80 | (cp & 0x3F)) as u8
+            n = n + 2 as i64
+        elif cp < 0x10000:
+            buf[n] = (0xE0 | (cp >> 12)) as u8
+            buf[n + 1 as i64] = (0x80 | ((cp >> 6) & 0x3F)) as u8
+            buf[n + 2 as i64] = (0x80 | (cp & 0x3F)) as u8
+            n = n + 3 as i64
+        else:
+            buf[n] = (0xF0 | (cp >> 18)) as u8
+            buf[n + 1 as i64] = (0x80 | ((cp >> 12) & 0x3F)) as u8
+            buf[n + 2 as i64] = (0x80 | ((cp >> 6) & 0x3F)) as u8
+            buf[n + 3 as i64] = (0x80 | (cp & 0x3F)) as u8
+            n = n + 4 as i64
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    // The result length is the ENCODED byte count, not the allocation size.
+    return slice(buf as str, 0 as i64, n)
+
+/// RFC 0020 §4 — UTF-16 code units (host-order values, NOT bytes: no BOM, no
+/// endianness). Scalars above U+FFFF become a surrogate PAIR, so the result length
+/// is >= the codepoint count. This is the shape Win32 `WCHAR` / JS strings use.
+pub fn to_utf16(s: str) -> Vec[i64]:
+    mut out := new_vec[i64]()
+    mut off := 0 as i64
+    while off < s.len:
+        let dec = utf8_decode(s, off)
+        let cp = dec & 4294967295
+        if cp < 0x10000:
+            out.push(cp)
+        else:
+            let v = cp - 0x10000
+            out.push(0xD800 + (v >> 10))
+            out.push(0xDC00 + (v & 0x3FF))
+        off = off + (dec >> 32)
+    return out
+
+/// RFC 0020 §4 — UTF-16 code units -> UTF-8. Well-formed surrogate pairs are
+/// recombined; a lone surrogate (unpaired high or a stray low) becomes U+FFFD,
+/// matching `from_utf32`'s lossy-but-always-valid contract.
+pub fn from_utf16(units: Vec[i64]) -> str:
+    mut cps := new_vec[i64]()
+    mut i := 0 as i64
+    while i < units.len:
+        let u = units.data[i]
+        if u >= 0xD800 and u <= 0xDBFF:
+            // High surrogate: needs a following low surrogate.
+            if i + 1 as i64 < units.len:
+                let lo = units.data[i + 1 as i64]
+                if lo >= 0xDC00 and lo <= 0xDFFF:
+                    cps.push(0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00))
+                    i = i + 2 as i64
+                else:
+                    cps.push(0xFFFD)
+                    i = i + 1 as i64
+            else:
+                cps.push(0xFFFD)
+                i = i + 1 as i64
+        elif u >= 0xDC00 and u <= 0xDFFF:
+            // Stray low surrogate.
+            cps.push(0xFFFD)
+            i = i + 1 as i64
+        else:
+            cps.push(u)
+            i = i + 1 as i64
+    let out = from_utf32(cps)
+    cps.destroy()
+    return out
+
 /// Concatenates two strings.
 ///
 /// Implemented in AXIOM (value ABI) rather than via the `str_concat` intrinsic:
@@ -268,6 +452,40 @@ pub fn to_hex(n: i64) -> str:
             rev[rl] = ('0' as u8 + d)
         else:
             rev[rl] = ('a' as u8 + (d - 10 as u8))
+        rl = rl + 1 as i64
+        v = v / 16 as u64
+    let buf = malloc((rl + 1 as i64) as u64) as ptr[u8]
+    mut k := 0 as i64
+    while k < rl:
+        buf[k] = rev[rl - 1 as i64 - k]
+        k = k + 1 as i64
+    buf[rl] = 0 as u8
+    @free(rev as ptr[u8])
+    return buf as str
+
+/// Formats an integer as an UPPERCASE base-16 (hexadecimal) string, no "0x"
+/// prefix and no leading zeros ("0" for zero). The value is interpreted as an
+/// unsigned 64-bit pattern, so `to_hex_upper(-1)` yields "FFFFFFFFFFFFFFFF".
+///
+/// Mirrors `to_hex` exactly apart from the digit alphabet ('A'..'F').
+pub fn to_hex_upper(n: i64) -> str:
+    if n == 0 as i64:
+        let z = malloc(2 as u64) as ptr[u8]
+        z[0] = '0' as u8
+        z[1] = 0 as u8
+        return z as str
+    // Unsigned interpretation: cast to u64 so negative i64 formats as its
+    // two's-complement bit pattern (and to use unsigned div/mod).
+    mut v := n as u64
+    // At most 16 hex digits for a 64-bit value; build least-significant-first.
+    let rev = malloc(16 as u64) as ptr[u8]
+    mut rl := 0 as i64
+    while v > 0 as u64:
+        let d = (v % 16 as u64) as u8
+        if d < 10 as u8:
+            rev[rl] = ('0' as u8 + d)
+        else:
+            rev[rl] = ('A' as u8 + (d - 10 as u8))
         rl = rl + 1 as i64
         v = v / 16 as u64
     let buf = malloc((rl + 1 as i64) as u64) as ptr[u8]
