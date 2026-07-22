@@ -1,0 +1,33 @@
+// A monomorphized Option/Result payload whose type argument is a STRUCTURAL array must
+// carry its real element width. register_array overloads `name_id` to hold the array
+// LENGTH, so the monomorphizer's name-based substitution produced a meaningless name, the
+// variant payload_type came out EMPTY, pl_type defaulted to i64, and OP_INDEX read every
+// array payload at stride 8. [i64;N] was correct only because 8 is i64's size; every other
+// element width was wrong, which is what this oracle pins.
+fn main() -> i64:
+    let a: Option[[i32; 3]] = Some([3, 40, 5])
+    let b: Option[[u8; 4]] = Some([1, 2, 3, 4])
+    let c: Option[[i16; 3]] = Some([10, 20, 30])
+    let d: Option[[i64; 3]] = Some([3, 40, 5])
+    mut r := 0 as i64
+    match a:
+        Some(v):
+            r = r + (v[0] + v[1] + v[2]) as i64      // 48
+        None:
+            r = r + 0
+    match b:
+        Some(v):
+            r = r + (v[0] + v[1] + v[2] + v[3]) as i64   // 10
+        None:
+            r = r + 0
+    match c:
+        Some(v):
+            r = r + (v[0] + v[1] + v[2]) as i64      // 60
+        None:
+            r = r + 0
+    match d:
+        Some(v):
+            r = r + v[0] + v[1] + v[2]               // 48
+        None:
+            r = r + 0
+    return r   // 48 + 10 + 60 + 48 = 166

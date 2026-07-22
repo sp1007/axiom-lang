@@ -452,6 +452,9 @@ rows=(
   "t_ctorarity|reject|"
   # ...and every legitimate ctor arity must still compile (guard for the reject above)
   "t_ctorarityok|exit|58"
+  # a structural ARRAY type argument keeps its element width through monomorphization
+  # (register_array overloads name_id as the LENGTH, so name-based substitution failed)
+  "t_arrpayloadwidth|exit|166"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)

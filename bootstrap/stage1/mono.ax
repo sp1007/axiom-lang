@@ -109,6 +109,16 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
                     if (type_id as i64) < self.typetable.entries.len:
                         let entry = self.typetable.entries.data[type_id]
                         mut target_name_id := entry.name_id
+                        // An ARRAY type has no name: `register_array` OVERLOADS `name_id`
+                        // to hold the array LENGTH (`name_id: length, extra: elem_id`).
+                        // So `entry.name_id` here is a length, and using it as an intern id
+                        // substitutes a meaningless name that resolves to nothing — which
+                        // is why `Option[[i32;3]]` monomorphized with an EMPTY variant
+                        // payload_type. Treat it like the `__tup` case: unnameable, recover
+                        // it from the stashed type_id below.
+                        mut unnameable := entry.kind == TYPE_KIND_ARRAY
+                        if unnameable:
+                            target_name_id = 0 as u32
                         if target_name_id == 0 as u32:
                             if type_id == 1 as u32:
                                 target_name_id = self.pool.intern("i8")
@@ -143,7 +153,12 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
                             elif type_id == 16 as u32:
                                 target_name_id = self.pool.intern("usize")
                             else:
+                                // No name and not a builtin primitive: a STRUCTURAL type
+                                // such as `[i32; 3]`. "type_val" is a placeholder that
+                                // resolves to nothing, so this substitution can only be
+                                // recovered from the stashed type_id below.
                                 target_name_id = self.pool.intern("type_val")
+                                unnameable = true
                         node.payload = target_name_id
                         if kind == NODE_TYPE_EXPR or kind == NODE_IDENT:
                             node.flags = node.flags | FLAG_IS_SUBSTITUTED
@@ -158,7 +173,17 @@ pub fn substitute_type_params(mut self: ptr[Monomorphizer], node_idx: u32, orig_
                             // `__tup` so every other (name-resolvable) substitution is
                             // byte-identical to before.
                             let sub_nm = self.pool.get(entry.name_id)
-                            if std.string.starts_with(sub_nm, "__tup"):
+                            // ...and the same applies to any type that has NO name at all:
+                            // a structural `[i32; 3]` array type argument fell through to
+                            // the "type_val" placeholder above, so `Option[[i32;3]]`
+                            // monomorphized with an EMPTY variant payload_type. The pattern
+                            // var then went untyped, `pl_type` defaulted to i64 and
+                            // OP_INDEX read the array at stride 8 — `arr[0]+arr[1]+arr[2]`
+                            // returned 8 instead of 48. (`[i64;3]` was correct only because
+                            // 8 happens to be i64's size.) The consumer side already
+                            // recovers extra_idx generically, keyed on the name having
+                            // failed to resolve, so only this producer guard was missing.
+                            if std.string.starts_with(sub_nm, "__tup") or unnameable:
                                 node.extra_idx = type_id
                 else:
                     mut is_local := false
