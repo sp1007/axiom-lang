@@ -77,6 +77,54 @@ for row in "${rows[@]}"; do
   fi
 done
 
+# --- RFC 0031: pin the dead-function-elimination win --------------------------
+#
+# §5 requires a baseline row so the win cannot silently regress. Two properties,
+# because either alone is a bad test:
+#
+#   SIZE  -- the pruned build must be far below the unpruned one. The cap is
+#            absolute (30,000) and calibrated against the measured pair
+#            77,824 unpruned / 22,016 pruned. If pruning stops engaging for any
+#            reason the value jumps back to ~77,824 and the row fails loudly. A
+#            relative budget would have quietly passed a no-op.
+#
+#   OUTPUT -- and the program must still PRINT THE RIGHT THING. Exit code alone
+#            is far too weak here: the whole hazard of this optimization is a
+#            call into an address that was never emitted, and the print / string
+#            path is exactly where that first bit us (the ELF SIGSEGV, see
+#            [[dfe-elf-runtime-is-in-program]]). A program that only returns an
+#            integer never calls into that machinery, so it cannot detect the
+#            failure this row exists to catch.
+cat > "$TMP/sz_dfe.ax" <<'EOF'
+fn main() -> i64:
+    println("dfe alive")
+    let s = std.string.concat("a", "b")
+    println(s)
+    return 42 as i64
+EOF
+"$AXC" build "$TMP/sz_dfe.ax" -o "$TMP/sz_dfe_plain.exe" -O1 >/dev/null 2>&1
+"$AXC" build "$TMP/sz_dfe.ax" -o "$TMP/sz_dfe.exe" -O1 -dfe >/dev/null 2>&1
+if [ ! -f "$TMP/sz_dfe.exe" ] || [ ! -f "$TMP/sz_dfe_plain.exe" ]; then
+  echo "FAIL sz_dfe (build failed)"; fail=$((fail+1)); failed="$failed sz_dfe"
+else
+  plain=$(stat -c%s "$TMP/sz_dfe_plain.exe")
+  pruned=$(stat -c%s "$TMP/sz_dfe.exe")
+  got=$("./$TMP/sz_dfe.exe" 2>/dev/null); rc=$?
+  want=$'dfe alive\nab'
+  if [ "$got" != "$want" ]; then
+    echo "FAIL sz_dfe (output '$got', want 'dfe alive/ab') -- a pruned root in the print path"
+    fail=$((fail+1)); failed="$failed sz_dfe"
+  elif [ "$rc" != "42" ]; then
+    echo "FAIL sz_dfe (exit $rc, want 42)"; fail=$((fail+1)); failed="$failed sz_dfe"
+  elif [ "$pruned" -gt 30000 ]; then
+    echo "FAIL sz_dfe (pruned=$pruned > 30000; plain=$plain) -- pruning stopped engaging"
+    fail=$((fail+1)); failed="$failed sz_dfe"
+  else
+    echo "PASS sz_dfe (pruned=$pruned vs plain=$plain, output ok, exit=$rc)"
+    pass=$((pass+1))
+  fi
+fi
+
 echo "=== exe-size check: $pass passed, $fail failed ==="
 if [ "$fail" != "0" ]; then
   echo "FAILED:$failed"; exit 1

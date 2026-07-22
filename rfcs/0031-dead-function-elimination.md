@@ -211,10 +211,17 @@ default-on decision is a user call, not an autopilot one.
 
 ## 7. Status / next step
 
-Measured and specified only; implementation NOT started. The root-set enumeration (§3) is the
-whole difficulty and deserves its own session.
+**Shipped opt-in (`-dfe`, §6b).** The remaining decision is whether it becomes the default —
+a user call, not an autopilot one. What would justify it: sustained use of `-dfe` on real
+programs, and ideally a second self-hosting target beyond the one exercised here.
 
-**Groundwork already banked (so the next session starts with the guard in place):**
+Pinned so the win cannot silently regress (§5's requirement): `exe_size_check.sh` row
+`sz_dfe`, which asserts BOTH that the pruned build stays under 30,000 bytes (calibrated
+against 78,336 unpruned — a relative budget would have quietly passed a no-op) AND that the
+program still prints correctly. Exit code alone is far too weak: the hazard is a call into an
+address that was never emitted, and the print/string path is exactly where that first bit us.
+
+**Groundwork banked before implementation (kept as the record of what the guard was):**
 
 - **`t_indirectcall`** (regression, exit 42) — four functions reachable ONLY through indirect
   edges: a function pointer in a variable, a lambda passed as a fn-typed argument, an
@@ -253,7 +260,13 @@ whole difficulty and deserves its own session.
 
 The entry root is `main` or `_AX_main_main_v_v` (`linker.ax` ~L3101).
 
-Remaining before implementation: decide where the shared root list lives so the linker and the
-new pass cannot disagree, then add oracle coverage for the `ax_free` path (a program that
-frees under `-ctgc-free` and must still link) the same way `t_indirectcall` covers the
-indirect-call edges.
+Both open questions from that survey are now answered, and neither answer was the expected one:
+
+- *Where does the shared root list live?* In `linker.ax:is_valid_runtime_dll_symbol`, READ by
+  `dfe_is_abi_name` rather than restated — but the useful part turned out to be the prefix
+  handling around it, not the list. See §6b.
+- *Oracle coverage for the `ax_free` path?* `ctgc_free_check.sh` already builds 14 programs
+  under `-ctgc-free`, so the coverage existed. The category that actually had none was
+  `#[export]` in an executable, and writing that oracle immediately exposed an unrelated
+  shipped bug: the export directory forced `IMAGE_FILE_DLL`, making every such .exe unloadable
+  (see [[bug-export-in-exe-image-file-dll]]).
