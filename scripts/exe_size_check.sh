@@ -125,6 +125,54 @@ else
   fi
 fi
 
+# --- RFC 0031: a static library must never be pruned -------------------------
+#
+# The .lib must be byte-identical with and without -dfe. Compared as bytes rather
+# than as a size, because the failure this pins is a MISSING function, and a
+# dropped function changes content long before it changes any budget.
+#
+# The shape matters and is the whole point of the row: the library contains one
+# #[export] AND one `pub` function that no export names. With zero exports the
+# "no entry and no exports" guard declines and everything looks fine; adding a
+# single export flips the module onto the other branch, and pruning then removed
+# the pub function -- an archive silently missing part of its public surface. For
+# an exe or DLL the roots really are the whole entry surface; for a .lib the
+# CONSUMER decides what to link, so every pub function is an entry point.
+#
+# CALIBRATED, not assumed (a row that cannot fail is not a test): this exact
+# source built with the PRE-FIX compiler reported `[dfe] prune ax_lib_pub_only`,
+# so the archive genuinely differed and this row would have failed. Drop the
+# #[export] and the row silently loses all power -- the empty-export case takes
+# the declining branch and passes no matter what pruning does.
+cat > "$TMP/sz_dfelib.ax" <<'EOF'
+library sizechklib
+
+#[export]
+pub fn lib_exported(x: i64) -> i64:
+    return x + 1 as i64
+
+pub fn lib_pub_only(x: i64) -> i64:
+    mut acc = 0 as i64
+    mut i = 0 as i64
+    while i < 3 as i64:
+        acc = acc + x
+        if acc > 1000 as i64:
+            acc = acc - 1 as i64
+        i = i + 1
+    return acc
+EOF
+"$AXC" build "$TMP/sz_dfelib.ax" -o "$TMP/lib_plain.lib" --staticlib -O1 >/dev/null 2>&1
+"$AXC" build "$TMP/sz_dfelib.ax" -o "$TMP/lib_dfe.lib" --staticlib -O1 -dfe >/dev/null 2>&1
+if [ ! -f "$TMP/lib_plain.lib" ] || [ ! -f "$TMP/lib_dfe.lib" ]; then
+  echo "FAIL sz_dfelib (staticlib build failed)"; fail=$((fail+1)); failed="$failed sz_dfelib"
+elif ! cmp -s "$TMP/lib_plain.lib" "$TMP/lib_dfe.lib"; then
+  echo "FAIL sz_dfelib (-dfe changed the .lib: $(stat -c%s "$TMP/lib_plain.lib") vs $(stat -c%s "$TMP/lib_dfe.lib")) -- pruning a static library"
+  fail=$((fail+1)); failed="$failed sz_dfelib"
+else
+  echo "PASS sz_dfelib (.lib byte-identical with and without -dfe, $(stat -c%s "$TMP/lib_dfe.lib") bytes)"
+  pass=$((pass+1))
+fi
+
 echo "=== exe-size check: $pass passed, $fail failed ==="
 if [ "$fail" != "0" ]; then
   echo "FAILED:$failed"; exit 1
