@@ -433,15 +433,57 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
     let reach = @alloc(nsym) as ptr[bool]
     @memset(reach as ptr[void], 0 as u8, nsym)
 
-    // Seed: the entry point. Everything else is discovered from it.
+    // Seed the roots. Three kinds. Only the first is discovered by walking the
+    // call graph; the other two are precisely the functions the graph CANNOT see,
+    // which is why getting them wrong is a miscompile rather than a size loss.
+    //
+    //   1. the entry point — everything an executable needs hangs off it;
+    //
+    //   2. every #[export]-ed function (RFC 0009 P2, symbols.export_syms). For a
+    //      --shared / --staticlib build the exports ARE the roots: nothing calls
+    //      them from inside the module, so a walk from main alone prunes the whole
+    //      public surface of the library. Matched on the intern name-id AND on the
+    //      resolved name, because export_syms stores plain name-ids while the
+    //      emitted symbol may be mangled — comparing only one of the two silently
+    //      matches nothing, which is how this root first shipped reporting zero;
+    //
+    //   3. bundled functions whose name collides with a runtime ABI symbol
+    //      (std/runtime.ax defines ax_str_len, ax_str_concat, ax_panic, ...).
+    //      These are reached by NAME, not by a call edge: x86_resolve_callee_name
+    //      rewrites AXIOM `free` to "ax_free" and `std.string.len` to "ax_str_len",
+    //      and the magic negative callee indices (-1, -2, -10..-22) resolve to the
+    //      same names. The linker then binds by name. A bundled definition
+    //      answering to one of those names therefore has callers that leave no
+    //      trace whatsoever in the AIR graph.
+    //
+    // (3) was found by measurement, not by reading: this pass shipped with an
+    // audit counter asserting no bundled function shadows an ABI name, and the
+    // first run reported ten of them. The allow-list is READ from linker.ax rather
+    // than restated here so the two cannot drift apart.
     mut total_funcs := 0 as i64
+    mut root_exports := 0 as i64
+    mut root_abi := 0 as i64
     mut fi := 0 as i64
     while fi < mod.funcs.len:
         let f = &mod.funcs.data[fi]
         if not f.is_extern:
             total_funcs = total_funcs + 1 as i64
             let nm = x86_resolve_sym_name(f.sym_id, symbols, pool, table)
-            if nm == "main" or nm == "_AX_main_main_v_v":
+            mut is_root := (nm == "main" or nm == "_AX_main_main_v_v")
+            if not is_root:
+                mut ek := 0 as i64
+                while ek < symbols.export_syms.len:
+                    let eid = symbols.export_syms.data[ek]
+                    if eid == f.name or pool.get(eid) == nm:
+                        is_root = true
+                        root_exports = root_exports + 1 as i64
+                        ek = symbols.export_syms.len
+                    else:
+                        ek = ek + 1
+            if not is_root and is_valid_runtime_dll_symbol(nm):
+                is_root = true
+                root_abi = root_abi + 1 as i64
+            if is_root:
                 if (f.sym_id as i64) < nsym:
                     reach[f.sym_id as i64] = true
         fi = fi + 1
@@ -477,8 +519,8 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
             reach_funcs = reach_funcs + 1 as i64
         hi = hi + 1
 
-    ax_printf_local("[dfe] reachable %d / %d functions (from main; ax_free + runtime ABI NOT yet seeded)\n",
-        reach_funcs, total_funcs, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi)\n",
+        reach_funcs, total_funcs, root_exports, root_abi, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     @free(reach as ptr[u8])
 

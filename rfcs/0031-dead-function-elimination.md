@@ -90,26 +90,53 @@ A dump-only pass landed first, mirroring the `-ctgc-free-report` precedent: it c
 reachability and PRINTS the count, injecting nothing. Proven inert — the executable is
 byte-identical with and without the flag.
 
-| program | reachable / total functions |
-|---|---|
-| `return 42` | **1 / 184** |
-| Vec + HashMap + string + Option | 52 / 188 |
-| `t_indirectcall` | 8 / 191 |
+A dump-only pass landed first, mirroring the `-ctgc-free-report` precedent: it computes
+reachability and PRINTS the count, injecting nothing. Proven inert — the executable is
+byte-identical with and without the flag.
 
-So **99.5% of the functions in a trivial program are unreachable**, and even a program using
-three containers plus the string library leaves 72% dead. This is the size measurement of §1
-restated as a call-graph fact, and it confirms the win is real rather than inferred from file
-sizes.
+**The indirect-edge check passed on its own terms.** `t_indirectcall` reported 8 from `main`
+alone — exactly `main` + the four functions reachable only indirectly + the three
+intermediaries. A pass walking direct call edges would have said about 3 and silently marked
+the fn-pointer targets, the lambda and the vtable method dead. That number is the evidence
+that `OP_FUNC_ADDR` is followed.
 
-**The indirect-edge check passed on its own terms.** `t_indirectcall` reports 8 — exactly
-`main` + the four functions reachable only indirectly + the three intermediaries. A pass
-walking direct call edges alone would have reported about 3 and silently marked the fn-pointer
-targets, the lambda, and the vtable method as dead. That number is the evidence that
-`OP_FUNC_ADDR` is being followed.
+### The first numbers were wrong by 60×, and the pass caught it itself
 
-Counts are still measured from `main` ALONE — `ax_free` and the runtime ABI allow-list are not
-yet seeded, so the true reachable set is somewhat larger than 1. Seeding them is a
-prerequisite for activation, not for measurement.
+The seed-from-`main`-only counts (`return 42` → **1 / 184**) were published in this RFC as a
+lower bound. They were a very loose one. Seeding the remaining root categories moves the same
+program to **61 / 184**.
+
+| program | main only | + export + ABI roots |
+|---|---|---|
+| `return 42` | 1 / 184 | **61 / 184** |
+| `t_indirectcall` | 8 / 191 | 68 / 191 |
+| `t_dfeexport` | — | 63 / 186 (2 export roots) |
+
+The correction came from an **audit counter, not from a crash**. §7 finding 2 below claimed
+`ax_free` was a hidden root needing seeding, and finding 3 claimed the runtime ABI allow-list
+was another. Both were reasoned out by reading. Rather than trust that, the pass shipped with
+a counter asserting the premise — that no BUNDLED function answers to a runtime ABI name — and
+the very first run reported **ten of them**. `std/runtime.ax` defines `ax_str_len`,
+`ax_str_concat`, `ax_str_slice`, `ax_str_replace`, `ax_panic` and more as ordinary AXIOM
+functions.
+
+That inverts both findings. The DLL imports were never at risk, because imports are not
+members of `mod.funcs` and pruning cannot reach them. The real hazard is the **shadow**: a
+bundled definition whose name collides with an ABI symbol is bound **by name** —
+`x86_resolve_callee_name` rewrites AXIOM `free` to `"ax_free"` and `std.string.len` to
+`"ax_str_len"`, and the magic negative callee indices resolve to the same names — so its
+callers leave no trace at all in the AIR graph. Sixty of the 61 functions now reachable in
+`return 42` hang off those ten shims.
+
+Had pruning been activated on the "1 / 184" reading, it would have deleted them and produced
+calls into freed address space. The lesson is not that the reading was careless; it is that a
+premise cheap enough to assert in code should never be left as prose.
+
+The third root, `#[export]`, was equally unproven: it shipped matching only the resolved
+symbol name, and `t_dfeexport` reported **0 export roots** because `export_syms` stores plain
+intern name-ids while the emitted symbol is mangled. Matching both id and name fixed it. A
+root category that silently matches nothing looks exactly like a root category that is not
+needed.
 
 ## 6. Expected result
 
