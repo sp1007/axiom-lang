@@ -162,12 +162,40 @@ With the cap raised, the coercion fix compiles. The two halves then diverged:
   `3CD8B786`.
 
 **The real distinction, now isolated:** typecheck gives a TUPLE literal its declared aggregate
-type but gives a VARIANT constructor call the payload-DERIVED type, not the annotation`s
-`Option[Shape]`. So the declared interface type genuinely is not reachable from the ctor node
-bottom-up, which is what makes this candidate 2 (rebuild at the binding site, or thread the
-`let` target type into ctor lowering) rather than the one-liner the tuple case turned out to
-be. The memory ceiling was masking this the whole time — the fix could never even be RUN to
-observe that it reads the wrong type.
+type but gives a VARIANT constructor call the payload-DERIVED type at the CALL node. The memory
+ceiling was masking this the whole time — the fix could never even be RUN to observe that it
+reads the wrong type.
+
+## Mechanism traced (read-only, 2026-07-23) — the fix is two known lines
+
+The declared type is NOT unreachable, correcting the paragraph above. `infer_node(node,
+expected)` threads an expected type; `try_instantiate_variant_call(callee, sum_type_id,
+expected)` receives it; and `typecheck.ax:526` already has `coerce_variant_ctor_payload`, a
+helper that re-infers the payload ARGUMENT node against the variant`s declared `payload_type` —
+the exact hook an interface coercion belongs in. Two reasons it does not currently box:
+
+1. **`coerce_variant_ctor_payload` is gated to `TYPE_KIND_SUM`** (`se.kind != TYPE_KIND_SUM:
+   return`). USER sums (`Wrap = Box(Shape)`) pass through it, so typecheck already sets
+   `node_types[payload_node]` to the interface type for them; `Option`/`Result` are kinds 11/12
+   and never enter it.
+2. **air_builder never coerces the payload.** The variant lowering is a bare
+   `payload_reg = self.lower_expr(payload_idx)` with no `coerce_struct_to_interface`, so even
+   where typecheck prepared the interface type (user sums), nothing acts on it.
+
+That also explains why my shipped attempt failed on its own terms: it read `node_types[idx]`
+(the ctor CALL node, payload-derived type) instead of `node_types[payload_idx]` (the payload
+node, which typecheck coerces for user sums).
+
+**The fix is two named edits, not a design problem:**
+
+- **air_builder**: coerce on `node_types[payload_idx]`, not the call node. Likely fixes USER
+  SUMS outright, since typecheck already sets that node to the interface type.
+- **typecheck**: extend `coerce_variant_ctor_payload` past `TYPE_KIND_SUM` to Option/Result so
+  their payload node is coerced too, letting the air_builder half fire for them.
+
+Still deliberately deferred: it spans two phases, and the arity/width rejects in this same file
+have broken self-build before, so it needs the full gate rather than a loop-tail edit. But it
+now starts from "add a coerce in two known places."
 
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
 **fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
