@@ -1,0 +1,22 @@
+// Vec.partition stdlib HOF, called for real with an inline lambda.
+// The original t_vecpartition oracle probes a hand-written generic `split` and
+// never touches the stdlib method itself, so this is what actually pins it.
+fn main() -> i64:
+    mut v: Vec[i64] = Vec.new()
+    v.push(5)
+    v.push(30)
+    v.push(3)
+    v.push(20)
+    let parts = v.partition(|x: i64| -> bool x < 10)
+    let lo = parts.0
+    let hi = parts.1
+    mut acc := 0 as i64
+    mut j := 0 as i64
+    while j < lo.len:
+        acc = acc + lo.data[j]
+        j = j + 1
+    mut k := 0 as i64
+    while k < hi.len:
+        acc = acc + hi.data[k]
+        k = k + 1
+    return acc + lo.len + hi.len   // 8 + 50 + 2 + 2 = 62

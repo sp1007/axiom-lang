@@ -1,0 +1,17 @@
+// Vec.enumerate over STRUCT elements: the tuple's second field is an aggregate.
+struct P:
+    x: i64
+    y: i64
+
+fn main() -> i64:
+    mut v: Vec[P] = Vec.new()
+    v.push(P(x: 3, y: 4))
+    v.push(P(x: 5, y: 6))
+    let pairs = v.enumerate()
+    mut acc := 0 as i64
+    mut j := 0 as i64
+    while j < pairs.len:
+        let p = pairs.get(j).unwrap()
+        acc = acc + p.0 * 100 + p.1.x + p.1.y
+        j = j + 1
+    return acc   // (0+3+4) + (100+5+6) = 118

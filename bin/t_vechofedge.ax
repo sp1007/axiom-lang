@@ -1,0 +1,20 @@
+// Edge cases: enumerate over an EMPTY Vec, and zip over unequal lengths
+// (must truncate to the shorter operand, not read past the short buffer).
+fn main() -> i64:
+    mut e: Vec[i64] = Vec.new()
+    let ee = e.enumerate()
+    mut a: Vec[i64] = Vec.new()
+    a.push(1)
+    a.push(2)
+    a.push(3)
+    mut b: Vec[i64] = Vec.new()
+    b.push(10)
+    b.push(20)
+    let z = a.zip(b)
+    mut acc := 0 as i64
+    mut i := 0 as i64
+    while i < z.len:
+        let p = z.get(i).unwrap()
+        acc = acc + p.0 + p.1
+        i = i + 1
+    return acc + ee.len + z.len   // (1+10)+(2+20)=33, +0 +2 = 35

@@ -419,6 +419,21 @@ rows=(
   "t_vecpartition|exit|62"
   # Vec.zip stdlib HOF: element-wise pairs Vec[(T,U)] (free-fn-shadow overload hole fixed)
   "t_veczip|exit|62"
+  # Vec.partition called for REAL with a lambda. t_vecpartition above only probes a
+  # hand-written generic `split`, so it never pinned the stdlib method itself.
+  "t_vecpartition2|exit|62"
+  # enumerate with T=str: 16B inline {ptr,len} carried as a tuple field through mono
+  "t_vecenumstr|exit|15"
+  # zip with U != T: two distinct generic params meeting in one tuple element
+  "t_veczipmix|exit|21"
+  # HOF edges: enumerate over an EMPTY Vec; zip truncates to the shorter operand
+  "t_vechofedge|exit|35"
+  # chained HOFs: filter's Vec[T] result feeding straight into enumerate
+  "t_vecenumchain|exit|51"
+  # partition's (Vec[T],Vec[T]) return consumed by tuple destructuring (RFC 0022 P3)
+  "t_vecpartdestr|exit|57"
+  # enumerate over STRUCT elements: the tuple's second field is an aggregate
+  "t_vecenumstruct|exit|118"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
