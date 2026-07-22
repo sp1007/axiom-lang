@@ -97,3 +97,18 @@ budget is spent in `typecheck.ax`, three phases earlier, and nothing about the c
 **Where to start:** `typecheck`. Roughly 5 GB is retained there across a build that never
 frees. Since the margin between success and OOM is ~30 MB out of ~7,900, even a small reduction
 in typecheck retention buys real headroom — and it is where the headroom is.
+
+### Already checked and NOT the cause (do not repeat)
+
+- **`typecheck.ax` does not itself allocate much.** Zero `get_token_text` calls, 7 `alloc_str`,
+  10 `std.string.concat`, against 36 `@free`. The phase spends its memory in what it invokes,
+  not in string churn in that file.
+- **`node_types` is not a leak.** It grows by doubling (`typecheck.ax:1804`), copies, and
+  `@free`s the old buffer. Correct as written.
+
+So the remaining suspects are the structures the phase builds up rather than the code that
+walks them: the type table (`register_option`/`register_result` linear-scan and push), generic
+monomorphization, and whatever the AST retains per node. Instrumenting is awkward — printing
+per-node from inside typecheck is itself enough to change the picture, and adding a call to a
+hot lowering function is what started this whole investigation. Prefer sampling working set
+against `--time` (as done above) over in-process counters.
