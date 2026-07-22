@@ -11975,7 +11975,17 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     mut existing_type_id := 0 as u32
                     mut j_tt := 0 as i64
                     while j_tt < self.types.entries.len:
-                        if self.types.entries.data[j_tt].name_id == mangled_id:
+                        // `TypeEntry.name_id` does NOT always hold a name. `register_array`
+                        // stores the array LENGTH there and `register_result` stores the ERR
+                        // TYPE ID, so scanning every entry for a mangled name can match one of
+                        // those integers by coincidence. It is not hypothetical: mangled ids
+                        // land in the high hundreds for even a trivial program, so a
+                        // `[i64; 974]` field alongside a generic instantiation whose mangled
+                        // name interned to 974 matched the ARRAY entry and used it as the
+                        // monomorphized type -> SIGSEGV. Only kinds that are genuinely
+                        // registered under a name can be the instantiation we are looking for.
+                        let jk = self.types.entries.data[j_tt].kind
+                        if jk != TYPE_KIND_ARRAY and jk != TYPE_KIND_RESULT and self.types.entries.data[j_tt].name_id == mangled_id:
                             existing_type_id = j_tt as u32
                             break
                         j_tt = j_tt + 1 as i64

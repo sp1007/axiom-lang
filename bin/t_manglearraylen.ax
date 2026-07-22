@@ -1,0 +1,24 @@
+// `TypeEntry.name_id` does NOT always hold a name: register_array stores the array
+// LENGTH there, and register_result stores the ERR TYPE ID. Scanning every type entry
+// for a mangled generic name could therefore match one of those integers by coincidence
+// and use it as the monomorphized type. Mangled ids land in the high hundreds even for a
+// tiny program, so the `[i64; 974]` field below — next to a generic instantiation whose
+// mangled name interned to exactly 974 — matched the ARRAY entry and SIGSEGV'd.
+//
+// CALIBRATION WARNING: the length 974 is tuned to this exact program's intern order. It
+// bit at the time of writing (segfault before the fix, 43 after). If the compiler's
+// interning changes, the collision moves and this test keeps PASSING while no longer
+// testing anything — it degrades to a trivial program, never to a false failure. Do not
+// read a pass here as proof the guard is alive; re-derive the colliding length (trace
+// mangled_id at the scan site) if you need to re-verify. Spreading many array lengths
+// does NOT help: each extra field interns another name and shifts the ids being chased.
+struct Pair[T]:
+    a: T
+    b: T
+
+struct Big:
+    buf: [i64; 974]
+
+fn main() -> i64:
+    let p = Pair[i64](a: 3, b: 40)
+    return p.a + p.b   // 43

@@ -455,6 +455,9 @@ rows=(
   # a structural ARRAY type argument keeps its element width through monomorphization
   # (register_array overloads name_id as the LENGTH, so name-based substitution failed)
   "t_arrpayloadwidth|exit|166"
+  # a mangled-name scan must skip entries whose name_id is NOT a name (array LENGTH,
+  # result ERR type). Calibrated length — see the header in the .ax before trusting a pass.
+  "t_manglearraylen|exit|43"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
