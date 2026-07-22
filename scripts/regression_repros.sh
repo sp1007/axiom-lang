@@ -714,6 +714,39 @@ for jt in "t_jumptable:226" "t_jumptable2:28" "t_jumptable3:27" "t_ifchainjt:53"
   done
 done
 
+# --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---
+# Three properties, and the third is the one that actually bit: a build that cannot
+# read its stdlib used to report eight anonymous `open failed` lines and then emit a
+# ~2 KB executable that SEGFAULTS -- so the user met a crash instead of a build
+# failure, with the real cause (wrong working directory) far above the symptom.
+#
+#   1. non-zero exit
+#   2. the diagnostic NAMES the file it could not open
+#   3. NO output file is produced
+#
+# Driven by running the compiler from a subdirectory, because std/*.ax resolves
+# relative to the CURRENT DIRECTORY -- the same way a real user trips it.
+ihalt_out="$REGTMP/ihalt.exe"
+rm -f "$ihalt_out"
+printf 'fn main() -> i64:
+    return 7
+' > "$REGTMP/ihalt.ax"
+ihalt_log=$( cd "$REGTMP" && timeout "$TIMEOUT" "$OLDPWD/$AXC" build ihalt.ax -o ihalt.exe -O1 2>&1 )
+ihalt_rc=$?
+ihalt_ok=1
+if [ "$ihalt_rc" = "0" ]; then
+  echo "FAIL input-halt (exit 0; a build with unreadable stdlib must fail)"; ihalt_ok=0
+elif ! printf '%s' "$ihalt_log" | grep -q 'std/result.ax'; then
+  echo "FAIL input-halt (diagnostic does not name the unreadable file)"; ihalt_ok=0
+elif [ -f "$REGTMP/ihalt.exe" ]; then
+  echo "FAIL input-halt (emitted an executable anyway -- it would segfault)"; ihalt_ok=0
+fi
+if [ "$ihalt_ok" = "1" ]; then
+  echo "PASS input-halt (exit=$ihalt_rc, names the file, no exe emitted)"; pass=$((pass+1))
+else
+  fail=$((fail+1)); failed="$failed input-halt"
+fi
+
 echo "=== regression: $pass passed, $fail failed ==="
 [ -n "$failed" ] && echo "FAILED:$failed"
 [ "$fail" -eq 0 ] && echo "REGRESSION_OK" || echo "REGRESSION_FAIL"

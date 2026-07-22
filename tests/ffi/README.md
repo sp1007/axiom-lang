@@ -47,10 +47,19 @@ objdump -p axmath.dll | grep -A12 "Export Tables"   # ax_add / ax_mul, base 1
 copied into the EXE, no runtime dependency).
 
 > **Run these from the REPOSITORY ROOT, not from `tests/ffi`.** The compiler resolves
-> `std/*.ax` and any `import`ed module relative to the CURRENT DIRECTORY. Run it from here and
-> the stdlib bundle silently fails to open, which surfaces as eight `Error: open failed:` lines
-> with no filename and a ~2 KB executable that segfaults. The commands below previously read
-> `cd tests/ffi` and could not work as written.
+> `std/*.ax` and any `import`ed module relative to the CURRENT DIRECTORY. The commands below
+> previously read `cd tests/ffi` and could not work as written. Running from the wrong place
+> now fails cleanly and says so:
+>
+> ```
+> error: cannot open source file:
+> std/result.ax
+> note: the compiler resolves std/*.ax and imported modules relative to the CURRENT DIRECTORY
+> error: 1 stdlib source file(s) could not be read; aborting before code generation
+> ```
+>
+> It used to print eight anonymous `Error: open failed:` lines and then emit a ~2 KB
+> executable that segfaulted — a crash rather than a build failure.
 
 ```sh
 # From the repository root.

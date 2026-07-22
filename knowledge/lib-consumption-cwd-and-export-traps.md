@@ -10,17 +10,26 @@ both of which cost real time when hit together.
 
 ## 1. Run the compiler from the REPOSITORY ROOT
 
-`std/*.ax` and any `import`ed module are resolved relative to the **current directory**. Run
-from `tests/ffi` and the stdlib bundle silently fails to open:
+`std/*.ax` and any `import`ed module are resolved relative to the **current directory**. The
+same applies to `import mylib` — the module file must sit in the CWD, which for a build needing
+the stdlib means the repository root.
+
+**FIXED 2026-07-23** (`36365fb`). This used to print eight anonymous `Error: open failed:`
+lines with no filename and then emit a ~2 KB executable that segfaulted, so the user met a
+crash rather than a build failure and the real cause sat several screens above the symptom.
+Now it names the file, states the cause, and halts:
 
 ```
-Error: open failed:            (x8, no filename)
+error: cannot open source file:
+std/result.ax
+note: the compiler resolves std/*.ax and imported modules relative to the CURRENT DIRECTORY
+error: 1 stdlib source file(s) could not be read; aborting before code generation
 ```
 
-…followed by a ~2 KB executable that segfaults. `tests/ffi/README.md` documented `cd tests/ffi`
-plus relative paths and therefore could not work as written; now fixed to use root-relative
-paths. The same applies to `import mylib` — the module file must sit in the CWD, which for a
-build needing the stdlib means the repository root.
+Guarded by the `input-halt` row in `regression_repros.sh`, which pins all three properties —
+non-zero exit, the diagnostic names the file, and no output is emitted. `tests/ffi/README.md`
+documented `cd tests/ffi` plus relative paths and therefore could not work as written; fixed to
+use root-relative paths.
 
 ## 2. `-l` links `#[export] pub fn`, not bare `pub fn`
 
