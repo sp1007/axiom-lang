@@ -26,6 +26,11 @@ $src = "bootstrap/stage1/tmp_concatenated_air.ax"
 # subtle -- A and B agree because they are the SAME STALE FILE -- and it has now
 # cost two separate sessions real time. Deleting first turns that into an honest
 # "hop1 (A) failed".
+#
+# CALIBRATED 2026-07-23, not assumed -- a guard that has never been seen to fire is
+# not a guard. Appending a syntax error to air_builder.ax and running this script
+# now yields the real parse errors and exit 1. The SAME injection before the fix
+# printed "SUCCESS: A == B".
 Remove-Item bin/axc_fpA.exe,bin/axc_fpB.exe,bin/axc_fpC.exe -ErrorAction SilentlyContinue
 
 # Regenerate the concatenated source from clean per-file modules.
