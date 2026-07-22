@@ -1,0 +1,80 @@
+// RFC 0028 §7e benchmark: a 32-arm `if op == K: elif op == K2: ...` dispatch chain in a hot
+// loop, mirroring _bench_jt.ax's `match` version so the two are directly comparable.
+fn dispatch(op: i64) -> i64:
+    if op == 0:
+        return 3
+    elif op == 1:
+        return 7
+    elif op == 2:
+        return 1
+    elif op == 3:
+        return 9
+    elif op == 4:
+        return 2
+    elif op == 5:
+        return 8
+    elif op == 6:
+        return 4
+    elif op == 7:
+        return 6
+    elif op == 8:
+        return 5
+    elif op == 9:
+        return 0
+    elif op == 10:
+        return 3
+    elif op == 11:
+        return 7
+    elif op == 12:
+        return 1
+    elif op == 13:
+        return 9
+    elif op == 14:
+        return 2
+    elif op == 15:
+        return 8
+    elif op == 16:
+        return 4
+    elif op == 17:
+        return 6
+    elif op == 18:
+        return 5
+    elif op == 19:
+        return 0
+    elif op == 20:
+        return 3
+    elif op == 21:
+        return 7
+    elif op == 22:
+        return 1
+    elif op == 23:
+        return 9
+    elif op == 24:
+        return 2
+    elif op == 25:
+        return 8
+    elif op == 26:
+        return 4
+    elif op == 27:
+        return 6
+    elif op == 28:
+        return 5
+    elif op == 29:
+        return 0
+    elif op == 30:
+        return 3
+    elif op == 31:
+        return 7
+    else:
+        return 11
+
+fn main() -> i32:
+    mut acc := 0 as i64
+    mut s := 12345 as i64
+    mut i := 0
+    while i < 20000000:
+        s = (s * 1103515245 + 12345) % 2147483648
+        mut op := s % 32
+        acc = acc + dispatch(op)
+        i = i + 1
+    return (acc % 251) as i32

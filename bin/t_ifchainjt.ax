@@ -1,0 +1,133 @@
+// Oracle (exit 53): RFC 0028 §7e — `if x == C: elif x == C2: ...` CHAIN recognition.
+// Covers the shape the compiler's own opcode dispatch is written in: comparisons against
+// NAMED consts (incl. hex), mixed-sign SIGNED arms, an UNSIGNED (u16) chain, gap/below-min/
+// above-max values falling to the `else`, a chain with NO else, a 3-arm chain that must stay
+// LINEAR (below the 4-arm threshold), DISJUNCTIVE arms (`x == A or x == B`, several values
+// sharing one body), and a chain whose last clause uses `and` (must fall back to linear
+// wholesale). Built both linear and with `-jumptable`; both must yield 53.
+
+const K_A: i64 = -50
+const K_B: i64 = -7
+const K_C: i64 = 0
+const K_D: i64 = 3
+const K_E: i64 = 40
+const K_F: i64 = 99
+
+// signed, named consts, mixed sign, with default
+fn sdispatch(op: i64) -> i64:
+    if op == K_A:
+        return 1
+    elif op == K_B:
+        return 2
+    elif op == K_C:
+        return 3
+    elif op == K_D:
+        return 4
+    elif op == K_E:
+        return 5
+    elif op == K_F:
+        return 6
+    else:
+        return 9
+
+const U_A: u16 = 0x0203
+const U_B: u16 = 0x0204
+const U_C: u16 = 0x0301
+const U_D: u16 = 0x030D
+const U_E: u16 = 0xF000
+
+// unsigned scrutinee: 0xF000 has the high bit of an i16 set, so a SIGNED sort would
+// mis-order it against the small opcodes and the tree would walk the wrong way.
+fn udispatch(op: u16) -> i64:
+    if op == U_A:
+        return 1
+    elif op == U_B:
+        return 2
+    elif op == U_C:
+        return 3
+    elif op == U_D:
+        return 4
+    elif op == U_E:
+        return 5
+    else:
+        return 8
+
+// no `else`: every miss must simply fall through to the merge block
+fn nodefault(op: i64) -> i64:
+    mut r := 7 as i64
+    if op == 10:
+        r = 1
+    elif op == 20:
+        r = 2
+    elif op == 30:
+        r = 3
+    elif op == 40:
+        r = 4
+    return r
+
+// only 3 arms -> below the threshold, must stay on the linear path
+fn small(op: i64) -> i64:
+    if op == 1:
+        return 5
+    elif op == 2:
+        return 6
+    else:
+        return 7
+
+// DISJUNCTIVE arms (`x == A or x == B`) — the shape the compiler's own selector dispatch
+// uses. Several values must reach ONE copy of the body, and a body that declares a local
+// must still work when it is the shared target of multiple tree leaves.
+fn ordispatch(op: i64) -> i64:
+    if op == 1 or op == 2 or op == 3:
+        mut t := op * 10
+        return t + 1
+    elif op == 7 or op == 9:
+        mut u := op - 5
+        return u * 2
+    elif op == 20:
+        return 100
+    elif op == 31 or op == 32:
+        return 200
+    else:
+        return 0
+
+// a chain mixing a plain arm, an or'd arm, and `and` in the LAST clause: the `and` clause
+// is not a compare-tree shape, so the WHOLE chain must fall back to linear and still be right
+fn mixedguard(op: i64, flag: bool) -> i64:
+    if op == 1:
+        return 1
+    elif op == 2 or op == 3:
+        return 2
+    elif op == 4:
+        return 3
+    elif op == 5 and flag:
+        return 4
+    else:
+        return 5
+
+fn main() -> i32:
+    mut a := 0 as i64
+    // every arm, in a different order than declared
+    a = a + sdispatch(0) + sdispatch(-50) + sdispatch(99) + sdispatch(3) + sdispatch(-7) + sdispatch(40)
+    // 3+1+6+4+2+5 = 21
+    // below min, above max, and a gap value -> default 9 each
+    a = a + sdispatch(-1000) + sdispatch(5000) + sdispatch(1)  // +27 = 48
+    a = a + udispatch(0x0203) + udispatch(0x030D) + udispatch(0xF000)  // 1+4+5 = 10 -> 58
+    a = a + udispatch(0x0000) + udispatch(0xFFFF)  // 8+8 = 16 -> 74
+    a = a + nodefault(10) + nodefault(40) + nodefault(25)  // 1+4+7 = 12 -> 86
+    a = a + small(1) + small(2) + small(3)  // 5+6+7 = 18 -> 104
+    // exercise the tree from inside a loop so the same chain runs many times
+    mut i := 0
+    while i < 10:
+        a = a + sdispatch(K_D) + udispatch(U_C)  // (4+3) * 10 = 70 -> 174
+        i = i + 1
+    a = a + nodefault(20) * 20  // 2*20 = 40 -> 214
+    // disjunctive arms: 11+21+31 (or-arm 1) + 4+8 (or-arm 2) + 100 + 200 + 200 + 0
+    a = a + ordispatch(1) + ordispatch(2) + ordispatch(3)    // 11+21+31 = 63  -> 277
+    a = a + ordispatch(7) + ordispatch(9)                    // 4+8     = 12   -> 289
+    a = a + ordispatch(20) + ordispatch(31) + ordispatch(32) // 100+200+200=500 -> 789
+    a = a + ordispatch(0) + ordispatch(99)                   // 0+0     = 0    -> 789
+    // `and` in the last clause -> whole chain stays linear, values unchanged
+    a = a + mixedguard(1, true) + mixedguard(2, true) + mixedguard(3, false)  // 1+2+2 = 5 -> 794
+    a = a + mixedguard(4, false) + mixedguard(5, true) + mixedguard(5, false) // 3+4+5 = 12 -> 806
+    return (a % 251) as i32  // 806 % 251 = 53

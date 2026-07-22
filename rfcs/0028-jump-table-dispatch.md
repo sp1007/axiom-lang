@@ -1,11 +1,11 @@
 # RFC 0028 — Jump-table dispatch for dense integer/tag chains
 
-- Status: **SHIPPED (compare-tree variant) 2026-07-19c `d85ec48`** — the §7d balanced compare
-  tree (O(log N), pure air-level, opt-in `-jumptable`) is implemented in air_builder.ax
-  (`try_lower_match_bsearch`/`emit_bsearch_range`), gated to i64 scrutinees. A==B=0b82e972,
-  447/447. The O(1) `.rodata`/inline-table variant (§3–§7c) remains a future follow-up only if
-  profiling shows the log-factor matters; extending beyond i64 + enabling by default are also
-  follow-ups. Original DRAFT design below.
+- Status: **CLOSED 2026-07-22.** The §7d balanced compare tree shipped 2026-07-19c `d85ec48`
+  for `match`; the §7e if/elif-chain follow-up shipped 2026-07-22 (A==B `57738F36`, 485/485).
+  Both stay behind the opt-in `-jumptable` flag — see §7f for the measured decision NOT to
+  enable by default, which was the last open item. The O(1) `.rodata`/inline-table variant
+  (§3–§7c) is **not** being pursued: §7f shows the log-factor is not what limits the compiler.
+  Original DRAFT design below.
 - Depends on: air.ax (new opcode), x86_selector/emitter (codegen), linker.ax (new
   relocation kind for a code-address table), ssa_opt.ax (recognition pass).
 - Related: [[m6-perf-gate-fib-benchmark]] (perf work), the self-host dispatch hot paths.
@@ -194,6 +194,67 @@ compare-tree needs no new opcode.
   identical, all correct.** Banked the deepest case as oracle **t_jumptable3** (9-arm mixed-sign, exit
   27, run linear AND `-jumptable` at O0/O1/O2). The remaining gate before flipping the default is a
   deliberate product/policy decision (opt-in vs on-by-default codegen), not a correctness gap.
+
+## 7f. §7e if-chain recognition SHIPPED + the default-on decision (2026-07-22)
+
+`try_lower_if_chain_bsearch` (air_builder.ax) recognizes `if x == C0: … elif x == C1: … else:`
+over one integer variable and lowers it as the same balanced tree, via a new
+`emit_bsearch_blocks` whose leaves JUMP to a per-clause block instead of lowering an arm body
+inline (`emit_bsearch_range` does the latter, which is right for `match` but would clone a body
+once per value here). What it accepts, beyond the `match` path:
+
+- **Disjunctive arms** — `x == OP_ALLOC or x == OP_ARENA_ALLOC or x == OP_SYSCALL`, the `case A:
+  case B:` of a switch. Several values map to ONE block, so the body is lowered once.
+- **Named consts as compare values** (`op == OP_IADD`), folded via `ifchain_const_int`, which
+  resolves a SYM_CONST to its initializer. This is what the compiler's own dispatch is written in.
+- **Unsigned scrutinees** (u8..u64/usize), sorted with an unsigned comparison to match the
+  `CC_B` that `select_comparison` emits for unsigned operands. The `match` path is still
+  signed-only.
+
+Threshold is **8 values**, not the `match` path's 4: a tree costs ~3 blocks + 4 vregs per value,
+if-chains are far more common than dense matches, and at 4 arms a tree saves ~0.5 compares.
+
+### The measurement (§10: no blind optimization)
+
+| Workload | Linear | Tree | Result |
+|---|---|---|---|
+| 32-arm dense `match`, 20M dispatches, -O2 | 255 ms | 184 ms | **1.38x** |
+| 32-arm `if/elif` chain, 20M dispatches, -O2 | 255 ms | 174 ms | **1.47x** |
+| **Compiler self-build** (-jumptable-built compiler) | 7.00 s | 7.06 s | **−0.8% (no win)** |
+
+### Decision: `-jumptable` stays OPT-IN. Do not enable by default.
+
+§7e speculated that recognizing the compiler's `if op == OP_*` chains "WOULD speed the
+compiler's own hot dispatch." **Measured, it does not** — the self-build is within noise of
+unchanged. Two reasons: the compiler's longest dispatch chains interleave `and`-guarded clauses
+(`if inst.opcode == OP_CALL and inst.src1 == 0`) which disqualify the whole chain, and
+self-build time is not dispatch-bound in the first place. Enabling by default would impose a
++0.5% code-size increase (2 523 136 → 2 534 912 bytes) and a changed codegen path on every
+build for zero measured benefit to the compiler, while the programs that DO benefit (1.4-1.5x
+on dispatch-bound code) can simply pass the flag. That is the answer to the "deliberate
+product/policy decision" this RFC was parked on; it is now settled on evidence, not caution.
+
+Self-host safety is nevertheless established, so the flag is safe for anyone to use: a compiler
+built WITH `-jumptable` produces **byte-identical output** to one built without
+(`57738F36C9A0F262` both ways), and the default build reaches A==B fixpoint.
+
+### Two bugs worth remembering (both found only by measuring, not by testing)
+
+1. **The rewrite silently never fired.** Pass 1 reused one `scratch` buffer for every clause, so
+   by pass 2 it held the LAST clause's values, not the first's. Slot 0 therefore got the final
+   arm's value, collided with that arm's own entry, and the duplicate-value guard rejected every
+   chain. Every oracle still PASSED — falling back to the linear path is always correct — so
+   only comparing binary hashes (`fired = linear_hash != jumptable_hash`) exposed it. **An
+   optimization's tests passing does not mean the optimization ran; assert that it changed the
+   output.**
+2. **Bailing after allocating leaked blocks.** The dup guard returned false *after*
+   `self.fb.new_block()` had handed out a block per clause; abandoned blocks stay in the
+   function forever. Because bug 1 made nearly every chain bail, this leaked thousands of dead
+   blocks and pushed the `-jumptable` self-build past the allocator's 256MB ceiling
+   (`SEGMENT_SIZE 65536 * MAX_SEGMENTS 4096`) — an OOM I first misread as the trees being
+   inherently too expensive, and nearly "fixed" by raising the threshold. Restructured so pass 2
+   records a clause INDEX and blocks are minted only after every bail check has passed.
+   **Never allocate into the function until the rewrite is committed.**
 
 ## 8. Implementation order (dedicated session)
 

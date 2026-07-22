@@ -17158,6 +17158,391 @@ pub fn try_lower_match_bsearch(mut self: ptr[FuncLowering], scrutinee_idx: u32, 
     self.terminated = false
     return true
 
+// RFC 0028 Â§7e: fold a comptime INTEGER constant expression used as an if-chain compare
+// value. Handles the literal forms plus a named `const` (the shape the compiler's own
+// dispatch uses: `op == OP_IADD`, where OP_IADD is a module-level const). Returns false â€”
+// never a bogus 0 â€” for anything it cannot prove constant, so the caller falls back to the
+// linear chain. `out` receives the value only on true.
+pub fn ifchain_const_int(self: ptr[FuncLowering], idx: u32, out: ptr[i64]) -> bool:
+    if idx == 0 as u32 or (idx as i64) >= self.mb.tree.nodes.len:
+        return false
+    let node = self.mb.tree.nodes.data[idx as i64]
+    if node.kind == NODE_CAST_EXPR:
+        return self.ifchain_const_int(node.first_child, out)
+    if node.kind == NODE_UNARY_EXPR:
+        let op = self.mb.get_token_text(node.token_idx)
+        let is_neg = op == "-"
+        let is_pos = op == "+"
+        @free(get_str_ptr(op))
+        if not is_neg and not is_pos:
+            return false
+        mut inner := 0 as i64
+        if not self.ifchain_const_int(node.first_child, &inner):
+            return false
+        if is_neg:
+            inner = 0 as i64 - inner
+        out[0] = inner
+        return true
+    if node.kind == NODE_INT_LIT or node.kind == NODE_BOOL_LIT or node.kind == NODE_CHAR_LIT:
+        out[0] = self.mb.builder_global_fold_int(idx)
+        return true
+    // A named constant: resolve the symbol and fold its initializer. Only a resolved
+    // SYM_CONST whose declaration lives in THIS tree is accepted â€” an imported/library
+    // const (decl_node 0, value in next_overload) is deliberately left to the linear
+    // path rather than duplicating that inlining rule here.
+    if node.kind == NODE_IDENT:
+        if node.payload == 0 as u32 or (node.payload as i64) >= self.mb.symbols.symbols.len:
+            return false
+        let sym = self.mb.symbols.symbols.data[node.payload as i64]
+        if sym.kind != SYM_CONST or sym.decl_node == 0 as u32:
+            return false
+        if (sym.decl_node as i64) >= self.mb.tree.nodes.len:
+            return false
+        mut init_expr := 0 as u32
+        mut child := self.mb.tree.nodes.data[sym.decl_node as i64].first_child
+        while child != 0 as u32:
+            let child_node = self.mb.tree.nodes.data[child as i64]
+            if child_node.kind != NODE_TYPE_EXPR and child_node.kind != NODE_GENERIC_TYPE:
+                init_expr = child
+            child = child_node.next_sibling
+        if init_expr == 0 as u32:
+            return false
+        return self.ifchain_const_int(init_expr, out)
+    return false
+
+// RFC 0028 Â§7e: collect the compare values of ONE clause condition. Accepts either a
+// single `<ident> == <const int>` or an OR-chain of them over the SAME ident
+// (`op == OP_ALLOC or op == OP_ARENA_ALLOC or op == OP_SYSCALL` â€” the disjunctive arm the
+// compiler's own selector dispatch is full of; it is the `case A: case B:` of a switch and
+// maps several values to one body). Appends each value at `vals_out[count_io[0]]` and
+// advances the count. `sym_out[0]` is 0 on entry and pins the scrutinee symbol at the first
+// leaf; a leaf naming a DIFFERENT variable fails the whole clause. Returns false â€” leaving
+// the caller to use the linear path â€” for any other shape (`and`, a non-ident left side, a
+// non-constant right side, or more than `cap` values).
+pub fn ifchain_collect_values(self: ptr[FuncLowering], cond_idx: u32, sym_out: ptr[u32], ident_out: ptr[u32], vals_out: ptr[i64], cap: i64, count_io: ptr[i64]) -> bool:
+    if cond_idx == 0 as u32 or (cond_idx as i64) >= self.mb.tree.nodes.len:
+        return false
+    let cond = self.mb.tree.nodes.data[cond_idx as i64]
+    if cond.kind != NODE_BINARY_EXPR:
+        return false
+    let op = self.mb.get_token_text(cond.token_idx)
+    let is_eq = op == "=="
+    let is_or = op == "or" or op == "||"
+    @free(get_str_ptr(op))
+    let lhs_idx = cond.first_child
+    if lhs_idx == 0 as u32:
+        return false
+    if is_or:
+        let rhs_or = self.mb.tree.nodes.data[lhs_idx as i64].next_sibling
+        if rhs_or == 0 as u32:
+            return false
+        if not self.ifchain_collect_values(lhs_idx, sym_out, ident_out, vals_out, cap, count_io):
+            return false
+        return self.ifchain_collect_values(rhs_or, sym_out, ident_out, vals_out, cap, count_io)
+    if not is_eq:
+        return false
+    let lhs = self.mb.tree.nodes.data[lhs_idx as i64]
+    if lhs.kind != NODE_IDENT:
+        return false
+    // The scrutinee must be a plain local/param read: pure (so evaluating it ONCE up
+    // front is equivalent to re-reading it at each linear compare) and identifiable by
+    // symbol index. A const/func/variant ident is not a dispatch scrutinee.
+    if lhs.payload == 0 as u32 or (lhs.payload as i64) >= self.mb.symbols.symbols.len:
+        return false
+    let lsym = self.mb.symbols.symbols.data[lhs.payload as i64]
+    if lsym.kind != SYM_VAR and lsym.kind != SYM_PARAM:
+        return false
+    if sym_out[0] == 0 as u32:
+        sym_out[0] = lhs.payload
+        ident_out[0] = lhs_idx
+    elif sym_out[0] != lhs.payload:
+        return false
+    let rhs_idx = lhs.next_sibling
+    if rhs_idx == 0 as u32:
+        return false
+    let slot = count_io[0]
+    if slot >= cap:
+        return false
+    mut cv := 0 as i64
+    if not self.ifchain_const_int(rhs_idx, &cv):
+        return false
+    vals_out[slot] = cv
+    count_io[0] = slot + 1 as i64
+    return true
+
+// RFC 0028 Â§7e: emit a balanced compare tree whose leaves JUMP to a pre-allocated block,
+// instead of lowering an arm body inline the way emit_bsearch_range does. This is what an
+// if-chain needs: one clause can carry several or'd compare values (`x == A or x == B`), and
+// all of them must reach ONE copy of the body â€” lowering inline per leaf would clone the body
+// once per value. Targets are referenced by block id only, so the caller lowers each body
+// AFTER this returns. `values[lo..hi]` must already be sorted in the scrutinee's compare
+// order; an out-of-range value falls through to default_block.
+pub fn emit_bsearch_blocks(mut self: ptr[FuncLowering], match_reg: u32, scrut_type: u32, values: ptr[i64], targets: ptr[u32], lo: i64, hi: i64, default_block: u32):
+    if lo > hi:
+        self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: default_block, src2: 0 as u32))
+        self.fb.add_edge(self.fb.current_block(), default_block)
+        return
+    let mid = (lo + hi) / 2 as i64
+    let v = values[mid]
+    let v_lo = (v & (0xFFFFFFFF as i64)) as u32
+    let v_hi = ((v >> (32 as i64)) & (0xFFFFFFFF as i64)) as u32
+    // equality test against the median -> jump straight to that clause's block
+    let eq_const = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: scrut_type, dest: eq_const, src1: v_lo, src2: v_hi))
+    let eq_reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_EQ, type_id: 11 as u32, dest: eq_reg, src1: match_reg, src2: eq_const))
+    let hit_block = targets[mid]
+    let miss_block = self.fb.new_block()
+    // OP_BRANCH: dest = false-target, src1 = cond, src2 = true-target
+    self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: miss_block, src1: eq_reg, src2: hit_block))
+    let cur0 = self.fb.current_block()
+    self.fb.add_edge(cur0, hit_block)
+    self.fb.add_edge(cur0, miss_block)
+    // miss: order test -> recurse into the lower or upper half
+    self.fb.switch_to(miss_block)
+    self.terminated = false
+    let lt_const = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_ICONST, type_id: scrut_type, dest: lt_const, src1: v_lo, src2: v_hi))
+    let lt_reg = self.fb.fresh_reg()
+    self.fb.emit(AirInst(opcode: OP_LT, type_id: 11 as u32, dest: lt_reg, src1: match_reg, src2: lt_const))
+    let left_block = self.fb.new_block()
+    let right_block = self.fb.new_block()
+    self.fb.emit(AirInst(opcode: OP_BRANCH, type_id: 0 as u32, dest: right_block, src1: lt_reg, src2: left_block))
+    let cur1 = self.fb.current_block()
+    self.fb.add_edge(cur1, left_block)
+    self.fb.add_edge(cur1, right_block)
+    self.fb.switch_to(left_block)
+    self.terminated = false
+    self.emit_bsearch_blocks(match_reg, scrut_type, values, targets, lo, mid - 1 as i64, default_block)
+    self.fb.switch_to(right_block)
+    self.terminated = false
+    self.emit_bsearch_blocks(match_reg, scrut_type, values, targets, mid + 1 as i64, hi, default_block)
+
+// RFC 0028 Â§7e: recognize an `if x == C0: â€¦ elif x == C1: â€¦ else: â€¦` CHAIN â€” the shape the
+// compiler's own opcode dispatch is written in â€” and lower it as the SAME balanced O(log N)
+// compare tree used for a dense `match`. Returns true if it took over the lowering (caller
+// must not run the linear path), false to fall back.
+//
+// Equivalence argument: a body only runs after every preceding condition tested false, and
+// no condition can run after a body, so no body's side effects can be observed by a compare.
+// Each condition is `<pure ident read> == <constant>`, so hoisting the read out of the chain
+// and reordering the compares into a search tree preserves semantics â€” PROVIDED the arm
+// values are pairwise distinct (otherwise linear first-match-wins would differ), which is
+// checked below.
+pub fn try_lower_if_chain_bsearch(mut self: ptr[FuncLowering], cond_idx: u32, body_idx: u32, next_clause_idx: u32, merge_block: u32) -> bool:
+    // A single clause may contribute several values (`x == A or x == B`), so the buffers
+    // are sized by a cap rather than by the clause count: IFCHAIN_MAX_VALUES total across
+    // the chain, IFCHAIN_MAX_PER_CLAUSE within one condition. Exceeding either bails to the
+    // linear path (no correctness impact, only a missed optimization).
+    let cap_total = 256 as i64
+    let cap_clause = 64 as i64
+    let scratch = @alloc(cap_clause * 8 as i64) as ptr[i64]
+    mut scrut_sym := 0 as u32
+    mut scrut_idx := 0 as u32
+    mut c0 := 0 as i64
+    if not self.ifchain_collect_values(cond_idx, &scrut_sym, &scrut_idx, scratch, cap_clause, &c0):
+        @free(scratch as ptr[u8])
+        return false
+    // Gate on the scrutinee's static type: integer widths only (1-8 = i8..u64,
+    // 15/16 = isize/usize). bool/char are excluded â€” a 2-value or codepoint dispatch is
+    // not worth a tree and keeps the sort's ordering question closed.
+    mut scrut_type := 0 as u32
+    if self.mb.node_types != null as ptr[u32]:
+        scrut_type = self.mb.node_types[scrut_idx as i64]
+    let is_signed = scrut_type == 1 as u32 or scrut_type == 2 as u32 or scrut_type == 3 as u32 or scrut_type == 4 as u32 or scrut_type == 15 as u32
+    let is_unsigned = scrut_type == 5 as u32 or scrut_type == 6 as u32 or scrut_type == 7 as u32 or scrut_type == 8 as u32 or scrut_type == 16 as u32
+    if not is_signed and not is_unsigned:
+        @free(scratch as ptr[u8])
+        return false
+    if self.mb.tree.nodes.data[body_idx as i64].kind != NODE_BLOCK:
+        @free(scratch as ptr[u8])
+        return false
+
+    // Pass 1: total the compare values and locate the trailing `else` (if any). Any clause
+    // that is not `<same ident> == <const>` (or an or-chain of those) with a NODE_BLOCK body
+    // aborts the rewrite.
+    mut n := c0
+    mut nclauses := 1 as i64
+    mut else_body := 0 as u32
+    mut have_else := false
+    mut clause := next_clause_idx
+    while clause != 0 as u32:
+        let cn = self.mb.tree.nodes.data[clause as i64]
+        if cn.kind == NODE_ELSE_CLAUSE:
+            let eb = cn.first_child
+            if eb == 0 as u32 or self.mb.tree.nodes.data[eb as i64].kind != NODE_BLOCK:
+                @free(scratch as ptr[u8])
+                return false
+            else_body = eb
+            have_else = true
+            clause = 0 as u32
+        elif cn.kind == NODE_ELIF_CLAUSE:
+            let ec = cn.first_child
+            if ec == 0 as u32:
+                @free(scratch as ptr[u8])
+                return false
+            mut esym := scrut_sym
+            mut eident := scrut_idx
+            mut ecount := 0 as i64
+            if not self.ifchain_collect_values(ec, &esym, &eident, scratch, cap_clause, &ecount):
+                @free(scratch as ptr[u8])
+                return false
+            let eb2 = self.mb.tree.nodes.data[ec as i64].next_sibling
+            if eb2 == 0 as u32 or self.mb.tree.nodes.data[eb2 as i64].kind != NODE_BLOCK:
+                @free(scratch as ptr[u8])
+                return false
+            n = n + ecount
+            nclauses = nclauses + 1 as i64
+            if n > cap_total:
+                @free(scratch as ptr[u8])
+                return false
+            clause = cn.next_sibling
+        else:
+            @free(scratch as ptr[u8])
+            return false
+    // Threshold 8, twice the `match` path's 4. An if-chain tree costs ~3 basic blocks and 4
+    // vregs per value, and if-chains are far more common in real code than dense matches, so
+    // the break-even sits higher: at 4 arms a tree saves ~0.5 compares, which does not pay
+    // for the extra blocks. The long dispatch chains this exists for are 10+ arms.
+    if n < 8 as i64:
+        @free(scratch as ptr[u8])
+        return false
+
+    // Pass 2: allocate ONE block per clause and map every compare value to its clause's
+    // block. Several or'd values share a block, so the body is lowered exactly once â€” the
+    // linear chain's shared arm block, reached from several tree leaves instead of several
+    // sequential compares.
+    // NOTHING here may allocate a basic block until every bail check has passed: a block
+    // handed out and then abandoned stays in the function forever. Bailing after allocating
+    // is what pushed the compiler's own `-jumptable` build past the allocator ceiling, since
+    // thousands of chains each leaked one dead block per clause. So pass 2 records a clause
+    // INDEX per value, and blocks are minted only once the rewrite is committed.
+    let values = @alloc(n * 8 as i64) as ptr[i64]
+    let val_clause = @alloc(n * 4 as i64) as ptr[u32]
+    let targets = @alloc(n * 4 as i64) as ptr[u32]
+    let cl_blocks = @alloc(nclauses * 4 as i64) as ptr[u32]
+    let cl_bodies = @alloc(nclauses * 4 as i64) as ptr[u32]
+    mut fi := 0 as i64
+    mut ci := 1 as i64
+    cl_bodies[0] = body_idx
+    // Re-collect clause 0's values: pass 1 reused `scratch` for every elif, so what it holds
+    // now is the LAST clause's values, not the first's. (Reading the stale buffer put the
+    // final arm's value in slot 0, which then collided with that arm's own entry and made the
+    // duplicate check reject every chain â€” the rewrite silently never fired.)
+    mut c0b := 0 as i64
+    mut sym0 := scrut_sym
+    mut id0 := scrut_idx
+    if not self.ifchain_collect_values(cond_idx, &sym0, &id0, scratch, cap_clause, &c0b):
+        @free(scratch as ptr[u8])
+        @free(values as ptr[u8])
+        @free(val_clause as ptr[u8])
+        @free(targets as ptr[u8])
+        @free(cl_blocks as ptr[u8])
+        @free(cl_bodies as ptr[u8])
+        return false
+    mut k := 0 as i64
+    while k < c0b:
+        values[fi] = scratch[k]
+        val_clause[fi] = 0 as u32
+        fi = fi + 1 as i64
+        k = k + 1 as i64
+    clause = next_clause_idx
+    while clause != 0 as u32 and fi < n:
+        let cn2 = self.mb.tree.nodes.data[clause as i64]
+        if cn2.kind == NODE_ELIF_CLAUSE:
+            let ec2 = cn2.first_child
+            mut esym2 := scrut_sym
+            mut eident2 := scrut_idx
+            mut ecount2 := 0 as i64
+            if self.ifchain_collect_values(ec2, &esym2, &eident2, scratch, cap_clause, &ecount2):
+                cl_bodies[ci] = self.mb.tree.nodes.data[ec2 as i64].next_sibling
+                mut k2 := 0 as i64
+                while k2 < ecount2 and fi < n:
+                    values[fi] = scratch[k2]
+                    val_clause[fi] = ci as u32
+                    fi = fi + 1 as i64
+                    k2 = k2 + 1 as i64
+                ci = ci + 1 as i64
+            clause = cn2.next_sibling
+        else:
+            clause = 0 as u32
+    @free(scratch as ptr[u8])
+
+    // Sort by value, using the SAME ordering the emitted OP_LT will use (select_comparison
+    // picks CC_L for signed operands and CC_B for unsigned) â€” a signed sort on unsigned
+    // values would build a tree the compares then walk in the wrong direction.
+    mut i := 1 as i64
+    while i < n:
+        let kv = values[i]
+        let kb = val_clause[i]
+        mut j := i - 1 as i64
+        mut moving := true
+        while j >= 0 as i64 and moving:
+            mut greater := values[j] > kv
+            if is_unsigned:
+                greater = (values[j] as u64) > (kv as u64)
+            if greater:
+                values[j + 1 as i64] = values[j]
+                val_clause[j + 1 as i64] = val_clause[j]
+                j = j - 1 as i64
+            else:
+                moving = false
+        values[j + 1 as i64] = kv
+        val_clause[j + 1 as i64] = kb
+        i = i + 1 as i64
+    // Duplicate compare values would make the tree pick an arbitrary arm where the linear
+    // chain picks the FIRST â€” bail rather than silently change which body runs.
+    mut d := 1 as i64
+    while d < n:
+        if values[d] == values[d - 1 as i64]:
+            @free(values as ptr[u8])
+            @free(val_clause as ptr[u8])
+            @free(targets as ptr[u8])
+            @free(cl_blocks as ptr[u8])
+            @free(cl_bodies as ptr[u8])
+            return false
+        d = d + 1 as i64
+
+    // Committed: mint one block per clause and resolve each value's target.
+    mut cb := 0 as i64
+    while cb < ci:
+        cl_blocks[cb] = self.fb.new_block()
+        cb = cb + 1 as i64
+    mut t := 0 as i64
+    while t < n:
+        targets[t] = cl_blocks[val_clause[t] as i64]
+        t = t + 1 as i64
+    // Evaluate the scrutinee ONCE in the current block, then emit the tree here (do not
+    // switch away first â€” see the note in try_lower_match_bsearch). The tree only names
+    // blocks, so every body is lowered afterwards.
+    let match_reg = self.lower_expr(scrut_idx)
+    mut default_block := merge_block
+    if have_else:
+        default_block = self.fb.new_block()
+    self.emit_bsearch_blocks(match_reg, scrut_type, values, targets, 0 as i64, n - 1 as i64, default_block)
+    mut b := 0 as i64
+    while b < ci:
+        self.fb.switch_to(cl_blocks[b])
+        self.terminated = false
+        self.lower_block(cl_bodies[b])
+        if not self.terminated:
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), merge_block)
+        b = b + 1 as i64
+    if have_else:
+        self.fb.switch_to(default_block)
+        self.terminated = false
+        self.lower_block(else_body)
+        if not self.terminated:
+            self.fb.emit(AirInst(opcode: OP_JUMP, type_id: 0 as u32, dest: 0 as u32, src1: merge_block, src2: 0 as u32))
+            self.fb.add_edge(self.fb.current_block(), merge_block)
+    @free(values as ptr[u8])
+    @free(val_clause as ptr[u8])
+    @free(targets as ptr[u8])
+    @free(cl_blocks as ptr[u8])
+    @free(cl_bodies as ptr[u8])
+    return true
+
 pub fn lower_match(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let scrutinee_idx = node.first_child
     if scrutinee_idx == 0 as u32:
@@ -17754,6 +18139,15 @@ pub fn lower_if(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     let body_node = self.mb.tree.nodes.data[body_node_idx as i64]
 
     let next_clause_idx = body_node.next_sibling
+
+    // RFC 0028 Â§7e (opt-in `-jumptable`): a >=8-value `if x == C: â€¦ elif x == C2: â€¦` chain over
+    // one integer variable lowers to the balanced O(log N) compare tree instead of the linear
+    // chain. Falls back to `lower_if_chain` on any shape it cannot prove equivalent.
+    if self.mb.jumptable_enabled:
+        if self.try_lower_if_chain_bsearch(cond_node_idx, body_node_idx, next_clause_idx, merge_block):
+            self.fb.switch_to(merge_block)
+            self.terminated = false
+            return
 
     self.lower_if_chain(cond_node_idx, cond_node, body_node_idx, body_node, next_clause_idx, merge_block)
 
