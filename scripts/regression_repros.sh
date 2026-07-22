@@ -437,6 +437,9 @@ rows=(
   # a 16-byte aggregate payload out of a tagged box must load the box's 8-byte
   # reference, not copy 16 bytes inline over a neighbouring caller stack slot
   "t_optupclobber|exit|110"
+  # a non-generic user sum's variant ctor coerces its payload arg to the DECLARED
+  # payload type (bare int literals in a tuple payload used to stay i32 -> 8B in a 16B slot)
+  "t_sumtupctor|exit|102"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)

@@ -6748,6 +6748,58 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
 
     return self.types.register_generic_inst(entry.name_id, args)
 
+// A NON-generic user sum's variant constructor never received an expected type for its
+// payload argument. `try_instantiate_variant_call` above threads a hint only INSIDE its
+// generic-parameter binding loop, so for `type Shape = Pair((i64, i64))` the constructor
+// `Pair((3, 40))` inferred its tuple literal with no expectation at all â€” and a bare int
+// literal defaults to i32. That built an 8-byte {i32,i32} value for a 16-byte payload
+// slot, so the match arm read field 1 past the end (`t.0 + t.1` returned 3, not 43).
+// Declaring the payload `(i32, i32)` made the widths agree and the same program worked,
+// which is what identified this as a width-coercion gap rather than a lowering bug.
+//
+// Re-infer the argument with the variant's DECLARED payload type so the literal's
+// elements coerce â€” the same expected-type threading already done for struct-ctor fields
+// (6132b15) and function params (f509506). Inert unless the arg is an under-widened
+// aggregate literal: the coercion self-guards when the types already agree.
+//
+// Excluded: a flagged RFC 0019 synth struct (multi-field variant / str wrap), whose N
+// call args map to N struct FIELDS and are handled as fields, not as one payload value;
+// and a generic payload param, which the generic path above already binds.
+pub fn coerce_variant_ctor_payload(mut self: ptr[TypeChecker], callee: u32, sum_type_id: u32):
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return
+    let vsym_idx = self.tree.nodes.data[callee].payload
+    if vsym_idx == 0 as u32 or (vsym_idx as i64) >= self.symtable.symbols.len:
+        return
+    let vsym = self.symtable.symbols.data[vsym_idx as i64]
+    if vsym.kind != SYM_VARIANT:
+        return
+    let arg = self.tree.nodes.data[callee].next_sibling
+    if arg == 0 as u32:
+        return
+    // A single payload argument only; multiple args are per-field (RFC 0019).
+    if self.tree.nodes.data[arg].next_sibling != 0 as u32:
+        return
+    if (sum_type_id as i64) >= self.types.entries.len:
+        return
+    let se = self.types.entries.data[sum_type_id as i64]
+    if se.kind != TYPE_KIND_SUM or (se.extra as i64) >= self.types.sumtypes.len:
+        return
+    let si = self.types.sumtypes.data[se.extra as i64]
+    mut vi := 0 as i64
+    while vi < si.variants.len:
+        if si.variants.data[vi as i64].name_id == vsym.name_id:
+            let pt = si.variants.data[vi as i64].payload_type
+            if pt != TYPE_UNKNOWN and (pt as i64) < self.types.entries.len:
+                let pe = self.types.entries.data[pt as i64]
+                mut is_flagged := false
+                if pe.kind == TYPE_KIND_STRUCT and (pe.flags & 1 as u16) != 0 as u16:
+                    is_flagged = true
+                if not is_flagged and not self.is_generic(pt):
+                    let recoerced = self.infer_node(arg, pt)
+            break
+        vi = vi + 1
+
 // Substitute a template variant's generic payload param against the concrete
 // type-args carried by a GENERIC_INST match scrutinee. An UNANNOTATED
 // `let x = Some((a,b))` types as a GENERIC_INST (`Option[(i64,i64)]`) rather than a
@@ -10570,6 +10622,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     self.check_ctor_field_str_num(callee)
                 elif entry.kind == TYPE_KIND_SUM:
                     result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
+                    self.coerce_variant_ctor_payload(callee, callee_type)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
                 elif self.tree.nodes.data[callee].kind == NODE_IDENT:

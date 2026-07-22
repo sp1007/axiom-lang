@@ -1,0 +1,27 @@
+// A non-generic user sum's variant constructor must coerce its payload argument to the
+// variant's DECLARED payload type. Without that, `Pair((3, 40))` inferred the tuple with
+// no expectation, bare int literals defaulted to i32, and an 8-byte {i32,i32} value went
+// into a 16-byte payload slot -> the match arm read field 1 past the end (3, not 43).
+type Shape = Pair((i64, i64)) | Trip((i64, i64, i64)) | Boxed(P) | Empty
+
+struct P:
+    x: i64
+    y: i64
+
+fn sum2(s: Shape) -> i64:
+    match s:
+        Pair(t):
+            return t.0 + t.1
+        Trip(t):
+            return t.0 + t.1 + t.2
+        Boxed(p):
+            return p.x + p.y
+        Empty:
+            return 0
+
+fn main() -> i64:
+    let a: Shape = Pair((3, 40))          // 43 — the regressed shape
+    let b: Shape = Trip((3, 40, 5))       // 48 — 24-byte payload, same gap
+    let c: Shape = Boxed(P(x: 5, y: 6))   // 11 — struct payload, always worked
+    let d: Shape = Empty                  // 0  — payload-less variant
+    return sum2(a) + sum2(b) + sum2(c) + sum2(d)   // 43 + 48 + 11 + 0 = 102
