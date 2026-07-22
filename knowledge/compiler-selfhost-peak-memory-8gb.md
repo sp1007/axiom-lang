@@ -123,6 +123,24 @@ This fits the monotonic never-dropping trajectory exactly: the compiler retains 
 every structure it builds, at a uniform high per-byte cost. **So the work is reducing retention
 and per-node footprint, not finding an algorithmic blowup.**
 
+### `-ctgc-free` buys nothing here — measured
+
+The obvious lever is the shipped compile-time-GC free pass, since the diagnosis is "nothing is
+freed". It does not help:
+
+| build | peak |
+|---|---|
+| default | 7,865 MB |
+| `-ctgc-free` | 7,866 MB |
+
+Identical. That is not a surprise in hindsight — the escape analysis already reported
+**freeable = 0** on the whole self-host build ([[ctgc-p3-scoping-2026-07-18]]), meaning every
+owning local in the compiler escapes and CTGC has nothing it can legally free. This measurement
+turns that analyzer claim into an observed fact, and closes the cheapest-looking route.
+
+So the headroom has to come from structure, not from switching on an existing pass: freeing
+intermediate phase data once a phase is done, or shrinking per-node footprint.
+
 ### Already checked and NOT the cause (do not repeat)
 
 - **`typecheck.ax` does not itself allocate much.** Zero `get_token_text` calls, 7 `alloc_str`,
