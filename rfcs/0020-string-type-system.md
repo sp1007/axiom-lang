@@ -1,8 +1,9 @@
 # RFC 0020 — String Type System (UTF-8 `str` + `bytes` + `rune`, with room for other encodings)
 
-Status: **RESOLVED** — core string type family complete (`str`/`bytes`/`rune` +
-iteration + slicing + byte/codepoint view methods). `ascii` and `utf16`/`utf32`
-transcoding split out to a future encodings/FFI follow-up (see §9, with rationale).
+Status: **CLOSED** — core string type family complete (`str`/`bytes`/`rune` +
+iteration + slicing + byte/codepoint view methods). The `ascii`/`utf16`/`utf32`
+follow-up is also closed: the transcoding **functions** shipped (`485d02f`) and the
+question of whether they need dedicated **types** was decided **NO** — see §10.
 Author: autopilot
 Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-utf8-default]]
 
@@ -31,10 +32,11 @@ Related: RFC 0018 (for-in iteration; string iteration deferred here), [[string-u
   s.as_bytes()` works). Named `as_bytes` (Rust's `str::as_bytes`): a bare `bytes()`
   method is impossible — `bytes` is a TYPE, so `s.bytes()`/`bytes(x)` parse as a
   conversion. Oracle `t_strviews` (exit 244).
-- ⛔ **`ascii` type, `utf16`/`utf32` transcoding, `char_indices()`** — **deferred out of
-  this RFC** to a future encodings/FFI follow-up. Rationale in §9. These are additive
-  (no migration cost) and no current use case is blocked, so RFC 0020 closes with the
-  core UTF-8 `str` + raw `bytes` + `rune` family complete.
+- ✅ **`ascii` ops, `utf16`/`utf32` transcoding, `char_indices()`** (`485d02f`) — shipped
+  as **functions over existing types**, not as new types: `is_ascii`, `to_ascii_lower`,
+  `to_ascii_upper`, `char_indices`, `to_utf16`, `from_utf16`, `to_utf32`, `from_utf32`
+  (`std/string.ax:105-242`). The accompanying **type** question is decided in §10: no
+  `ascii`/`utf16`/`utf32` types are added.
 
 ## 1. Motivation
 
@@ -217,3 +219,50 @@ codepoint iteration), raw `bytes`, `rune`, slicing, and `.as_bytes()`/`.chars()`
 `.char_at()` views — is shipped and gated (A==B). The deferred items (`ascii`, `utf16`/
 `utf32` transcoding, `char_indices` iterator) are additive and carry no migration cost, so
 they are cleanly split into a future encodings/iterator follow-up rather than blocking closure.
+
+## 10. Amendment 2026-07-22 — the encodings follow-up needs NO new types (CLOSED)
+
+§9 deferred `ascii`/`utf16`/`utf32` to "a future encodings/FFI RFC" and left open whether
+they should become **types** alongside `str`/`bytes`/`rune`. The transcoding **functions**
+have since shipped (`485d02f`, listed in the status block above). This amendment answers the
+type question and closes the follow-up.
+
+**Decision: do not add `ascii`, `utf16`, or `utf32` as types.** UTF-16 code units and
+Unicode scalars are carried as `Vec[i64]`; ASCII operations are functions over `str`.
+
+### Rationale
+
+1. **`Vec[i64]` is exactly representable, not a workaround.** A UTF-16 code unit is
+   `0..=0xFFFF` and a Unicode scalar is `0..=0x10FFFF`; `i64` holds either exactly, with
+   no truncation and no invalid-state gap that a type could rule out.
+2. **The §3.1 argument for `bytes` does not transfer.** `bytes` earns its type because it
+   shares `str`'s `{ptr,len}` 16-byte repr, which makes `str`↔`bytes` a **zero-cost
+   reinterpret** (`lower_cast` reuses the source register). UTF-16/UTF-32 do **not** share
+   that repr — they are wider elements requiring a real transcode either way, so a type
+   would buy a tag, not a free conversion.
+3. **`ascii` was already rejected on its own merits in §9** ("largely duplicates `bytes`
+   iteration for marginal value"). That reasoning is unchanged; the shipped
+   `is_ascii`/`to_ascii_lower`/`to_ascii_upper` cover the real need as plain functions.
+4. **Surface area is a listed drawback (§5) and a standing project rule** (CLAUDE.md §19,
+   "small clean systems > giant abstractions"). Three new builtin types would add
+   parser/typecheck/mono/codegen surface for a tag with no representational or performance
+   payoff.
+5. **Zero output-size cost.** Functions in `std/string.ax` are only linked when called;
+   builtin types would add permanent compiler surface. Nothing here grows a user
+   executable that does not use it.
+
+### What this forecloses, and the escape hatch
+
+A typed API cannot statically distinguish "a `Vec[i64]` of UTF-16 units" from "a `Vec[i64]`
+of anything else" — misuse is caught at the transcode boundary (`from_utf16` on non-unit
+data yields replacement characters) rather than at compile time. That is accepted: the same
+trade-off the language already makes for `Vec[u8]` vs `bytes` in non-view positions.
+
+Should a concrete need arise — most plausibly **Windows wide-char FFI**, where an ABI-level
+`utf16` distinction would carry weight — adding the type is **purely additive** (new name,
+no migration, A==B for programs that do not use it), exactly as `bytes` was. Reopen with a
+follow-up RFC citing the specific FFI signature that needs it. No current use case is
+blocked, so it is not built speculatively.
+
+**Status: §9's encodings/FFI follow-up is CLOSED** — functions shipped, types declined
+with the reopening condition recorded above.

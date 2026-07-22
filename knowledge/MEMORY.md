@@ -60,6 +60,7 @@
 - [Feedback: làm việc tự chủ](feedback-autonomous.md) — Ko hỏi lại; tự chọn hướng tối ưu; chờ build thì làm việc build-independent.
 - [Feedback: chạy liên tục](feedback-continuous-loop.md) — Self-perpetuating loop, KHÔNG ngủ đông: arm persistent `Monitor` heartbeat 5 phút (ScheduleWakeup ko fire idle); mỗi tick → tự chọn+chạy task kế, ko hỏi; chỉ TaskStop khi user bảo. CLAUDE.md §24.
 - [Feedback: auto-compact context](feedback_compact.md) — Tự động /compact khi context gần đầy.
+- [Feedback: KHÔNG làm phình exe](feedback-no-exe-bloat.md) — User 2026-07-22: "không muốn làm phình các file thực thi". Mọi thay đổi codegen/linker/section/bundling phải ĐO size exe trước-sau; tăng size = finding cần lý do. Ưu tiên thiết kế "không dùng thì tốn 0 byte".
 - [Feedback: ergonomics ngôn ngữ](feedback-ergonomics.md) — User ghét boilerplate (`as u32` khắp nơi); ưu tiên inference/sugar an toàn → RFC 0005.
 - [Fast fixpoint workflow](fast-fixpoint-workflow.md) — `scripts/fast_fixpoint.ps1` ~9s gate (seed axc_native→A→B, **A==B**=fixpoint). Daily-driver rebuild sau mỗi commit trước khi AXC= regression.
 - [DESIGN: struct reference semantics](axiom-struct-reference-semantics.md) — ⚠️ AXIOM struct/aggregate = REFERENCE (RFC 0001 §5): `mut cpy:=src`/`b=a`/param struct đều ALIAS, ko copy (chỉ scalar). ĐÚNG, đừng "fix".

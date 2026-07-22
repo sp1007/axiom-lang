@@ -1,12 +1,44 @@
 ---
 name: m4-compliance-suite-spec-vs-impl-gap
-description: "M4 milestone assessment (2026-07-18): tests/axiom_compliance_suite.ax (100 tests, 10 groups) + its std/testing.ax dependency are written in the ASPIRATIONAL SPEC DIALECT (brace blocks, !not, default args, trait bounds, format(), async/gpu/quantum) which the implemented self-hosting compiler does NOT parse. M4 '100 tests pass' is blocked on a large spec-vs-impl gap, not a bounded bug. Needs a user decision on approach."
+description: "M4 CLOSED. The suite was rewritten in real grammar (bin/t_compliance.ax 60 + t_compliance2.ax 28 = 88 gated tests). The last three dialect items — `=>` match arms, `.length()`, `impl Trait for Type` — were DECLINED by user decision 2026-07-22 as redundant/competing surface; the aspirational-dialect file is frozen history, not a backlog. Still open as FEATURES (not dialect): local const, closure-capture-of-locals, match-as-expression, @SOA, ! sink, effects, groups 7-10."
 metadata:
   node_type: memory
   type: project
 ---
 
-# M4 compliance suite — spec-vs-implementation dialect gap (needs a decision)
+# M4 compliance suite — spec-vs-implementation dialect gap (DECIDED, CLOSED)
+
+## ✅ DIALECT QUESTION CLOSED 2026-07-22 (user decision) — adopt NONE of the three
+
+The last three open dialect items — **`=>` match arms**, **`.length()`**, and
+**`impl Trait for Type`** — were carried as "needs a user decision". User decided
+**2026-07-22: adopt none of them.** The real-grammar suite stands as the M4 definition.
+
+**Rationale, per item:**
+- **`=>` match arms** — AXIOM's `Pattern:` block arm already expresses this. Adding `=>`
+  would be a second spelling for one construct: it violates CLAUDE.md §3 ("invent syntax
+  not supported by spec" / redundant surface), doubles `parse_match_arm`'s state space, and
+  every future match feature would have to be implemented and tested twice.
+- **`.length()`** — `.len` is spec-authoritative and is a **field**, not a method. An alias
+  is cheap to add and permanently confusing: two names for one property, with the method
+  form implying a computation that does not happen.
+- **`impl Trait for Type`** — AXIOM dispatches structurally (duck-typed methods); the
+  measurement above confirmed Square works with **no** `impl` block. RFC 0029 shipped
+  dynamic dispatch through interface **values** without needing declaration-site impls.
+  Adding `impl` is an RFC-scale type-system feature, not a syntax alias, and it would
+  introduce a second, competing conformance model.
+
+**Consequence:** the aspirational-dialect suite at
+`tests/axiom_compliance_suite_aspirational.ax` is **frozen as a historical artifact** — it
+is not a backlog of work. M4 is measured by the real-grammar suites (`bin/t_compliance.ax`
+60 + `bin/t_compliance2.ax` 28 = **88 gated tests**). Do not reopen these three without a
+concrete new use case; "the aspirational file uses it" is not one.
+
+**Still genuinely open, and NOT part of this decision** (they are features, not dialect):
+local `const`, closure-capture-of-locals (RFC 0008 P2), match-as-expression, `@SOA`, `!`
+sink params, `{.raises.}` effects, and groups 7–10 (async/comptime/gpu/quantum/AI).
+
+## Original framing (kept for history)
 
 ## ✅ RESOLVED 2026-07-18 — approach (b)/(c) shipped: `bin/t_compliance.ax` (60/60, gated)
 User (2026-07-18) chose **rewrite-in-real-grammar** and granted standing autonomy
