@@ -1,9 +1,53 @@
 ---
 name: rfc0029-vtable-progress
-description: "RFC 0029 interface vtable dynamic dispatch — ✅ SHIPPED af26946 (closes BUG#71). `fn f(s: Shape): s.area()` dispatches through a per-value inline vtable: interface value = 8-byte ptr to heap box {data, m0..m(N-1)}, built at T→I coercion (OP_ALLOC+OP_SET_FIELD+OP_FUNC_ADDR), dispatched via OP_GET_FIELD+OP_CALL callee_reg. NO linker/reloc changes. A==B c8910d77, 463/463, oracle t_ifacedispatch(37), multi-method+args(51), O0-O3 clean. Optional follow-ups: shared static vtables, conformance diagnostic, std/log Box[LogSink]."
+description: "RFC 0029 interface vtable dynamic dispatch — ✅ FEATURE-COMPLETE 770dfc3. Dispatch shipped af26946; T→I coercion now fires at EVERY value site (call-arg/let/return/struct-field/assign/array-elem) + conformance rejects at let/return/field-init. Interface usable as a VALUE type (Box[Interface] shape). Shared static vtables = WON'T-DO (quantified bad trade). A==B 2FC562C7, 474/474."
 metadata:
   type: project
 ---
+
+# ✅ FEATURE-COMPLETE 770dfc3 (2026-07-22) — coercion family closed
+
+`af26946` shipped dispatch but boxed T→I **only at call-arg**. Every other site stored the
+raw struct and dispatched on its bytes → SIGSEGV. `770dfc3` closes the family, making an
+interface usable as a **value type** (the `Box[Interface]` shape `std/log`'s `Logger.sink`
+needs):
+
+| Site | Before | After |
+|---|---|---|
+| call-arg `f(Square(..))` | ✅ worked | ✅ (delegates to shared helper) |
+| `let s: Shape = Square(..)` | SIGSEGV | ✅ 36 |
+| `return <struct>` from `-> Iface` | SIGSEGV | ✅ 48 |
+| interface-typed struct FIELD | SIGSEGV | ✅ 49 |
+| `s = <struct>` reassign | SIGSEGV | ✅ 75 (t_ifaceassign) |
+| `[Iface; N]` array literal | SIGSEGV | ✅ 43 (t_ifacearray) |
+| `Vec[Iface].push` | ✅ (call-arg path) | ✅ 43 |
+| module-level `mut g: Shape` | clean REJECT | unchanged (RFC 0017 storage gap, NOT a miscompile) |
+
+**air_builder:** `coerce_struct_to_interface(target, src_node, reg)` = the one general helper;
+wired at var-decl, return (`self.fb.ret_type`), ctor field-init (via `coerce_field_to_interface`),
+simple-var assign, field assign, array-literal elements.
+**typecheck:** `check_iface_conformance(target, src_node)` wired at let / return / ctor-field-init
+(call-arg keeps its inline check) — a non-implementing struct is a clean REJECT instead of a
+null-vtable-slot dispatch (BUG#53 class). Oracles t_ifacenoconf / t_ifacefieldconf.
+
+## ❌ Shared static vtables — WON'T-DO (not merely "deferred")
+Quantified: current per-value box `{data, m0..m(N-1)}` costs 1 alloc + (N+1) stores per
+coercion. A shared static `{m0..m(N-1)}` global + `{data, vtable_ptr}` box costs 1 alloc +
+2 stores. **For N=1 (the common interface — Shape) that saves ZERO; for N=2 (LogSink) one
+store.** Against that it ADDS: (a) a third load on EVERY dispatch (extra indirection),
+(b) a module-level (T,I)→global vtable registry = global mutable state (CLAUDE.md §3),
+(c) main-entry init sequencing (RFC 0017 machinery) that escalates the gate A==B → B==C.
+Trading per-dispatch runtime cost + global state for ~zero coercion-time savings is a bad
+trade at realistic interface sizes. Revisit ONLY if profiling shows large-N interfaces
+dominating. This closes the follow-up rather than leaving it open.
+
+## Remaining (NOT part of RFC 0029)
+`std/log` `Box[LogSink]` rewrite is blocked on the **aspirational-dialect rewrite** milestone,
+not on vtables: `std/log.ax` uses `enum {}` braces, `impl X {}`, `match self { A => .. }` —
+none of which parse in the real grammar. RFC 0029's consumer story is proven instead by
+**t_ifaceconsumer(46)**, a real-grammar Logger-with-a-sink-field exercising let + return +
+field-init + call-arg coercion + polymorphic dispatch through a field. The std module rewrite
+stays its own backlog item.
 
 # ✅ SHIPPED af26946 (2026-07-19b) — closes BUG#71
 
