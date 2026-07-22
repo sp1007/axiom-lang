@@ -61,6 +61,16 @@ not derived from each other:
 | `std/mem/alloc.ax:352` | `196608` | slab `@memset` size at init |
 | `runtime/axalloc/*.c` | `AXIOM_MAX_SEGMENTS 4096` | C runtime`s `axiom_segment_slab[]` |
 
+**FIXED for the four `.ax` sites (2026-07-23).** All now derive from one constant: the cap reads
+`>= MAX_SEGMENTS`, and the three region sizes read
+`MAX_SEGMENTS * @compiler_intrinsic("size_of")[Segment]()`. Byte-for-byte the same values today
+(48 x 4096 = 196,608), and the drift is now structurally impossible. Note the old code sized
+the region with a literal while INDEXING it with `size_of(Segment)` (line 378) — so the two
+could already have disagreed if `Segment` ever gained a field. They now cannot.
+
+Changing the cap is consequently a **one-line edit**, which is what the fix directions below
+assume. `runtime/axalloc/*.c` still keeps its own copy and would need the matching change.
+
 `Segment` is 48 bytes (3 pointers + i32 + pointer + u32, padded), and **48 × 4096 = 196,608
 exactly**. So raising the segment count without raising all three `196608` sites writes
 descriptor #4097 past the end of the mapped region — silent heap corruption, in the allocator,

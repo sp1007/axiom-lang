@@ -157,13 +157,13 @@ pub fn std_mem_alloc_get_slab() -> ptr[Segment]:
     let p_g_slab = (state as i64 + 32 as i64) as ptr[ptr[Segment]]
     if p_g_slab.* == null as ptr[Segment]:
         if @compiler_intrinsic("is_windows"):
-            p_g_slab.* = VirtualAlloc(null as ptr[void], 196608 as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
+            p_g_slab.* = VirtualAlloc(null as ptr[void], (MAX_SEGMENTS * @compiler_intrinsic("size_of")[Segment]() as i64) as u64, 0x3000 as u32, 0x04 as u32) as ptr[Segment]
         else:
             // Linux: the slab-metadata region had NO allocation path, so
             // ax_segment_manager_init's `@memset(slab, 0, 196608)` hit a NULL pointer and
             // crashed inside libc — the sole blocker for heap use (Vec/String/HashMap) on
             // the ELF target. mmap it (PROT_READ|WRITE=3, MAP_PRIVATE|MAP_ANONYMOUS=0x22, fd=-1).
-            let res = syscall(9 as u64, 0 as u64, 196608 as u64, 3 as u64, 0x22 as u64, 0xFFFFFFFFFFFFFFFF as u64, 0 as u64)
+            let res = syscall(9 as u64, 0 as u64, (MAX_SEGMENTS * @compiler_intrinsic("size_of")[Segment]() as i64) as u64, 3 as u64, 0x22 as u64, 0xFFFFFFFFFFFFFFFF as u64, 0 as u64)
             p_g_slab.* = res as ptr[Segment]
     return p_g_slab.*
 
@@ -349,7 +349,7 @@ pub fn ax_segment_manager_init():
     let free_pool_ptr = std_mem_alloc_get_free_pool()
     free_pool_ptr.* = null as ptr[Segment]
     let slab_ptr = std_mem_alloc_get_slab()
-    @memset(slab_ptr as ptr[u8], 0 as u8, 196608 as i64)
+    @memset(slab_ptr as ptr[u8], 0 as u8, MAX_SEGMENTS * @compiler_intrinsic("size_of")[Segment]() as i64)
 
 pub fn ax_segment_manager_shutdown():
     let slab_used_ptr = std_mem_alloc_get_slab_used()
@@ -372,7 +372,12 @@ fn alloc_segment_meta() -> ptr[Segment]:
         free_pool_ptr.* = seg.next
         return seg
     let slab_used_ptr = std_mem_alloc_get_slab_used()
-    if slab_used_ptr.* >= 4096 as i64:
+    // Was a bare `4096`, duplicating MAX_SEGMENTS without referencing it. The slab
+    // region below is sized MAX_SEGMENTS * sizeof(Segment), so the two MUST agree:
+    // capping higher than the region holds writes descriptors past the end of the
+    // mapping — silent heap corruption inside the allocator. Deriving both from one
+    // constant makes that impossible rather than merely unlikely.
+    if slab_used_ptr.* >= MAX_SEGMENTS:
         return null as ptr[Segment]
     let slab_ptr = std_mem_alloc_get_slab()
     let seg = (slab_ptr as i64 + slab_used_ptr.* * @compiler_intrinsic("size_of")[Segment]() as i64) as ptr[Segment]
