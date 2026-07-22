@@ -1,0 +1,28 @@
+// RFC 0029 regression (exit 42): a concrete struct in an INTERFACE-typed TUPLE
+// element must be boxed, not stored raw.
+//
+// Before the fix this segfaulted. coerce_struct_to_interface guards a list of
+// sites -- call-arg, let-binding, return, struct-field init, assignment -- and
+// aggregate CONSTRUCTOR payloads were missing from it, so the tuple held the raw
+// struct and `t.0.area()` dispatched on struct bytes as a box pointer.
+//
+// Two elements with different values, so a cross-wired read cannot land on the
+// right total by accident: 16 + 26 = 42.
+
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+struct Rec:
+    w: i64
+    h: i64
+    fn area(self: Rec) -> i64:
+        return self.w * self.h
+
+fn main() -> i64:
+    let t: (Shape, Shape) = (Sq(side: 4), Rec(w: 2, h: 13))
+    return t.0.area() + t.1.area()

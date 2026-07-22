@@ -1,11 +1,19 @@
 ---
 name: bug-small-alloc-256mb-segment-slab-cap
-description: OPEN — the small-object allocator caps at 4096 segments x 64KB = 256 MB via a hardcoded literal, and exhausting it is what actually produces "OOM size requested: 24"
+description: FIXED — the small-object allocator capped at 256 MB; proven root cause of the "OOM size requested: 24" self-build failures, cap raised to 1 GB
 metadata:
   type: project
 ---
 
-**Status: OPEN, root cause identified 2026-07-23.** This is the real cause of the
+**Status: FIXED 2026-07-23** — cap raised 4096 → 16384 segments (256 MB → 1 GB).
+
+**Proven, not inferred.** A two-stage bootstrap experiment: (1) build a compiler carrying the
+raised cap — succeeds; (2) promote it as the seed and re-apply a fix that had OOMed in every
+location tried — **it compiles and reaches fixpoint**. A first attempt at this conflated the
+compiler being BUILT with the compiler doing the BUILDING and produced a false refutation; the
+seed carries the cap, so it must be rebuilt first.
+
+Original analysis follows. This is the real cause of the
 `AXIOM RUNTIME PANIC: Out of memory` that blocks [[bug-iface-variant-payload-no-vtable-box]],
 and it is not what the surrounding evidence suggested.
 

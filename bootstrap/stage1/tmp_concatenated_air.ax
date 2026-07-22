@@ -16760,10 +16760,18 @@ pub fn lower_tuple_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         src2: 0 as u32,
     ))
 
+    mut tup_struct := 0 - 1 as i64
+    if (type_id as i64) < self.mb.typetable.entries.len:
+        if self.mb.typetable.entries.data[type_id as i64].kind == TYPE_KIND_STRUCT:
+            let ex = self.mb.typetable.entries.data[type_id as i64].extra
+            if (ex as i64) < self.mb.typetable.structs.len:
+                tup_struct = ex as i64
+
     mut child := node.first_child
     mut field_idx := 0 as u32
     while child != 0 as u32:
-        let val_reg = self.lower_expr(child)
+        mut val_reg = self.lower_expr(child)
+        val_reg = self.coerce_field_to_interface(tup_struct, field_idx, child, val_reg)
         self.fb.emit(AirInst(
             opcode: OP_SET_FIELD,
             type_id: type_id,
