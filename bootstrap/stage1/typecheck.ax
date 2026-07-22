@@ -3140,9 +3140,34 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let scrutinee = self.tree.nodes.data[node_idx].first_child
         if scrutinee != 0 as u32:
             let scrutinee_type = self.infer_node(scrutinee, TYPE_UNKNOWN)
+            // A match SCRUTINEE is lowered one of two ways (air_builder lower_match):
+            // sum-like (Option/Result/sum/generic-inst-of-sum) dispatches on the variant
+            // tag, everything else becomes a C-`switch` that only supports integer/bool/
+            // char. An AGGREGATE (struct/array/tuple) or a 16-byte inline primitive
+            // (str/bytes) or a float hits NEITHER path: the match lowered to NOTHING and
+            // the function fell through returning garbage RAX — accept-then-miscompile,
+            // BUG#53 class. Reject those precise kinds/ids.
+            //
+            // This SUBSUMES the per-arm literal-pattern reject below for str/bytes/float
+            // (that one only fires on a literal pattern; a bare `_` or binding arm slipped
+            // through). Destructuring a tuple/struct scrutinee (`match t: (a, b):`) is
+            // RFC 0022 P5, a FUTURE feature — until it exists this must be a diagnostic,
+            // not a silent no-op.
+            //
+            // GENERIC_INST is deliberately NOT rejected: it is the kind a monomorphized
+            // Option[T]/user-sum instance carries, and rejecting it would break every real
+            // generic sum match. TYPE_UNKNOWN is likewise spared (imprecise inference must
+            // never turn into an over-reject — the recurring trap in this file).
+            if scrutinee_type != TYPE_UNKNOWN and (scrutinee_type as i64) < self.types.entries.len:
+                let sc_kind = self.types.entries.data[scrutinee_type].kind
+                let sc_is_agg = sc_kind == TYPE_KIND_STRUCT or sc_kind == TYPE_KIND_ARRAY or sc_kind == TYPE_KIND_TUPLE
+                let sc_is_wide_prim = scrutinee_type == TYPE_STRING or scrutinee_type == TYPE_BYTES or scrutinee_type == TYPE_F32 or scrutinee_type == TYPE_F64
+                if sc_is_agg or sc_is_wide_prim:
+                    ax_printf_local("error: `match` requires a sum-like (Option/Result/enum/sum) or integer/bool/char scrutinee; matching on a struct/array/tuple/string/float value is not supported\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                    self.diags_count = self.diags_count + 1 as i64
             let prev_scrutinee = self.current_match_scrutinee
             self.current_match_scrutinee = scrutinee_type
-            
+
             mut arm := self.tree.nodes.data[scrutinee].next_sibling
             mut arm_type := TYPE_UNKNOWN
             while arm != 0 as u32:
