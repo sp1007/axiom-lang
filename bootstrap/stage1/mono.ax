@@ -276,7 +276,21 @@ pub fn get_type_name_recursive(self: ptr[Monomorphizer], type_id: u32) -> str:
     if (type_id as i64) >= self.typetable.entries.len:
         return "unknown"
     let entry = self.typetable.entries.data[type_id]
-    if entry.name_id != 0 as u32:
+    // `TypeEntry.name_id` does NOT always hold a name. `register_array` stores the array
+    // LENGTH there and `register_result` stores the ERR TYPE ID, so reading it as an intern
+    // id yields an unrelated string — and, worse, the SAME string for every array of that
+    // length. `[i32; 2]` and `[i64; 2]` both mangled to `Box__T` (intern id 2 happened to be
+    // the generic param name), so two instantiations differing only in element type SHARED
+    // one monomorphized struct: the second reused the first's layout and its elements were
+    // stored at the wrong stride, or a scalar-element and a struct-element array merged and
+    // the aggregate-vs-scalar disagreement segfaulted.
+    // The structural branches further down already build correct names (`arr_<len>_<elem>`);
+    // they were simply unreachable because this early return fired first. Third instance of
+    // this footgun — see the audit in knowledge/bug-array-typearg-mono-payload.
+    mut name_is_real := true
+    if entry.kind == 3 as u8 or entry.kind == 12 as u8: // ARRAY (length) / RESULT (err type)
+        name_is_real = false
+    if entry.name_id != 0 as u32 and name_is_real:
         // Tuple synth-structs all share the bare name `__tupN` regardless of their
         // element types, so two distinct tuple type arguments (e.g. (i32,i32) vs
         // (i64,i64)) would mangle to the SAME instance name and the second generic
@@ -346,6 +360,17 @@ pub fn get_type_name_recursive(self: ptr[Monomorphizer], type_id: u32) -> str:
         let first = std.string.concat("arr_", len_str)
         let second = std.string.concat(first, "_")
         return std.string.concat(second, inner_name)
+    elif kind == 12 as u8: // TYPE_KIND_RESULT — name_id is the ERR type, extra the OK type
+        let ok_name = self.get_type_name_recursive(entry.extra)
+        let err_name = self.get_type_name_recursive(entry.name_id)
+        let r_first = std.string.concat("res_", ok_name)
+        let r_second = std.string.concat(r_first, "_")
+        return std.string.concat(r_second, err_name)
+    elif kind == 11 as u8: // TYPE_KIND_OPTION — unnamed; without this every Option
+        // type argument mangled to the shared fallback "type" below, merging
+        // `Option[i64]` and `Option[str]` instantiations into one.
+        let opt_inner = self.get_type_name_recursive(entry.extra)
+        return std.string.concat("opt_", opt_inner)
     elif kind == 2 as u8: // TYPE_KIND_FUNC
         if (entry.extra as i64) < self.typetable.funcs.len:
             let f_info = self.typetable.funcs.data[entry.extra]

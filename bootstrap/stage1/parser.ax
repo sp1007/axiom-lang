@@ -80,6 +80,34 @@ pub fn check(mut self: ptr[Parser], kind: u8) -> bool:
 pub fn check_raw(self: ptr[Parser], kind: u8) -> bool:
     return self.peek_raw().kind == kind
 
+// Does the bracketed argument starting at the current position spell an ARRAY TYPE
+// (`[T; N]`) rather than an index expression? Used by the `[` led to accept an explicit
+// array type ARGUMENT (`Box[[i32; 3]](v: ..)`), which is legal in type position but was a
+// parse error in expression position.
+//
+// The discriminator is a `;` at bracket depth 1: an array TYPE always has one, an array
+// LITERAL never can (its elements are comma-separated), so `x[[1,2][0]]` keeps parsing as
+// an expression. Bounded scan so a malformed program cannot walk the whole token stream.
+pub fn is_array_type_arg(self: ptr[Parser]) -> bool:
+    if self.peek_at(0 as i64).kind != TK_L_BRACKET:
+        return false
+    mut depth := 0 as i64
+    mut i := 0 as i64
+    while i < 64 as i64:
+        let k = self.peek_at(i).kind
+        if k == TK_EOF:
+            return false
+        if k == TK_L_BRACKET:
+            depth = depth + 1 as i64
+        elif k == TK_R_BRACKET:
+            depth = depth - 1 as i64
+            if depth <= 0 as i64:
+                return false
+        elif k == TK_SEMICOLON and depth == 1 as i64:
+            return true
+        i = i + 1 as i64
+    return false
+
 pub fn errorf(mut self: ptr[Parser], tok: Token, msg: str):
     self.diags_count = self.diags_count + 1
     // Simple diagnostic printing
@@ -507,7 +535,17 @@ pub fn parse_led(mut self: ptr[Parser], left: u32, op_tok: Token, bp: i32) -> u3
         self.append_child(node, left)
         while not self.check(TK_R_BRACKET) and not self.check(TK_EOF):
             let prev_pos = self.pos
-            let idx = self.parse_expr_with_prec(BP_NONE)
+            // A bracketed argument here is a generic type argument spelled as an ARRAY
+            // TYPE (`Box[[i32; 3]](v: ..)`), not an index expression. The same spelling
+            // in TYPE position (`let b: Box[[i32;3]]`) already worked, so without this
+            // the two positions disagreed and the ctor form was a parse error.
+            // `is_array_type_arg` requires a `;` at bracket depth 1, which no array
+            // LITERAL can contain, so `x[[1,2][0]]` still parses as an expression.
+            mut idx := 0 as u32
+            if self.is_array_type_arg():
+                idx = self.parse_type_expr()
+            else:
+                idx = self.parse_expr_with_prec(BP_NONE)
             if idx != 0 as u32:
                 self.append_child(node, idx)
             if not self.check(TK_R_BRACKET):

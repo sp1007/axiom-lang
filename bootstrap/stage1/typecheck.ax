@@ -751,7 +751,26 @@ pub fn check_ctor_field_str_num(mut self: ptr[TypeChecker], callee: u32):
             call_arg = self.tree.nodes.data[call_arg].next_sibling
         field_node = fn_node.next_sibling
 
-pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, struct_type_id: u32) -> u32:
+// Is `cand` an already-monomorphized instantiation of the generic struct template named
+// `base`? Instance types are registered under the mangled name `_AX_std_<base>__<args>`
+// (mono.ax mangle_name), and the `__` separator keeps `Box` from matching `Boxer`.
+// Used to recognize the target type a ctor call is being coerced INTO.
+pub fn struct_is_instance_of(self: ptr[TypeChecker], cand: u32, base: str) -> bool:
+    if cand == TYPE_UNKNOWN or (cand as i64) >= self.types.entries.len:
+        return false
+    let ce = self.types.entries.data[cand as i64]
+    if ce.kind != TYPE_KIND_STRUCT or ce.name_id == 0 as u32:
+        return false
+    let cname = self.intern.get(ce.name_id)
+    let pre1 = std.string.concat("_AX_std_", base)
+    let prefix = std.string.concat(pre1, "__")
+    let hit = std.string.starts_with(cname, prefix)
+    safe_free_str(cname)
+    safe_free_str(pre1)
+    safe_free_str(prefix)
+    return hit
+
+pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, struct_type_id: u32, expected: u32) -> u32:
     if self.tree.nodes.data[callee].kind != NODE_IDENT:
         return struct_type_id
     let ssym_idx = self.tree.nodes.data[callee].payload
@@ -795,11 +814,28 @@ pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, stru
         inferred.push(TYPE_UNKNOWN)
         gi = gi + 1
 
+    // When the context already names the instantiation (`let b: Box[[i64;2]] = Box(v: [5,6])`
+    // or an explicit `Box[[i64;2]](v: ..)`), bind the type params from ITS field types rather
+    // than from the values. A bare int-literal array defaults to `[i32; N]`, so inferring from
+    // the value alone instantiated `Box[[i32;2]]` and stored 4-byte elements into what the
+    // annotated local reads with the `[i64;2]` stride — silently wrong elements. Passing the
+    // expected field type down ALSO coerces the literal, so store and load agree.
+    // Scoped to a monomorphized instance of THIS template; anything else (including a plain
+    // `mut b := Box(v: ..)` with no annotation) keeps the previous UNKNOWN inference.
+    mut exp_fields_extra := 0xffffffff as u32
+    let base_name = self.intern.get(ssym.name_id)
+    if self.struct_is_instance_of(expected, base_name):
+        let exp_extra = self.types.entries.data[expected as i64].extra
+        if (exp_extra as i64) < self.types.structs.len:
+            exp_fields_extra = exp_extra
+    safe_free_str(base_name)
+
     // Walk struct fields (decl order) and call args (positional) in lockstep;
     // named args are assigned positionally by the backend (see BUG#21 in
     // linker.ax), so field N's declared type-expr pairs with call arg N's value.
     mut field_node := src_tree.nodes.data[ssym.decl_node].first_child
     mut call_arg := self.tree.nodes.data[callee].next_sibling
+    mut fpos := 0 as i64
     while field_node != 0 as u32 and call_arg != 0 as u32:
         let fn_node = src_tree.nodes.data[field_node]
         if fn_node.kind == NODE_FIELD_DECL:
@@ -808,9 +844,15 @@ pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, stru
             if self.tree.nodes.data[call_arg].kind == NODE_NAMED_ARG:
                 val_node = self.tree.nodes.data[call_arg].first_child
             if field_type_node != 0 as u32 and val_node != 0 as u32:
-                let val_type = self.infer_node(val_node, TYPE_UNKNOWN)
+                mut vexp := TYPE_UNKNOWN
+                if exp_fields_extra != 0xffffffff as u32:
+                    let exp_si = self.types.structs.data[exp_fields_extra as i64]
+                    if fpos < exp_si.fields.len:
+                        vexp = exp_si.fields.data[fpos].type_id
+                let val_type = self.infer_node(val_node, vexp)
                 self.infer_generic_type_args(field_type_node, val_type, gen_params, inferred, src_tree)
             call_arg = self.tree.nodes.data[call_arg].next_sibling
+            fpos = fpos + 1 as i64
         field_node = fn_node.next_sibling
 
     mut bound_any := false
@@ -4441,7 +4483,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 elif entry.kind == TYPE_KIND_STRUCT:
                     // BUG#74: if this is a generic struct constructed without
                     // explicit type args, monomorphize it from the field values.
-                    result_type = self.try_instantiate_struct_ctor(callee, callee_type)
+                    result_type = self.try_instantiate_struct_ctor(callee, callee_type, expected)
                     self.check_ctor_field_str_num(callee)
                 elif entry.kind == TYPE_KIND_SUM:
                     result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
@@ -4742,8 +4784,20 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // struct field values keep their prior UNKNOWN inference, so an int literal in a
             // scalar field is NOT silently retyped -> self-host fixpoint unaffected).
             mut did_ctor_args := false
-            if self.tree.nodes.data[callee].kind == NODE_IDENT and callee_type != TYPE_UNKNOWN and (callee_type as i64) < self.types.entries.len:
-                let se = self.types.entries.data[callee_type as i64]
+            // For a GENERIC ctor, `callee_type` is the TEMPLATE, whose fields are typed by the
+            // still-unbound params — no usable expected type. The monomorphized instance in
+            // `result_type` carries the concrete field types, so prefer it. This also covers the
+            // explicit-type-argument spelling `Box[[i64;2]](v: ..)`, whose callee is an
+            // INDEX_EXPR rather than a bare ident; without it the array literal stayed `[i32;N]`
+            // and stored 4-byte elements into 8-byte slots.
+            mut ctor_sty := callee_type
+            if callee_type != TYPE_UNKNOWN and (callee_type as i64) < self.types.entries.len:
+                if self.types.entries.data[callee_type as i64].kind == TYPE_KIND_STRUCT and (result_type as i64) < self.types.entries.len:
+                    if self.types.entries.data[result_type as i64].kind == TYPE_KIND_STRUCT:
+                        ctor_sty = result_type
+            let ctor_callee_kind = self.tree.nodes.data[callee].kind
+            if (ctor_callee_kind == NODE_IDENT or ctor_callee_kind == NODE_INDEX_EXPR) and ctor_sty != TYPE_UNKNOWN and (ctor_sty as i64) < self.types.entries.len:
+                let se = self.types.entries.data[ctor_sty as i64]
                 if se.kind == TYPE_KIND_STRUCT and (se.extra as i64) < self.types.structs.len:
                     // Struct's RESOLVED field types (StructInfo, tree-independent). Named
                     // args are assigned POSITIONALLY by the backend (see BUG#21), so arg N

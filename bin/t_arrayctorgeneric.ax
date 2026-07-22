@@ -1,0 +1,43 @@
+// An ARRAY as a generic type ARGUMENT, in both spellings.
+//
+// 1. `Box[[i32; 3]](v: ..)` — an explicit array type argument in a ctor CALL used to be a
+//    parse error, though the same spelling in TYPE position always worked. The `[` led now
+//    parses a bracketed argument as a TYPE when it contains a `;` at depth 1 (an array
+//    literal never can, so `f[[1,2][0]]` still parses as an expression — pinned below).
+// 2. Element WIDTH. A bare int-literal array defaults to `[i32; N]`, so inferring the type
+//    argument from the value alone instantiated `Box[[i32;2]]` where the annotation said
+//    `Box[[i64;2]]` — 4-byte element stores read back at the 8-byte stride. The ctor now
+//    binds its type params from the expected instantiation's field types, which coerces the
+//    literal at the same time.
+struct Box[T]:
+    v: T
+
+struct Pair[A, B]:
+    a: A
+    b: B
+
+fn main() -> i64:
+    mut r := 0 as i64
+    // annotated, 8-byte elements (the width case)
+    let a: Box[[i64; 2]] = Box(v: [5, 6])
+    r = r + a.v[0] + a.v[1]
+    // annotated, 4-byte elements
+    let b: Box[[i32; 4]] = Box(v: [1, 2, 3, 4])
+    r = r + (b.v[0] + b.v[3]) as i64
+    // explicit type argument (was a parse error)
+    let c = Box[[i64; 2]](v: [7, 8])
+    r = r + c.v[0] + c.v[1]
+    // explicit NESTED array type argument
+    let d = Box[[[i32; 2]; 2]](v: [[1, 2], [3, 4]])
+    r = r + (d.v[1][1] + d.v[0][1]) as i64
+    // array type argument beside a scalar one, two params
+    let e = Pair[[i32; 2], i64](a: [7, 8], b: 9)
+    r = r + (e.a[1]) as i64 + e.b
+    // two instantiations that differ ONLY in element type must not merge
+    let g: Box[[i32; 2]] = Box(v: [1, 2])
+    let h: Box[[i64; 2]] = Box(v: [3, 4])
+    r = r + (g.v[1]) as i64 + h.v[1]
+    // an array LITERAL in index position is still an expression, not a type
+    let f = [10, 20, 30]
+    r = r + f[[1, 2][0]] as i64
+    return r

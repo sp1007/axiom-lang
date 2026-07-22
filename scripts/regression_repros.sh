@@ -459,8 +459,14 @@ rows=(
   # result ERR type). Calibrated length — see the header in the .ax before trusting a pass.
   "t_manglearraylen|exit|43"
   # verification sweep for the array type-arg mono fix (Vec/HashMap/Result/for-in/
-  # tuple-array/struct elements). Omits the nested-Option shape that still crashes.
+  # tuple-array/struct elements).
   "t_arraygenerics|exit|110"
+  # two Option-with-ARRAY payloads sharing a LENGTH must not share a monomorphized type
+  # (arrays mangled to a bogus name derived from name_id == the length) — used to SIGSEGV
+  "t_twoarraypayload|exit|104"
+  # an ARRAY as a generic type argument: explicit `Box[[i64;2]](v: ..)` spelling parses,
+  # keeps its element width, and does not merge with a same-length different-element inst
+  "t_arrayctorgeneric|exit|80"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
@@ -652,6 +658,8 @@ opt_rows=(
   "t_inlinecf3|45"
   "t_shiftloop|63"
   "t_negmatch|70"
+  "t_twoarraypayload|104"
+  "t_arrayctorgeneric|80"
 )
 for opt in O2 O3; do
   for orow in "${opt_rows[@]}"; do

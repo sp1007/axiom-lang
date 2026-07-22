@@ -1,0 +1,50 @@
+// Two distinct Option-with-ARRAY payloads in one program used to SIGSEGV whenever they
+// shared a LENGTH. `TypeEntry.name_id` holds the array LENGTH (register_array overloads the
+// field), and mono's get_type_name_recursive read it as an intern id, so every array of a
+// given length mangled to the SAME instance name — `[i32;2]` and `[i64;2]` both became
+// `Box__T` — and the second instantiation silently reused the first one's layout. A
+// narrow-scalar-element array merged with a struct-element array then disagreed about
+// aggregate-vs-scalar handling and crashed. Arrays now mangle structurally (arr_<len>_<elem>).
+struct P:
+    x: i32
+    y: i32
+
+struct Q:
+    x: i64
+    y: i64
+
+fn main() -> i64:
+    mut r := 0 as i64
+    // nested Option, narrow scalar element
+    let n: Option[Option[[i32; 2]]] = Some(Some([3, 40]))
+    match n:
+        Some(inner):
+            match inner:
+                Some(arr):
+                    r = r + (arr[0] + arr[1]) as i64
+                None:
+                    r = r + 0
+        None:
+            r = r + 0
+    // same length (2), 8-byte STRUCT element — the pair that crashed
+    let s: Option[[P; 2]] = Some([P(x: 1, y: 2), P(x: 3, y: 40)])
+    match s:
+        Some(arr):
+            r = r + (arr[1].x + arr[1].y) as i64
+        None:
+            r = r + 0
+    // same length again, a third element width
+    let t: Option[[i16; 2]] = Some([5, 6])
+    match t:
+        Some(arr):
+            r = r + (arr[0] + arr[1]) as i64
+        None:
+            r = r + 0
+    // and a 16-byte struct element at the same length
+    let u: Option[[Q; 2]] = Some([Q(x: 1, y: 2), Q(x: 3, y: 4)])
+    match u:
+        Some(arr):
+            r = r + arr[1].x + arr[1].y
+        None:
+            r = r + 0
+    return r
