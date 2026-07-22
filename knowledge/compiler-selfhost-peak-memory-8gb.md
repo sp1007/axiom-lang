@@ -170,6 +170,14 @@ intermediate phase data once a phase is done, or shrinking per-node footprint.
   not in string churn in that file.
 - **`node_types` is not a leak.** It grows by doubling (`typecheck.ax:1804`), copies, and
   `@free`s the old buffer. Correct as written.
+- **`AstNode` is 24 bytes** (`ast.ax:121`) in a flat `NodeVec`. A 2 MB source is a few MB of
+  nodes — the AST itself is nowhere near the budget.
+- **Binding a struct VALUE out of an array does NOT allocate.** This was the scariest
+  hypothesis, because `let node = tree.nodes.data[i]` is the compiler`s most pervasive idiom
+  and AXIOM aggregates are reference semantics (RFC 0001 §5) — if each such binding heap-copied
+  24 bytes and never freed, that alone would explain everything. Tested directly with a program
+  doing **20,000,000** such bindings in a loop: **peak 4 MB**. If each allocated and leaked it
+  would have been ~480 MB. The idiom is clean.
 
 So the remaining suspects are the structures the phase builds up rather than the code that
 walks them: the type table (`register_option`/`register_result` linear-scan and push), generic
