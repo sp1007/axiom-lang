@@ -16,10 +16,18 @@ memory, and anything that pushes it further falls off.**
 
 Ruled out along the way, each by measurement:
 
-- **Not an artificial allocator cap.** `std/mem/alloc.ax` declares
-  `SEGMENT_SIZE 65536` and `MAX_SEGMENTS 4096` (which would be 256 MB), but **`MAX_SEGMENTS` is
-  never referenced anywhere** — a dead constant that reads like a cap and is not one. Worth
-  deleting or wiring up; as written it will mislead the next reader exactly as it misled me.
+- **Not an artificial allocator cap.** `std/mem/alloc.ax` declares `SEGMENT_SIZE 65536` and
+  `MAX_SEGMENTS 4096` (which would be a 256 MB cap), and the AXIOM allocator **never references
+  `MAX_SEGMENTS`** — nothing enforces it on the self-hosted path, which is why the build sails
+  past 256 MB to 7.9 GB.
+
+  **Correction to an earlier draft of this note:** I first wrote that it is a dead constant and
+  should be deleted. It is not dead. `runtime/axalloc/*.c` uses it for real — `static
+  AxiomSegment axiom_segment_slab[AXIOM_MAX_SEGMENTS]` — so the C runtime genuinely caps at
+  4096 segments, and the `.ax` copies (`std/mem/alloc.ax:22`, `bootstrap/runtime/axalloc.ax:20`)
+  exist to mirror it. The real finding is a **divergence**: the cap is enforced in the C
+  allocator and absent in the AXIOM one. Do not "clean up" the constant; the two allocators
+  disagree, and that is the thing worth reconciling.
 - **Not an optimizer pass.** `--time` shows codegen completing (1868 ms, 15,281 relocs,
   2,447 syms, object written) before the OOM in stage 5, self-linking.
 - **Not source size.** Call-free statements can be added freely; only statements carrying a
