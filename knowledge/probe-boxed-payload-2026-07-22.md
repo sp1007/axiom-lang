@@ -1,12 +1,12 @@
 ---
 name: probe-boxed-payload-2026-07-22
-description: "OPEN x3 — probe of the boxed-aggregate-payload surface right after fixing the 16B-tuple deref clobber found three MORE pre-existing silent miscompiles: Option[[T;N]] array-payload element reads, a TUPLE payload in a USER sum (field 1 = 0), and an RFC 0019 multi-field variant bound to ONE name (SEGFAULT). All verified identical on the pre-fix backend."
+description: "Probe of the boxed-aggregate-payload surface found three pre-existing silent miscompiles. #2 (tuple payload in a USER sum) FIXED 6667c68 — the variant ctor never got an expected type, so int literals stayed i32. STILL OPEN: #1 Option[[T;N]] array-payload element reads (NOT the same cause), #3 RFC 0019 multi-field variant bound to ONE name (SEGFAULT). Also open: variant-ctor arity is unchecked in both directions."
 metadata:
   node_type: memory
   type: project
 ---
 
-# Probe of the boxed-payload surface — 3 new OPEN bugs
+# Probe of the boxed-payload surface — 3 found, 1 fixed, 2 open
 
 Run 2026-07-22 immediately after [[bug-opt-tuple16-deref-caller-clobber]] shipped
 (`3319bdc`), on the theory that a region which just yielded one silent miscompile is
@@ -76,7 +76,7 @@ The tell that identified it as a width gap rather than a lowering bug: declaring
 payload `(i32, i32)` made the *same* program correct. Explicit `(3 as i64, 40 as i64)`
 also worked.
 
-**Fix `4b8f2c1`** — new `coerce_variant_ctor_payload` re-infers the single payload arg
+**Fix `6667c68`** — new `coerce_variant_ctor_payload` re-infers the single payload arg
 with the variant's DECLARED payload type, mirroring the expected-type threading already
 done for struct-ctor fields (`6132b15`) and function params (`f509506`). Flagged RFC 0019
 synth structs (multi-field / str wrap) and generic payloads are excluded.
