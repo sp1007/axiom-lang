@@ -37,7 +37,7 @@ oracle `t_arrpayload(232)`.
 A plain annotated `let v: [i64;3] = [..]` is visited once and was never affected — that
 asymmetry is what made the bug look payload-specific.
 
-### 🔴 RESIDUAL still OPEN — i32-ELEMENT array payload
+### 🔴 RESIDUAL still OPEN — narrow-ELEMENT array payload (and why the i64 case only LOOKS fixed)
 
 ```axiom
 let a: Option[[i32; 3]] = Some([3, 40, 5])
@@ -47,8 +47,32 @@ match a:
 ```
 
 Here the declared and inferred types already AGREE (both `[i32;3]`), so the double-visit
-is not the cause — this is a separate narrow-element stride problem reading through the
-box. Do not assume the sticky guard covers it.
+is not the cause. **Traced 2026-07-22 to a payload-type recovery failure**, and the trace
+also corrected an over-claim about the fix above:
+
+| payload | pl_type recovered | bindsym | result |
+|---|---|---|---|
+| `[i32;3]` | **0 → defaulted to i64** | 0 | 8 ✗ |
+| `[i64;3]` | **0 → defaulted to i64** | 0 | 48 ✓ **by accident** |
+| `(i64,i64)` | 287 | 287 | 43 ✓ genuinely |
+
+For an ARRAY payload, `lower_match_tagged`'s pl_type chain finds nothing —
+`find_variant_info` yields no payload for the monomorphized Option-as-SUM (kind 6), and
+the binding-symbol fallback is empty because the TYPECHECKER never typed the pattern var
+(`bindsym=0`). pl_type therefore hits its final `= 4` (i64) default. `OP_INDEX` then sees
+`insttype=0` with a base register typed i64 (not an array), so it cannot recover an
+element type and its stride falls back to 8.
+
+**So `[i64;3]` is correct only because the 8-byte default stride happens to equal i64's
+size.** The `7bb826f` sticky fix was still necessary — it repaired the STORE side, which
+was writing 4-byte elements — but it did not repair payload-type recovery. Any element
+whose size is not 8 (i32/i16/u8/f32) is still read at the wrong stride.
+
+Real fix = make the monomorphized Option/Result SUM carry its array payload_type (the
+tuple payload already does, which is why tuples work), so the typechecker types the
+pattern var and both the DEREF and the index stride follow. That touches Option
+monomorphization/registration — self-host-critical, so it wants a dedicated gated
+session, not a tack-on.
 
 ## ✅ FIXED #2 — a TUPLE payload in a USER sum read field 1 as 0
 
