@@ -920,7 +920,14 @@ pub fn main() -> i32:
     let filename = args[file_arg_idx as i64]
     mut src := read_file_content(filename)
     if std.string.len(src) == 0 as i64:
-        ax_puts_local("Error: could not open or read file")
+        // read_file_content has ALREADY printed a precise, named diagnostic if the
+        // open or read failed, so this must not restate it in different words -- two
+        // messages in two styles for one problem reads like two problems. It also has
+        // to stay honest about the case read_file_content cannot distinguish: a file
+        // that opened perfectly well and is simply empty, where "could not open or
+        // read file" was flatly wrong.
+        ax_puts_local("error: no source to compile (missing or empty):")
+        ax_puts_local(filename)
         fflush(null as ptr[void])
         return 1
 
