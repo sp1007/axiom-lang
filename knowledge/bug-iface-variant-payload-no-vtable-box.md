@@ -144,8 +144,30 @@ this one is stage1-side and function-local.
    test, and it fails. **The ceiling is NOT function-local — it is the global ~30 MB margin.**
 2. ~~**Spend an existing call site.**~~ Follows the same fate: there is no per-function budget
    to trade, only total headroom.
-3. **Fix the memory ceiling.** Not one option among three — **the only one.** Every attempted
-   fix, in every location, dies against [[compiler-selfhost-peak-memory-8gb]].
+3. **Fix the memory ceiling.** Was the blocker for the compile — now DONE
+   ([[bug-small-alloc-256mb-segment-slab-cap]], cap 256 MB -> 1 GB). Compilation of a fix at
+   this site no longer OOMs.
+
+## Progress 2026-07-23: tuple half FIXED, variant half still open for a DIFFERENT reason
+
+With the cap raised, the coercion fix compiles. The two halves then diverged:
+
+- **Tuple element — FIXED and shipped** (`lower_tuple_lit`, oracle `t_ifacetuple`). typecheck
+  assigns the tuple node its declared anonymous-struct type, whose fields carry the real
+  element types, so `coerce_field_to_interface` per element works.
+- **Variant payload — compiles but STILL SEGFAULTS at runtime.** The same shape of fix at the
+  `Some`/`Ok` ctor reads `node_types[idx]` for the ctor call node and it is **not**
+  `Option[Shape]` — the coercion condition never matches (an earlier `[IFPROBE]` counter showed
+  0 hits), so nothing is boxed and the raw struct is still stored. Reverted; driver back at
+  `3CD8B786`.
+
+**The real distinction, now isolated:** typecheck gives a TUPLE literal its declared aggregate
+type but gives a VARIANT constructor call the payload-DERIVED type, not the annotation`s
+`Option[Shape]`. So the declared interface type genuinely is not reachable from the ctor node
+bottom-up, which is what makes this candidate 2 (rebuild at the binding site, or thread the
+`let` target type into ctor lowering) rather than the one-liner the tuple case turned out to
+be. The memory ceiling was masking this the whole time — the fix could never even be RUN to
+observe that it reads the wrong type.
 
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
 **fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
