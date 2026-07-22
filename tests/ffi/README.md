@@ -46,17 +46,29 @@ objdump -p axmath.dll | grep -A12 "Export Tables"   # ax_add / ax_mul, base 1
 `--staticlib` emits a COFF `!<arch>` archive; `-l x.lib` statically links it (code
 copied into the EXE, no runtime dependency).
 
+> **Run these from the REPOSITORY ROOT, not from `tests/ffi`.** The compiler resolves
+> `std/*.ax` and any `import`ed module relative to the CURRENT DIRECTORY. Run it from here and
+> the stdlib bundle silently fails to open, which surfaces as eight `Error: open failed:` lines
+> with no filename and a ~2 KB executable that segfaults. The commands below previously read
+> `cd tests/ffi` and could not work as written.
+
 ```sh
+# From the repository root.
 # Produce a stdlib-free static lib (pure fns → symbols ax_ax_add / ax_ax_mul)
-../../bin/axc_native.exe build axmath.ax -o axmath_ns.lib --staticlib --no-stdlib -self-link -O1
-ar t axmath_ns.lib          # lists member axiom.o
-nm axmath_ns.lib | grep ax_ax_   # symbol index has ax_ax_add / ax_ax_mul
+bin/axc_native.exe build tests/ffi/axmath.ax -o tests/ffi/axmath_ns.lib --staticlib --no-stdlib -self-link -O1
+ar t tests/ffi/axmath_ns.lib          # lists member axiom.o
+nm tests/ffi/axmath_ns.lib | grep ax_ax_   # symbol index has ax_ax_add / ax_ax_mul
 
 # Statically link it into an app that only declares those symbols
-../../bin/axc_native.exe build app_static.ax -o app_static.exe -l axmath_ns.lib -self-link -O1
-objdump -p app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbase — NO axmath
-./app_static.exe ; echo "exit=$?"             # expect exit=84, runs with no .lib present
+bin/axc_native.exe build tests/ffi/app_static.ax -o tests/ffi/app_static.exe -l tests/ffi/axmath_ns.lib -self-link -O1
+objdump -p tests/ffi/app_static.exe | grep "DLL Name"   # only kernel32/ax_runtime/ucrtbase — NO axmath
+./tests/ffi/app_static.exe ; echo "exit=$?"             # expect exit=84, runs with no .lib present
 ```
+
+> A library function is only linkable from the archive if it is `#[export] pub fn`. A bare
+> `pub fn` produces `Linker Error: Unresolved external symbol` on the `-l` path — and, because
+> the build still emits an executable, a **segfault** rather than a build failure. (It IS
+> reachable the other way, through `import` + `--auto-lib`; see the section below.)
 
 ## Import-driven auto-library test (RFC 0011 P4 inc3b)
 
