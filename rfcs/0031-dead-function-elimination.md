@@ -1,6 +1,6 @@
 # RFC 0031 — Dead function elimination
 
-Status: **DRAFT** (measured, design proposed, not yet implemented)
+Status: **DRAFT** — measured end-to-end (`-dfe-report` shipped, inert); pruning NOT yet activated
 Author: autopilot
 Related: RFC 0030 (`.bss`), [[feedback-no-exe-bloat]], RFC 0011 (static libs / bundling)
 
@@ -83,6 +83,33 @@ baseline row so the win is pinned and cannot silently regress.
 **A dedicated indirect-call oracle is required**: a program whose only reference to a
 function is through a function pointer / closure / interface method must still link and run.
 That is the test that distinguishes this from a miscompile.
+
+## 5b. Measured reachability (`-dfe-report`, 2026-07-22)
+
+A dump-only pass landed first, mirroring the `-ctgc-free-report` precedent: it computes
+reachability and PRINTS the count, injecting nothing. Proven inert — the executable is
+byte-identical with and without the flag.
+
+| program | reachable / total functions |
+|---|---|
+| `return 42` | **1 / 184** |
+| Vec + HashMap + string + Option | 52 / 188 |
+| `t_indirectcall` | 8 / 191 |
+
+So **99.5% of the functions in a trivial program are unreachable**, and even a program using
+three containers plus the string library leaves 72% dead. This is the size measurement of §1
+restated as a call-graph fact, and it confirms the win is real rather than inferred from file
+sizes.
+
+**The indirect-edge check passed on its own terms.** `t_indirectcall` reports 8 — exactly
+`main` + the four functions reachable only indirectly + the three intermediaries. A pass
+walking direct call edges alone would have reported about 3 and silently marked the fn-pointer
+targets, the lambda, and the vtable method as dead. That number is the evidence that
+`OP_FUNC_ADDR` is being followed.
+
+Counts are still measured from `main` ALONE — `ax_free` and the runtime ABI allow-list are not
+yet seeded, so the true reachable set is somewhat larger than 1. Seeding them is a
+prerequisite for activation, not for measurement.
 
 ## 6. Expected result
 

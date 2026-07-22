@@ -409,7 +409,80 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
 
 
 
-pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool) -> bool:
+
+// RFC 0031 (dead function elimination) — REPORT-ONLY reachability over the AIR call graph.
+// Follows the `-ctgc-free-report` precedent (RFC 0015 P3): measure the set first, emit
+// nothing differently, and only activate once the numbers are understood. Output is
+// byte-identical with the flag on.
+//
+// Edges, per the AIR encoding:
+//   * direct call    — OP_CALL with src1 == 0 carries the callee symbol in type_id
+//   * indirect edge  — OP_FUNC_ADDR carries the target symbol in src1
+// An OP_CALL with src1 != 0 is a call THROUGH a register; its target was necessarily
+// materialised by some OP_FUNC_ADDR, which is why taking every funcaddr as a root-ish edge
+// is what keeps fn pointers, lambdas and RFC 0029 vtables alive.
+//
+// NOT visible here, and the reason activation needs more than this pass: OP_FREE/OP_DESTROY
+// lower to a MACH_CALL with the magic callee index -2 rather than a symbol, so `ax_free` has
+// no edge at all. The linker's runtime-ABI allow-list (linker.ax ~L635) is the other root
+// source. Both must be seeded before anything is actually pruned.
+fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable]):
+    let nsym = symbols.symbols.len
+    if nsym <= 0 as i64:
+        return
+    let reach = @alloc(nsym) as ptr[bool]
+    @memset(reach as ptr[void], 0 as u8, nsym)
+
+    // Seed: the entry point. Everything else is discovered from it.
+    mut total_funcs := 0 as i64
+    mut fi := 0 as i64
+    while fi < mod.funcs.len:
+        let f = &mod.funcs.data[fi]
+        if not f.is_extern:
+            total_funcs = total_funcs + 1 as i64
+            let nm = x86_resolve_sym_name(f.sym_id, symbols, pool, table)
+            if nm == "main" or nm == "_AX_main_main_v_v":
+                if (f.sym_id as i64) < nsym:
+                    reach[f.sym_id as i64] = true
+        fi = fi + 1
+
+    // Fixpoint: re-scan until a full pass adds nothing.
+    mut changed := true
+    while changed:
+        changed = false
+        mut gi := 0 as i64
+        while gi < mod.funcs.len:
+            let g = &mod.funcs.data[gi]
+            if not g.is_extern and (g.sym_id as i64) < nsym and reach[g.sym_id as i64]:
+                mut ii := 0 as i64
+                while ii < g.insts.len:
+                    let inst = g.insts.data[ii]
+                    mut tgt := 0 as u32
+                    if inst.opcode == OP_CALL and inst.src1 == 0 as u32:
+                        tgt = inst.type_id
+                    elif inst.opcode == OP_FUNC_ADDR:
+                        tgt = inst.src1
+                    if tgt != 0 as u32 and (tgt as i64) < nsym:
+                        if not reach[tgt as i64]:
+                            reach[tgt as i64] = true
+                            changed = true
+                    ii = ii + 1
+            gi = gi + 1
+
+    mut reach_funcs := 0 as i64
+    mut hi := 0 as i64
+    while hi < mod.funcs.len:
+        let h = &mod.funcs.data[hi]
+        if not h.is_extern and (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
+            reach_funcs = reach_funcs + 1 as i64
+        hi = hi + 1
+
+    ax_printf_local("[dfe] reachable %d / %d functions (from main; ax_free + runtime ABI NOT yet seeded)\n",
+        reach_funcs, total_funcs, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    fflush(null as ptr[void])
+    @free(reach as ptr[u8])
+
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool, dfe_rep: bool) -> bool:
     let is_elf64 = (format_ptr[0] == 'e' as u8)
     mut abi := "win64"
     if is_elf64:
@@ -518,6 +591,9 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 push_coff_symbol(&coff_syms, COFFSymbol(name_str: name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         fi = fi + 1
         
+    if dfe_rep:
+        dfe_report(mod, symbols, pool, table)
+
     fi = 0
     mut func_done_count := 0 as i64
     while fi < mod.funcs.len:
