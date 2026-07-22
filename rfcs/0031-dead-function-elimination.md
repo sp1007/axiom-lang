@@ -106,11 +106,11 @@ The seed-from-`main`-only counts (`return 42` → **1 / 184**) were published in
 lower bound. They were a very loose one. Seeding the remaining root categories moves the same
 program to **61 / 184**.
 
-| program | main only | + export + ABI roots |
-|---|---|---|
-| `return 42` | 1 / 184 | **61 / 184** |
-| `t_indirectcall` | 8 / 191 | 68 / 191 |
-| `t_dfeexport` | — | 63 / 186 (2 export roots) |
+| program | main only | + export + ABI roots | dead `.text` bytes |
+|---|---|---|---|
+| `return 42` | 1 / 184 | **61 / 184** | **55,518 of 74,088 (74.9%)** |
+| `t_indirectcall` | 8 / 191 | 68 / 191 | 55,518 of 74,723 |
+| `t_dfeexport` | — | 63 / 186 (2 export roots) | 55,518 of 74,169 |
 
 The correction came from an **audit counter, not from a crash**. §7 finding 2 below claimed
 `ax_free` was a hidden root needing seeding, and finding 3 claimed the runtime ABI allow-list
@@ -138,11 +138,24 @@ intern name-ids while the emitted symbol is mangled. Matching both id and name f
 root category that silently matches nothing looks exactly like a root category that is not
 needed.
 
+### Bytes, not function counts
+
+Function counts are the cheap number and the misleading one. What this RFC buys is `.text`
+bytes, and the two ratios differ: 67% of functions are dead in `return 42` but **74.9% of the
+bytes** are, because the dead set skews large — the ABI shims' closure is string machinery.
+The report therefore runs AFTER emission and sums real emitted sizes rather than inferring a
+win from a ratio.
+
+**`dead_bytes` is 55,518 in all three programs, to the byte.** That is the fixed stdlib tail
+of §1 measured directly rather than inferred from file-size differences, and its invariance
+across three unrelated programs is a consistency check the count-based number could not give.
+
 ## 6. Expected result
 
-If reachability is accurate, `return 42` should link to a few KB rather than 77 KB — roughly
-a 90% reduction on small programs, and a proportional win on every program that uses part of
-the stdlib rather than all of it.
+Measured, no longer estimated: removing 55,518 bytes of dead `.text` takes `return 42` from
+**77,824 to roughly 22 KB — about a 71% reduction**. The earlier "a few KB / ~90%" guess was
+too optimistic; it assumed the 1/184 count, which the root seeding corrected. 71% of every
+executable is still by far the largest size win available.
 
 ## 7. Status / next step
 

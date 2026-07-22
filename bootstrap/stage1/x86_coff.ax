@@ -426,7 +426,7 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
 // lower to a MACH_CALL with the magic callee index -2 rather than a symbol, so `ax_free` has
 // no edge at all. The linker's runtime-ABI allow-list (linker.ax ~L635) is the other root
 // source. Both must be seeded before anything is actually pruned.
-fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable]):
+fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], infos: ptr[CompiledFuncInfoVec]):
     let nsym = symbols.symbols.len
     if nsym <= 0 as i64:
         return
@@ -511,16 +511,37 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
                     ii = ii + 1
             gi = gi + 1
 
+    // Bytes, matched back by NAME rather than by position: the emission loop is
+    // followed by several synthetic entries (ax_Ok, ax_Err, ...) pushed into the
+    // same vector, so index correspondence with mod.funcs holds only by accident
+    // of ordering and would break silently the day another stub is appended.
     mut reach_funcs := 0 as i64
+    mut reach_bytes := 0 as i64
+    mut dead_bytes := 0 as i64
     mut hi := 0 as i64
     while hi < mod.funcs.len:
         let h = &mod.funcs.data[hi]
-        if not h.is_extern and (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
-            reach_funcs = reach_funcs + 1 as i64
+        if not h.is_extern:
+            let hn = x86_resolve_sym_name(h.sym_id, symbols, pool, table)
+            mut hsz := 0 as i64
+            mut ki := 0 as i64
+            while ki < infos.len:
+                if infos.data[ki].name == hn:
+                    hsz = infos.data[ki].size as i64
+                    ki = infos.len
+                else:
+                    ki = ki + 1
+            if (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
+                reach_funcs = reach_funcs + 1 as i64
+                reach_bytes = reach_bytes + hsz
+            else:
+                dead_bytes = dead_bytes + hsz
         hi = hi + 1
 
     ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi)\n",
         reach_funcs, total_funcs, root_exports, root_abi, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("[dfe] text bytes: live %d, dead %d (of %d)\n",
+        reach_bytes, dead_bytes, reach_bytes + dead_bytes, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
     @free(reach as ptr[u8])
 
@@ -633,9 +654,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 push_coff_symbol(&coff_syms, COFFSymbol(name_str: name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         fi = fi + 1
         
-    if dfe_rep:
-        dfe_report(mod, symbols, pool, table)
-
     fi = 0
     mut func_done_count := 0 as i64
     while fi < mod.funcs.len:
@@ -707,6 +725,14 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             func_done_count = func_done_count + 1
 
         fi = fi + 1
+
+    // Reported AFTER emission, deliberately. Function COUNTS are the cheap number
+    // and the misleading one: what RFC 0031 is actually buying is .text bytes, and
+    // the two are not proportional — the ten runtime-ABI shims and their transitive
+    // closure are string machinery, among the largest functions in the bundle. Sum
+    // the real emitted sizes rather than inferring the win from a ratio.
+    if dfe_rep:
+        dfe_report(mod, symbols, pool, table, &func_infos)
 
     // Append identity variant constructors for sum types (Ok, Err, Some, None)
     let ok_offset = all_code.len as u32
