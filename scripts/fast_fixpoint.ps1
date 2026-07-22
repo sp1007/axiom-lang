@@ -19,6 +19,15 @@ if (-not (Test-Path bin/axc_native.exe)) {
 Write-Host "=== AXIOM Fast Fixpoint (axc_native seed) ===" -ForegroundColor Cyan
 $src = "bootstrap/stage1/tmp_concatenated_air.ax"
 
+# Delete the hop outputs BEFORE building. Without this the Test-Path guards below
+# are satisfied by LEFTOVERS from the previous run: a build that fails outright
+# (parse error, OOM) leaves the old fpA/fpB in place, every check passes, and the
+# script prints "SUCCESS: A == B" for a compiler that was never built. The tell is
+# subtle -- A and B agree because they are the SAME STALE FILE -- and it has now
+# cost two separate sessions real time. Deleting first turns that into an honest
+# "hop1 (A) failed".
+Remove-Item bin/axc_fpA.exe,bin/axc_fpB.exe,bin/axc_fpC.exe -ErrorAction SilentlyContinue
+
 # Regenerate the concatenated source from clean per-file modules.
 & "$PSScriptRoot\regen_concat.ps1" | Out-Null
 
@@ -34,9 +43,11 @@ $sw.Stop()
 if (-not (Test-Path bin/axc_fpB.exe)) { Write-Error "hop2 (B) failed"; Get-Content fpB.log -Tail 20; exit 1 }
 Write-Host ("[B] {0:F1}s" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
 
+$seed=(Get-FileHash bin/axc_native.exe -Algorithm SHA256).Hash
 $a=(Get-FileHash bin/axc_fpA.exe -Algorithm SHA256).Hash
 $b=(Get-FileHash bin/axc_fpB.exe -Algorithm SHA256).Hash
 Write-Host "  A: $a" -ForegroundColor Cyan
 Write-Host "  B: $b" -ForegroundColor Cyan
+if ($a -eq $seed) { Write-Host "  note: A == seed (source is inert vs the driver, or nothing was rebuilt)" -ForegroundColor DarkYellow }
 if ($a -eq $b) { Write-Host "SUCCESS: A == B (fixpoint)" -ForegroundColor Green; exit 0 }
 else { Write-Error "FAILURE: A != B (non-deterministic / broken backend)"; exit 1 }

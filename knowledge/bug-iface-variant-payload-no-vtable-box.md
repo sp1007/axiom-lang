@@ -72,5 +72,27 @@ would need a NEW check at the declaration site. Worth doing, but `typecheck.ax` 
 over-rejection attempts that broke the self-build, so it needs its own gated session rather
 than a drive-by.
 
+## Fix ATTEMPTED and reverted 2026-07-23
+
+Tried candidate 1 in its cheapest form: at the variant ctor, read the type typecheck assigned
+to the CALL NODE (`node_types[idx]`), and if it is `Option`/`Result` of an interface, coerce the
+payload before `box_ty` is chosen.
+
+**It OOMs the self-build.** The seed compiler dies with `AXIOM RUNTIME PANIC: Out of memory`
+(`OOM size requested: 24`) building the compiler source, which uses `Option`/`Result` heavily —
+the new path fires far more often than the failing shape and blows up type registration.
+Reverted; the tree is back at `1FD4C07F…`.
+
+So the cheap version of candidate 1 is ruled out by measurement, not by argument. A real fix
+has to either fire only on the interface-payload shape without touching the common path, or
+take candidate 2 (rebuild at the binding site). Both still want their own session.
+
+**Gate trap hit while doing this, worth its own warning:** `fast_fixpoint.ps1` reported
+`SUCCESS: A == B` **twice** for a source that did not compile at all. A failed hop leaves the
+previous run's `fpA/fpB` in place, the `Test-Path` guards pass, and the two hashes agree
+because they are the same stale file. The tell is `A == seed`. The script now deletes the hop
+outputs before building and prints a note when `A == seed`, so this fails honestly instead.
+Never trust a fixpoint result without confirming the hop output was actually produced.
+
 Related: [[rfc0029-vtable-progress]], [[dfe-elf-runtime-is-in-program]] (same "enumerated site
 list missed one" shape).
