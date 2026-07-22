@@ -124,6 +124,11 @@ narrow scalar element and the other a struct element, they disagreed about
 aggregate-vs-scalar handling and SIGSEGV'd. Full write-up:
 [[bug-two-array-payload-instantiations]].
 
+`t_manglearraylen`'s CALIBRATION was re-verified after that change (the new structural names
+intern extra strings and could have moved the collision): with the ARRAY/RESULT skip
+temporarily removed the oracle still crashes (0xC0000005), so it is still biting, not
+passing trivially. Re-run that check the same way after any change that alters interning.
+
 Note the shape of the miss: the function's OWN later branches already build correct
 structural names (`arr_<len>_<elem>`, `ptr_`, `slice_`, …) — they were simply unreachable
 behind the early return. **When auditing a footgun, grep the field name across ALL modules,
