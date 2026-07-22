@@ -82,7 +82,34 @@ i32/u8/i16 payloads alongside i64, so the previously-accidental i64 case now sit
 widths that exercise the real path.
 
 **Footgun worth remembering: `TypeEntry.name_id` does NOT always hold a name.** For an
-ARRAY it is the length. Any code doing name-based reasoning over arbitrary type entries
-must exclude arrays.
+ARRAY it is the LENGTH; for a RESULT it is the ERR TYPE ID. Any code doing name-based
+reasoning over arbitrary type entries must exclude both.
+
+## Audit of that footgun (2026-07-22) — found a SECOND bug, fixed `b966f73`
+
+Grepped every name-based read over arbitrary type entries. Most are already gated on
+STRUCT/GENERIC_INST (the Vec/HashMap base-name checks, the `__tup` guards, the selector's
+Option/Result check), so an array cannot reach them. **One was not**: the generic
+instantiation path scans EVERY entry for `name_id == mangled_id`. Mangled ids land in the
+high hundreds even for a tiny program, so
+
+```axiom
+struct Pair[T]:
+    a: T
+    b: T
+
+struct Big:
+    buf: [i64; 974]        // 974 == the mangled id of Pair[i64] in this program
+```
+
+matched the ARRAY entry and SIGSEGV'd — confirmed by a trace at the scan site. Fixed by
+skipping ARRAY and RESULT there. A==B `48EF9CC1`, 501/501.
+
+Oracle `t_manglearraylen(43)` is **CALIBRATED** to that program's intern order. It bites
+today, but if interning drifts the collision moves and the test keeps passing while
+testing nothing — it degrades to a trivial pass, never a false failure. Spreading array
+lengths does NOT make it robust: each extra field interns another name and shifts the very
+ids being chased (tried both sparse and dense spreads; neither reproduced). The `.ax`
+header says all of this.
 
 Related: [[probe-boxed-payload-2026-07-22]], [[bug-opt-tuple16-deref-caller-clobber]].
