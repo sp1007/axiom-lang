@@ -1194,7 +1194,21 @@ pub fn main() -> i32:
             mut obj_format := "coff"
             if target_linux:
                 obj_format = "elf"
-            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag, dfe_enabled)
+            // RFC 0031: NEVER prune into a static library, even when the module has
+            // #[export] functions. For an executable or a DLL the roots really are
+            // the whole entry surface -- nothing outside can call an unexported
+            // function. A .lib is the opposite: the CONSUMER decides what to link,
+            // and every `pub` function is a legitimate entry point whether or not it
+            // is exported.
+            //
+            // The `no entry and no exports` guard inside dfe_compute already covers a
+            // library with no exports at all, which is why this looked safe. It is
+            // not: adding ONE #[export] flips the module onto the other branch, and a
+            // probe of exactly that shape pruned a `pub` function that a consumer
+            // would then fail to link against -- an archive silently missing part of
+            // its public surface, with no diagnostic anywhere.
+            let dfe_for_output = dfe_enabled and not is_staticlib
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag, dfe_for_output)
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1

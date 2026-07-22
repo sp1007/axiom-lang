@@ -181,10 +181,24 @@ weight instead:
    binary **byte-identical** to the one the unpruned compiler produces. A 1.96 MB source
    exercising the entire frontend, backend and linker is a far more demanding program than any
    oracle, and bit-identity means pruning perturbed nothing it touched.
-3. **A refusal to guess.** Where the analysis has no entry point and no exports — a
-   `--staticlib` or `--shared` build — `dfe_compute` returns null and nothing is pruned.
-   Otherwise an empty root set would compute a "correct" empty reachable set and prune the
-   entire library into an empty archive.
+3. **A refusal to guess.** Where the analysis has no entry point and no exports,
+   `dfe_compute` returns null and nothing is pruned. Otherwise an empty root set would
+   compute a "correct" empty reachable set and prune an entire library into an empty archive.
+
+### Static libraries are never pruned, exports or not
+
+That guard was necessary and **not sufficient**, which a probe of the exact corner it was
+written for exposed. A `--staticlib` module with no exports declines correctly. Adding ONE
+`#[export]` flips it onto the other branch, and pruning then removed a `pub` function that no
+export named — an archive silently missing part of its public surface, with no diagnostic
+anywhere.
+
+The predicate was simply wrong for archives. For an executable or a DLL the roots really are
+the whole entry surface: nothing outside can reach an unexported function. A `.lib` is the
+opposite — the **consumer** decides what to link, and every `pub` function is a legitimate
+entry point. So `--staticlib` now disables pruning outright, regardless of exports, and the
+emitted `.lib` is byte-identical with and without `-dfe`. `--shared` still prunes, because
+there the export table genuinely is the complete public surface.
 
 ### ELF nearly shipped broken, and COFF could not have told us
 
