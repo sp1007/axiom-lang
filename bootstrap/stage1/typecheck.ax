@@ -1996,6 +1996,14 @@ pub fn check_module_global(mut self: ptr[TypeChecker], node_idx: u32):
                 supported = true
         elif k == TYPE_KIND_STRUCT or k == TYPE_KIND_ARRAY or k == TYPE_KIND_TUPLE:
             supported = true
+        elif k == TYPE_KIND_INTERFACE:
+            // RFC 0017 + RFC 0029: an INTERFACE global. An interface value is an 8-byte
+            // pointer to its heap vtable box ({data, m0..mN}, built at the T->I coercion),
+            // so it needs no new storage strategy at all — it is an 8-byte slot in `.data`,
+            // runtime-initialized at program entry like any non-const scalar. The coercion
+            // and conformance checks already run at the assignment/initializer site, so a
+            // global is just another value site for them.
+            supported = true
         elif type_is_pointer_repr(self.types, self.intern, type_id2):
             // RFC 0017 P2: a sum/Option/Result global. Its VALUE is an 8-byte tagged
             // box pointer (entry.size 16 = the heap box, NOT the slot). Stored inline

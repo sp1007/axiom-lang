@@ -548,6 +548,7 @@ rows=(
   "t_ifaceassign|exit|75"
   # RFC 0029 conformance at struct-field-init site: non-implementing struct -> REJECT
   "t_ifacefieldconf|reject|"
+  "t_ifaceglobal|exit|86"
   # RFC 0029 array-literal element coercion: `[Iface; N] = [S(..), C(..)]` boxes elements
   "t_ifacearray|exit|43"
 )

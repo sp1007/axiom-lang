@@ -1,0 +1,57 @@
+// Oracle (exit 86): RFC 0017 + RFC 0029 — module-level INTERFACE globals.
+//
+// An interface value is an 8-byte pointer to its heap vtable box, so it needs no
+// new storage strategy: an 8-byte `.data` slot, runtime-initialized at program
+// entry like any non-const scalar. Previously RFC 0017's Phase-4 gate rejected the
+// declaration outright ("must be a scalar, struct, fixed-array, tuple, or
+// sum/Option/Result type").
+//
+// The subtle half is the INITIALIZER: the global-init prologue is a value site
+// like any other, so the struct must be boxed with its vtable THERE too. Without
+// that, the raw struct pointer was stored and the first dispatch read a method
+// slot out of the struct's own fields -> SIGSEGV. (`mut g: Shape` assigned inside
+// main already worked, being an ordinary assignment.) Both forms are covered here,
+// plus reassignment to a DIFFERENT impl and dispatch from another function.
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Square:
+    side: i64
+    fn area(self: Square) -> i64:
+        return self.side * self.side
+
+struct Circle:
+    r: i64
+    fn area(self: Circle) -> i64:
+        return self.r * self.r * 3
+
+mut g_init: Shape = Square(side: 5)      // 25 — initializer form
+mut g_late: Shape                        // assigned in main
+mut g_swap: Shape = Square(side: 3)      // 9, then reassigned to Circle(r:2) = 12
+
+fn from_other_fn() -> i64:
+    // dispatch through a global from a function that is not `main`
+    return g_init.area()
+
+fn main() -> i64:
+    mut acc := 0 as i64
+    acc = acc + g_init.area()            // 25
+    acc = acc + from_other_fn()          // 25 -> 50
+
+    g_late = Circle(r: 2)
+    acc = acc + g_late.area()            // 12 -> 62
+
+    acc = acc + g_swap.area()            // 9  -> 71
+    g_swap = Circle(r: 2)
+    acc = acc + g_swap.area()            // 12 -> 83
+
+    // reassign back to the other impl to prove the vtable follows the VALUE
+    g_swap = Square(side: 1)
+    acc = acc + g_swap.area()            // 1  -> 84
+
+    g_late = Square(side: 1)
+    acc = acc + g_late.area()            // 1  -> 85
+
+    g_init = Square(side: 1)
+    acc = acc + g_init.area()            // 1  -> 86
+    return acc

@@ -4827,7 +4827,14 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
         while gi < self.module.globals.len:
             let g = self.module.globals.data[gi]
             if g.init_node != 0 as u32:
-                let vreg = fl.lower_expr(g.init_node)
+                mut vreg = fl.lower_expr(g.init_node)
+                // RFC 0029: the global-init prologue is a VALUE SITE like any other, so a
+                // struct initializing an INTERFACE-typed global must be boxed with its
+                // vtable here too. Without this the raw struct pointer was stored and the
+                // first dispatch through the global read a method slot out of the struct's
+                // own fields -> SIGSEGV. (`mut g: Shape` then assigning inside `main` already
+                // worked: that path is an ordinary assignment, which was wired in 770dfc3.)
+                vreg = fl.coerce_struct_to_interface(g.type_id, g.init_node, vreg)
                 fl.lower_global_write(g.sym_id, g.type_id, vreg)
             gi = gi + 1
 
