@@ -128,8 +128,13 @@ struct payload were **byte-for-byte identical in shape** (same offsets, sizes, b
 which ruled out the whole read path and pointed at construction. **Trace before theorising
 in this area.**
 
-Still unchecked anywhere: arity. `V((i64,i64))` accepts `V(3, 40)` (→ 6) and
-`V(i64,i64)` accepts `V((3,40))` (→ 127), both silently wrong.
+✅ **Constructor arity FIXED `97c54ac`** — it was unchecked in every direction: too few
+args left a field unwritten, too many were dropped, a tuple payload given two args
+SIGSEGV'd, and a multi-field variant given a tuple returned unstable garbage. Expected
+count now comes from the payload SHAPE (flagged `__mfv_` → one arg per field; anything
+else, incl. an unflagged `__tup`, → exactly one; no payload → none) — the same
+flagged/unflagged distinction the pattern arity check uses. A==B `73AA3969`, 499/499,
+oracles `t_ctorarity`(reject) + `t_ctorarityok`(58).
 
 ## ✅ FIXED #3 — RFC 0019 multi-field variant bound to ONE name SEGFAULTed
 
