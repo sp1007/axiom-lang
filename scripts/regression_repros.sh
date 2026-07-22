@@ -458,6 +458,9 @@ rows=(
   # a mangled-name scan must skip entries whose name_id is NOT a name (array LENGTH,
   # result ERR type). Calibrated length — see the header in the .ax before trusting a pass.
   "t_manglearraylen|exit|43"
+  # verification sweep for the array type-arg mono fix (Vec/HashMap/Result/for-in/
+  # tuple-array/struct elements). Omits the nested-Option shape that still crashes.
+  "t_arraygenerics|exit|110"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)

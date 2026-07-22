@@ -1,0 +1,54 @@
+// Verification sweep for 82d0565 (structural array type arguments through
+// monomorphization). Every shape below was measured correct on the fixed compiler.
+//
+// DELIBERATELY OMITTED: a nested `Option[Option[[i32; 2]]]`. Combining that with the
+// `Option[[P; 2]]` below SIGSEGVs — a pre-existing crash (reproduces on the pre-82d0565
+// compiler too), tracked separately. Adding it here would make this suite red.
+//
+// Exit codes are 8-bit, so the accumulator is reported minus 256 to stay in range.
+struct P:
+    x: i32
+    y: i32
+
+fn firstof[T](a: [T; 3]) -> T:
+    return a[1]
+
+fn mk() -> [i32; 3]:
+    return [3, 40, 5]
+
+fn main() -> i64:
+    mut r := 0 as i64
+    r = r + firstof([3 as i32, 40 as i32, 5 as i32]) as i64          // 40
+    mut v: Vec[[i32; 3]] = Vec.new()
+    v.push([3, 40, 5])
+    let e = v.get(0).unwrap()
+    r = r + (e[0] + e[1] + e[2]) as i64                              // 48
+    mut m: HashMap[str, [i32; 3]] = HashMap.new()
+    m.insert("k", [3, 40, 5])
+    let h = m.get("k").unwrap()
+    r = r + (h[0] + h[1] + h[2]) as i64                              // 48
+    let k: Result[[i32; 3], i64] = Ok([3, 40, 5])
+    match k:
+        Ok(arr):
+            r = r + (arr[0] + arr[1] + arr[2]) as i64                // 48
+        Err(x):
+            r = r + 0
+    let t: [(i64, i64); 2] = [(1, 2), (3, 40)]
+    r = r + t[1].0 + t[1].1                                          // 43
+    let a = mk()
+    r = r + (a[0] + a[1] + a[2]) as i64                              // 48
+    let o: Option[[i32; 3]] = Some([3, 40, 5])
+    match o:
+        Some(arr):
+            for x in arr:
+                r = r + x as i64                                     // 48
+        None:
+            r = r + 0
+    let s: Option[[P; 2]] = Some([P(x: 1, y: 2), P(x: 3, y: 40)])
+    match s:
+        Some(arr):
+            r = r + (arr[1].x + arr[1].y) as i64                     // 43
+        None:
+            r = r + 0
+    // 40+48+48+48+43+48+48+43 = 366 -> report 366-256 = 110
+    return r - 256

@@ -1,0 +1,26 @@
+// OPEN, pre-existing (reproduces on the pre-82d0565 compiler too): TWO distinct
+// Option-with-ARRAY-payload instantiations in one program SIGSEGV. Either half alone
+// is correct. NOT registered in the suite — it crashes.
+struct P:
+    x: i32
+    y: i32
+
+fn main() -> i64:
+    mut r := 0 as i64
+    let n: Option[Option[[i32; 2]]] = Some(Some([3, 40]))
+    match n:
+        Some(inner):
+            match inner:
+                Some(arr):
+                    r = r + (arr[0] + arr[1]) as i64
+                None:
+                    r = r + 0
+        None:
+            r = r + 0
+    let s: Option[[P; 2]] = Some([P(x: 1, y: 2), P(x: 3, y: 40)])
+    match s:
+        Some(arr):
+            r = r + (arr[1].x + arr[1].y) as i64
+        None:
+            r = r + 0
+    return r   // want 86; actual: SIGSEGV
