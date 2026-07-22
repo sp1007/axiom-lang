@@ -1,0 +1,45 @@
+// RFC 0029 regression (exit 42): a concrete struct in an INTERFACE-typed USER SUM
+// payload must be boxed. Before the fix `Box(Sq(..))` stored the raw struct and the
+// matched-out `.area()` dispatched on struct bytes -> SIGSEGV.
+//
+// Fixed in lower_variant_construct, which has the declared payload type
+// (find_variant_info) directly in hand -- so unlike the Option/Result path it needs
+// no type recovered from a possibly-retyped node.
+//
+// Two different payload shapes and values so a cross-wired read cannot reach 42 by
+// accident: Sq(side 4)=16 (8-byte payload), Rec(2,13)=26 (16-byte payload). 16+26=42.
+
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+struct Rec:
+    w: i64
+    h: i64
+    fn area(self: Rec) -> i64:
+        return self.w * self.h
+
+type WrapA = A(Shape) | NoneA
+type WrapB = B(Shape) | NoneB
+
+fn area_of(w: WrapA) -> i64:
+    match w:
+        A(s):
+            return s.area()
+        NoneA:
+            return -1 as i64
+
+fn main() -> i64:
+    let x: WrapA = A(Sq(side: 4))
+    let y: WrapB = B(Rec(w: 2, h: 13))
+    mut total = area_of(x)
+    match y:
+        B(s):
+            total = total + s.area()
+        NoneB:
+            total = total - 1 as i64
+    return total

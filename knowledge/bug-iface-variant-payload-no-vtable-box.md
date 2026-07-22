@@ -1,6 +1,6 @@
 ---
 name: bug-iface-variant-payload-no-vtable-box
-description: OPEN — a concrete struct in an interface-typed VARIANT payload (Some/Ok/user sum) is stored raw with no vtable box, so the method call jumps through a wild pointer (SIGSEGV)
+description: PARTIAL — user-sum and tuple interface payloads FIXED; Option/Result (Some/Ok) still SIGSEGV, blocked on the lower_call_expr path
 metadata:
   type: project
 ---
@@ -22,9 +22,9 @@ o.unwrap().area()        // SIGSEGV
 |---|---|
 | `Option[Shape] = Some(Sq(..))` | **SEGV** |
 | `Result[Shape, i64] = Ok(Sq(..))` | **SEGV** |
-| user sum `Wrap = Box(Shape)`, `Box(Sq(..))` | **SEGV** |
+| user sum `Wrap = Box(Shape)`, `Box(Sq(..))` | **FIXED** (`0E1D6F31`) |
 | `fn take(o: Option[Shape])`, `take(Some(Sq(..)))` | **SEGV** |
-| **tuple element**, `let t: (Shape, i64) = (Sq(..), 7)` | **SEGV** |
+| **tuple element**, `let t: (Shape, i64) = (Sq(..), 7)` | **FIXED** (`909e9e5`) |
 | `Vec[Shape]` + `push(Sq(..))` | ok |
 | `HashMap[i64, Shape]` + `insert(1, Sq(..))` | ok |
 | `mut s: Shape = Sq(..)` then `s = Rec(..)` (reassign) | ok |

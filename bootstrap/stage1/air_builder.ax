@@ -3224,7 +3224,16 @@ pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32
                 fi = fi + 1 as u32
             self.fb.emit(AirInst(opcode: OP_SET_FIELD, type_id: sum_type_id, dest: struct_reg, src1: box_reg, src2: 1 as u32))
         else:
-            let pl_reg = self.lower_expr(payload_arg_idx)
+            mut pl_reg = self.lower_expr(payload_arg_idx)
+            // RFC 0029: a concrete struct in an INTERFACE-typed variant payload
+            // (`Wrap = Box(Shape)`, `Box(Sq(..))`) was stored raw, so the later
+            // `.area()` dispatched on struct bytes as a box pointer -> SIGSEGV. Unlike
+            // the Some/Ok path in lower_call_expr, THIS site has the declared payload
+            // type in hand (`payload_type`, from find_variant_info), so no type has to
+            // be recovered from a node typecheck may have retyped -- sidestepping the
+            // ordering conflict documented in the bug note. Guarded internally: a no-op
+            // unless payload_type is an interface AND the arg node is still a struct.
+            pl_reg = self.coerce_struct_to_interface(payload_type, payload_arg_idx, pl_reg)
             self.fb.emit(AirInst(
                 opcode: OP_SET_FIELD,
                 type_id: sum_type_id,
