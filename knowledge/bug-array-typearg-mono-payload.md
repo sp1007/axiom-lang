@@ -112,4 +112,17 @@ lengths does NOT make it robust: each extra field interns another name and shift
 ids being chased (tried both sparse and dense spreads; neither reproduced). The `.ax`
 header says all of this.
 
+## Companion audit of `TypeEntry.extra` — CLEAN, do not repeat
+
+`extra` is polymorphic by design (element for array/pointer/ref/slice, struct index for
+struct, sumtypes index for sum, inner for option, ok for result, func index for func).
+Audited all 12 reads over arbitrary entries: **every one is already kind-gated** —
+selector OP_INDEX/OP_INDEX_ADDR and the register-type recovery (POINTER/REF/SLICE/ARRAY),
+air_builder's for-loop element and RFC 0019 payload struct, typecheck's for-loop element
+and the sticky-array guard, and the linker's struct/func export walks.
+
+The contrast is the lesson: `extra` is *obviously* polymorphic so every site guards it,
+while `name_id` **looks** like it always holds a name — which is exactly why two sites got
+it wrong. Suspect fields that look monomorphic but are not.
+
 Related: [[probe-boxed-payload-2026-07-22]], [[bug-opt-tuple16-deref-caller-clobber]].
