@@ -54,14 +54,30 @@ fn main() -> i64:
             return 0
 ```
 
-24-byte (3-element) tuple behaves the same: `3 + 0 + 5 = 8`. A **struct** payload in the
-same position is CORRECT, so this is tuple-specific, and `Option[(i64,i64)]` is now
-correct too, so it is specifically the USER-sum path. Prime suspect:
-`lower_variant_construct`'s `is_multifield` branch treats a flagged synth struct payload
-by iterating the CALL ARGS as fields (`arg[i] -> field i`). A tuple payload is ONE arg
-that is itself a flagged synth struct, so field 0 gets it and field 1 is never written.
-**Verify that reading before changing it** — RFC 0019 multi-field variants depend on the
-same branch.
+24-byte (3-element) tuple behaves the same: `3 + 0 + 5 = 8`. Note the signature: field 1
+is zero while fields 0 **and 2** are correct. A **struct** payload in the same position is
+CORRECT, and `Option[(i64,i64)]` is correct since `3319bdc`, so this is specifically the
+USER-sum path with a tuple payload.
+
+### Two structural hypotheses, both REFUTED — do not retry them
+
+1. *"`V((A,B))` and `V(A,B)` desugar to the same type, so nothing can tell them apart."*
+   **False.** RFC 0019 multi-field payloads are synth structs named `__mfv_<sum>_<variant>`
+   (typecheck.ax ~L2553) and tuples are `__tup<N>` (~L2715); the naming was deliberately
+   chosen not to collide.
+2. *"`lower_variant_construct`'s `is_multifield` branch iterates call ARGS as fields, so a
+   single tuple arg fills only field 0."* **False.** That branch is gated on the payload
+   struct's flag bit 0, and `do_wrap` (typecheck.ax ~L2534) only wraps-and-flags when there
+   are MULTIPLE payload type exprs, or a single >8-byte PRIMITIVE (the str wrap). A tuple
+   payload is one type expr of struct kind, so it stays an UNFLAGGED `__tup<N>` and both
+   the constructor and the pattern binder take their ordinary single-payload paths.
+
+**Root cause therefore still OPEN.** Both hypotheses came from reading the code; both
+looked convincing and both were wrong. Next attempt should TRACE (as the deref clobber
+ultimately required) rather than reason structurally — and note the adjacent oddity that
+the mismatched declaration/constructor/pattern combinations are all silently ACCEPTED:
+`V((i64,i64))` accepts `V(3, 40)` (→ 6) and `V(i64,i64)` accepts `V((3,40))` (→ 127).
+Whatever the mechanism, arity is not being checked anywhere along that path.
 
 ## OPEN #3 — RFC 0019 multi-field variant bound to ONE name: SEGFAULT
 
