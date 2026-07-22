@@ -83,9 +83,37 @@ payload before `box_ty` is chosen.
 the new path fires far more often than the failing shape and blows up type registration.
 Reverted; the tree is back at `1FD4C07F…`.
 
-So the cheap version of candidate 1 is ruled out by measurement, not by argument. A real fix
-has to either fire only on the interface-payload shape without touching the common path, or
-take candidate 2 (rebuild at the binding site). Both still want their own session.
+## The real blocker: the fix SITE cannot hold any more code
+
+The OOM turned out to have nothing to do with the fix logic. Bisected by shrinking the added
+code to nothing:
+
+| what was added inside `if variant_ctor != 0:` | result |
+|---|---|
+| full coercion (read declared type, coerce payload) | OOM |
+| same, without the `let we = entries.data[..]` aggregate copy | OOM |
+| only `let want_ty = self.mb.node_types[idx]`, unused | OOM |
+| only `if variant_ctor == 99: ax_puts_local(..)` — inert, touches nothing | **OOM** |
+| that same inert statement in `coerce_struct_to_interface` instead | **builds fine** |
+
+So **any** statement added to the variant-constructor region of `lower_call_expr` makes the
+seed compiler die with `AXIOM RUNTIME PANIC: Out of memory` (`OOM size requested: 24`) while
+building the 1.9 MB compiler source. The identical statement elsewhere is harmless. A probe
+counting how often the interface condition matched reported **0 hits** — the coercion never ran
+even once, and the build still OOMed.
+
+This is a capacity/miscompile bug at exactly the site the fix has to go, and it is the actual
+blocker. It resembles the documented "stage0 ceiling" (`read_file_content` in main_air.ax
+carries a comment about a stage0 inference bug that caps how much code stage1 can hold), but
+this one is stage1-side and function-local.
+
+**Consequence for anyone picking this up:** do not start by designing the coercion. Start by
+making that region able to hold one more line. Until then every fix attempt fails for a reason
+that has nothing to do with its design, which is exactly what happened here — twice, and the
+gate reported SUCCESS both times (see below).
+
+Candidate 2 (rebuild at the binding site) is now the more attractive route purely because it
+touches a different function.
 
 **Gate trap hit while doing this, worth its own warning:** `fast_fixpoint.ps1` reported
 `SUCCESS: A == B` **twice** for a source that did not compile at all. A failed hop leaves the
