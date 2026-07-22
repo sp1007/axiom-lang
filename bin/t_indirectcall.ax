@@ -1,0 +1,61 @@
+// RFC 0031 root-set oracle (exit 42). Written BEFORE any dead-function elimination
+// exists, deliberately: this pins the DANGEROUS direction of that optimization, so the
+// guard is in place before the first function is ever dropped.
+//
+// Every function below is reachable ONLY through an indirect edge — there is no direct
+// call to any of them from main. A reachability analysis that walks direct call edges
+// alone would classify all four as dead, drop them, and produce a wild call rather than
+// a smaller binary. If this oracle ever stops returning 42, the root set is incomplete.
+//
+//   via_fnptr     — address taken into a variable, called through it   (BUG#49 fn pointers)
+//   via_lambda    — a lambda passed as a fn-typed argument              (RFC 0008 closures)
+//   Sq.area       — reached through an interface vtable, i.e. an OP_FUNC_ADDR stored into
+//                   a box and loaded back at dispatch                   (RFC 0029)
+//   via_table     — address stored in an ARRAY of function pointers, selected at runtime
+//                   so the index cannot be constant-folded to a direct call
+//
+// 6 + 10 + 16 + 10 = 42.
+
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+fn via_fnptr(n: i64) -> i64:
+    return n + 1 as i64
+
+fn via_table_a(n: i64) -> i64:
+    return n * 2 as i64
+
+fn via_table_b(n: i64) -> i64:
+    return n * 5 as i64
+
+fn apply(f: fn(i64) -> i64, n: i64) -> i64:
+    return f(n)
+
+fn shape_area(s: Shape) -> i64:
+    return s.area()
+
+fn main() -> i64:
+    // 1. plain function pointer
+    let fp = via_fnptr
+    let a = fp(5 as i64)                     // 6
+
+    // 2. lambda through a fn-typed parameter
+    let b = apply(|x: i64| -> i64 x * 2 as i64, 5 as i64)   // 10
+
+    // 3. interface dispatch — the only reference to Sq.area
+    let sq = Sq(side: 4 as i64)
+    let c = shape_area(sq)                   // 16
+
+    // 4. table of function pointers, index chosen at runtime
+    let tbl = [via_table_a, via_table_b]
+    mut i = 0 as i64
+    if a > 0 as i64:
+        i = 0 as i64
+    let d = tbl[i](5 as i64)                 // 10
+
+    return a + b + c + d

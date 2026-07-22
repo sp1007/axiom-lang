@@ -615,6 +615,15 @@ pub fn opcode_mnemonic(op: u16) -> str:
 
     if op == OP_COMPTIME:
         return "comptime"
+    // These two printed as "???", which is a debuggability hole precisely where it hurts
+    // most: OP_FUNC_ADDR is the instruction that creates an INDIRECT call edge, so it is
+    // what anyone tracing a call graph (RFC 0031's root set) has to look for, and
+    // OP_GLOBAL_ADDR is how every module-level global is reached. CLAUDE.md §9 requires
+    // the IR to be printable.
+    if op == OP_FUNC_ADDR:
+        return "funcaddr"
+    if op == OP_GLOBAL_ADDR:
+        return "globaddr"
     return "???"
 
 pub fn opcode_class(op: u16) -> u16:

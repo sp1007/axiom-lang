@@ -92,6 +92,49 @@ the stdlib rather than all of it.
 
 ## 7. Status / next step
 
-Measured and specified only. Implementation is NOT started: the root-set enumeration (§3) is
-the whole difficulty and deserves its own session with the indirect-call oracle written
-FIRST, so the dangerous direction is under test before any function is dropped.
+Measured and specified only; implementation NOT started. The root-set enumeration (§3) is the
+whole difficulty and deserves its own session.
+
+**Groundwork already banked (so the next session starts with the guard in place):**
+
+- **`t_indirectcall`** (regression, exit 42) — four functions reachable ONLY through indirect
+  edges: a function pointer in a variable, a lambda passed as a fn-typed argument, an
+  interface method reached through its vtable, and an array of function pointers indexed at
+  runtime. A reachability pass that walks direct call edges alone drops all four. Verified
+  identical at O0–O3.
+- **Calibrated, not assumed.** `dump-air` on that oracle shows **five `funcaddr`
+  instructions**, and the table call lowers to `%36 = index …` / `%37 = call %36` — a genuine
+  indirect call, not a direct one the compiler folded. So the oracle really does exercise the
+  edges it claims to.
+- **The AIR printer can now name them.** `OP_FUNC_ADDR` and `OP_GLOBAL_ADDR` previously
+  printed as `???` — the exact instruction this RFC's analysis must trace. Both now print as
+  `funcaddr` / `globaddr` (CLAUDE.md §9: the IR must be printable).
+
+### Root survey (read-only, 2026-07-22) — three findings
+
+1. **Drop glue and operator overloads are NOT hidden roots.** Both were listed as suspects,
+   and both turn out to emit an ordinary `OP_CALL` carrying the resolved symbol
+   (`lower_destroy` for `drop`, `lower_op_overload` for operators). A reachability walk over
+   the FINAL AIR therefore sees them, provided it runs after CTGC injection. Better still,
+   with `-ctgc-free` off no `OP_DESTROY` is injected at all, so unused `drop` methods are
+   genuinely unreachable and pruning them is correct rather than merely safe.
+
+2. ⚠️ **`ax_free` IS a hidden root.** `OP_FREE` and `OP_DESTROY` do not lower to a symbol
+   reference — `x86_selector.ax` emits `MACH_CALL` with the immediate **-2**, a magic callee
+   index resolved late. So the deallocator has NO call edge in the AIR graph and an
+   otherwise-correct reachability pass would drop it, leaving a call to a pruned address.
+   This is the concrete instance of the failure mode §3 warns about, found by reading rather
+   than by a crash.
+
+3. **The runtime ABI already has an allow-list.** `linker.ax` (~L635) enumerates the
+   `__ax_runtime_init` / `ax_alloc` / `ax_str_*` / `ax_println_*` / scheduler family that must
+   survive regardless of call edges. That list is a ready-made seed for the root set rather
+   than something to re-derive — and it should be READ from one place, not duplicated, so the
+   two cannot drift.
+
+The entry root is `main` or `_AX_main_main_v_v` (`linker.ax` ~L3101).
+
+Remaining before implementation: decide where the shared root list lives so the linker and the
+new pass cannot disagree, then add oracle coverage for the `ax_free` path (a program that
+frees under `-ctgc-free` and must still link) the same way `t_indirectcall` covers the
+indirect-call edges.

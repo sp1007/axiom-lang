@@ -291,6 +291,11 @@ rows=(
   # that they read as zero, that BOTH ends of the extent are addressable, and that two
   # such globals stay distinct -- properties a size check alone cannot see.
   "t_bssglobal|exit|42"
+  # RFC 0031 root-set oracle: four functions reachable ONLY through indirect edges (fn
+  # pointer, lambda-as-argument, interface vtable, array of fn pointers). Banked BEFORE
+  # dead-function elimination exists so the dangerous direction is under test first --
+  # a reachability pass that walks direct call edges only would drop all four.
+  "t_indirectcall|exit|42"
   "t_globarrnoinit|exit|40"
   # RFC 0017 P2 — aggregate-global write paths (user-code block-copy, not just init)
   "t_globwholeassign|exit|42"
