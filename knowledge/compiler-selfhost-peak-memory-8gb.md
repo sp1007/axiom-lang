@@ -98,6 +98,31 @@ budget is spent in `typecheck.ax`, three phases earlier, and nothing about the c
 frees. Since the margin between success and OOM is ~30 MB out of ~7,900, even a small reduction
 in typecheck retention buys real headroom — and it is where the headroom is.
 
+### It is LINEAR with a huge constant — there is no O(n^2) to hunt
+
+Slope analysis on generated sources of doubling size (same shape, `-O1 -self-link`):
+
+| source | bytes | peak | marginal cost |
+|---|---|---|---|
+| m250 | 23,172 | 308 MB | — |
+| m500 | 46,422 | 355 MB | 2.02 KB RAM per source byte |
+| m1000 | 92,922 | 444 MB | 1.91 KB per byte |
+| m2000 | 186,922 | 622 MB | 1.89 KB per byte |
+
+The slope is **constant across three doublings**, so consumption is **linear in source size**.
+There is no quadratic structure to find, which rules out the most tempting class of
+explanation and saves whoever picks this up from hunting one.
+
+What is wrong is the **constant: roughly 1.9 KB of RAM per BYTE of source, about a 1,900x
+blowup**, plus a ~264 MB floor for any program at all. Extrapolating the slope to the compiler`s
+2,012,779 bytes predicts ~4.1 GB; the measured peak is 7.9 GB, so the compiler`s own source
+costs about 1.9x the synthetic rate — denser code (generics, monomorphization, more types), not
+a different asymptotic class.
+
+This fits the monotonic never-dropping trajectory exactly: the compiler retains essentially
+every structure it builds, at a uniform high per-byte cost. **So the work is reducing retention
+and per-node footprint, not finding an algorithmic blowup.**
+
 ### Already checked and NOT the cause (do not repeat)
 
 - **`typecheck.ax` does not itself allocate much.** Zero `get_token_text` calls, 7 `alloc_str`,
