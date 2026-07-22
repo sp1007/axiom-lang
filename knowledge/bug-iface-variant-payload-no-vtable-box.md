@@ -95,25 +95,40 @@ code to nothing:
 | only `let want_ty = self.mb.node_types[idx]`, unused | OOM |
 | only `if variant_ctor == 99: ax_puts_local(..)` — inert, touches nothing | **OOM** |
 | that same inert statement in `coerce_struct_to_interface` instead | **builds fine** |
+| the inert `ax_puts_local` at the TOP of `lower_call_expr` instead | OOM |
+| `mut probe_unused := idx` — a statement with NO call — at the top | **builds fine** |
 
-So **any** statement added to the variant-constructor region of `lower_call_expr` makes the
-seed compiler die with `AXIOM RUNTIME PANIC: Out of memory` (`OOM size requested: 24`) while
-building the 1.9 MB compiler source. The identical statement elsewhere is harmless. A probe
-counting how often the interface condition matched reported **0 hits** — the coercion never ran
-even once, and the build still OOMed.
+**The rule, and it fits every row above: `lower_call_expr` cannot take ONE MORE CALL SITE.**
+A statement with no call is fine anywhere in the function; a statement containing a call OOMs
+the seed compiler regardless of where in the function it sits, while the same call in a
+neighbouring function is harmless. `OOM size requested: 24` on the 1.9 MB compiler source.
+
+That also explains the row that first looked like a counterexample: `let want_ty =
+node_types[idx]` contains no visible call, but array indexing emits an implicit
+`ax_bounds_check` call — so it is a call site too.
+
+A probe counting how often the interface condition matched reported **0 hits** — the coercion
+never ran even once, and the build still OOMed. The failure is entirely about the call site
+existing, not about anything it does.
 
 This is a capacity/miscompile bug at exactly the site the fix has to go, and it is the actual
 blocker. It resembles the documented "stage0 ceiling" (`read_file_content` in main_air.ax
 carries a comment about a stage0 inference bug that caps how much code stage1 can hold), but
 this one is stage1-side and function-local.
 
-**Consequence for anyone picking this up:** do not start by designing the coercion. Start by
-making that region able to hold one more line. Until then every fix attempt fails for a reason
-that has nothing to do with its design, which is exactly what happened here — twice, and the
-gate reported SUCCESS both times (see below).
+**Consequence for anyone picking this up.** The fix needs a call — `coerce_struct_to_interface`
+— at a site that cannot accept one. Three ways out, in increasing order of effort:
 
-Candidate 2 (rebuild at the binding site) is now the more attractive route purely because it
-touches a different function.
+1. **Put the call in a different function.** Candidate 2 (rebuild at the binding site) now
+   looks best purely because it lives elsewhere. Cheapest route to a working fix.
+2. **Spend an existing call site.** The budget appears to be exactly one; folding two existing
+   calls in `lower_call_expr` into one may buy the slot back. Untested.
+3. **Fix the underlying capacity bug.** The right answer, and its own project — this is a
+   backend limit (register/spill pressure per call site), not a source-size limit, since
+   call-free statements add freely.
+
+Do NOT start by designing the coercion. Two attempts have already failed for a reason that has
+nothing to do with their design.
 
 **Gate trap hit while doing this, worth its own warning:** `fast_fixpoint.ps1` reported
 `SUCCESS: A == B` **twice** for a source that did not compile at all. A failed hop leaves the
