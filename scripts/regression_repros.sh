@@ -434,6 +434,9 @@ rows=(
   "t_vecpartdestr|exit|57"
   # enumerate over STRUCT elements: the tuple's second field is an aggregate
   "t_vecenumstruct|exit|118"
+  # a 16-byte aggregate payload out of a tagged box must load the box's 8-byte
+  # reference, not copy 16 bytes inline over a neighbouring caller stack slot
+  "t_optupclobber|exit|110"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)

@@ -2257,6 +2257,29 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
                 let se2 = sel.table.entries.data[src_type]
                 if (se2.kind == TYPE_KIND_POINTER or se2.kind == TYPE_KIND_REF) and type_is_aggregate(sel.table, se2.extra):
                     deref_is_agg = true
+            // Extracting a payload out of a TAGGED BOX (sum/option/result, or a
+            // GENERIC_INST of Option/Result) always reads the box's 8-byte payload
+            // SLOT, and for any aggregate payload that slot holds a REFERENCE —
+            // lower_variant_construct stores exactly one pointer there, whether the
+            // payload is a user struct or an RFC 0019 / tuple synth struct. That is a
+            // different situation from `p.*` where p: ptr[Struct], which genuinely
+            // reads the struct's bytes inline, and the two are told apart by the
+            // SOURCE type, not by the destination size.
+            //
+            // The `type_size != 16` guards above used size as a stand-in for "the
+            // destination is a str" (str being the one truly-16-byte-inline value).
+            // That stand-in cannot see this case: a payload whose aggregate is
+            // EXACTLY 16 bytes — a `(i64,i64)` tuple — kept type_size 16 and took the
+            // str-style inline copy, writing 16 bytes into an 8-byte home and zeroing
+            // the neighbouring stack slot in the CALLER. A 24-byte tuple escaped
+            // (size != 16, so the guard let the aggregate check run) and a 16-byte
+            // user struct escaped for an unrelated reason, which is what made the bug
+            // look payload-specific rather than size-specific.
+            //
+            // A str payload is unaffected: air_builder unwraps a single-str-field
+            // synth struct back to str (type id 12), which is not an aggregate.
+            if type_is_pointer_repr(sel.table, sel.pool, src_type) and type_is_aggregate(sel.table, type_id):
+                deref_is_agg = true
             if deref_is_agg:
                 type_size = 8 as u32
 

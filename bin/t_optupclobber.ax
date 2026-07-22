@@ -1,0 +1,43 @@
+// Extracting an EXACTLY-16-BYTE aggregate payload out of a tagged box must load the
+// box's 8-byte reference, not copy 16 bytes inline. It used to take the str-style
+// inline copy and write 16 bytes into an 8-byte home, zeroing the neighbouring stack
+// slot in the CALLER: `keep` read 0. A 24-byte tuple and a 16-byte user struct both
+// escaped the old guard, so all three shapes are pinned here.
+struct P:
+    x: i64
+    y: i64
+
+fn take2(o: Option[(i64, i64)]) -> i64:
+    match o:
+        Some(t):
+            return t.0 + t.1
+        None:
+            return 0
+
+fn take3(o: Option[(i64, i64, i64)]) -> i64:
+    match o:
+        Some(t):
+            return t.0 + t.1 + t.2
+        None:
+            return 0
+
+fn takep(o: Option[P]) -> i64:
+    match o:
+        Some(p):
+            return p.x + p.y
+        None:
+            return 0
+
+fn main() -> i64:
+    let a: Option[(i64, i64)] = Some((3, 40))
+    let b: Option[(i64, i64, i64)] = Some((1, 2, 3))
+    let c: Option[P] = Some(P(x: 5, y: 6))
+    let keep = 7 as i64
+    // Two calls are required: with a single call the stray 16-byte write landed on a
+    // dead temp and the corruption stayed invisible.
+    let r1 = take2(a)
+    let r2 = take2(a)
+    let r3 = take3(b)
+    let r4 = takep(c)
+    // keep=7, r1=r2=43, r3=6, r4=11  -> 7 + 43 + 43 + 6 + 11 = 110
+    return keep + r1 + r2 + r3 + r4

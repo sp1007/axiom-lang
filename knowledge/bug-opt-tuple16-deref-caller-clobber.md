@@ -1,18 +1,17 @@
 ---
 name: bug-opt-tuple16-deref-caller-clobber
-description: "OPEN silent miscompile: reading a field of a match-bound EXACTLY-16-BYTE tuple payload (Option[(i64,i64)]) makes OP_DEREF take the str-style 16-byte inline copy and zero one adjacent 8-byte stack slot in the CALLER. Repro bin/repro_optuple_clobber.ax. One fix attempt held B==C but regressed working cases — REVERTED."
+description: "FIXED 2026-07-22 (A==B==C 907958ED, 493/493): silent miscompile where reading a field of a match-bound EXACTLY-16-BYTE tuple payload (Option[(i64,i64)]) made OP_DEREF take the str-style 16-byte inline copy and zero one adjacent 8-byte stack slot in the CALLER. Root = OP_DEREF used dest SIZE as a proxy for is-str; the real discriminator is the SOURCE being a tagged box. Oracle t_optupclobber(110)."
 metadata:
   node_type: memory
   type: project
 ---
 
-# OPEN — 16-byte tuple payload deref clobbers a caller stack slot
+# ✅ FIXED — 16-byte tuple payload deref clobbered a caller stack slot
 
 Found 2026-07-22 while probing the B4 width-coerce residual (which turned out to be
-already closed by A1 `171ea83`). This is a **new, unrelated, silent miscompile**, and
-the first OPEN bug since the "no OPEN bugs remain" note.
+already closed by A1 `171ea83`). A new, unrelated silent miscompile.
 
-## Minimal repro — `bin/repro_optuple_clobber.ax` (NOT registered in the suite; it FAILS)
+## Symptom
 
 ```axiom
 fn use_it(o: Option[(i64, i64)]) -> i64:
@@ -27,73 +26,92 @@ fn main() -> i64:
     let keep = 7 as i64
     let r1 = use_it(a)
     let r2 = use_it(a)
-    return keep          // returns 0 — `keep` was destroyed
+    return keep          // returned 0 — `keep` was destroyed
 ```
 
-Deterministic at **-O0/-O1/-O2/-O3** on driver `57738F36`, so it is in AIR building or
-the selector, not the optimizer.
+Deterministic at -O0..-O3, so never the optimizer.
 
-## Scoping — all measured, do NOT re-derive
+## Scoping — measured, do NOT re-derive
 
 | Variation | Result |
 |---|---|
 | `Option[(i64,i64)]` payload (**16B**) | **BROKEN** |
 | `Option[(i64,i64,i64)]` payload (24B) | OK |
-| `Option[P]`, `struct P{x,y}` (also 16B!) | OK |
+| `Option[P]`, `struct P{x,y}` (also 16B) | OK |
 | plain `(i64,i64)` param, no Option | OK |
 | `Option[i64]` scalar payload | OK |
-| ONE call | OK |
-| TWO calls | BROKEN (a third destroys nothing further) |
-| inline `match` in main, no call at all | OK |
-| callee ignores the param / only `is_some()` | OK |
-| callee binds `t` but reads NO field | OK |
+| ONE call | OK · TWO calls | BROKEN (a third adds nothing) |
+| inline `match`, no call at all | OK |
+| callee ignores param / only `is_some()` / binds `t` without reading a field | OK |
 | callee reads `t.0` **or** `t.1` (either alone) | BROKEN |
 
-Exactly **one 8-byte slot** is zeroed, the one adjacent to `a` in the frame layout —
-which local that is follows the stack layout, not declaration order (declaring locals
-before `a` moves the damage to a different one; in one arrangement nothing live is hit).
-This is why the failure first looked like "the second Option variable is broken" and
-then like "the second call returns None" — both are downstream of the same single
-stray 8-byte write.
+Exactly **one 8-byte slot** was zeroed — the one adjacent to `a` in the frame layout,
+which follows stack layout, not declaration order. That is why the failure looked in
+turn like "the second Option variable is broken" and "the second call returns None":
+both were downstream of one stray 8-byte write. With a single call the write landed on
+a dead temp and stayed invisible, which is why two calls are needed to see it.
 
-## Root cause (located, not yet fixed)
+## Root cause
 
-[x86_selector.ax:2253-2259](bootstrap/stage1/x86_selector.ax#L2253-L2259), `OP_DEREF`:
+[x86_selector.ax](bootstrap/stage1/x86_selector.ax) `OP_DEREF`. `deref_is_agg` forces the
+8-byte "aggregates are held by reference" load, and was gated on `type_size != 16`, using
+the destination SIZE as a proxy for "this is a `str`" (str being the one genuinely
+16-byte-INLINE value). The proxy silently excluded any aggregate whose `entry.size` is
+*exactly* 16, so a 2-element tuple payload took the str-style 16-byte inline copy and
+wrote 16 bytes into an 8-byte destination home.
+
+**The real discriminator is the SOURCE type, not the destination size.** Extracting a
+payload out of a tagged box (sum/option/result) always reads the box's 8-byte payload
+SLOT, which holds a *reference* for any aggregate payload — `lower_variant_construct`
+stores exactly one pointer there, for a user struct and an RFC 0019 / tuple synth struct
+alike. That is a different situation from `p.*` where `p: ptr[Struct]`, which genuinely
+reads the struct's bytes inline. Fix = one added condition:
 
 ```axiom
-mut deref_is_agg := false
-if type_size != 16 as u32 and type_is_aggregate(sel.table, type_id):
+if type_is_pointer_repr(sel.table, sel.pool, src_type) and type_is_aggregate(sel.table, type_id):
     deref_is_agg = true
 ```
 
-`deref_is_agg` forces the 8-byte "aggregates are held by reference" load. It is gated on
-`type_size != 16`, using the size as a proxy for "this is a `str`" (str is the one value
-genuinely 16 bytes INLINE). That proxy silently excludes any aggregate whose `entry.size`
-is *exactly* 16 → a 2-element tuple payload takes the str-style 16-byte inline copy and
-writes 16 bytes into an 8-byte destination home.
+The existing `type_size != 16` guards are left alone. A `str` payload is unaffected:
+air_builder unwraps a single-str-field synth struct back to str (type id 12), which is
+not an aggregate.
 
-The 16B/24B split was **predicted from this reading and then confirmed**, so the mechanism
-is right. What is NOT yet explained: a 16-byte *user struct* payload (`P{x,y}`) is fine,
-so `get_register_type(sel, inst.dest)` must yield the concrete `__tup` for tuples but
-something non-concrete for user structs — plausibly a consequence of `a5c410f` (air_builder
-preferring the concrete bound-var payload type). **Explain that asymmetry before fixing.**
+**A==B==C `907958ED5460DE41`, 493/493.** All three hops identical means the change is
+inert on the compiler's own self-build (compiler source never derefs a 16-byte aggregate
+payload out of a box) while fixing user programs — a low-risk shape.
 
-## Fix attempt 2026-07-22 — REVERTED (B==C held, behaviour regressed)
+## The asymmetry that had to be explained first (16B struct was FINE)
 
-Replaced the size proxy with an explicit `is_str_val` discriminator (set at `type_id == 12`
-and at the `ptr[str]`/`ref[str]` recovery), gating `deref_is_agg` on `not is_str_val`.
+A 16-byte user struct payload was unaffected, which made the bug look payload-specific
+rather than size-specific. Armchair reasoning could not settle it; a temporary trace at
+the `OP_DEREF` site did, in one build. The broken program had exactly ONE trace line the
+two working controls lacked:
 
-- **B==C fixpoint HELD** — `0F36BEBE74275F54` (A≠B is expected for a backend change; the
-  criterion is B==C).
-- But the new compiler returned **0** for cases that were CORRECT before (24B tuple, 16B
-  user struct, the survivor-bitmap probe). Strictly worse → reverted per revert-on-red.
+```
+DRFX tid=287 kind=1 esize=16 src=415 skind=6 sextra=12 agg=0 size=16   <- tuple payload, src kind 6 = SUM
+DRFX tid=42  kind=1 esize=16 src=439 skind=9 sextra=42 agg=0 size=16   <- present in ALL THREE, src kind 9 = POINTER
+```
 
-**Lesson: the `type_size != 16` guard is load-bearing for paths not yet mapped.** B==C
-proved the backend reproduces itself; it said nothing about correctness — the same lesson
-already banked for the RPO-inliner ("B==C necessary NOT sufficient, full user regression
-is the real gate"). Next attempt must enumerate every producer of a 16-byte `type_size`
-reaching this site BEFORE narrowing the guard, and must run the full regression on the
-newly built compiler, not just the fixpoint.
+Two distinct 16-byte-struct derefs reach this site: one out of a **box** (must load 8) and
+one out of a genuine **`ptr[Struct]`** (must load 16). The `tid=42` lines are why the first
+fix attempt regressed working code.
 
-Related: [[bug-unannotated-some-aggregate-match]] (a5c410f, the concrete-payload-type
-preference this interacts with), [[backlog-open-items]], [[fast-fixpoint-workflow]].
+## Failed first attempt — the lesson that mattered
+
+Attempt #1 replaced the size proxy with an `is_str_val` discriminator gating
+`deref_is_agg` on `not is_str_val`. **B==C HELD (`0F36BEBE`) and the compiler was still
+strictly worse** — 24-byte tuples and 16-byte user structs that had been correct started
+returning 0, because it swept up the legitimate `ptr[Struct]` inline derefs. Reverted.
+
+**B==C proves the backend reproduces itself; it says nothing about correctness.** Same
+lesson already banked for the RPO inliner. The gate that caught it was running the repro
+set plus the full regression *on the newly built compiler* — do that before trusting any
+selector change, and prefer ADDING a narrow condition over loosening an existing guard
+whose load-bearing cases you have not enumerated.
+
+Second lesson: when a guard's intent is "is this X", trace what actually reaches it rather
+than deducing it. The trace prefix must be UNBRACKETED (`DRFX`, not `[D…`) or
+`is_verbose_debug` (print_helpers.ax) swallows it silently.
+
+Related: [[bug-unannotated-some-aggregate-match]], [[backlog-open-items]],
+[[fast-fixpoint-workflow]].
