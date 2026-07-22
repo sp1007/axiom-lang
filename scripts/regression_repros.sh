@@ -296,6 +296,9 @@ rows=(
   # dead-function elimination exists so the dangerous direction is under test first --
   # a reachability pass that walks direct call edges only would drop all four.
   "t_indirectcall|exit|42"
+  # Also pins the IMAGE_FILE_DLL fix: before it, an #[export] in an EXECUTABLE
+  # forced the DLL characteristic and Windows refused to load the image at all.
+  "t_dfeexport|exit|42"
   "t_globarrnoinit|exit|40"
   # RFC 0017 P2 — aggregate-global write paths (user-code block-copy, not just init)
   "t_globwholeassign|exit|42"

@@ -1,0 +1,26 @@
+// RFC 0031 root-set oracle #2 (exit 42) — the #[export] root.
+//
+// Companion to t_indirectcall, which pins the INDIRECT-edge roots. This one pins
+// the other correctness root: a function that is part of the module's public
+// surface and is deliberately NOT called from anywhere inside the module.
+//
+// Neither exported_add nor exported_mul has a single call edge. Walking the call
+// graph from main alone marks both dead — which is the right answer for an
+// executable and the WRONG answer for a --shared / --staticlib build, where the
+// exports are the only roots there are. Dropping them would produce a library
+// whose advertised entry points resolve to nothing.
+//
+// `-dfe-report` on this program must report the export roots as a non-zero count.
+// The exit code only proves the program still builds and runs; the number is the
+// part that proves the root category is wired.
+
+#[export]
+fn exported_add(a: i64, b: i64) -> i64:
+    return a + b
+
+#[export]
+fn exported_mul(a: i64, b: i64) -> i64:
+    return a * b
+
+fn main() -> i64:
+    return 42
