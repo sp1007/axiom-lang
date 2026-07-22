@@ -75,7 +75,7 @@ objdump -p tests/ffi/app_static.exe | grep "DLL Name"   # only kernel32/ax_runti
 ```
 
 > A library function is only linkable from the archive if it is `#[export] pub fn`. A bare
-> `pub fn` produces `Linker Error: Unresolved external symbol` on the `-l` path — and, because
+> `pub fn` produces `error: linker: unresolved external symbol` on the `-l` path — and, because
 > the build still emits an executable, a **segfault** rather than a build failure. (It IS
 > reachable the other way, through `import` + `--auto-lib`; see the section below.)
 

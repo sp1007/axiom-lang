@@ -580,7 +580,7 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     
     let success_w = write_file_content("scratch/self_linked_concatenated.ax", result_str)
     if not success_w:
-        ax_puts_local("Error: could not write self_linked_concatenated.ax")
+        ax_puts_local("error: could not write self_linked_concatenated.ax")
     return result_str
 fn print_num(val: i64):
     if val == 0:
@@ -848,7 +848,7 @@ pub fn main() -> i32:
                 output_file = args[opt_idx as i64 + 1 as i64]
                 opt_idx = opt_idx + 1
             else:
-                ax_puts_local("Error: missing value for -o option")
+                ax_puts_local("error: missing value for -o option")
                 return 1
         elif opt == "--target" or opt == "-target":
             if opt_idx + 1 < argc:
@@ -859,7 +859,7 @@ pub fn main() -> i32:
                     target_linux = true
                 opt_idx = opt_idx + 1
             else:
-                ax_puts_local("Error: missing value for --target option")
+                ax_puts_local("error: missing value for --target option")
                 return 1
         elif opt == "-self-link" or opt == "--self-link":
             self_link = true
@@ -889,7 +889,7 @@ pub fn main() -> i32:
                 push_linker_str(&extra_libs, args[opt_idx as i64 + 1 as i64])
                 opt_idx = opt_idx + 1
             else:
-                ax_puts_local("Error: missing value for -l option")
+                ax_puts_local("error: missing value for -l option")
                 return 1
         elif opt == "--time":
             show_time = true
@@ -940,7 +940,7 @@ pub fn main() -> i32:
         if success_f:
             ax_puts_local("[Debug] Formatted file successfully!")
         else:
-            ax_puts_local("Error: could not write formatted file")
+            ax_puts_local("error: could not write formatted file")
         
         @free(get_str_ptr(formatted))
         return 0
@@ -1198,7 +1198,7 @@ pub fn main() -> i32:
             output_file = "output.c"
         let success = cgen.generate(output_file)
         if not success:
-            ax_puts_local("Error: could not generate C code")
+            ax_puts_local("error: could not generate C code")
             return 1
     elif is_build:
         if target_wasm32:
@@ -1207,7 +1207,7 @@ pub fn main() -> i32:
                 output_file = "output.wat"
             let success = wasm_gen.generate(output_file)
             if not success:
-                ax_puts_local("Error: could not generate Wasm Text code")
+                ax_puts_local("error: could not generate Wasm Text code")
                 return 1
             
             @free(get_str_ptr(src))
@@ -1259,7 +1259,7 @@ pub fn main() -> i32:
             let dfe_for_output = dfe_enabled and not is_staticlib
             let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag, dfe_for_output)
             if not success:
-                ax_puts_local("Error: could not generate native binary code")
+                ax_puts_local("error: could not generate native binary code")
                 return 1
             t_mark = time_phase(show_time, "codegen", t_mark)
             ax_puts_local("[Debug] Stage 4: Finished native code generation.")
@@ -1284,7 +1284,7 @@ pub fn main() -> i32:
                 let temp_obj_nt2 = str_to_null_terminated(temp_obj)
                 @free(temp_obj_nt2)
                 if not lib_ok:
-                    ax_puts_local("Error: static library generation failed")
+                    ax_puts_local("error: static library generation failed")
                     return 1
                 ax_puts_local("[Debug] Static library written.")
                 if not is_shared:
@@ -1378,9 +1378,9 @@ pub fn main() -> i32:
                 // is never silently trusted.
                 let rm = std.os.remove_file(output_file)
                 if rm.is_err():
-                    ax_puts_local("Warning: could not remove the incomplete output; do NOT run:")
+                    ax_puts_local("warning: could not remove the incomplete output; do NOT run:")
                     ax_puts_local(output_file)
-                ax_puts_local("Error: Self-linking failed")
+                ax_puts_local("error: Self-linking failed")
                 return 1
             // RFC 0011 P4 (inc3f): for a DLL, emit an FFI wrapper module `<base>_ffi.ax`
             // (pub extern bindings for every #[export]ed fn) so a consumer imports one file
@@ -1416,7 +1416,7 @@ pub fn main() -> i32:
             mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
             let gen_success = cgen.generate("axiom_temp.c")
             if not gen_success:
-                ax_puts_local("Error: C code generation failed")
+                ax_puts_local("error: C code generation failed")
                 fflush(null as ptr[void])
                 return 1
             ax_puts_local("[Debug] Stage 2.4: Finished C code generation successfully.")
@@ -1444,7 +1444,7 @@ pub fn main() -> i32:
             @free(cmd_buf)
 
             if link_status != 0:
-                ax_puts_local("Error: C compilation failed")
+                ax_puts_local("error: C compilation failed")
                 fflush(null as ptr[void])
                 return link_status
 
@@ -1682,7 +1682,7 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
                 @free(get_str_ptr(path2))
 
     if not opened:
-        ax_printf_local("Error: could not open module file '%s'\n", get_str_ptr(file_path) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error: could not open module file '%s'\n", get_str_ptr(file_path) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         @free(get_str_ptr(file_path))
         @free(get_str_ptr(mod_name))
         return 1 as i32

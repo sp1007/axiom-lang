@@ -1437,7 +1437,7 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
     let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
     @free(path_nt)
     if f == null as ptr[void]:
-        ax_puts_local("Error: staticlib could not open object file")
+        ax_puts_local("error: staticlib could not open object file")
         return false
     fseek(f, 0, 2)
     let osize = ftell(f)
@@ -1546,7 +1546,7 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
     let of = fopen(out_nt as ptr[void], get_str_ptr("wb"))
     @free(out_nt)
     if of == null as ptr[void]:
-        ax_puts_local("Error: staticlib could not write output file")
+        ax_puts_local("error: staticlib could not write output file")
         return false
     fwrite(ar.data as ptr[void], 1, ar.len, of)
     fclose(of)
@@ -1593,7 +1593,7 @@ pub fn axiom_read_lib_iface(lib_path: str) -> bool:
     let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
     @free(path_nt)
     if f == null as ptr[void]:
-        ax_puts_local("Error: iface could not open .lib")
+        ax_puts_local("error: iface could not open .lib")
         return false
     fseek(f, 0, 2)
     let size = ftell(f)
@@ -1602,7 +1602,7 @@ pub fn axiom_read_lib_iface(lib_path: str) -> bool:
     fread(buf as ptr[void], 1, size, f)
     fclose(f)
     if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
-        ax_puts_local("Error: not a COFF !<arch> library")
+        ax_puts_local("error: not a COFF !<arch> library")
         @free(buf)
         return false
     mut apos := 8 as i64
@@ -1625,7 +1625,7 @@ pub fn axiom_read_lib_iface(lib_path: str) -> bool:
             apos = apos + 1
     @free(buf)
     if not found:
-        ax_puts_local("Error: no __axiom_iface member in library")
+        ax_puts_local("error: no __axiom_iface member in library")
     return found
 
 // ── RFC 0011 P4 (increment 3a): the interface READER ─────────────────────────────
@@ -1894,7 +1894,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         let file = fopen(path_nt as ptr[void], get_str_ptr("rb"))
         @free(path_nt)
         if file == null as ptr[void]:
-            ax_puts_local("Error: Linker could not open input file: ")
+            ax_puts_local("error: Linker could not open input file: ")
             ax_puts_local(path)
             return false
             
@@ -1903,7 +1903,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         rewind(file)
         
         if size <= 4:
-            ax_puts_local("Error: Input file too small: ")
+            ax_puts_local("error: Input file too small: ")
             ax_puts_local(path)
             fclose(file)
             return false
@@ -1942,7 +1942,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             obj = linker_parse_coff(buffer, size)
             format = "coff"
         else:
-            ax_puts_local("Error: Unsupported object format in: ")
+            ax_puts_local("error: Unsupported object format in: ")
             ax_puts_local(path)
             @free(buffer)
             return false
@@ -3069,10 +3069,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         if dll_home == "kernel32.dll" or is_valid_runtime_dll_symbol(target_name):
                             dead_win_import = true
                     if dead_win_import:
-                        ax_printf_local("Linker Warning (elf64): dead Windows/runtime import '%s' patched to 0\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        ax_printf_local("warning: linker (elf64): dead Windows/runtime import '%s' patched to 0\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         target_va = 0 as u64
                     else:
-                        ax_printf_local("Linker Error: Unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        ax_printf_local("error: linker: unresolved external symbol '%s'\n", (get_str_ptr(target_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         has_reloc_error = true
                         target_va = 0 as u64
                 
@@ -3116,7 +3116,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     let file = fopen(output_path_nt as ptr[void], get_str_ptr("wb"))
     @free(output_path_nt)
     if file == null as ptr[void]:
-        ax_puts_local("Error: Linker could not write output file")
+        ax_puts_local("error: Linker could not write output file")
         return false
         
     if format == "coff":
