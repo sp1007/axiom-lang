@@ -138,11 +138,35 @@ fixpoint-async rule). Plus:
 
 ## 7. Phased plan
 
-- **P1 — the alignment fix.** Shipped separately; removes the 2× multiplier. (Done.)
-- **P2 — size oracle.** Institutionalize the measurement before changing layout, so P3 is
-  gated by a test that already passes at the current 1× and must reach ≈0×.
-- **P3 — PE/COFF zero-tail.** Order + split + `VirtualSize`; B==C.
-- **P4 — ELF zero-tail.** `p_memsz > p_filesz`; verified under WSL.
+- **P1 — the alignment fix.** ✅ Shipped `fbb70d0`; removes the 2× multiplier.
+- **P2 — size oracle.** ✅ Shipped `fbb70d0` (`scripts/exe_size_check.sh`).
+- **P3 — PE/COFF zero-tail.** ✅ Implemented. `[i64; 200000]` went 1,678,336 → **78,336**
+  bytes (delta over a no-global baseline: 1,600,512 → **512**). Oracle `t_bssglobal`.
+- **P4 — ELF zero-tail.** `SHT_NOBITS` + `p_memsz > p_filesz`; verified under WSL. Open.
+
+### P4 note — append `.bss` LAST, do not insert it
+
+`x86_elf64.ax` emits a **fixed 7-section layout** whose indices are hardcoded in several
+places (`sh_link -> .strtab (section 5)`, the symtab's index references, and the comment at
+~L63 noting the PROGBITS indices deliberately match the COFF convention so symbol `section`
+values flow through both emitters unchanged). Inserting `.bss` at index 4 would shift
+`.symtab`/`.strtab`/`.rela` and every reference to them.
+
+So P4 should append `.bss` as section **7** (`num_sections` 7 → 8), leaving indices 1–6
+untouched. The linker already normalises `.bss` to the logical section 4 by matching the
+header NAME (the mechanism P3 added for COFF, where `.bss` is index 3 or 4 depending on
+whether `.data` exists), so a different physical index on the ELF side costs nothing.
+
+### What P3 actually cost, versus the estimate
+
+Two defects, neither visible from the size measurement alone:
+
+1. **`section != 3` filters (`linker.ax` ~1953, ~2067) let `.bss` symbols through**, and
+   those passes treat a symbol's offset as a TEXT offset — so every `OP_GLOBAL_ADDR`
+   resolved into `.text` and the program segfaulted. **The executable was already the
+   correct, small size on that build**: a size-only check would have reported success.
+2. **`.bss` is section 3, not 4, when every global is zero-initialized** (`.data` is emitted
+   only when non-empty). Caught before building by reading the emitter, not by a test.
 
 ### P3/P4 edit sites (surveyed 2026-07-22 — the work is bounded, not open-ended)
 

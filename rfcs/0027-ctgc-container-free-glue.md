@@ -171,3 +171,33 @@ request in that shape, and a program cannot otherwise observe its own heap. Firi
 out-of-band with a temporary trace in `emit_owned_field_frees`. Per the RFC 0028 lesson this is
 recorded rather than papered over: the dangerous direction (over-freeing) has a sharp oracle, the
 inert direction does not.
+
+## 10. Annotations reconsidered 2026-07-22 — better design, deferred on value not cost
+
+After §9 established that the no-syntax model has a hard limit, the user asked whether the
+annotation variant should simply be adopted instead. Reassessed, and **deferred** — with the
+trigger written down so this is a scheduling decision, not a rejection.
+
+**Cost is NOT the blocker.** `#[export]` already exists (parser.ax `TK_HASH`, ~L1572), so
+`#[owns]` reuses the attribute lexing/parsing path rather than inventing syntax. The work is
+`StructField` gaining a flags word, typecheck propagating it, and `emit_owned_field_frees`
+reading the flag instead of scanning the AST. Bounded — a few gated cycles.
+
+**Value is the blocker.** Every benefit — of path D *and* of annotations — is realised only
+under `-ctgc-free`, which is opt-in, off for the self-host build, and off for every default
+user build. Today both models therefore have **zero effect on any shipped artifact**; what
+separates them is the coverage of a feature nobody's build enables. Against that, annotations
+move the change out of the provably-inert free path (§2.3) and into the parser/typecheck —
+self-host-critical code — which is a real risk increase for an unrealised gain. CLAUDE.md §3,
+§13 and §19 all counsel against adding language surface before the need is demonstrated.
+
+**Trigger to adopt:** a decision that `-ctgc-free` becomes DEFAULT-ON, i.e. that AXIOM commits
+to reclaiming memory in shipped programs. At that moment path D's coverage gap stops being
+theoretical (the idiomatic `let d = @alloc(..); S(data: d)` is the shape `std/collections.ax`
+itself uses) and annotations become the right answer immediately. Revisit here first.
+
+**Cheaper intermediate, available any time, no syntax:** replace the program-wide field-NAME
+match with a per-declaring-TYPE match. That removes the wart where `data` is permanently
+demoted by `Vec[T](data: data)`, so user containers stop depending on their field's name. It
+stays inside the free path and does NOT extend coverage past the fresh-allocation limit — it
+only makes the existing coverage predictable.

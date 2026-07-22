@@ -287,6 +287,10 @@ rows=(
   # RFC 0017 — no-initializer globals default to a zeroed .data slot (parser desync fix)
   "t_globnoinit|exit|7"
   "t_globstructnoinit|exit|42"
+  # RFC 0030 P3: large zero-initialized globals live in .bss (reserved, not stored). Pins
+  # that they read as zero, that BOTH ends of the extent are addressable, and that two
+  # such globals stay distinct -- properties a size check alone cannot see.
+  "t_bssglobal|exit|42"
   "t_globarrnoinit|exit|40"
   # RFC 0017 P2 — aggregate-global write paths (user-code block-copy, not just init)
   "t_globwholeassign|exit|42"

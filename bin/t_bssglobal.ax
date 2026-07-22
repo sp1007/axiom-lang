@@ -1,0 +1,36 @@
+// RFC 0030 P3 oracle: a large zero-initialized global lives in .bss — reserved in the
+// image, absent from the file. Three properties that a size-only check would miss:
+//
+//   1. it READS as zero before anything writes it (the loader must zero-fill the tail,
+//      not hand back whatever was there),
+//   2. the LAST element is addressable (VirtualSize and SizeOfImage must cover the whole
+//      extent — an off-by-one there faults only at the far end, never at big[0]),
+//   3. a second global still gets a distinct region (no aliasing after the split).
+//
+// Sized past the 4096-byte threshold so the .bss path is actually taken; below it the
+// emitter deliberately keeps globals in .data and this would test nothing.
+mut big: [i64; 100000]
+mut other: [i64; 2000]
+
+fn main() -> i64:
+    // (1) untouched .bss must read zero
+    if big[0 as i64] != 0 as i64:
+        return 1 as i64
+    if big[99999 as i64] != 0 as i64:
+        return 2 as i64
+    if other[1999 as i64] != 0 as i64:
+        return 3 as i64
+
+    // (2) both ends of the extent are writable
+    big[0 as i64] = 20 as i64
+    big[99999 as i64] = 22 as i64
+
+    // (3) a write to `other` must not disturb `big`
+    other[0 as i64] = 999 as i64
+    other[1999 as i64] = 999 as i64
+    if big[0 as i64] != 20 as i64:
+        return 4 as i64
+    if big[99999 as i64] != 22 as i64:
+        return 5 as i64
+
+    return big[0 as i64] + big[99999 as i64]

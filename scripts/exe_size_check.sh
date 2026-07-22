@@ -40,9 +40,13 @@ echo "baseline (no globals): $BASE bytes"
 #   sz_big: 1,600,000 storage -> ~3,200,512 delta ; budget 1,700,000 => FAILS pre-fix
 # An earlier draft used 65,536 for sz_small, which the pre-fix value would have exactly
 # matched (the check is `>`), so that row would have passed the very defect it exists for.
+# Budgets TIGHTENED for RFC 0030 P3: zero-initialized globals now occupy no file bytes at
+# all, so the executable barely grows regardless of how much storage is declared. These
+# budgets are deliberately near-zero -- if .bss ever stops engaging, the delta jumps back to
+# the storage size (1x) or the padding size (2x) and both rows fail loudly.
 rows=(
-  "sz_small|4096|40000"
-  "sz_big|200000|1700000"
+  "sz_small|4096|8192"
+  "sz_big|200000|8192"
 )
 
 for row in "${rows[@]}"; do

@@ -72,7 +72,7 @@ extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
 extern "C" fn fclose(stream: ptr[void]) -> i32
 
-pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
+pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
     // 1. Build string table
     mut strtab := new_byte_vec()
     push_u32_le(&strtab, 4 as u32) // length placeholder
@@ -106,9 +106,16 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec
     // byte-identical 2-section object (fixpoint-preserving).
     let data_size = data.len
     let has_data = data_size > 0 as i64
+    // RFC 0030 P3: an optional .bss (section 4) reserving zero-initialized global storage.
+    // It occupies NO file bytes — SizeOfRawData 0, PointerToRawData 0 — and declares its
+    // extent through VirtualSize, which the image loader zero-fills. Emitted only when the
+    // emitter routed globals into it, so objects without one stay byte-identical.
+    let has_bss = bss_size > 0 as i64
     mut num_sections := 2 as i64
     if has_data:
         num_sections = 3 as i64
+    if has_bss:
+        num_sections = num_sections + 1 as i64
     let text_raw_ptr = 20 as i64 + num_sections * 40 as i64 // FileHeader(20) + N*SectionHeader(40)
     let rdata_raw_ptr = text_raw_ptr + text_size
     let data_raw_ptr = rdata_raw_ptr + rdata_size
@@ -185,6 +192,28 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec
         push_u16_le(out_bytes, 0 as u16) // NumLineNums
         push_u32_le(out_bytes, 0x00000040 as u32 | 0x40000000 as u32 | 0x80000000 as u32) // INIT_DATA|READ|WRITE
 
+    // 4d. Write Section Header 4 (.bss) — RFC 0030: zero-initialized global storage.
+    // SizeOfRawData and PointerToRawData are 0 (no file bytes); VirtualSize carries the
+    // extent. UNINITIALIZED_DATA | READ | WRITE (0xC0000080).
+    if has_bss:
+        push_byte(out_bytes, '.' as u8)
+        push_byte(out_bytes, 'b' as u8)
+        push_byte(out_bytes, 's' as u8)
+        push_byte(out_bytes, 's' as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_byte(out_bytes, 0 as u8)
+        push_u32_le(out_bytes, bss_size as u32) // VirtualSize = the reserved extent
+        push_u32_le(out_bytes, 0 as u32) // VirtualAddress
+        push_u32_le(out_bytes, 0 as u32) // SizeOfRawData = 0 (occupies no file bytes)
+        push_u32_le(out_bytes, 0 as u32) // PointerToRawData = 0
+        push_u32_le(out_bytes, 0 as u32) // RelocsPtr
+        push_u32_le(out_bytes, 0 as u32) // LineNumsPtr
+        push_u16_le(out_bytes, 0 as u16) // NumRelocs
+        push_u16_le(out_bytes, 0 as u16) // NumLineNums
+        push_u32_le(out_bytes, 0x00000080 as u32 | 0x40000000 as u32 | 0x80000000 as u32) // UNINIT_DATA|READ|WRITE
+
     // 5. Write raw section data
     push_bytes(out_bytes, code.data, text_size)
     push_bytes(out_bytes, rdata.data, rdata_size)
@@ -233,9 +262,9 @@ pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec
     if strtab.data != null as ptr[u8]:
         @free(strtab.data)
 
-pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec]) -> bool:
+pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec]) -> bool:
     mut out_bytes := new_byte_vec()
-    coff_serialize(code, rdata, data, relocs, symbols, &out_bytes)
+    coff_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
     let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
@@ -685,6 +714,40 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     // (named via the same x86_resolve_sym_name the OP_GLOBAL_ADDR reloc resolves through)
     // is registered here, BEFORE the sym-map pre-pass, so the reloc binds to it.
     mut data_buf := new_byte_vec()
+    // RFC 0030 P3: a global whose image bytes are all zero (`init_lo == 0` — an
+    // uninitialized declaration, a runtime-initialized aggregate, or a folded constant that
+    // happens to be 0) carries no information in the file. Route those to a `.bss` section
+    // that reserves address space without occupying bytes.
+    //
+    // Gated on a 4096-byte total so that small programs keep producing a byte-identical
+    // 3-section object — that is what keeps the fixpoint argument trivial, and it avoids
+    // paying a section header to save a handful of bytes.
+    //
+    // COFF only for now; the ELF path still emits every global into `.data` (P4). Splitting
+    // per format keeps a red gate attributable to one emitter.
+    mut bss_total := 0 as i64
+    mut init_globals := 0 as i64
+    mut gz := 0 as i64
+    while gz < mod.globals.len:
+        let gzg = mod.globals.data[gz]
+        if gzg.init_lo == 0 as i64:
+            mut zsz := gzg.size as i64
+            if zsz < 1 as i64:
+                zsz = 1 as i64
+            bss_total = bss_total + zsz
+        else:
+            init_globals = init_globals + 1 as i64
+        gz = gz + 1
+    let use_bss = not is_elf64 and bss_total >= 4096 as i64
+    mut bss_size := 0 as i64
+    // COFF symbols name their section by 1-based INDEX, and `.data` is emitted only when
+    // it has content. So when every global is zero-initialized there IS no `.data` and
+    // `.bss` lands at index 3, not 4. Deciding the number here — from whether any global
+    // will stay in `.data` — keeps the symbols consistent with the section table in both
+    // shapes; hardcoding 4 silently mislabels every symbol in the all-zero-globals case.
+    mut bss_secnum := 3 as i16
+    if use_bss and init_globals > 0 as i64:
+        bss_secnum = 4 as i16
     mut gi := 0 as i64
     while gi < mod.globals.len:
         let g = mod.globals.data[gi]
@@ -705,18 +768,26 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             galign = 1 as i64
         if galign > 16 as i64:
             galign = 16 as i64
-        while (data_buf.len % galign) != 0 as i64:
-            push_byte(&data_buf, 0 as u8)
-        let goff = data_buf.len as u32
-        mut b := 0 as i64
-        while b < gsize:
-            push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
-            b = b + 1
         let gname = x86_resolve_sym_name(g.sym_id, symbols, pool, table)
-        if is_elf64:
-            push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: goff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 3 as u16))
+        if use_bss and g.init_lo == 0 as i64:
+            // .bss (COFF section 4): reserve aligned address space, emit no bytes.
+            while (bss_size % galign) != 0 as i64:
+                bss_size = bss_size + 1 as i64
+            let boff = bss_size as u32
+            bss_size = bss_size + gsize
+            push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: boff, section_num: bss_secnum, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
         else:
-            push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: goff, section_num: 3 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
+            while (data_buf.len % galign) != 0 as i64:
+                push_byte(&data_buf, 0 as u8)
+            let goff = data_buf.len as u32
+            mut b := 0 as i64
+            while b < gsize:
+                push_byte(&data_buf, ((g.init_lo >> (b * 8 as i64)) & 0xFF as i64) as u8)
+                b = b + 1
+            if is_elf64:
+                push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: goff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: 3 as u16))
+            else:
+                push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: goff, section_num: 3 as i16, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
         gi = gi + 1
 
     ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
@@ -830,7 +901,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     if is_elf64:
         success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &elf_relocs, &elf_syms)
     else:
-        success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &coff_relocs, &coff_syms)
+        success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, bss_size, &coff_relocs, &coff_syms)
 
     if all_code.data != null as ptr[u8]:
         @free(all_code.data)
