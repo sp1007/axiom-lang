@@ -73,6 +73,27 @@ That is a coherent picture rather than a mystery, and it points at the compiler`
 posture of not freeing (`-ctgc-free` is off by default everywhere). The cost of that posture is
 now measured: ~8 GB, and the ceiling has been reached.
 
-**Where to start:** the 10% -> 25% segment, which jumps 525 MB -> 3.8 GB, is the single
-largest step and worth attributing first. Reducing retention anywhere buys headroom
-immediately, since the margin that decides success is ~30 MB out of ~7,900.
+## Attributed: TYPECHECK holds ~72% of it
+
+Correlating the working-set series against `--time` phase boundaries (total 7,900 ms):
+
+| phase | window | memory across it | share |
+|---|---|---|---|
+| concat/lex/parse/resolve | 0–663 ms | 2 MB → ~450 MB | 6% |
+| **typecheck** | **663–3770 ms** | **~450 MB → ~5,715 MB** | **~67%** |
+| air-build + ssa-opt | 3770–4276 ms | 5,715 → ~7,191 MB | ~19% |
+| codegen | 4276–6382 ms | 7,191 → 7,311 MB | ~2% |
+| self-link | 6382–7264 ms | 7,373 → 7,865 MB | ~6% |
+
+**Typecheck is the consumer**, at roughly 5.3 GB of the 7.9 GB, and it is also the slowest
+phase (3,107 ms of 7,900). Codegen — which handles 15,279 relocations and 2,447 symbols — adds
+only about 120 MB. The linker adds ~500 MB.
+
+This is worth stating loudly because it is the opposite of where the investigation kept
+pointing. The OOM message names the linker, the failing statement was in the lowering code, and
+both earlier versions of this note sent readers to `linker.ax` and to the optimizer. The actual
+budget is spent in `typecheck.ax`, three phases earlier, and nothing about the crash says so.
+
+**Where to start:** `typecheck`. Roughly 5 GB is retained there across a build that never
+frees. Since the margin between success and OOM is ~30 MB out of ~7,900, even a small reduction
+in typecheck retention buys real headroom — and it is where the headroom is.
