@@ -37834,6 +37834,23 @@ pub fn main() -> i32:
             //  commented out, so it was a pure post-Stage-6 heap op with no effect.)
 
             if not link_success:
+                // Delete the half-written output. The linker streams headers and code
+                // to disk BEFORE it discovers an unresolved relocation, so a failed
+                // link still leaves a complete-looking executable behind. The exit
+                // code is already 1, but a user who sees both an error and an .exe
+                // reasonably runs the .exe -- and meets a SEGFAULT instead of a build
+                // failure. That is how "Unresolved external symbol" was mistaken for a
+                // .bss addressing bug during an RFC 0031 probe: the diagnostic was
+                // correct and right there, and the runnable artifact next to it was
+                // more persuasive than the text.
+                //
+                // Failing to remove it is not itself fatal -- the build has already
+                // failed and says so -- but say which file is stale so a stale binary
+                // is never silently trusted.
+                let rm = std.os.remove_file(output_file)
+                if rm.is_err():
+                    ax_puts_local("Warning: could not remove the incomplete output; do NOT run:")
+                    ax_puts_local(output_file)
                 ax_puts_local("Error: Self-linking failed")
                 return 1
             // RFC 0011 P4 (inc3f): for a DLL, emit an FFI wrapper module `<base>_ffi.ax`
