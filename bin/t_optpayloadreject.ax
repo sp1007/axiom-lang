@@ -1,0 +1,23 @@
+// Oracle (reject): BUG#53 convention — passing an Option VARIABLE whose payload
+// width differs from the parameter's.
+//
+// `let x = Some((3, 40))` builds an {i32,i32} 8-byte payload (tuple int-literal
+// elements default to i32). Passing `x` to a `o: Option[(i64,i64)]` param stored 8
+// bytes into a 16-byte payload slot, so the callee read field 1 as 0 and this
+// returned 3 instead of 43 — a silent miscompile.
+//
+// Threading the param's expected type coerces an INLINE constructor argument, but
+// it cannot help here: the local's storage is already built, and an expected-type
+// hint does not rebuild an ident's value. A diagnostic is the correct outcome.
+// Annotating the local (`let x: Option[(i64,i64)] = ..`) or writing the elements as
+// i64 both fix it, and both are covered as POSITIVE cases in the probe set.
+fn take(o: Option[(i64, i64)]) -> i64:
+    match o:
+        Some(t):
+            return t.0 + t.1
+        None:
+            return 0
+
+fn main() -> i64:
+    let x = Some((3, 40))
+    return take(x)

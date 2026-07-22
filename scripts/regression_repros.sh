@@ -197,6 +197,7 @@ rows=(
   "t_sumdispatch|exit|31"
   "t_optunwrapadd|exit|112"
   "t_optarithreject|reject|"
+  "t_optpayloadreject|reject|"
   "t_arrret|exit|70"
   "t_arrargmismatch|reject|"
   "t_ctorarrfield|exit|110"
