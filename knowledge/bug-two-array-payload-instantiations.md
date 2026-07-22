@@ -39,8 +39,40 @@ fn main() -> i64:
 ```
 
 Deterministic (3/3 runs, and two builds are byte-identical). **Either half alone is
-correct**: the nested `Option[Option[[i32;2]]]` returns 43 on its own, and the
-`Option[[P;2]]` returns 43 on its own.
+correct.**
+
+## Sharpened rule (measured 2026-07-22; the nesting is irrelevant)
+
+The nested Option in the repro above is incidental. The real trigger is **two
+Option-with-ARRAY payloads of the SAME LENGTH, one with a narrow (<8-byte) scalar
+element and the other with a STRUCT element**:
+
+| pair | length | result |
+|---|---|---|
+| `[i32;2]` + `[P;2]` | same 2 | **CRASH** (both orders) |
+| `[i16;2]` + `[P;2]` | same 2 | **CRASH** |
+| `[u8;2]`  + `[P;2]` | same 2 | **CRASH** |
+| `[i32;4]` + `[P;4]` | same 4 | **CRASH** |
+| `[i32;2]` + `[Q;2]` (Q = 16-byte struct) | same 2 | **CRASH** |
+| `[i32;2]` + `[P;4]` | differ | ok |
+| `[i32;3]` + `[P;2]` | differ | ok |
+| `[i64;2]` + `[P;2]` | same 2 | ok |
+| `[i32;2]` + `[i64;2]` (no struct) | same 2 | ok |
+| `[P;2]` + `[Q;2]` (both struct) | same 2 | ok |
+| `Option[[P;2]]` alone, or with a scalar Option / a plain array | — | ok |
+
+(`P = {i32,i32}` 8 bytes, `Q = {i64,i64}` 16 bytes.)
+
+**Two hypotheses tried and REJECTED — neither fits the whole table:**
+1. *Same length → same mangled name → the two instantiations collide.* Fails on
+   `[i64;2]` + `[P;2]`, which shares length 2 yet works.
+2. *Same length + different total array SIZE.* Fails on `[P;2]`(16B) + `[Q;2]`(32B),
+   which differ in size yet work, and on `[i32;2]`(8B) + `[P;4]`(32B), which differ in
+   both yet also work.
+
+The narrow-scalar-element vs struct-element distinction is doing real work in the rule and
+is not explained by either. **Trace next, do not theorise** — that is what settled the
+three previous bugs in this area.
 
 ## Not a regression
 
