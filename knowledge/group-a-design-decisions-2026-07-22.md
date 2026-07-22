@@ -68,7 +68,33 @@ headers) rather than reading code. A distinguishable-value probe also ruled out 
 lead: the 4 copies of a sentinel found in the exe were `mov imm64` operands in `.text`, not
 duplicated storage.
 
-## RFC 0030 (.bss) — design settled, P3/P4 open
+## RFC 0030 (.bss) — SHIPPED, all four phases
+
+**Final numbers for `[i64; 200000]`** (baseline with no globals = 77,824):
+
+| | exe | delta |
+|---|---|---|
+| start of session | 3,278,336 | 3,200,512 |
+| after P1 (alignment fix) | 1,678,336 | 1,600,512 |
+| after P3 (.bss, PE) | **78,336** | **512** |
+
+ELF (P4): `t_bssglobal` = 83,080 vs an 82,432 baseline — 648 bytes for 816 KB of globals.
+Overhead no longer scales with declared storage in either format. −97.6% overall.
+
+⚠️ **Two P3 defects that a size check could NOT see** — both are the reason `t_bssglobal`
+asserts behaviour, not bytes:
+1. `linker.ax`'s `section != 3` filters (~1953, ~2067) let `.bss` symbols through, and those
+   passes treat a symbol's offset as a TEXT offset → every `OP_GLOBAL_ADDR` resolved into
+   `.text` → SIGSEGV. **The executable was already the correct small size on that build.**
+2. `.bss` is section **3**, not 4, when EVERY global is zero-initialized (`.data` is emitted
+   only when non-empty). Caught by reading the emitter before building, not by a test.
+
+**ELF layout constraint:** `x86_elf64.ax` hardcodes indices 1–6 (`sh_link -> .strtab
+(section 5)` etc.), so `.bss` is **appended at index 7**, never inserted. The linker
+normalises it to logical section 4 by matching the header NAME/type, which is what lets the
+two emitters use different physical indices (COFF: 3 or 4; ELF: 7).
+
+## Original design note (superseded by the shipped result above)
 
 Cheaper than the "fourth section everywhere" framing: **image** needs no new section, just
 `VirtualSize > SizeOfRawData` (PE) / `p_memsz > p_filesz` (ELF) with zero globals ordered

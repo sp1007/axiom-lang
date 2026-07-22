@@ -31170,6 +31170,7 @@ pub const SHT_PROGBITS:  u32 = 1
 pub const SHT_SYMTAB:    u32 = 2
 pub const SHT_STRTAB:    u32 = 3
 pub const SHT_RELA:      u32 = 4
+pub const SHT_NOBITS:    u32 = 8
 
 pub const SHF_WRITE:     u64 = 0x01
 pub const SHF_ALLOC:     u64 = 0x02
@@ -31211,11 +31212,15 @@ pub fn push_elf64_sym(mut self: ptr[ELF64SymVec], s: ELF64Sym):
     self.data[self.len] = s
     self.len = self.len + 1
 
-pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
+pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
     // Fixed 7-section layout whose PROGBITS indices match the linker's canonical COFF
     // convention (1=.text, 2=.rodata/.rdata, 3=.data), so symbol `section` values flow
     // through emitter -> object -> linker with no translation:
     //   0 NULL | 1 .text | 2 .rodata | 3 .data | 4 .symtab | 5 .strtab | 6 .rela.text
+    // RFC 0030 P4 appends `.bss` as section 7 rather than inserting it after `.data`:
+    // indices 4-6 are referenced by hardcoded sh_link values and by the linker's symbol
+    // mapping, so inserting would shift them. The linker recognises `.bss` by NAME and
+    // normalises it to the logical section 4, so its physical index here is free.
     // .rodata carries string literals; .data carries RFC 0017 module globals. Sections
     // may be zero-sized; emitting all seven unconditionally keeps the layout deterministic.
     // 1. Build string table
@@ -31225,17 +31230,18 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     // NB: `str` is a 16-byte {ptr,len} value, so a 6-element ptr[str] array needs 6*16
     // bytes â€” the original 4*8 under-allocated by half and overflowed the heap (this
     // writer had never been exercised: is_windows was hardcoded).
-    let sec_names = @alloc(6 * @compiler_intrinsic("size_of")[str]()) as ptr[str]
+    let sec_names = @alloc(7 * @compiler_intrinsic("size_of")[str]()) as ptr[str]
     sec_names[0] = ".text"
     sec_names[1] = ".rodata"
     sec_names[2] = ".data"
     sec_names[3] = ".symtab"
     sec_names[4] = ".strtab"
     sec_names[5] = ".rela.text"
+    sec_names[6] = ".bss"
 
-    let sec_offsets = @alloc(6 * 4) as ptr[u32]
+    let sec_offsets = @alloc(7 * 4) as ptr[u32]
     mut i := 0 as i64
-    while i < 6:
+    while i < 7:
         sec_offsets[i] = strtab.len as u32
         let s = sec_names[i]
         let s_len = std.string.len(s)
@@ -31263,7 +31269,7 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
         si = si + 1
 
     // 2. Lay out the file
-    let num_sections = 7 as u16
+    let num_sections = 8 as u16 // RFC 0030 P4: + .bss (SHT_NOBITS) at index 7
     let ehdr_size = 64 as i64
     let shdr_size = 64 as i64
 
@@ -31469,6 +31475,21 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     push_u64_le(out_bytes, 8 as u64)
     push_u64_le(out_bytes, rela_ent_size as u64)
 
+    // Section 7: .bss â€” RFC 0030 P4. SHT_NOBITS occupies NO file bytes; sh_size carries the
+    // extent and the loader zero-fills it. Always emitted (zero-sized when unused) so the
+    // section count stays constant and the layout deterministic, matching the rationale for
+    // the other possibly-empty sections above.
+    push_u32_le(out_bytes, sec_offsets[6])
+    push_u32_le(out_bytes, SHT_NOBITS)
+    push_u64_le(out_bytes, 3 as u64) // sh_flags = SHF_ALLOC | SHF_WRITE
+    push_u64_le(out_bytes, 0 as u64) // sh_addr
+    push_u64_le(out_bytes, shdr_off as u64) // sh_offset (conventional; no bytes are read)
+    push_u64_le(out_bytes, bss_size as u64) // sh_size = the reserved extent
+    push_u32_le(out_bytes, 0 as u32)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u64_le(out_bytes, 16 as u64) // sh_addralign
+    push_u64_le(out_bytes, 0 as u64)
+
     // Free resources
     @free(sec_names as ptr[u8])
     @free(sec_offsets as ptr[u8])
@@ -31476,9 +31497,9 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     if strtab.data != null as ptr[u8]:
         @free(strtab.data)
 
-pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
+pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
     mut out_bytes := new_byte_vec()
-    elf64_serialize(code, rdata, data, relocs, symbols, &out_bytes)
+    elf64_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
     let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
@@ -32233,7 +32254,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         else:
             init_globals = init_globals + 1 as i64
         gz = gz + 1
-    let use_bss = not is_elf64 and bss_total >= 4096 as i64
+    let use_bss = bss_total >= 4096 as i64
     mut bss_size := 0 as i64
     // COFF symbols name their section by 1-based INDEX, and `.data` is emitted only when
     // it has content. So when every global is zero-initialized there IS no `.data` and
@@ -32243,6 +32264,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut bss_secnum := 3 as i16
     if use_bss and init_globals > 0 as i64:
         bss_secnum = 4 as i16
+    // RFC 0030 P4: the ELF object uses a FIXED 8-section layout with `.bss` appended at
+    // index 7 (indices 4-6 are referenced by hardcoded sh_link values, so it cannot be
+    // inserted after `.data`). The COFF number above is positional; the ELF one is not.
+    if is_elf64:
+        bss_secnum = 7 as i16
     mut gi := 0 as i64
     while gi < mod.globals.len:
         let g = mod.globals.data[gi]
@@ -32270,7 +32296,10 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 bss_size = bss_size + 1 as i64
             let boff = bss_size as u32
             bss_size = bss_size + gsize
-            push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: boff, section_num: bss_secnum, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
+            if is_elf64:
+                push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: boff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: bss_secnum as u16))
+            else:
+                push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: boff, section_num: bss_secnum, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
         else:
             while (data_buf.len % galign) != 0 as i64:
                 push_byte(&data_buf, 0 as u8)
@@ -32394,7 +32423,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     mut success := false
     if is_elf64:
-        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &elf_relocs, &elf_syms)
+        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, bss_size, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, bss_size, &coff_relocs, &coff_syms)
 
@@ -32649,6 +32678,12 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     mut rela_off := 0 as i64
     mut rela_size := 0 as i64
 
+    // RFC 0030 P4: .bss (SHT_NOBITS). Tracked by header index so its symbols can be
+    // remapped to the LOGICAL section 4, the same normalisation the COFF path does â€” the
+    // physical index differs between the two emitters (7 for ELF, 3 or 4 for COFF).
+    mut elf_bss_size := 0 as i64
+    mut elf_bss_hdr_idx := -1 as i64
+
     mut i := 0 as i64
     while i < shnum:
         let off = shoff + i * 64
@@ -32679,6 +32714,10 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
         elif sh_type == 4 as u32: // SHT_RELA
             rela_off = sh_offset
             rela_size = sh_size
+        elif sh_type == 8 as u32: // SHT_NOBITS -> .bss (RFC 0030 P4)
+            // No file bytes: sh_size is the extent to reserve, sh_offset is meaningless.
+            elf_bss_size = sh_size
+            elf_bss_hdr_idx = i
         i = i + 1
         
     mut sym_names := new_linker_str_vec()
@@ -32722,6 +32761,8 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
                 mapped_sec = 1 as i64
             elif sec_idx as i64 == rodata_hdr_idx:
                 mapped_sec = 2 as i64
+            elif elf_bss_hdr_idx >= 0 as i64 and sec_idx as i64 == elf_bss_hdr_idx:
+                mapped_sec = 4 as i64
             elif sec_idx as i64 == gdata_hdr_idx:
                 mapped_sec = 3 as i64
 
@@ -32782,7 +32823,7 @@ pub fn linker_parse_elf(data: ptr[u8], data_len: i64) -> ptr[ParsedObject]:
     obj.data_va = 0 as u64
     // RFC 0030 P4 will populate these from SHT_NOBITS; zeroed for now so the ELF path is
     // unchanged and the field is never read uninitialised.
-    obj.bss_size = 0 as i64
+    obj.bss_size = elf_bss_size
     obj.bss_va = 0 as u64
     return obj
 
@@ -33321,7 +33362,7 @@ pub fn linker_build_pe_headers(
 
     align_byte_vec(out, 0x400 as i64)
 
-pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va: u64, dynamic_offset: u32, dynamic_size: u32):
+pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va: u64, dynamic_offset: u32, dynamic_size: u32, bss_extent: u32):
     // 1. e_ident
     push_byte(out, 0x7F as u8)
     push_byte(out, 'E' as u8)
@@ -33378,7 +33419,7 @@ pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va:
         push_u64_le(out, 0x400000 as u64) // p_vaddr
         push_u64_le(out, 0x400000 as u64) // p_paddr
         push_u64_le(out, 512 as u64 + code_raw_size as u64) // p_filesz
-        push_u64_le(out, 512 as u64 + code_raw_size as u64) // p_memsz
+        push_u64_le(out, 512 as u64 + code_raw_size as u64 + bss_extent as u64) // p_memsz (RFC 0030 P4)
         push_u64_le(out, 4096 as u64) // p_align
         
         // PHDR 3: PT_DYNAMIC
@@ -33420,7 +33461,9 @@ pub fn linker_build_elf_headers(out: ptr[ByteVec], code_raw_size: u32, entry_va:
         push_u64_le(out, 0x400000 as u64) // p_vaddr
         push_u64_le(out, 0x400000 as u64) // p_paddr
         push_u64_le(out, 128 as u64 + code_raw_size as u64) // p_filesz: maps entire executable file!
-        push_u64_le(out, 128 as u64 + code_raw_size as u64) // p_memsz
+        // RFC 0030 P4: p_memsz exceeds p_filesz by the .bss extent; the kernel supplies
+        // zero pages for the difference. Equal when bss_extent is 0, so unchanged output.
+        push_u64_le(out, 128 as u64 + code_raw_size as u64 + bss_extent as u64) // p_memsz
         push_u64_le(out, 0x1000 as u64) // p_align
         
         align_byte_vec(out, 128 as i64)
@@ -35360,6 +35403,10 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     // Mirrors the COFF path, which appends globals to the end of .idata. Registered into
     // func_names/func_offsets BEFORE relocation resolution so OP_GLOBAL_ADDR relocs bind.
     mut elf_data_buf := new_byte_vec()
+    // RFC 0030 P4: bytes of zero-initialized global storage that exist in memory only.
+    // Stays 0 for PE and for ELF programs without large zero globals, so p_memsz keeps
+    // equalling p_filesz and the emitted headers are unchanged.
+    mut elf_bss_extent := 0 as i64
     if format == "elf64":
         let elf_data_base = merged_code.len + dyn_buf.len
         // 8-align the region base within the image.
@@ -35387,6 +35434,28 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                         push_parsed_reloc(&func_offsets, ParsedReloc(offset: (region_off as u64 + gsym.offset) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
                     gsym_e = gsym_e + 1
             gobj_e = gobj_e + 1
+        // RFC 0030 P4: reserve .bss AFTER every file-backed block, virtual-only. The PT_LOAD
+        // segment's p_memsz grows to cover it while p_filesz stays at the file size, so the
+        // kernel maps the tail as anonymous zero pages. Mirrors the PE path exactly.
+        mut ebss_cursor := elf_data_base + elf_data_buf.len
+        mut ebobj_i := 0 as i64
+        while ebobj_i < objects.len:
+            let ebobj = objects.data[ebobj_i]
+            if ebobj.bss_size > 0 as i64:
+                while (ebss_cursor % 16 as i64) != 0 as i64:
+                    ebss_cursor = ebss_cursor + 1 as i64
+                ebobj.bss_va = base_addr + ebss_cursor as u64
+                let ebase = ebss_cursor
+                ebss_cursor = ebss_cursor + ebobj.bss_size
+                mut ebsym_i := 0 as i64
+                while ebsym_i < ebobj.symbols.len:
+                    let ebsym = &ebobj.symbols.data[ebsym_i]
+                    if ebsym.defined and ebsym.section == 4 as i64:
+                        push_linker_str(&func_names, ebsym.name)
+                        push_parsed_reloc(&func_offsets, ParsedReloc(offset: (ebase as u64 + ebsym.offset) as i64, sym_idx: 0 as u32, is_pc: false, addend: 0 as i64))
+                    ebsym_i = ebsym_i + 1
+            ebobj_i = ebobj_i + 1
+        elf_bss_extent = ebss_cursor - (elf_data_base + elf_data_buf.len)
 
     // 3. Resolve & Apply Relocations
     mut has_reloc_error := false
@@ -35581,7 +35650,7 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             dynamic_offset = (512 as i64 + dyn_file_off + offset_dynamic) as u32
             dynamic_size = size_dynamic as u32
             
-        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size)
+        linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size, elf_bss_extent as u32)
 
         fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
         fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)

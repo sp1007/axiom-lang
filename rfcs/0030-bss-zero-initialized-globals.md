@@ -1,6 +1,10 @@
 # RFC 0030 — `.bss`: zero-initialized globals must not occupy file bytes
 
-Status: **DRAFT** (design settled, implementation phased)
+Status: **SHIPPED** — P1–P4 complete for both PE/COFF and ELF.
+
+**Result:** a `[i64; 200000]` global cost 3,278,336 bytes of executable when this RFC was
+written and costs **78,336** now, against a 77,824-byte no-global baseline. The overhead no
+longer scales with the declared storage in either format: 512 bytes on PE, 648 on ELF.
 Author: autopilot
 Related: RFC 0017 (global variable storage), [[feedback-no-exe-bloat]], [[backlog-group-a-closed-2026-07-22]]
 
@@ -142,7 +146,11 @@ fixpoint-async rule). Plus:
 - **P2 — size oracle.** ✅ Shipped `fbb70d0` (`scripts/exe_size_check.sh`).
 - **P3 — PE/COFF zero-tail.** ✅ Implemented. `[i64; 200000]` went 1,678,336 → **78,336**
   bytes (delta over a no-global baseline: 1,600,512 → **512**). Oracle `t_bssglobal`.
-- **P4 — ELF zero-tail.** `SHT_NOBITS` + `p_memsz > p_filesz`; verified under WSL. Open.
+- **P4 — ELF zero-tail.** ✅ Implemented. `SHT_NOBITS` section appended at index 7, the
+  single `PT_LOAD` segment's `p_memsz` exceeds `p_filesz` by the reserved extent, and the
+  kernel supplies zero pages for the difference. `t_bssglobal` (816 KB of globals) links to
+  83,080 bytes against an 82,432-byte baseline — a **648-byte** delta — and runs to 42 under
+  WSL. `elf_linux_check.sh` 11/11.
 
 ### P4 note — append `.bss` LAST, do not insert it
 

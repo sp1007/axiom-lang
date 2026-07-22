@@ -10,7 +10,13 @@ ROOT_WSL="/mnt/d/projects/compiler/Axiom"
 pass=0; fail=0; failed=""
 build() { rm -f "bin/t_$1.elf"; "$AXC" build "bin/$1.ax" -o "bin/t_$1.elf" --target linux -self-link -O1 > "/tmp/elfchk_$1.log" 2>&1; }
 # exit-code oracles: name|expected
-for row in "elf42|42" "elfloop|7" "elfglob|55" "elfglobuninit|92" "elfvec|42" "elfmap|42" "elfsmap|42" "elfparse|40"; do
+# `t_bssglobal` pins RFC 0030 P4: a large zero-initialized global is reserved via SHT_NOBITS
+# and p_memsz > p_filesz. It checks BEHAVIOUR under Linux (reads zero, both ends of the
+# extent addressable) — the size win is meaningless if the kernel does not actually map the
+# tail, and that can only be observed by running it. It deliberately reuses the SAME source
+# the Windows regression gates (bin/t_bssglobal.ax) rather than duplicating the program, so
+# the two formats can never drift apart; the `t_t_` output filename is the cosmetic cost.
+for row in "elf42|42" "elfloop|7" "elfglob|55" "elfglobuninit|92" "elfvec|42" "elfmap|42" "elfsmap|42" "elfparse|40" "t_bssglobal|42"; do
   name="${row%%|*}"; exp="${row##*|}"; build "$name"
   if [ ! -f "bin/t_$name.elf" ]; then echo "FAIL $name (build)"; fail=$((fail+1)); failed="$failed $name"; continue; fi
   wsl "$ROOT_WSL/bin/t_$name.elf"; got=$?

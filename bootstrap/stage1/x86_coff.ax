@@ -738,7 +738,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         else:
             init_globals = init_globals + 1 as i64
         gz = gz + 1
-    let use_bss = not is_elf64 and bss_total >= 4096 as i64
+    let use_bss = bss_total >= 4096 as i64
     mut bss_size := 0 as i64
     // COFF symbols name their section by 1-based INDEX, and `.data` is emitted only when
     // it has content. So when every global is zero-initialized there IS no `.data` and
@@ -748,6 +748,11 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     mut bss_secnum := 3 as i16
     if use_bss and init_globals > 0 as i64:
         bss_secnum = 4 as i16
+    // RFC 0030 P4: the ELF object uses a FIXED 8-section layout with `.bss` appended at
+    // index 7 (indices 4-6 are referenced by hardcoded sh_link values, so it cannot be
+    // inserted after `.data`). The COFF number above is positional; the ELF one is not.
+    if is_elf64:
+        bss_secnum = 7 as i16
     mut gi := 0 as i64
     while gi < mod.globals.len:
         let g = mod.globals.data[gi]
@@ -775,7 +780,10 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 bss_size = bss_size + 1 as i64
             let boff = bss_size as u32
             bss_size = bss_size + gsize
-            push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: boff, section_num: bss_secnum, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
+            if is_elf64:
+                push_elf64_sym(&elf_syms, ELF64Sym(name_str: gname, value: boff as u64, size: gsize as u64, binding: STB_GLOBAL, sym_type: STT_OBJECT, section: bss_secnum as u16))
+            else:
+                push_coff_symbol(&coff_syms, COFFSymbol(name_str: gname, value: boff, section_num: bss_secnum, sym_type: 0 as u16, storage_class: IMAGE_SYM_CLASS_STATIC, num_aux: 0 as u8))
         else:
             while (data_buf.len % galign) != 0 as i64:
                 push_byte(&data_buf, 0 as u8)
@@ -899,7 +907,7 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     mut success := false
     if is_elf64:
-        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, &elf_relocs, &elf_syms)
+        success = elf64_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, bss_size, &elf_relocs, &elf_syms)
     else:
         success = coff_write_object_file(output_obj_file, &all_code, &rdata_buf, &data_buf, bss_size, &coff_relocs, &coff_syms)
 

@@ -12,7 +12,11 @@
 set -u
 cd "$(dirname "$0")/.."
 AXC="${AXC:-bin/axc_native.exe}"
-TMP="${REGTMP:-bin/_regtmp}"
+# Deliberately NOT $REGTMP: this suite must not share a scratch directory with
+# regression_repros.sh. When it did, running the two concurrently produced a spurious
+# t_strsplit failure — the documented contention trap in [[infra-defender-build-throttle]],
+# reintroduced by this script's own default. Keep it on its own directory.
+TMP="${SIZETMP:-bin/_sizetmp}"
 mkdir -p "$TMP"
 pass=0; fail=0; failed=""
 

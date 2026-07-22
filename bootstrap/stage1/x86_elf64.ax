@@ -18,6 +18,7 @@ pub const SHT_PROGBITS:  u32 = 1
 pub const SHT_SYMTAB:    u32 = 2
 pub const SHT_STRTAB:    u32 = 3
 pub const SHT_RELA:      u32 = 4
+pub const SHT_NOBITS:    u32 = 8
 
 pub const SHF_WRITE:     u64 = 0x01
 pub const SHF_ALLOC:     u64 = 0x02
@@ -59,11 +60,15 @@ pub fn push_elf64_sym(mut self: ptr[ELF64SymVec], s: ELF64Sym):
     self.data[self.len] = s
     self.len = self.len + 1
 
-pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
+pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec], out_bytes: ptr[ByteVec]):
     // Fixed 7-section layout whose PROGBITS indices match the linker's canonical COFF
     // convention (1=.text, 2=.rodata/.rdata, 3=.data), so symbol `section` values flow
     // through emitter -> object -> linker with no translation:
     //   0 NULL | 1 .text | 2 .rodata | 3 .data | 4 .symtab | 5 .strtab | 6 .rela.text
+    // RFC 0030 P4 appends `.bss` as section 7 rather than inserting it after `.data`:
+    // indices 4-6 are referenced by hardcoded sh_link values and by the linker's symbol
+    // mapping, so inserting would shift them. The linker recognises `.bss` by NAME and
+    // normalises it to the logical section 4, so its physical index here is free.
     // .rodata carries string literals; .data carries RFC 0017 module globals. Sections
     // may be zero-sized; emitting all seven unconditionally keeps the layout deterministic.
     // 1. Build string table
@@ -73,17 +78,18 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     // NB: `str` is a 16-byte {ptr,len} value, so a 6-element ptr[str] array needs 6*16
     // bytes — the original 4*8 under-allocated by half and overflowed the heap (this
     // writer had never been exercised: is_windows was hardcoded).
-    let sec_names = @alloc(6 * @compiler_intrinsic("size_of")[str]()) as ptr[str]
+    let sec_names = @alloc(7 * @compiler_intrinsic("size_of")[str]()) as ptr[str]
     sec_names[0] = ".text"
     sec_names[1] = ".rodata"
     sec_names[2] = ".data"
     sec_names[3] = ".symtab"
     sec_names[4] = ".strtab"
     sec_names[5] = ".rela.text"
+    sec_names[6] = ".bss"
 
-    let sec_offsets = @alloc(6 * 4) as ptr[u32]
+    let sec_offsets = @alloc(7 * 4) as ptr[u32]
     mut i := 0 as i64
-    while i < 6:
+    while i < 7:
         sec_offsets[i] = strtab.len as u32
         let s = sec_names[i]
         let s_len = std.string.len(s)
@@ -111,7 +117,7 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
         si = si + 1
 
     // 2. Lay out the file
-    let num_sections = 7 as u16
+    let num_sections = 8 as u16 // RFC 0030 P4: + .bss (SHT_NOBITS) at index 7
     let ehdr_size = 64 as i64
     let shdr_size = 64 as i64
 
@@ -317,6 +323,21 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     push_u64_le(out_bytes, 8 as u64)
     push_u64_le(out_bytes, rela_ent_size as u64)
 
+    // Section 7: .bss — RFC 0030 P4. SHT_NOBITS occupies NO file bytes; sh_size carries the
+    // extent and the loader zero-fills it. Always emitted (zero-sized when unused) so the
+    // section count stays constant and the layout deterministic, matching the rationale for
+    // the other possibly-empty sections above.
+    push_u32_le(out_bytes, sec_offsets[6])
+    push_u32_le(out_bytes, SHT_NOBITS)
+    push_u64_le(out_bytes, 3 as u64) // sh_flags = SHF_ALLOC | SHF_WRITE
+    push_u64_le(out_bytes, 0 as u64) // sh_addr
+    push_u64_le(out_bytes, shdr_off as u64) // sh_offset (conventional; no bytes are read)
+    push_u64_le(out_bytes, bss_size as u64) // sh_size = the reserved extent
+    push_u32_le(out_bytes, 0 as u32)
+    push_u32_le(out_bytes, 0 as u32)
+    push_u64_le(out_bytes, 16 as u64) // sh_addralign
+    push_u64_le(out_bytes, 0 as u64)
+
     // Free resources
     @free(sec_names as ptr[u8])
     @free(sec_offsets as ptr[u8])
@@ -324,9 +345,9 @@ pub fn elf64_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVe
     if strtab.data != null as ptr[u8]:
         @free(strtab.data)
 
-pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
+pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[RelocationVec], symbols: ptr[ELF64SymVec]) -> bool:
     mut out_bytes := new_byte_vec()
-    elf64_serialize(code, rdata, data, relocs, symbols, &out_bytes)
+    elf64_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
     let filename_nt = x86_str_to_null_terminated(filename)
     let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))

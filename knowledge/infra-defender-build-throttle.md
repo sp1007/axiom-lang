@@ -53,3 +53,18 @@ that is NOT a real regression. Also, `TaskStop` on a git-bash regression may lea
 child bash/axc processes still looping and spawning compiles — verify with
 `Get-CimInstance Win32_Process -Filter "Name='bash.exe'"` (check CreationDate/parent) and
 kill the whole tree before re-running. Only ever run ONE regression at a time.
+
+## Concurrency trap, concrete instance (2026-07-22)
+
+Running `scripts/exe_size_check.sh` and `scripts/elf_linux_check.sh` WHILE
+`regression_repros.sh` was running produced a **spurious `t_strsplit` failure**
+(`508 passed, 1 failed`). Re-running `t_strsplit` alone gave the expected 46 five times out
+of five, and a clean solo regression was green.
+
+Root cause was not merely "two suites at once": `exe_size_check.sh` defaulted its scratch
+directory to `${REGTMP:-bin/_regtmp}` — the *same* directory the regression suite uses. It
+now defaults to `bin/_sizetmp` (`$SIZETMP` to override).
+
+**Rule:** run ONE build-driven suite at a time, and give every new suite its own scratch
+directory. A red gate that arrives while another suite is running is suspect until
+reproduced solo — but reproduce it, never assume it away.
