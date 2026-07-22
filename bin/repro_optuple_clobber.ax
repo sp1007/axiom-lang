@@ -1,0 +1,14 @@
+// MINIMAL: two calls to a fn taking Option[(i64,i64)] destroy an unrelated caller local.
+fn use_it(o: Option[(i64, i64)]) -> i64:
+    match o:
+        Some(t):
+            return t.0 + t.1
+        None:
+            return 99
+
+fn main() -> i64:
+    let a: Option[(i64, i64)] = Some((3, 40))
+    let keep = 7 as i64
+    let r1 = use_it(a)
+    let r2 = use_it(a)
+    return keep   // want 7
