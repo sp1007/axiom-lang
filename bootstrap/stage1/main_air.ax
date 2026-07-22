@@ -875,9 +875,14 @@ pub fn main() -> i32:
             // it stays opt-in until the root set has been exercised by something
             // more demanding than the oracles — the failure mode is a call into an
             // address that was never emitted, which no size check can detect.
-            // Implies the report, so a build that prunes always says what it pruned.
+            // Quiet by default. It first shipped implying -dfe-report, on the
+            // reasoning that a build which drops functions should say which ones.
+            // In practice that is ~123 lines on a hello-world and buries whatever
+            // the user was actually building — a real barrier for the one thing
+            // this flag now needs, which is being used. Pair it with -dfe-report
+            // when diagnosing; that combination is what turned the ELF SIGSEGV
+            // into a named function in a single build.
             dfe_enabled = true
-            dfe_report_flag = true
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
         opt_idx = opt_idx + 1
