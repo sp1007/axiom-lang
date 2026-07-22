@@ -1632,10 +1632,25 @@ pub fn coerce_interface_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx:
     let pt = fi.params.data[param_idx as i64]
     if (pt as i64) >= self.mb.typetable.entries.len or self.mb.typetable.entries.data[pt as i64].kind != TYPE_KIND_INTERFACE:
         return arg_reg
-    let at = self.mb.node_types[arg_node as i64]
+    return self.coerce_struct_to_interface(pt, arg_node, arg_reg)
+
+// RFC 0029: general T->I coercion. If `target_type` is an interface and the source
+// expression (`src_node`) is a concrete struct, build the interface box value and return
+// its pointer; otherwise return `src_reg` unchanged. Used at every site a concrete struct
+// can flow into an interface-typed slot: call-arg, let-binding, return, struct-field init,
+// assignment. Without this, a struct stored into an interface slot dispatches on raw struct
+// bytes -> segfault (the "demonstrated hole": only call-arg was covered before).
+pub fn coerce_struct_to_interface(mut self: ptr[FuncLowering], target_type: u32, src_node: u32, src_reg: u32) -> u32:
+    if self.mb.node_types == null as ptr[u32]:
+        return src_reg
+    if (target_type as i64) >= self.mb.typetable.entries.len or self.mb.typetable.entries.data[target_type as i64].kind != TYPE_KIND_INTERFACE:
+        return src_reg
+    if src_node == 0 as u32:
+        return src_reg
+    let at = self.mb.node_types[src_node as i64]
     if at == 0 as u32 or (at as i64) >= self.mb.typetable.entries.len or self.mb.typetable.entries.data[at as i64].kind != TYPE_KIND_STRUCT:
-        return arg_reg
-    return self.build_interface_value(arg_reg, at, pt)
+        return src_reg
+    return self.build_interface_value(src_reg, at, target_type)
 
 pub fn coerce_float_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
     if fn_sym == 0 as u32 or (fn_sym as i64) >= self.mb.symbols.symbols.len:
@@ -2741,7 +2756,10 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
     mut child := node.first_child
     mut elem_idx := 0 as u32
     while child != 0 as u32:
-        let elem_reg = self.lower_expr(child)
+        mut elem_reg = self.lower_expr(child)
+        // RFC 0029: `[Square(..), Circle(..)]` typed `[Iface; N]` boxes each concrete
+        // element (else the raw struct is stored and dispatch reads garbage -> segfault).
+        elem_reg = self.coerce_struct_to_interface(elem_type_id, child, elem_reg)
 
         let idx_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
@@ -2778,6 +2796,14 @@ pub fn lower_struct_constructor_call(mut self: ptr[FuncLowering], idx: u32, node
     if callee == 0 as u32:
         return struct_reg
 
+    // RFC 0029: the struct-index for this ctor's type, so a field declared as an interface
+    // can box a concrete-struct field initializer (`Holder(shp: Square(...))`).
+    mut cfield_struct := -1 as i64
+    if (type_id as i64) < self.mb.typetable.entries.len:
+        let cte = self.mb.typetable.entries.data[type_id as i64]
+        if cte.kind == TYPE_KIND_STRUCT and (cte.extra as i64) < self.mb.typetable.structs.len:
+            cfield_struct = cte.extra as i64
+
     mut child := self.mb.tree.nodes.data[callee as i64].next_sibling
     mut field_idx := 0 as u32
     while child != 0 as u32:
@@ -2785,7 +2811,8 @@ pub fn lower_struct_constructor_call(mut self: ptr[FuncLowering], idx: u32, node
         if cn.kind == NODE_NAMED_ARG:
             let val_child = cn.first_child
             if val_child != 0 as u32:
-                let val_reg = self.lower_expr(val_child)
+                mut val_reg = self.lower_expr(val_child)
+                val_reg = self.coerce_field_to_interface(cfield_struct, field_idx, val_child, val_reg)
                 self.fb.emit(AirInst(
                     opcode: OP_SET_FIELD,
                     type_id: type_id as u32,
@@ -2795,7 +2822,8 @@ pub fn lower_struct_constructor_call(mut self: ptr[FuncLowering], idx: u32, node
                 ))
             field_idx = field_idx + 1 as u32
         else:
-            let val_reg = self.lower_expr(child)
+            mut val_reg = self.lower_expr(child)
+            val_reg = self.coerce_field_to_interface(cfield_struct, field_idx, child, val_reg)
             self.fb.emit(AirInst(
                 opcode: OP_SET_FIELD,
                 type_id: type_id as u32,
@@ -2806,6 +2834,17 @@ pub fn lower_struct_constructor_call(mut self: ptr[FuncLowering], idx: u32, node
             field_idx = field_idx + 1 as u32
         child = cn.next_sibling
     return struct_reg
+
+// RFC 0029: coerce a struct-field initializer to an interface value when the field at
+// `field_idx` of struct `struct_index` is declared as an interface type.
+pub fn coerce_field_to_interface(mut self: ptr[FuncLowering], struct_index: i64, field_idx: u32, val_node: u32, val_reg: u32) -> u32:
+    if struct_index < 0 as i64:
+        return val_reg
+    let si = self.mb.typetable.structs.data[struct_index]
+    if (field_idx as i64) >= si.fields.len:
+        return val_reg
+    let fty = si.fields.data[field_idx as i64].type_id
+    return self.coerce_struct_to_interface(fty, val_node, val_reg)
 
 pub fn emit_heap_alloc(mut self: ptr[FuncLowering], type_id: u32) -> u32:
     let ptr_reg = self.fb.fresh_reg()
@@ -3794,11 +3833,13 @@ pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut type_id := 0 as u32
 
     mut init_reg := 0 as u32
+    mut init_node_idx := 0 as u32
     mut child := node.first_child
     while child != 0 as u32:
         let cn = self.mb.tree.nodes.data[child as i64]
         if cn.kind != NODE_TYPE_EXPR and cn.kind != NODE_PTR_TYPE and cn.kind != NODE_SLICE_TYPE and cn.kind != NODE_ARRAY_TYPE and cn.kind != NODE_FUNC_TYPE and cn.kind != NODE_GENERIC_TYPE:
             init_reg = self.lower_expr(child)
+            init_node_idx = child
         child = cn.next_sibling
 
     if init_reg != 0 as u32:
@@ -3812,6 +3853,9 @@ pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
             let sym = self.mb.symbols.symbols.data[node.payload as i64]
             if sym.type_id != 0 as u32:
                 var_type_id = sym.type_id as u32
+
+        // RFC 0029: `let s: Iface = <struct>` -> box the struct into an interface value.
+        src_reg = self.coerce_struct_to_interface(var_type_id, init_node_idx, src_reg)
 
         self.fb.emit(AirInst(
             opcode: OP_COPY,
@@ -3886,7 +3930,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let rhs_idx = lhs_node.next_sibling
         if rhs_idx == 0 as u32:
             return
-        let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
+        mut val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
         mut type_id := 0 as u32
         let obj_type = self.mb.node_types[obj_idx as i64]
@@ -3896,6 +3940,12 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                 type_id = entry.extra as u32
             else:
                 type_id = obj_type as u32
+
+        // RFC 0029: `obj.field = <struct>` where the field is interface-typed boxes it.
+        if (type_id as i64) < self.mb.typetable.entries.len:
+            let ste = self.mb.typetable.entries.data[type_id as i64]
+            if ste.kind == TYPE_KIND_STRUCT and (ste.extra as i64) < self.mb.typetable.structs.len:
+                val_reg = self.coerce_field_to_interface(ste.extra as i64, field_idx, rhs_idx, val_reg)
 
         self.fb.emit(AirInst(
             opcode: OP_SET_FIELD,
@@ -3986,13 +4036,17 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     if rhs_idx == 0 as u32:
         return
     let rhs_node = self.mb.tree.nodes.data[rhs_idx as i64]
-    let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
+    mut val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
     mut type_id := 3 as u32 // default i32
     if lhs_node.payload != 0 as u32 and (lhs_node.payload as i64) < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[lhs_node.payload as i64]
         if sym.type_id != 0 as u32:
             type_id = sym.type_id as u32
+
+    // RFC 0029: `s = <struct>` where `s` is interface-typed boxes the struct into an
+    // interface value (else the raw struct bytes are stored and dispatch reads garbage).
+    val_reg = self.coerce_struct_to_interface(type_id, rhs_idx, val_reg)
 
     // RFC 0017 / BUG#82: assigning to a module-level global writes its static storage
     // (OP_GLOBAL_ADDR + OP_STORE), not a per-function vreg — so the value persists
@@ -4018,6 +4072,8 @@ pub fn lower_return(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut ret_val := 0 as u32
     if node.first_child != 0 as u32:
         ret_val = self.lower_expr(node.first_child)
+        // RFC 0029: `return <struct>` from a fn declared `-> Iface` boxes the struct.
+        ret_val = self.coerce_struct_to_interface(self.fb.ret_type, node.first_child, ret_val)
 
     // RFC 0006 (#38.4): run deferred expressions (LIFO) after the return value
     // is computed but before transferring control, on every return path.

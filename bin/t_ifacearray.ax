@@ -1,0 +1,20 @@
+// Oracle (exit 43): RFC 0029 — elements of a fixed array typed `[Iface; N]` must be boxed
+// at the array-literal site. Before the fix the raw concrete structs were stored and
+// dispatch through `arr[i]` read garbage -> SIGSEGV.
+// Square(4).area = 16; Circle(3).area = 3*3*3 = 27; 16 + 27 = 43.
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Square:
+    side: i64
+    fn area(self: Square) -> i64:
+        return self.side * self.side
+
+struct Circle:
+    r: i64
+    fn area(self: Circle) -> i64:
+        return self.r * self.r * 3
+
+fn main() -> i64:
+    let arr: [Shape; 2] = [Square(side: 4), Circle(r: 3)]
+    return arr[0].area() + arr[1].area()

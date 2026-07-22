@@ -1,0 +1,36 @@
+// Oracle (exit 46): RFC 0029 interface dynamic dispatch as a VALUE TYPE — the real
+// `Box[Interface]`-as-struct-field consumer pattern (mirrors std/log's `Logger.sink`).
+// Proves T->I coercion + dispatch work when the interface lives in a struct FIELD, is
+// passed/returned, and drives polymorphism — not just as a bare call-arg.
+//
+// Sink is an interface with one method. Logger holds a `sink: Sink` field (an interface
+// VALUE). Two distinct sinks (Doubler, AddTen) are boxed into two loggers; each logger
+// dispatches through its own field to its own impl:
+//   Logger(Doubler).run(8) = 8*2  = 16
+//   Logger(AddTen ).run(20) = 20+10 = 30
+//   16 + 30 = 46
+interface Sink:
+    fn emit(self: Self, n: i64) -> i64
+
+struct Doubler:
+    factor: i64
+    fn emit(self: Doubler, n: i64) -> i64:
+        return n * self.factor
+
+struct AddTen:
+    base: i64
+    fn emit(self: AddTen, n: i64) -> i64:
+        return n + self.base
+
+struct Logger:
+    sink: Sink
+    fn run(self: Logger, n: i64) -> i64:
+        return self.sink.emit(n)
+
+fn make_logger(s: Sink) -> Logger:
+    return Logger(sink: s)
+
+fn main() -> i64:
+    let a: Logger = make_logger(Doubler(factor: 2))
+    let b: Logger = make_logger(AddTen(base: 10))
+    return a.run(8) + b.run(20)

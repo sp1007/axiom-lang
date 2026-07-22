@@ -216,6 +216,18 @@ pub const SEGMENT_SIZE: i64 = 65536
 pub const MAX_SEGMENTS: i64 = 4096
 pub const SEGMENT_MAGIC: u32 = 0xAF5E6000
 
+// --- DEBUG heap-overflow canary (root-causing the 3+-hash-container teardown OOB).
+// When AX_CANARY is true, every non-large block reserves 16 extra bytes and writes
+// two magic u64 footers right after the caller's requested size; the true requested
+// size is stashed in AxHeader.flags high bits (low 8 bits still hold the size class).
+// ax_actor_free verifies the footer and reports the overflowed block's size before
+// aborting — pinning which allocation the compiler writes past. Flip to false (the
+// committed default) for the release allocator; byte-identical to pre-canary code.
+pub const AX_CANARY: bool = false // debug heap-overflow instrumentation — OFF in release (byte-identical to pre-canary)
+pub const AX_CANARY_FOOTER: bool = false // per-free check (fragile vs garbage frees) — keep off; sweep is used instead
+pub const AX_CANARY_SWEEP_EVERY: i64 = 512 // whole-heap footer sweep cadence (allocations)
+pub const AX_CANARY_MAGIC: u64 = 0xCA9A19FEEDC0FFEE
+
 pub struct Segment:
     pub base: ptr[u8]
     pub bump: ptr[u8]
@@ -465,6 +477,20 @@ pub fn ax_free_list_pop(list: ptr[FreeList]) -> ptr[u8]:
     let slot = list.head
     if slot == null as ptr[FreeSlot]:
         return null as ptr[u8]
+    if AX_CANARY:
+        // Validate the node about to be dereferenced: a clobbered .next link (the
+        // suspected corruption) shows up here as a misaligned/tiny address or a node
+        // whose block header is not marked freed (gen_id!=0).
+        let na = slot as i64
+        if na < 65536 as i64 or (na & 7 as i64) != 0 as i64:
+            print_hex_freestanding(0xF00DBAD0 as u32)
+            print_hex_freestanding((na & 0xFFFFFFFF as i64) as u32)
+            ExitProcess(68 as u32)
+        let b = (na - 8 as i64) as ptr[AxHeader]
+        if b.gen_id != 0 as u32:
+            print_hex_freestanding(0xF00D11BA as u32)
+            print_hex_freestanding((b.flags & 0xFFFF as u32))
+            ExitProcess(69 as u32)
     list.head = slot.next
     list.count = list.count - 1
     return ((slot as i64) - 8) as ptr[u8]
@@ -666,13 +692,97 @@ pub fn ax_actor_heap_destroy(heap: ptr[ActorHeap]):
     let page_aligned = ((size + 4095) / 4096) * 4096
     ax_os_free(heap as ptr[void], page_aligned)
 
+// --- DEBUG canary footer helpers (active only when AX_CANARY) ---
+fn ax_canary_write(block: ptr[u8], sz: i64, block_size: i64):
+    // Footer occupies the last 16 bytes of the block — beyond any legitimate caller
+    // use of the requested `sz` bytes, and strictly inside the block (block_size>=sz+24).
+    let f0 = (block as i64 + block_size - 16) as ptr[u64]
+    f0.* = AX_CANARY_MAGIC
+    let f1 = (block as i64 + block_size - 8) as ptr[u64]
+    f1.* = AX_CANARY_MAGIC
+
+fn ax_canary_ok(block: ptr[u8], block_size: i64) -> bool:
+    let f0 = (block as i64 + block_size - 16) as ptr[u64]
+    let f1 = (block as i64 + block_size - 8) as ptr[u64]
+    return f0.* == AX_CANARY_MAGIC and f1.* == AX_CANARY_MAGIC
+
+fn ax_canary_report(sz: i64, seq: u32):
+    // Emit a recognizable 3-line hex burst to stderr, then a distinct exit code (66).
+    print_hex_freestanding(0xCA0A0CA0 as u32) // marker: canary tripped
+    print_hex_freestanding(sz as u32)         // overflowed block's requested size
+    print_hex_freestanding(seq as u32)        // heap.alloc_count when detected
+    ExitProcess(66 as u32)
+
+// Walk one segment chain, checking the footer of every LIVE canary block. Only
+// touches allocator-owned memory (never a caller's free() pointer), so it is safe
+// even when the compiler double-frees or frees a non-heap pointer.
+fn ax_canary_sweep_seglist(list: ptr[SegmentList], seq: u32):
+    mut s := list.active
+    mut phase := 0
+    while phase < 2:
+        while s != null as ptr[Segment]:
+            if s.magic == SEGMENT_MAGIC:
+                let bs = ax_size_class_size(s.sclass)
+                mut p := s.base as i64
+                let stop = s.bump as i64
+                while p + bs <= stop:
+                    let hdr = p as ptr[AxHeader]
+                    if hdr.gen_id == 1 as u32 and (hdr.flags & 15 as u32) < 10 as u32:
+                        let csz = (hdr.flags >> 8 as u32) as i64
+                        if csz >= 1 as i64 and csz <= 4088 as i64:
+                            if not ax_canary_ok(p as ptr[u8], bs):
+                                ax_canary_report(csz, seq)
+                    p = p + bs
+            s = s.next
+        phase = phase + 1
+        s = list.retired
+
+// Verify each per-size-class free list: every link must be 8-aligned, non-tiny, and
+// point at a block whose header marks it freed (gen_id==0). A clobbered .next (the
+// suspected corruption mechanism) is detected here before it faults a later pop.
+fn ax_canary_verify_freelists(heap: ptr[ActorHeap], seq: u32):
+    mut sc := 0
+    while sc < 10:
+        let fl = ax_get_free_list(heap, sc)
+        mut node := fl.head
+        mut steps := 0 as i64
+        while node != null as ptr[FreeSlot] and steps < fl.count + 4 as i64:
+            let na = node as i64
+            if na < 65536 as i64 or (na & 7 as i64) != 0 as i64:
+                // link points at a bogus address → free-list corrupted
+                print_hex_freestanding(0xF7EEC0DE as u32)
+                print_hex_freestanding(sc as u32)
+                print_hex_freestanding(seq)
+                ExitProcess(68 as u32)
+            let b = (na - 8 as i64) as ptr[AxHeader]
+            if b.gen_id != 0 as u32:
+                // link points at a LIVE (or clobbered-header) block
+                print_hex_freestanding(0xF7EE11BA as u32)
+                print_hex_freestanding(sc as u32)
+                print_hex_freestanding(seq)
+                ExitProcess(69 as u32)
+            node = node.next
+            steps = steps + 1 as i64
+        sc = sc + 1
+
+fn ax_canary_sweep(heap: ptr[ActorHeap], seq: u32):
+    if heap == null as ptr[ActorHeap]:
+        return
+    mut sc := 0
+    while sc < 10:
+        ax_canary_sweep_seglist(ax_get_segment_list(heap, sc), seq)
+        sc = sc + 1
+    ax_canary_verify_freelists(heap, seq)
+
 pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:
     mut sz := user_size
     if sz < 1 as i64:
         sz = 1 as i64
     if heap == null as ptr[ActorHeap]:
         return null as ptr[u8]
-    let sc = ax_size_class_for(sz)
+    mut sc := ax_size_class_for(sz)
+    if AX_CANARY:
+        sc = ax_size_class_for(sz + 16) // reserve room for the 16-byte footer
     if sc == 10:
         let ptr_val = ax_large_alloc(sz)
         if ptr_val != null as ptr[u8]:
@@ -697,9 +807,19 @@ pub fn ax_actor_alloc(heap: ptr[ActorHeap], user_size: i64) -> ptr[u8]:
     let hdr = block as ptr[AxHeader]
     hdr.gen_id = 1 as u32
     hdr.flags = sc as u32
+    if AX_CANARY:
+        // low 8 bits keep the size class (read via `& 15`); stash the true
+        // requested size in the high bits so free can locate the footer.
+        hdr.flags = (sc as u32) | ((sz as u32) << 8 as u32)
+        ax_canary_write(block, sz, ax_size_class_size(sc))
     let block_size = ax_size_class_size(sc)
     heap.total_allocated = heap.total_allocated + block_size as u64
     heap.alloc_count = heap.alloc_count + 1 as u64
+    if AX_CANARY:
+        // Periodic whole-heap footer sweep: pins the corruption to within
+        // AX_CANARY_SWEEP_EVERY allocations of the offending write.
+        if (heap.alloc_count % AX_CANARY_SWEEP_EVERY as u64) == 0 as u64:
+            ax_canary_sweep(heap, heap.alloc_count as u32)
     return (block as i64 + 8) as ptr[u8]
 
 pub fn ax_actor_free(heap: ptr[ActorHeap], user_ptr: ptr[u8]):
@@ -710,6 +830,13 @@ pub fn ax_actor_free(heap: ptr[ActorHeap], user_ptr: ptr[u8]):
     let block = (user_ptr as i64 - 8) as ptr[u8]
     let hdr = block as ptr[AxHeader]
     let sc = (hdr.flags & 15 as u32) as i32
+    if AX_CANARY_FOOTER and sc < 10 and hdr.gen_id == 1 as u32:
+        // Only trust the stashed size for a live, canary-allocated block; a garbage
+        // (double-free / non-canary) header would give a wild csz → skip safely.
+        let csz = (hdr.flags >> 8 as u32) as i64
+        if csz >= 1 as i64 and csz <= 4088 as i64:
+            if not ax_canary_ok(block, ax_size_class_size(sc)):
+                ax_canary_report(csz, heap.alloc_count as u32)
     hdr.gen_id = 0 as u32
     if sc == 10 or sc >= 10:
         let p_total = (user_ptr as i64 - 16) as ptr[u64]
@@ -3468,18 +3595,34 @@ pub fn remove[T](mut self: HashSet[T], item: T) -> bool:
 pub fn destroy[T](mut self: HashSet[T]):
     self.map.destroy()
 
-// RFC 0025 loop-unroll oracle: a constant-trip (4) accumulator loop — exactly the
-// loop-carried pattern the OLD unroller miscompiled (it reset its rename map each
-// iteration, so acc read the original value each time). The sound rewrite threads
-// acc through a persistent value map. Must give the same result unrolled (-O2/-O3)
-// as rolled (-O0/-O1). acc = 0+3+6+9 = 18.
-fn compute() -> i64:
-    mut acc := 0
-    mut i := 0
-    while i < 4:
-        acc = acc + i * 3
-        i = i + 1
-    return acc
-
-fn main() -> i64:
-    return compute()      // 18
+// Oracle (exit 27): RFC 0028 jump-table with a DEEP balanced compare tree (9 literal arms)
+// that MIXES negative and positive i64 arms — the deepest tree the suite exercises, and the
+// only jumptable oracle covering negative match-arm literals (payload-sign path) through the
+// bsearch value collection + signed sort. Built WITHOUT -jumptable (linear) by the main rows
+// and WITH -jumptable by the RFC 0028 block; both must yield 27.
+fn f(n: i64) -> i64:
+    match n:
+        -50:
+            return 1
+        -20:
+            return 2
+        -7:
+            return 3
+        -1:
+            return 4
+        0:
+            return 5
+        3:
+            return 6
+        11:
+            return 7
+        40:
+            return 8
+        99:
+            return 9
+        _:
+            return 0
+fn main() -> i32:
+    mut a := 0 as i64
+    a = a + f(-50) + f(-1) + f(0) + f(40) + f(99) + f(7)  // 1+4+5+8+9+0 = 27
+    return a as i32

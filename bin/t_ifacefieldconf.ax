@@ -1,0 +1,15 @@
+// Oracle (reject): RFC 0029 — a struct that does NOT implement the interface, used as an
+// interface-typed STRUCT FIELD initializer, must be rejected (else dispatch through the
+// field calls a null vtable slot). Bad has no area() -> reject at the ctor field.
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Bad:
+    x: i64
+
+struct Holder:
+    shp: Shape
+
+fn main() -> i64:
+    let h: Holder = Holder(shp: Bad(x: 1))
+    return 0

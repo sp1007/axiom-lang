@@ -1,0 +1,20 @@
+// Oracle (exit 75): RFC 0029 — `s = <struct>` reassignment where `s` is interface-typed
+// boxes the new concrete struct (else raw struct bytes are stored and dispatch segfaults).
+// s starts Square(3) then is reassigned Circle(5); dispatch must call Circle.area = 5*5*3 = 75.
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Square:
+    side: i64
+    fn area(self: Square) -> i64:
+        return self.side * self.side
+
+struct Circle:
+    r: i64
+    fn area(self: Circle) -> i64:
+        return self.r * self.r * 3
+
+fn main() -> i64:
+    mut s: Shape = Square(side: 3)
+    s = Circle(r: 5)
+    return s.area()

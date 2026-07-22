@@ -641,6 +641,9 @@ pub fn check_ctor_field_str_num(mut self: ptr[TypeChecker], callee: u32):
                 if (f_num and v_strlit) or (f_str and v_numlit):
                     ax_printf_local("error: struct field initializer type mismatch: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+                // RFC 0029: an interface-typed field must be initialized with a struct that
+                // implements it (else dispatch through the field calls a null vtable slot).
+                self.check_iface_conformance(ftype, val_node)
             call_arg = self.tree.nodes.data[call_arg].next_sibling
         field_node = fn_node.next_sibling
 
@@ -1503,6 +1506,35 @@ pub fn interface_missing_method(self: ptr[TypeChecker], struct_type: u32, iface_
             return methods.data[k]
         k = k + 1 as i64
     return 0 as u32
+
+// RFC 0029: at any T->I coercion site (let / return / struct-field-init / assignment; the
+// call-arg site has its own inline check) a concrete struct flowing into an interface slot
+// must structurally IMPLEMENT it. Otherwise air_builder builds a vtable slot from a 0
+// method-symbol and dispatch calls through a null pointer — an accept-then-miscompile
+// (BUG#53 class). Emits a diagnostic if `src_node`'s type is a struct that does not
+// implement interface `target_type`; a no-op for every non-(struct->interface) pair.
+pub fn check_iface_conformance(mut self: ptr[TypeChecker], target_type: u32, src_node: u32):
+    if target_type == TYPE_UNKNOWN or (target_type as i64) >= self.types.entries.len:
+        return
+    if self.types.entries.data[target_type as i64].kind != TYPE_KIND_INTERFACE:
+        return
+    if src_node == 0 as u32:
+        return
+    mut at := TYPE_UNKNOWN
+    if (src_node as i64) < self.node_types_cap:
+        at = self.node_types[src_node as i64]
+    if at == TYPE_UNKNOWN:
+        at = self.infer_node(src_node, TYPE_UNKNOWN)
+    if at == TYPE_UNKNOWN or (at as i64) >= self.types.entries.len:
+        return
+    if self.types.entries.data[at as i64].kind != TYPE_KIND_STRUCT:
+        return
+    let missing = self.interface_missing_method(at, target_type)
+    if missing != 0 as u32:
+        let mn = self.intern.get(missing)
+        ax_printf_local("error: type does not implement interface method '%s' required by the interface type\n", get_str_ptr(mn) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        safe_free_str(mn)
+        self.diags_count = self.diags_count + 1 as i64
 
 pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
     let field_name = self.intern.get(field_name_id)
@@ -3047,6 +3079,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if (exp_is_num and rhs_is_strlit) or (exp_is_str and rhs_is_numlit):
                     ax_printf_local("error: type mismatch in `let`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+            // RFC 0029: `let s: Iface = <struct>` — reject a struct that doesn't implement it.
+            if type_node != 0 as u32:
+                self.check_iface_conformance(exp_type, init_expr)
             if exp_type != TYPE_UNKNOWN:
                 result_type = exp_type
             else:
@@ -3060,6 +3095,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         let expr = self.tree.nodes.data[node_idx].first_child
         if expr != 0 as u32:
             let et_ret = self.infer_node(expr, self.current_return)
+            // RFC 0029: `return <struct>` from a `-> Iface` fn — reject a non-conforming struct.
+            self.check_iface_conformance(self.current_return, expr)
             // BUG#53 (m5agg): `return <aggregate variable>` from a NUMERIC-returning fn
             // (`return p` where p is a struct, fn is `-> i64`) was silently accepted --
             // the aggregate's address was returned as an int -> garbage for the caller.

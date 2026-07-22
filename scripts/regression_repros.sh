@@ -535,6 +535,15 @@ rows=(
   "t_ifacedispatch|exit|37"
   # RFC 0029 structural conformance: struct missing an interface method -> REJECT (BUG#53)
   "t_ifacenoconf|reject|"
+  # RFC 0029 value-typed interface (Box[Interface]-as-struct-field, std/log pattern):
+  # let + return + field-init + call-arg coercion + polymorphic dispatch through a field
+  "t_ifaceconsumer|exit|46"
+  # RFC 0029 interface coercion at ASSIGNMENT site (`s = <struct>` reboxes)
+  "t_ifaceassign|exit|75"
+  # RFC 0029 conformance at struct-field-init site: non-implementing struct -> REJECT
+  "t_ifacefieldconf|reject|"
+  # RFC 0029 array-literal element coercion: `[Iface; N] = [S(..), C(..)]` boxes elements
+  "t_ifacearray|exit|43"
 )
 
 for row in "${rows[@]}"; do
