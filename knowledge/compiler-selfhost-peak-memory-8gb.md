@@ -37,6 +37,42 @@ Treat the ~8 GB as the headline defect. The RFC 0029 interface fix is blocked by
 anything else of comparable size, and the honest fix is to reduce self-link memory rather than
 to route individual features around it.
 
-Cheap first questions for whoever takes it: what does the linker retain for 15,281
-relocations and 2,447 symbols that could be streamed or freed; and does peak scale with
-relocation count (measure at `-O0`, which succeeds, against `-O1`).
+## Where it goes: nowhere, it just accumulates
+
+Both follow-up questions are now answered by measurement.
+
+**Peak does NOT scale with optimization or relocation count.** `-O0` and `-O1` land within
+33 MB of each other on nearly identical reloc counts:
+
+| level | peak | relocs | syms |
+|---|---|---|---|
+| `-O0` | 7,833 MB | 15,314 | 2,446 |
+| `-O1` | 7,866 MB | 15,279 | 2,446 |
+
+So the ~30 MB that `-O1` adds is the entire margin between building and not building. The
+build is on a knife edge, and which side it lands on is close to arbitrary.
+
+**It is not a link-time spike — it is monotonic accumulation.** Sampling working set across a
+whole build:
+
+| point in run | working set |
+|---|---|
+| 10% | 525 MB |
+| 25% | 3,816 MB |
+| 50% | 6,594 MB |
+| 75% | 7,295 MB |
+| 90% | 7,638 MB |
+| max | **7,865 MB** |
+
+Memory climbs from start to finish and **never drops**. Peak is therefore approximately
+everything the compiler ever allocated: it frees essentially nothing across a build. The
+linker is where the OOM surfaces only because the linker runs last, at the top of the ramp —
+not because the linker is the consumer.
+
+That is a coherent picture rather than a mystery, and it points at the compiler`s standing
+posture of not freeing (`-ctgc-free` is off by default everywhere). The cost of that posture is
+now measured: ~8 GB, and the ceiling has been reached.
+
+**Where to start:** the 10% -> 25% segment, which jumps 525 MB -> 3.8 GB, is the single
+largest step and worth attributing first. Reducing retention anywhere buys headroom
+immediately, since the margin that decides success is ~30 MB out of ~7,900.
