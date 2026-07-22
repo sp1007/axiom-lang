@@ -11431,6 +11431,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let exp_entry = self.types.entries.data[expected as i64]
             if exp_entry.kind == TYPE_KIND_ARRAY:
                 expected_elem = exp_entry.extra as u32
+        // Sticky coercion â€” the array analogue of the NODE_TUPLE_EXPR guard below.
+        // An enclosing context may infer this literal TWICE: once with the concrete
+        // expected array type (a variant-ctor payload, `Some([3, 40, 5])` for an
+        // `Option[[i64; 3]]`) and again later with UNKNOWN. On that second, hint-less
+        // visit the elements re-infer as i32 and `[i32; N]` is re-registered â€” and
+        // because that write lands LAST, the elements store 4 bytes wide while the
+        // reader uses the declared stride, so `arr[0] + arr[1] + arr[2]` returned 8
+        // instead of 48. A plain annotated `let v: [i64;3] = [..]` is visited once and
+        // was never affected, which is what made this look payload-specific.
+        // Recover the element hint from the type a prior visit already pinned on this
+        // node, so the re-visit coerces the elements the same way instead of widening
+        // the type while leaving 4-byte element stores behind.
+        if expected_elem == TYPE_UNKNOWN and (node_idx as i64) < self.node_types_cap:
+            let prior_arr = self.node_types[node_idx as i64]
+            if prior_arr != TYPE_UNKNOWN and (prior_arr as i64) < self.types.entries.len:
+                if self.types.entries.data[prior_arr as i64].kind == TYPE_KIND_ARRAY:
+                    expected_elem = self.types.entries.data[prior_arr as i64].extra as u32
         mut elem_type := expected_elem
         mut count := 0 as u32
         mut mixed_strnum := false

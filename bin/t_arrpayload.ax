@@ -1,0 +1,37 @@
+// An array literal used as a variant-ctor payload is inferred TWICE: once with the
+// concrete expected array type, then again with UNKNOWN. Without a sticky guard the
+// second visit re-inferred the elements as i32 and re-registered [i32; N]; that write
+// landed last, so elements stored 4 bytes wide while reads used the declared stride
+// and `arr[0] + arr[1] + arr[2]` returned 8 instead of 48.
+type Box = Arr([i64; 3]) | Empty
+
+fn viasum(b: Box) -> i64:
+    match b:
+        Arr(v):
+            return v[0] + v[1] + v[2]
+        Empty:
+            return 0
+
+fn main() -> i64:
+    // user sum payload
+    let b: Box = Arr([3, 40, 5])
+    // builtin Option payload, indexed read + single-element read + loop read
+    let o: Option[[i64; 3]] = Some([3, 40, 5])
+    mut viaopt := 0 as i64
+    mut single := 0 as i64
+    mut looped := 0 as i64
+    match o:
+        Some(arr):
+            viaopt = arr[0] + arr[1] + arr[2]
+            single = arr[1]
+            mut i := 0 as i64
+            while i < 3:
+                looped = looped + arr[i]
+                i = i + 1
+        None:
+            viaopt = 0
+    // a plain annotated let is visited once and was never affected
+    let plain: [i64; 3] = [3, 40, 5]
+    let direct = plain[0] + plain[1] + plain[2]
+    // 48 + 48 + 40 + 48 + 48 = 232
+    return viasum(b) + viaopt + single + looped + direct

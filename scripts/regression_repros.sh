@@ -444,6 +444,9 @@ rows=(
   "t_mfvarity|reject|"
   # ...and every legitimate binding shape must still compile (guard for the reject above)
   "t_mfvarityok|exit|58"
+  # an array literal as a variant-ctor payload keeps its coerced element type on the
+  # hint-less re-visit (sticky guard, the array analogue of the tuple one)
+  "t_arrpayload|exit|232"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
