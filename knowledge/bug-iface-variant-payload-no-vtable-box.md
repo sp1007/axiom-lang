@@ -134,13 +134,18 @@ this one is stage1-side and function-local.
 **Consequence for anyone picking this up.** The fix needs a call — `coerce_struct_to_interface`
 — at a site that cannot accept one. Three ways out, in increasing order of effort:
 
-1. **Put the call in a different function.** Candidate 2 (rebuild at the binding site) now
-   looks best purely because it lives elsewhere. Cheapest route to a working fix.
-2. **Spend an existing call site.** The budget appears to be exactly one; folding two existing
-   calls in `lower_call_expr` into one may buy the slot back. Untested.
-3. **Fix the underlying capacity bug.** The right answer, and its own project — this is a
-   backend limit (register/spill pressure per call site), not a source-size limit, since
-   call-free statements add freely.
+1. ~~**Put the call in a different function.**~~ **TRIED AND REFUTED 2026-07-23.** Implemented
+   the tuple half in `lower_tuple_lit` — a different, smaller function — calling the existing
+   `coerce_field_to_interface`. It OOMs too.
+
+   The earlier control that suggested this route was misleading: an inert `if x == 0xFFFFFFFF`
+   in `coerce_struct_to_interface` built fine, but an unreachable branch in a cold function
+   adds essentially nothing. A real call on a hot path (every tuple literal) is a different
+   test, and it fails. **The ceiling is NOT function-local — it is the global ~30 MB margin.**
+2. ~~**Spend an existing call site.**~~ Follows the same fate: there is no per-function budget
+   to trade, only total headroom.
+3. **Fix the memory ceiling.** Not one option among three — **the only one.** Every attempted
+   fix, in every location, dies against [[compiler-selfhost-peak-memory-8gb]].
 
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
 **fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
