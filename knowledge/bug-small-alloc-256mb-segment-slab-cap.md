@@ -47,6 +47,29 @@ anywhere, in any function) tips it past 256 MB.
 It also explains why every attempted fix location failed identically, and why an inert
 statement in a cold function was fine — the inert branch allocates nothing.
 
+## DANGER: five coupled sites, four of them magic numbers
+
+Do not simply raise the `4096`. The slab is a fixed region sized to match it, and the two are
+not derived from each other:
+
+| site | value | role |
+|---|---|---|
+| `std/mem/alloc.ax:22` | `MAX_SEGMENTS = 4096` | declared, **never referenced** |
+| `std/mem/alloc.ax:375` | literal `4096` | the cap that actually fires |
+| `std/mem/alloc.ax:160` | `196608` | slab `VirtualAlloc` size (Windows) |
+| `std/mem/alloc.ax:166` | `196608` | slab `mmap` size (Linux) |
+| `std/mem/alloc.ax:352` | `196608` | slab `@memset` size at init |
+| `runtime/axalloc/*.c` | `AXIOM_MAX_SEGMENTS 4096` | C runtime`s `axiom_segment_slab[]` |
+
+`Segment` is 48 bytes (3 pointers + i32 + pointer + u32, padded), and **48 × 4096 = 196,608
+exactly**. So raising the segment count without raising all three `196608` sites writes
+descriptor #4097 past the end of the mapped region — silent heap corruption, in the allocator,
+on both platforms.
+
+That coupling is the deeper defect. One capacity decision is spelled out in five places across
+two languages, four of them as bare literals, and the one place with a NAME is the one nothing
+reads.
+
 ## Fix directions
 
 1. **Raise the cap.** Mechanically trivial and unblocks the interface bug immediately. The
