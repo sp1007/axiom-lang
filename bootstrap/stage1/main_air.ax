@@ -184,8 +184,19 @@ fn read_file_content(path: str) -> str:
         ax_puts_local("error: cannot open source file:")
         ax_puts_local(path)
         ax_puts_local(r.unwrap_err())
-        // Overwhelmingly the cause, and invisible from the message alone.
-        ax_puts_local("note: the compiler resolves std/*.ax and imported modules relative to the CURRENT DIRECTORY -- run it from the repository root")
+        // The CWD note belongs ONLY on paths the COMPILER resolved for itself. For a
+        // path the user typed, the file simply does not exist and the note points at
+        // a cause that is not there -- and a misleading note is worse than none, which
+        // is the exact failure it was added to prevent. `axc build typo.ax` printing
+        // "run it from the repository root" would send someone hunting a directory
+        // problem instead of reading the filename.
+        let n = std.string.len(path)
+        if n > 4:
+            let p = get_str_ptr(path)
+            let is_std = (p[0] == 's' as u8 and p[1] == 't' as u8 and p[2] == 'd' as u8 and p[3] == '/' as u8)
+            let is_boot = (p[0] == 'b' as u8 and p[1] == 'o' as u8 and p[2] == 'o' as u8 and p[3] == 't' as u8)
+            if is_std or is_boot:
+                ax_puts_local("note: the compiler resolves std/*.ax and imported modules relative to the CURRENT DIRECTORY -- run it from the repository root")
     return ""
 
 fn write_file_content(path: str, content: str) -> bool:
