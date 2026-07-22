@@ -197,6 +197,29 @@ Still deliberately deferred: it spans two phases, and the arity/width rejects in
 have broken self-build before, so it needs the full gate rather than a loop-tail edit. But it
 now starts from "add a coerce in two known places."
 
+### Ordering conflict — read this before writing the fix
+
+"Coerce on `node_types[payload_idx]`" is necessary but NOT sufficient, and naively doing both
+edits deadlocks. `coerce_struct_to_interface` (`air_builder.ax:1744`) builds the box from the
+SOURCE node`s type: line 1752 requires `node_types[src_node].kind == TYPE_KIND_STRUCT`, and it
+uses that concrete struct type as the box`s inner type. But the proposed typecheck edit
+(`coerce_variant_ctor_payload` calling `infer_node(arg, interface_pt)`) **re-types the payload
+node to the interface** — so by the time air_builder runs, `node_types[payload_idx]` is the
+INTERFACE, line 1752 sees a non-struct and BAILS, and no box is built. The two edits fight.
+
+Whatever the fix, air_builder must still be able to recover the CONCRETE struct type at the box
+site. Options, in rough order of safety:
+
+- Have `coerce_variant_ctor_payload` record the interface as the intended type WITHOUT
+  overwriting the payload node`s concrete struct type (e.g. mark the ctor node, not the payload
+  node) so air_builder still sees a struct at `payload_idx` and knows the target from elsewhere.
+- Or give air_builder a variant of `coerce_struct_to_interface` that takes the concrete struct
+  type explicitly rather than reading it back from the (possibly-retyped) source node.
+
+This is precisely the subtle typecheck×lowering interaction that makes it a dedicated-session
+change: the failure mode of getting it wrong is another silent miscompile-to-segfault, the same
+class of bug being fixed.
+
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
 **fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
 be validated at `-O0` before anyone fights the limit.
