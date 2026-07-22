@@ -1,0 +1,39 @@
+// RFC 0029 regression (exit 42): interface vtable dispatch must map methods by
+// SIGNATURE, not by the order they are declared in the struct. This is the
+// classic vtable slot-assignment bug -- if slots were assigned in struct
+// declaration order, a struct that declares its methods in a different order than
+// the interface would cross-wire area() and tag().
+//
+// Both structs declare {area, tag} in the OPPOSITE order to each other and to the
+// interface. Each method is checked on each struct with distinct values, so any
+// cross-wiring changes the result:
+//   A: area=25 tag=100   B: area=8 tag=200
+// The exact-match guard returns 42 only if all four dispatch correctly.
+
+interface Shape:
+    fn area(self: Self) -> i64
+    fn tag(self: Self) -> i64
+
+struct A:
+    x: i64
+    fn tag(self: A) -> i64:
+        return 100 as i64
+    fn area(self: A) -> i64:
+        return self.x * self.x
+
+struct B:
+    y: i64
+    fn area(self: B) -> i64:
+        return self.y + 1 as i64
+    fn tag(self: B) -> i64:
+        return 200 as i64
+
+fn check(s: Shape) -> i64:
+    return s.area() * 1000 as i64 + s.tag()
+
+fn main() -> i64:
+    let ra = check(A(x: 5))
+    let rb = check(B(y: 7))
+    if ra == 25100 as i64 and rb == 8200 as i64:
+        return 42 as i64
+    return 1 as i64

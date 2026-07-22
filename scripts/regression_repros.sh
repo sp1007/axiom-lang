@@ -307,6 +307,7 @@ rows=(
   "t_ifacetuple|exit|42"
   "t_ifacetuplenest|exit|42"
   "t_ifacesumpayload|exit|42"
+  "t_ifacemethodorder|exit|42"
   # Also pins the IMAGE_FILE_DLL fix: before it, an #[export] in an EXECUTABLE
   # forced the DLL characteristic and Windows refused to load the image at all.
   "t_dfeexport|exit|42"
