@@ -1,105 +1,79 @@
 ---
 name: bug-two-array-payload-instantiations
-description: "OPEN, pre-existing: TWO distinct Option-with-ARRAY-payload instantiations in one program SIGSEGV. Either half alone is correct. Verified to reproduce on the pre-82d0565 compiler, so it is not fallout from the array type-arg fix. Repro bin/repro_twoarraypayload.ax (not registered — it crashes)."
+description: "FIXED bf67c7d (A==B 44688E18, 508/508). TWO Option-with-ARRAY-payload instantiations sharing a LENGTH SIGSEGV'd because mono's get_type_name_recursive read TypeEntry.name_id — which holds the array LENGTH — as an intern id, so every array of that length mangled to the same name and the second instantiation reused the first's layout. Third instance of the name_id footgun."
 metadata:
   node_type: memory
   type: project
 ---
 
-# OPEN — two array-payload Option instantiations crash
+# ✅ FIXED `bf67c7d` — two array-payload instantiations collided in the mangler
 
-Found 2026-07-22 while building a verification sweep for [[bug-array-typearg-mono-payload]].
+Found 2026-07-22 while building a verification sweep for [[bug-array-typearg-mono-payload]];
+closed 2026-07-22 (same family, same footgun).
 
-## Minimal repro — `bin/repro_twoarraypayload.ax`
+## Root cause — a THIRD `name_id`-is-not-a-name site
 
-```axiom
-struct P:
-    x: i32
-    y: i32
+`get_type_name_recursive` (mono.ax:275) returned `pool.get(entry.name_id)` for any entry
+with a non-zero `name_id`, **before** reaching its own structural branches further down —
+which already built correct names like `arr_<len>_<elem>` and were simply unreachable.
+For an ARRAY, `name_id` is the **LENGTH**, so the name came out as whatever string happened
+to be interned at that id. Traced decisively:
 
-fn main() -> i64:
-    mut r := 0 as i64
-    let n: Option[Option[[i32; 2]]] = Some(Some([3, 40]))
-    match n:
-        Some(inner):
-            match inner:
-                Some(arr):
-                    r = r + (arr[0] + arr[1]) as i64
-                None:
-                    r = r + 0
-        None:
-            r = r + 0
-    let s: Option[[P; 2]] = Some([P(x: 1, y: 2), P(x: 3, y: 40)])
-    match s:
-        Some(arr):
-            r = r + (arr[1].x + arr[1].y) as i64
-        None:
-            r = r + 0
-    return r          // want 86; actual SIGSEGV
+```
+MANGLEDBG _AX_std_Box__T arg0=482 kind0=3      ([i64; 2])
+MANGLEDBG _AX_std_Box__T arg0=484 kind0=3      ([i32; 2])
 ```
 
-Deterministic (3/3 runs, and two builds are byte-identical). **Either half alone is
-correct.**
+Both `[i32;2]` and `[i64;2]` mangled to `Box__T` — intern id 2 was the generic param name
+`"T"`. Two instantiations differing only in element type therefore shared ONE monomorphized
+type, and the second silently reused the first's layout.
 
-## Sharpened rule (measured 2026-07-22; the nesting is irrelevant)
+The fix excludes ARRAY (length) and RESULT (err type id) from the early name return, so both
+fall through to the structural branches, and gives OPTION a name of its own — it has none, so
+every `Option[..]` type argument previously mangled to the shared fallback `"type"`.
 
-The nested Option in the repro above is incidental. The real trigger is **two
-Option-with-ARRAY payloads of the SAME LENGTH, one with a narrow (<8-byte) scalar
-element and the other with a STRUCT element**:
+## Why the earlier hypotheses looked refuted
 
-| pair | length | result |
-|---|---|---|
-| `[i32;2]` + `[P;2]` | same 2 | **CRASH** (both orders) |
-| `[i16;2]` + `[P;2]` | same 2 | **CRASH** |
-| `[u8;2]`  + `[P;2]` | same 2 | **CRASH** |
-| `[i32;4]` + `[P;4]` | same 4 | **CRASH** |
-| `[i32;2]` + `[Q;2]` (Q = 16-byte struct) | same 2 | **CRASH** |
-| `[i32;2]` + `[P;4]` | differ | ok |
-| `[i32;3]` + `[P;2]` | differ | ok |
-| `[i64;2]` + `[P;2]` | same 2 | ok |
-| `[i32;2]` + `[i64;2]` (no struct) | same 2 | ok |
-| `[P;2]` + `[Q;2]` (both struct) | same 2 | ok |
-| `Option[[P;2]]` alone, or with a scalar Option / a plain array | — | ok |
+The two theories recorded against this crash were *"same length → same mangled name"* and
+*"same length + differing total size"*. Both were rejected because the measured table showed
+same-length pairs that worked (`[i64;2]` + `[P;2]`, `[P;2]` + `[Q;2]`).
 
-(`P = {i32,i32}` 8 bytes, `Q = {i64,i64}` 16 bytes.)
+**They were rejected for the wrong reason.** The collision really is keyed by length; it is
+only OBSERVABLE when the merged layouts disagree. `[i64;2]` and `[P;2]` are both 16 bytes
+with an 8-byte element, so sharing one instantiation is harmless. The crashing pairs are
+exactly those where a narrow-scalar element merged with a struct element and the two halves
+disagreed about aggregate-vs-scalar handling.
 
-**Two hypotheses tried and REJECTED — neither fits the whole table:**
-1. *Same length → same mangled name → the two instantiations collide.* Fails on
-   `[i64;2]` + `[P;2]`, which shares length 2 yet works.
-2. *Same length + different total array SIZE.* Fails on `[P;2]`(16B) + `[Q;2]`(32B),
-   which differ in size yet work, and on `[i32;2]`(8B) + `[P;4]`(32B), which differ in
-   both yet also work.
+⚠️ **Lesson: a hypothesis that explains the failures but "predicts collisions that don't
+crash" is not refuted — silent-but-harmless is a real outcome of aliasing.** Ask whether the
+non-failing rows would be *observable* before discarding the theory. Tracing the mangled name
+directly settled in one build what the behaviour table could not settle at all.
 
-The narrow-scalar-element vs struct-element distinction is doing real work in the rule and
-is not explained by either. **Trace next, do not theorise** — that is what settled the
-three previous bugs in this area.
+## Two related gaps closed with it (both silent miscompiles)
 
-## Not a regression
+1. **Generic ctor element width.** A bare int-literal array defaults to `[i32; N]`, so
+   `let b: Box[[i64;2]] = Box(v: [5,6])` inferred the type argument from the VALUE and built
+   `Box[[i32;2]]` — 4-byte stores read back at the 8-byte stride, so the sum came out 6.
+   `try_instantiate_struct_ctor` now takes the `expected` type and binds its params from that
+   instantiation's field types, which coerces the literal at the same time.
+2. **`Box[[i32; 3]](v: ..)` was a parse error** while the same spelling in TYPE position
+   worked. The `[` led now parses a bracketed argument as a TYPE when it contains a `;` at
+   bracket depth 1 — an array literal never can, so `f[[1,2][0]]` still parses as an
+   expression.
 
-Reproduces identically on a compiler built from the pre-`82d0565` source, so it is NOT
-fallout from the array type-arg monomorphization fix. Both instantiations are
-Option-with-an-ARRAY-payload, which points at their registration/mono interacting rather
-than at either shape being wrong.
+## Gate + oracles
 
-## Everything else in the sweep is CLEAN (banked as `t_arraygenerics`, exit 110)
+A==B `44688E182D4C0084`, **508/508**. `t_twoarraypayload`(104) covers four same-length
+array payloads (i32 / 8-byte struct / i16 / 16-byte struct); `t_arrayctorgeneric`(80) covers
+both spellings, nested array type args, a two-param generic, non-merging of same-length
+different-element instantiations, and the array-literal-as-index guard. Both SIGSEGV on the
+pre-fix compiler and are identical across O0–O3.
 
-generic fn with an array param · `Vec[[i32;3]]` element · `HashMap[str,[i32;3]]` value ·
-`Result[[i32;3],i64]` Ok payload · `[(i64,i64);2]` array-of-tuples · array return value ·
-`for x in arr` over an array payload · `Option[[P;2]]` struct elements. A parser gap was
-also noted: an explicit array type ARG in a ctor call (`Box[[i32;3]](v: …)`) is a parse
-error, while the same syntax in TYPE position (`let b: Box[[i32;3]] = Box(v: …)`) works —
-clean reject, two workarounds, low priority.
+## Also closed as stale on the same pass
 
-## ⚠️ How this was nearly mis-reported — 8-bit exit codes, again
-
-The first bisect produced a chain of "failures" (270→14, 275→19, 318→62, 366→110) that
-were **entirely my own arithmetic error**: bash exit codes are 8 bits, and 270 & 0xFF = 14.
-Every one of those was CORRECT. Only the SIGSEGV survived re-checking.
-
-This pitfall is already banked ("keep oracles 0..255") and I walked into it anyway. When a
-probe's expected value can exceed 255, either keep the accumulator small or subtract — and
-treat a "wrong" result that differs from the expectation by exactly 256 as the wraparound
-until proven otherwise. A crash (139) is the one signal that cannot be an exit-code
-artifact, which is why the bisect was redone using crash-vs-no-crash alone.
+The *"narrow-element array payload `Option[[i32;3]]` still returns 8"* residual recorded
+against [[bug-array-typearg-mono-payload]] was **already fixed by `82d0565`** and covered by
+`t_arrpayloadwidth`(166); it measured 48 (correct) before any change in this session. The
+note was stale, not an open bug.
 
 Related: [[bug-array-typearg-mono-payload]], [[probe-boxed-payload-2026-07-22]].

@@ -112,6 +112,24 @@ lengths does NOT make it robust: each extra field interns another name and shift
 ids being chased (tried both sparse and dense spreads; neither reproduced). The `.ax`
 header says all of this.
 
+## A THIRD site, found 2026-07-22d — fixed `bf67c7d`
+
+The audit above grepped name-based *reads over arbitrary type entries* and found one
+unguarded site. It missed a second, in a different file: **`get_type_name_recursive`
+(mono.ax:275)**, which builds the mangled name for a generic type ARGUMENT. It returned
+`pool.get(entry.name_id)` for any entry with a non-zero `name_id`, so an array's LENGTH was
+used as an intern id — and every array of a given length produced the SAME name. Two
+instantiations differing only in element type shared one monomorphized type; when one had a
+narrow scalar element and the other a struct element, they disagreed about
+aggregate-vs-scalar handling and SIGSEGV'd. Full write-up:
+[[bug-two-array-payload-instantiations]].
+
+Note the shape of the miss: the function's OWN later branches already build correct
+structural names (`arr_<len>_<elem>`, `ptr_`, `slice_`, …) — they were simply unreachable
+behind the early return. **When auditing a footgun, grep the field name across ALL modules,
+not just the module where the first instance appeared**, and check whether correct handling
+already exists but is shadowed.
+
 ## Companion audit of `TypeEntry.extra` — CLEAN, do not repeat
 
 `extra` is polymorphic by design (element for array/pointer/ref/slice, struct index for
