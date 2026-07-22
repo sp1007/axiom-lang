@@ -1,0 +1,59 @@
+// Oracle (exit 92): RFC 0017 — module-level globals declared WITHOUT an
+// initializer (`mut g: T`) are legal and zero-initialized, across every value
+// category the RFC 0017 storage surface covers.
+//
+// Banked 2026-07-22: the backlog listed "uninit-decl = parse error" as an open
+// RFC 0017 gap; a probe showed all seven categories already build and run. This
+// oracle pins that behaviour so it cannot regress silently. Every global here
+// must read as zero BEFORE first assignment (that is the zero-init contract),
+// then hold what was written.
+struct P:
+    x: i64
+    y: i64
+
+mut g_scalar: i64
+mut g_bool: bool
+mut g_f64: f64
+mut g_str: str
+mut g_struct: P
+mut g_arr: [i64; 3]
+mut g_tup: (i64, i64)
+mut g_opt: Option[i64]
+
+fn main() -> i64:
+    mut acc := 0 as i64
+
+    // zero-init contract: everything reads as zero/empty before assignment
+    if g_scalar == 0 as i64 and not g_bool and g_str.len == 0 as i64:
+        acc = acc + 10 as i64
+    if g_struct.x == 0 as i64 and g_struct.y == 0 as i64 and g_arr[1] == 0 as i64:
+        acc = acc + 10 as i64
+
+    // scalars
+    g_scalar = 20
+    g_bool = true
+    g_f64 = 1.5
+    if g_scalar == 20 as i64 and g_bool and g_f64 > 1.4:
+        acc = acc + 12 as i64
+
+    // 16-byte inline primitive
+    g_str = "hello"
+    if g_str.len == 5 as i64:
+        acc = acc + 10 as i64
+
+    // by-address aggregates: struct / array / tuple
+    g_struct.x = 30
+    g_struct.y = 12
+    g_arr[0] = 1
+    g_arr[2] = 9
+    g_tup.0 = 4
+    g_tup.1 = 6
+    if g_struct.x + g_struct.y == 42 as i64 and g_arr[0] + g_arr[2] == 10 as i64 and g_tup.0 + g_tup.1 == 10 as i64:
+        acc = acc + 30 as i64
+
+    // pointer-repr (Option box)
+    g_opt = Some(20)
+    if g_opt.unwrap() == 20 as i64:
+        acc = acc + 20 as i64
+
+    return acc

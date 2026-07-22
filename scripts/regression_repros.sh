@@ -182,6 +182,7 @@ rows=(
   "t_toradix|exit|99"
   "t_tohexup|exit|77"
   "t_strenc|exit|70"
+  "t_globuninit|exit|92"
   "t_numufcs|exit|11"
   "t_numufcsneg|reject|"
   "t_numufcswide|exit|7"
