@@ -1,0 +1,11 @@
+// REJECT: an RFC 0019 multi-field variant bound to a SINGLE name. This used to type the
+// name as field 0 and let the body read `.0`/`.1` off a scalar -> SIGSEGV (BUG#53 class).
+type Shape = Pair(i64, i64) | Empty
+
+fn main() -> i64:
+    let a: Shape = Pair(3, 40)
+    match a:
+        Pair(t):
+            return t.0 + t.1
+        Empty:
+            return 0

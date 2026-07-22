@@ -3464,6 +3464,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                             self.set_node_type(ap, fld_ty)
                                     ap = self.tree.nodes.data[ap].next_sibling
                                     afi = afi + 1 as i64
+                                // An RFC 0019 synthesized payload binds one name per FIELD, so
+                                // the pattern's arity must match the variant's. Binding a
+                                // two-field variant to a SINGLE name (`Pair(t)` for
+                                // `Pair(i64, i64)`) typed `t` as field 0 and then let the body
+                                // read `t.0`/`t.1` off a scalar — an accept-then-SEGFAULT
+                                // (BUG#53 class). The supported form is `Pair(x, y)`.
+                                // Safe to compare counts here because a flagged synth struct is
+                                // unambiguously RFC 0019 (`__mfv_…`): a TUPLE payload registers
+                                // as an UNFLAGGED `__tup…` and takes the single-binding branch
+                                // below, where binding one name to the whole tuple is correct.
+                                if mf_struct_idx < self.types.structs.len and afi != self.types.structs.data[mf_struct_idx].fields.len:
+                                    ax_printf_local("error: variant pattern binds the wrong number of values: this variant has %d field(s) but the pattern binds %d; write one name per field\n", self.types.structs.data[mf_struct_idx].fields.len, afi, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                    self.diags_count = self.diags_count + 1 as i64
                             elif arg != 0 as u32 and self.tree.nodes.data[arg].kind == NODE_BINDING_PAT:
                                 let arg_sym_idx = self.tree.nodes.data[arg].payload
                                 if arg_sym_idx != 0 as u32:

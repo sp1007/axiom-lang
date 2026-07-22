@@ -1,0 +1,25 @@
+// GUARD for the t_mfvarity reject: every legitimate binding shape must still compile.
+// A one-name binding is correct for an UNFLAGGED payload (tuple / struct / scalar); the
+// arity rule applies only to the flagged RFC 0019 synth struct.
+type Shape = Pair(i64, i64) | Tup((i64, i64)) | Text(str) | One(i64) | Empty
+
+fn f(s: Shape) -> i64:
+    match s:
+        Pair(x, y):          // 2 fields, 2 names
+            return x + y
+        Tup(t):              // unflagged tuple payload, ONE name binds the whole tuple
+            return t.0 + t.1
+        Text(msg):           // RFC 0019 str wrap: 1 synth field, 1 name
+            return msg.len
+        One(n):              // plain scalar payload
+            return n
+        Empty:
+            return 0
+
+fn main() -> i64:
+    let a: Shape = Pair(3, 40)
+    let b: Shape = Tup((1, 2))
+    let c: Shape = Text("hello")
+    let d: Shape = One(7)
+    let e: Shape = Empty
+    return f(a) + f(b) + f(c) + f(d) + f(e)   // 43 + 3 + 5 + 7 + 0 = 58

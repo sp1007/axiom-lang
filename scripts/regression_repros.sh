@@ -440,6 +440,10 @@ rows=(
   # a non-generic user sum's variant ctor coerces its payload arg to the DECLARED
   # payload type (bare int literals in a tuple payload used to stay i32 -> 8B in a 16B slot)
   "t_sumtupctor|exit|102"
+  # an RFC 0019 multi-field variant bound to ONE name was accept-then-SEGFAULT
+  "t_mfvarity|reject|"
+  # ...and every legitimate binding shape must still compile (guard for the reject above)
+  "t_mfvarityok|exit|58"
   # user free-fn overload: concrete 1-arg vs generic-first-param 2-arg (no over-match)
   "t_useroverload|exit|42"
   # tuple-literal RHS coerced on ASSIGNMENT to a tuple-typed lvalue (global reassign)
