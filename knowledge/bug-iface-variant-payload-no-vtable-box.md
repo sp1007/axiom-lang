@@ -202,28 +202,33 @@ Still deliberately deferred: it spans two phases, and the arity/width rejects in
 have broken self-build before, so it needs the full gate rather than a loop-tail edit. But it
 now starts from "add a coerce in two known places."
 
-### Ordering conflict — read this before writing the fix
+### ~~Ordering conflict~~ — DISPROVEN 2026-07-23 by the user-sum fix
 
-"Coerce on `node_types[payload_idx]`" is necessary but NOT sufficient, and naively doing both
-edits deadlocks. `coerce_struct_to_interface` (`air_builder.ax:1744`) builds the box from the
-SOURCE node`s type: line 1752 requires `node_types[src_node].kind == TYPE_KIND_STRUCT`, and it
-uses that concrete struct type as the box`s inner type. But the proposed typecheck edit
-(`coerce_variant_ctor_payload` calling `infer_node(arg, interface_pt)`) **re-types the payload
-node to the interface** — so by the time air_builder runs, `node_types[payload_idx]` is the
-INTERFACE, line 1752 sees a non-struct and BAILS, and no box is built. The two edits fight.
+I documented an "ordering conflict" here: that `coerce_variant_ctor_payload` calling
+`infer_node(arg, interface_pt)` would re-type the payload node to the interface, making
+`coerce_struct_to_interface` (which requires `node_types[src_node].kind == TYPE_KIND_STRUCT`,
+`air_builder.ax:1752`) bail. **It does not.** User sums ARE `TYPE_KIND_SUM`, so
+`coerce_variant_ctor_payload` genuinely runs for them and calls `infer_node(arg, Shape)` — and
+the user-sum fix (`0E1D6F31`) still boxes correctly, which is only possible if
+`node_types[payload_idx]` remained the concrete struct. So `infer_node(node, expected)` returns
+a coerced type but does NOT overwrite the node`s stored type. The conflict was imagined.
 
-Whatever the fix, air_builder must still be able to recover the CONCRETE struct type at the box
-site. Options, in rough order of safety:
+**What this unblocks:** candidate 1 (thread the expected type into ctor lowering) is clean, not
+deadlocked. Coercing on the concrete `node_types[payload_idx]` with the interface as target is
+exactly what worked for user sums, and it will work for Option/Result too once the target
+interface is in hand at the ctor site.
 
-- Have `coerce_variant_ctor_payload` record the interface as the intended type WITHOUT
-  overwriting the payload node`s concrete struct type (e.g. mark the ctor node, not the payload
-  node) so air_builder still sees a struct at `payload_idx` and knows the target from elsewhere.
-- Or give air_builder a variant of `coerce_struct_to_interface` that takes the concrete struct
-  type explicitly rather than reading it back from the (possibly-retyped) source node.
+### The one thing Option/Result actually lacks
 
-This is precisely the subtle typecheck×lowering interaction that makes it a dedicated-session
-change: the failure mode of getting it wrong is another silent miscompile-to-segfault, the same
-class of bug being fixed.
+`lower_variant_construct` got the target interface from `find_variant_info(sum_type_id, ...)`,
+because a USER sum`s DECLARATION carries `payload_type = Shape`. Option/Result have no such
+declaration — their payload is generic `T`, and the binding `T = Shape` lives only on the `let`
+annotation `Option[Shape]`, never on the `Some` ctor node (an IFPROBE showed `node_types[ctor]`
+is `Option[Sq]`, not `Option[Shape]`). So the remaining work is exactly: get the declared
+`Option[Shape]` — which the `let`/return/arg site knows — down to the `Some`/`Ok` lowering in
+`lower_call_expr`, extract `.extra` = `Shape`, and coerce. No phantom conflict stands in the
+way; it is a plumbing change (thread an expected type, or special-case the `let`-of-`Some` at
+the binding site), gated because it touches the ctor lowering path.
 
 ## Why Option/Result is still open (and how the user-sum half got fixed anyway)
 
