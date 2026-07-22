@@ -14,6 +14,19 @@
 // The exit code only proves the program still builds and runs; the number is the
 // part that proves the root category is wired.
 
+// exported_via_helper additionally pins TRANSITIVE reachability from an export
+// root. The first version of this oracle made every exported function a leaf, so
+// it proved only that roots survive -- never that the walk continues THROUGH one.
+// A pass that seeded export roots but failed to follow their call edges would have
+// passed it while shipping a DLL whose advertised entry point jumps into a hole.
+//
+// deep_helper is deliberately too large to inline. That matters: at -O1 the
+// inliner deletes call edges, so a small callee legitimately disappears from the
+// graph and its pruning is correct. A small helper here would have tested the
+// inliner, not the root set -- and reading the prune list without accounting for
+// that is exactly how this oracle's own author briefly "found" a bug that was not
+// there.
+
 #[export]
 fn exported_add(a: i64, b: i64) -> i64:
     return a + b
@@ -21,6 +34,22 @@ fn exported_add(a: i64, b: i64) -> i64:
 #[export]
 fn exported_mul(a: i64, b: i64) -> i64:
     return a * b
+
+fn deep_helper(x: i64) -> i64:
+    mut acc = 0 as i64
+    mut i = 0 as i64
+    while i < 3 as i64:
+        acc = acc + x
+        if acc > 1000 as i64:
+            acc = acc - 1 as i64
+        if acc < 0 as i64:
+            acc = acc + 2 as i64
+        i = i + 1
+    return acc
+
+#[export]
+fn exported_via_helper(x: i64) -> i64:
+    return deep_helper(x)
 
 fn main() -> i64:
     return 42
