@@ -24,9 +24,24 @@ o.unwrap().area()        // SIGSEGV
 | `Result[Shape, i64] = Ok(Sq(..))` | **SEGV** |
 | user sum `Wrap = Box(Shape)`, `Box(Sq(..))` | **SEGV** |
 | `fn take(o: Option[Shape])`, `take(Some(Sq(..)))` | **SEGV** |
+| **tuple element**, `let t: (Shape, i64) = (Sq(..), 7)` | **SEGV** |
 | `Vec[Shape]` + `push(Sq(..))` | ok |
+| `HashMap[i64, Shape]` + `insert(1, Sq(..))` | ok |
+| `mut s: Shape = Sq(..)` then `s = Rec(..)` (reassign) | ok |
+| generic struct field `Box[Shape](v: Sq(..))` | ok |
+| array literal `[Sq(..), Sq(..)]` typed as shapes | ok |
 | `struct Holder: s: Shape` | ok |
 | `let s: Shape = Sq(..)` | ok |
+
+**The tuple case was PREDICTED and then found (2026-07-23).** Reasoning that the root cause is
+an enumerated site list with an omission, tuple-element construction is the same kind of
+aggregate-payload position as a variant payload — so it should fail the same way. It does, and
+the same workaround fixes it (`let s: Shape = Sq(..)` then `(s, 7)` returns 16). That is
+confirmation that the defect is the missing site, not anything specific to `Some`/`Ok`.
+
+Probed alongside it and CLEAN: HashMap values, interface reassignment, generic struct fields,
+generic fn params, array literals. So the omission is narrow — aggregate CONSTRUCTOR payloads
+(variant and tuple) — rather than "containers in general".
 
 **Workaround:** coerce through a typed local first — `let s: Shape = Sq(side: 3)` then
 `Some(s)` returns 9 correctly. The box gets built at the `let`, and wrapping a value that is
