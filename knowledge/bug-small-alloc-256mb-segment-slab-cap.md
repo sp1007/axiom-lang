@@ -91,9 +91,11 @@ let the tuple/user-sum fixes build. Two OTHER copies were NOT touched and still 
   bundled (`main_air.ax:955,963`) — never `axalloc.ax`. Both files define `ax_alloc`; if both
   were bundled the self-link would fail on a duplicate symbol, and it does not. So
   `bootstrap/runtime/axalloc.ax` is **superseded for every self-link/native/ELF build** and its
-  4096 does not gate them. It IS still referenced by `tests/codegen/axiom_freestanding_runtime_test.go`,
-  so "fully dead" is unproven — treat it as "not on the self-host path" pending that test`s
-  check. If it is ever reinstated as a bundled allocator, it needs the same raise + derive.
+  4096 does not gate them. Its only remaining consumer is
+  `tests/codegen/axiom_freestanding_runtime_test.go` — which is **not run by any script in
+  `scripts/` or `ci/`** and is a runtime smoke test that never allocates near 256 MB, so the
+  4096 there is harmless at any value. Confirmed off the hot path and inert. If it is ever
+  reinstated as a bundled allocator, it needs the same raise + derive.
 - `runtime/axalloc/*.c` (4096) — the GCC-backend allocator (`main_air.ax:1439` links
   `axalloc_compiled.c`), only used on the `-use-gcc` path, not the default self-link build.
 
