@@ -1,0 +1,11 @@
+// REJECT: a variant constructor's argument count was never checked. A tuple payload
+// given TWO arguments (instead of one tuple) SIGSEGV'd; the other four mismatch shapes
+// were accepted and produced garbage. See t_ctorarityok for the shapes that must stay legal.
+type S = P((i64, i64)) | E
+fn main() -> i64:
+    let a: S = P(3, 40)
+    match a:
+        P(t):
+            return t.0 + t.1
+        E:
+            return 0

@@ -558,6 +558,58 @@ pub fn coerce_variant_ctor_payload(mut self: ptr[TypeChecker], callee: u32, sum_
             break
         vi = vi + 1
 
+// A variant constructor's argument count was never checked. Every mismatch was accepted
+// and produced garbage or a crash:
+//   P(i64, i64)   built as P(3)        -> field 1 never written  (returned 3)
+//   P(i64, i64)   built as P(3, 40, 5) -> extra arg silently dropped
+//   P((i64,i64))  built as P(3, 40)    -> SIGSEGV
+//   P(i64)        built as P(3, 40)    -> extra arg silently dropped
+//   P(i64, i64)   built as P((3, 40))  -> garbage (127)
+// All BUG#53 class. The expected count comes from the payload's SHAPE: a FLAGGED
+// RFC 0019 synth struct (`__mfv_…`, a multi-field variant or the >8B primitive wrap)
+// takes one argument per FIELD; any other payload — including an UNFLAGGED `__tup…`
+// tuple — is a single value taking exactly one argument; a payload-less variant takes
+// none. That distinction is exactly the one the match-pattern arity check relies on.
+pub fn check_variant_ctor_arity(mut self: ptr[TypeChecker], callee: u32, sum_type_id: u32):
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return
+    let vsym_idx = self.tree.nodes.data[callee].payload
+    if vsym_idx == 0 as u32 or (vsym_idx as i64) >= self.symtable.symbols.len:
+        return
+    let vsym = self.symtable.symbols.data[vsym_idx as i64]
+    if vsym.kind != SYM_VARIANT:
+        return
+    if (sum_type_id as i64) >= self.types.entries.len:
+        return
+    let se = self.types.entries.data[sum_type_id as i64]
+    if se.kind != TYPE_KIND_SUM or (se.extra as i64) >= self.types.sumtypes.len:
+        return
+    let si = self.types.sumtypes.data[se.extra as i64]
+    mut found := false
+    mut want := 0 as i64
+    mut vi := 0 as i64
+    while vi < si.variants.len:
+        if si.variants.data[vi as i64].name_id == vsym.name_id:
+            found = true
+            let pt = si.variants.data[vi as i64].payload_type
+            if pt != TYPE_UNKNOWN and (pt as i64) < self.types.entries.len:
+                want = 1 as i64
+                let pe = self.types.entries.data[pt as i64]
+                if pe.kind == TYPE_KIND_STRUCT and (pe.flags & 1 as u16) != 0 as u16 and (pe.extra as i64) < self.types.structs.len:
+                    want = self.types.structs.data[pe.extra as i64].fields.len
+            break
+        vi = vi + 1
+    if not found:
+        return
+    mut got := 0 as i64
+    mut a := self.tree.nodes.data[callee].next_sibling
+    while a != 0 as u32:
+        got = got + 1 as i64
+        a = self.tree.nodes.data[a].next_sibling
+    if got != want:
+        ax_printf_local("error: variant constructor takes %d value(s) but %d were given\n", want, got, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        self.diags_count = self.diags_count + 1 as i64
+
 // Substitute a template variant's generic payload param against the concrete
 // type-args carried by a GENERIC_INST match scrutinee. An UNANNOTATED
 // `let x = Some((a,b))` types as a GENERIC_INST (`Option[(i64,i64)]`) rather than a
@@ -4394,6 +4446,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 elif entry.kind == TYPE_KIND_SUM:
                     result_type = self.try_instantiate_variant_call(callee, callee_type, expected)
                     self.coerce_variant_ctor_payload(callee, callee_type)
+                    self.check_variant_ctor_arity(callee, callee_type)
                 elif entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
                     result_type = callee_type
                 elif self.tree.nodes.data[callee].kind == NODE_IDENT:

@@ -1,0 +1,18 @@
+// GUARD for the t_ctorarity reject: every legitimate variant-constructor arity must still
+// compile — a multi-field variant given one arg per FIELD, an unflagged tuple payload given
+// ONE tuple, the RFC 0019 str wrap, a plain scalar payload, and a payload-less variant.
+type S = P(i64, i64) | T((i64, i64)) | Msg(str) | One(i64) | E
+fn f(s: S) -> i64:
+    match s:
+        P(x, y):
+            return x + y
+        T(t):
+            return t.0 + t.1
+        Msg(m):
+            return m.len
+        One(n):
+            return n
+        E:
+            return 0
+fn main() -> i64:
+    return f(P(3, 40)) + f(T((1, 2))) + f(Msg("hello")) + f(One(7)) + f(E)
