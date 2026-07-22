@@ -5,8 +5,13 @@ metadata:
   type: project
 ---
 
-**Status: OPEN.** Found by probing 2026-07-23. Repro:
-`bin/known_fail_iface_variant_payload.ax` (expect 9, get SIGSEGV / exit 139).
+**Status: PARTIAL.** Tuple (`909e9e5`) and user-sum (`0E1D6F31`) interface payloads are FIXED
+and pinned by oracles `t_ifacetuple` / `t_ifacetuplenest` / `t_ifacesumpayload`. **Option/Result
+(`Some`/`Ok`) still SIGSEGV** — a genuinely separate code path (`lower_call_expr`) with the
+harder type-recovery problem; details in "Why Option/Result is still open" below. The bulk of
+this note is the original investigation, retained because the remaining half needs it.
+
+Original repro (still crashes): `bin/known_fail_iface_variant_payload.ax` (expect 9, exit 139).
 
 ```
 interface Shape:  fn area(self: Self) -> i64
@@ -219,6 +224,24 @@ site. Options, in rough order of safety:
 This is precisely the subtle typecheck×lowering interaction that makes it a dedicated-session
 change: the failure mode of getting it wrong is another silent miscompile-to-segfault, the same
 class of bug being fixed.
+
+## Why Option/Result is still open (and how the user-sum half got fixed anyway)
+
+The conflict above is real for the `Some`/`Ok` path but **did not block the user-sum half**,
+and the difference is the whole lesson. USER sums lower through `lower_variant_construct`
+(`air_builder.ax:3169`), which receives `payload_type` — the DECLARED variant payload — directly
+from `find_variant_info`. So the box target is known without reading it back from a node
+typecheck may have retyped, and one guarded `coerce_struct_to_interface(payload_type, arg,
+reg)` in the single-value branch fixed it (`0E1D6F31`, oracle `t_ifacesumpayload`). No ordering
+conflict, because nothing is recovered from a node.
+
+`Some`/`Ok`/`Err` lower through the `lower_call_expr` branch instead, which does NOT have the
+declared payload in hand — it derives `box_ty` from the payload`s own type — and that is where
+the whole "recover the type from a node typecheck retypes" tangle lives. So the remaining work
+is specifically: give the Option/Result ctor path access to the declared interface payload the
+way `lower_variant_construct` already has it. The `-ctgc`/OOM history above is moot now that the
+256 MB cap is raised, so the constraint is purely the type-recovery one documented in this
+section.
 
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
 **fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
