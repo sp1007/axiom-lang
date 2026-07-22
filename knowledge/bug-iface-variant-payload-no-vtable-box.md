@@ -128,12 +128,27 @@ this one is stage1-side and function-local.
    call-free statements add freely.
 
 **And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
-**fine at `-O0`**. So there is no hard ceiling on call sites; some `-O1` pass degrades
-superlinearly once the function carries one more, and that pass is the real bug — the RFC 0029
-fix is only its most visible victim. Two practical consequences: the coercion design can be
-validated at `-O0` before anyone fights the limit, and route 3 has a concrete starting point —
-bisect the `-O1` pass list against this repro, which is a two-line source change plus one
-build.
+**fine at `-O0`**. So there is no hard ceiling on call sites. The coercion design can therefore
+be validated at `-O0` before anyone fights the limit.
+
+**CORRECTION — it is the LINKER, not an optimizer pass.** I first concluded "some `-O1` pass
+degrades superlinearly" and wrote that down. Running the repro with `--time` falsifies it:
+
+```
+[codegen] reloc table done: 15281 relocs, 2447 syms, writing object...
+[time] codegen: 1868 ms
+[Debug] Stage 4: Finished native code generation.
+[Debug] Stage 5: Starting self-linking...
+AXIOM RUNTIME PANIC: Out of memory
+```
+
+Codegen COMPLETES and writes its object. The OOM is in **stage 5, self-linking**. `-O1` matters
+only because it changes the object handed to the linker (relocation and symbol counts), not
+because an optimizer pass misbehaves.
+
+So route 3 starts in `linker.ax`, not in the optimizer pipeline — a much narrower search, and a
+different file from the one my previous note sent people to. The lesson is the cheap one: one
+`--time` run replaced a plausible theory I had already committed.
 
 Do NOT start by designing the coercion. Two attempts have already failed for a reason that has
 nothing to do with their design.
