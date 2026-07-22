@@ -36669,6 +36669,17 @@ fn print_module(mod: AirModule):
         print_func(mod.funcs.data[i])
         i = i + 1
 
+// A file the build CANNOT proceed without. read_file_content returns "" on
+// failure, which is indistinguishable from an empty file, so every caller of it
+// for a required input silently compiled against nothing. Counting the failures
+// here lets the driver halt for the same reason BUG#53 made parse errors halt:
+// a pipeline fed garbage produces garbage far from the real cause.
+fn read_required_file(path: str, fails: ptr[i64]) -> str:
+    let content = read_file_content(path)
+    if std.string.len(content) == 0:
+        fails[0] = fails[0] + 1 as i64
+    return content
+
 fn read_file_content(path: str) -> str:
     let r = std.io.open(path)
     if r.is_ok():
@@ -36682,11 +36693,19 @@ fn read_file_content(path: str) -> str:
             // much code can be added to stage1 ("stage0 ceiling"). See knowledge/bugs.md.
             return r2.unwrap()
         else:
-            ax_puts_local("Error: read_all failed: ")
+            // Name the FILE. Both arms used to print only the errno-ish string, so a
+            // failed stdlib bundle produced eight identical anonymous lines --
+            // `Error: open failed:` with nothing after it -- which says neither what
+            // was being opened nor why. CLAUDE.md Â§8: diagnostics must be actionable.
+            ax_puts_local("error: cannot read source file:")
+            ax_puts_local(path)
             ax_puts_local(r2.unwrap_err())
     else:
-        ax_puts_local("Error: open failed: ")
+        ax_puts_local("error: cannot open source file:")
+        ax_puts_local(path)
         ax_puts_local(r.unwrap_err())
+        // Overwhelmingly the cause, and invisible from the message alone.
+        ax_puts_local("note: the compiler resolves std/*.ax and imported modules relative to the CURRENT DIRECTORY -- run it from the repository root")
     return ""
 
 fn write_file_content(path: str, content: str) -> bool:
@@ -36885,35 +36904,35 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
 
 
 
-fn concatenate_stdlib(src: str) -> str:
+fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     ax_puts_local("[Debug] Reading result.ax...")
     fflush(null as ptr[void])
-    let raw_res = read_file_content("std/result.ax")
+    let raw_res = read_required_file("std/result.ax", fails)
     ax_puts_local("[Debug] Reading alloc.ax...")
     fflush(null as ptr[void])
-    let raw_alloc = read_file_content("std/mem/alloc.ax")
+    let raw_alloc = read_required_file("std/mem/alloc.ax", fails)
     ax_puts_local("[Debug] Reading scheduler.ax...")
     fflush(null as ptr[void])
-    let raw_sched = read_file_content("std/scheduler.ax")
+    let raw_sched = read_required_file("std/scheduler.ax", fails)
     ax_puts_local("[Debug] Reading runtime.ax...")
     fflush(null as ptr[void])
-    let raw_rt = read_file_content("std/runtime.ax")
+    let raw_rt = read_required_file("std/runtime.ax", fails)
     ax_puts_local("[Debug] Reading os.ax...")
     fflush(null as ptr[void])
-    let raw_os = read_file_content("std/os.ax")
+    let raw_os = read_required_file("std/os.ax", fails)
     ax_puts_local("[Debug] Reading string.ax...")
     fflush(null as ptr[void])
-    let raw_str = read_file_content("std/string.ax")
+    let raw_str = read_required_file("std/string.ax", fails)
     ax_puts_local("[Debug] Reading io.ax...")
     fflush(null as ptr[void])
-    let raw_io = read_file_content("std/io.ax")
+    let raw_io = read_required_file("std/io.ax", fails)
     // BUG#61b: std/collections.ax (Vec/HashMap/HashSet) was NOT in this bundle, so
     // `import std.collections` was silently dropped on the native build path and
     // Vec methods dispatched into garbage at runtime. It only needs std.result
     // (bundled above) + builtins, so bundle it like the rest.
     ax_puts_local("[Debug] Reading collections.ax...")
     fflush(null as ptr[void])
-    let raw_coll = read_file_content("std/collections.ax")
+    let raw_coll = read_required_file("std/collections.ax", fails)
 
     ax_puts_local("[Debug] Stripping imports from result.ax...")
     let res_src_raw = strip_imports(raw_res)
@@ -37448,7 +37467,19 @@ pub fn main() -> i32:
                 let src_nl2 = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl2, raw_syscall_rt)
                 @free(get_str_ptr(src_nl2))
-        src = concatenate_stdlib(src)
+        // BUG#53's rule applied one stage earlier: bad INPUT must halt the pipeline
+        // exactly as bad parse output does. read_file_content returns "" when it
+        // cannot open a file, so a missing stdlib used to bundle as empty text and
+        // flow all the way into codegen -- which then reported eight anonymous
+        // `open failed` lines followed by a ~2 KB executable that segfaults. The
+        // real cause (wrong working directory) was several screens above the
+        // symptom the user actually met.
+        mut stdlib_fails := 0 as i64
+        src = concatenate_stdlib(src, &stdlib_fails)
+        if stdlib_fails > 0 as i64:
+            ax_printf_local("error: %d stdlib source file(s) could not be read; aborting before code generation\n", stdlib_fails, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+            return 1
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 
     // RFC 0011 P3: for --staticlib, skip the whole pipeline when the source is
