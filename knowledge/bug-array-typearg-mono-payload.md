@@ -9,8 +9,8 @@ metadata:
 # ✅ FIXED `82d0565` — array type argument lost the mono variant payload type
 
 The last survivor of the 2026-07-22 boxed-payload sweep
-([[probe-boxed-payload-2026-07-22]]). **Diagnosis is complete**; only the implementation
-is left, and it is deliberately deferred because it touches generic monomorphization.
+([[probe-boxed-payload-2026-07-22]]), now closed. The symptom and the two refuted
+hypotheses below are kept because they are what the investigation had to walk through.
 
 ## Symptom
 
