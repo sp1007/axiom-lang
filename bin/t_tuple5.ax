@@ -1,0 +1,67 @@
+// Oracle (exit 91): RFC 0022 P5 — NESTED destructuring patterns and the
+// destructuring for-loop variable. Both are parser-only desugars over the P3
+// machinery: a nested pattern binds a fresh `__td` temp to the parent's field and
+// recurses into it, and `for (a, b) in v` makes the loop variable that temp with
+// the bindings prepended to the body.
+import std.collections
+import std.string
+
+fn main() -> i64:
+    mut acc := 0 as i64
+
+    // P5a — nested pattern in `let`
+    let n = ((1, 2), 3)
+    let ((a, b), c) = n
+    if a + b + c == 6 as i64:
+        acc = acc + 10 as i64
+
+    // P5a — 3 levels deep, mixed with a `_` wildcard at the outer level
+    let deep = (((10, 30), 2), 99)
+    let (((p, q), r), _) = deep
+    if p + q + r == 42 as i64:
+        acc = acc + 15 as i64
+
+    // P5a — `mut` propagates to every leaf binding, at any depth
+    mut ((ma, mb), mc) = ((1, 2), 3)
+    ma = 45
+    mc = mc + 1
+    if ma + mb + mc == 51 as i64:
+        acc = acc + 15 as i64
+
+    // P5a — the initializer is evaluated exactly ONCE (the temp is the block's
+    // first statement); a nested read must not re-evaluate it.
+    let (x, (y, z)) = (7, (8, 9))
+    if x + y + z == 24 as i64:
+        acc = acc + 10 as i64
+
+    // P5b — destructuring for-loop over Vec[(i64, i64)]
+    mut v := new_vec[(i64, i64)]()
+    v.push((20, 1))
+    v.push((20, 1))
+    mut s := 0 as i64
+    for (e0, e1) in v:
+        s = s + e0 + e1
+    if s == 42 as i64:
+        acc = acc + 15 as i64
+
+    // P5b — nested pattern as the loop variable
+    mut w := new_vec[((i64, i64), i64)]()
+    w.push(((1, 2), 5))
+    w.push(((3, 4), 6))
+    mut t := 0 as i64
+    for ((wa, wb), wc) in w:
+        t = t + wa + wb + wc
+    if t == 21 as i64:
+        acc = acc + 15 as i64
+
+    // P5b — the pairing that motivates it: char_indices yields (offset, codepoint)
+    mut cnt := 0 as i64
+    mut sumcp := 0 as i64
+    for (off, cp) in char_indices("abc"):
+        cnt = cnt + 1
+        sumcp = sumcp + cp + off
+    // 'a'+'b'+'c' = 97+98+99 = 294, offsets 0+1+2 = 3
+    if cnt == 3 as i64 and sumcp == 297 as i64:
+        acc = acc + 11 as i64
+
+    return acc

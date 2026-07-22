@@ -2594,74 +2594,104 @@ pub fn parse_var_decl(mut self: ptr[Parser]) -> u32:
 // each binding reads one tuple field through the ordinary tuple field-access path
 // (`_f<i>`). `_` bindings are skipped. Nested patterns are deferred (P3+): bindings
 // must be plain names or `_`.
-pub fn parse_tuple_destructure(mut self: ptr[Parser], kw_tok: Token) -> u32:
-    let is_mut = (kw_tok.kind == TK_MUT)
-    self.consume() // '('
-    mut names := new_u32_vec()   // interned binding name ids; 0 == wildcard `_`
+// RFC 0022 P3/P5: interned name for a destructuring temp, made unique by the AST
+// node index it is attached to (node indices are strictly increasing). The `__td`
+// PREFIX IS LOAD-BEARING: air_builder's lower_ident trusts an already-resolved
+// payload for `__td`-prefixed symbols instead of re-deriving the name from the
+// token (a synthesized ident has a placeholder token).
+pub fn fresh_td_name(mut self: ptr[Parser], node_idx: u32) -> u32:
+    let uniq = std.string.to_str(node_idx as i64)
+    let tmp_str = std.string.concat("__td", uniq)
+    safe_free_str(uniq)
+    let id = self.pool.intern(tmp_str)
+    safe_free_str(tmp_str)
+    return id
+
+// RFC 0022 P3/P5: give `bind` the initializer `<base_name>._f<idx>` â€” one tuple
+// field read through the ordinary tuple field-access path.
+pub fn attach_tuple_field_init(mut self: ptr[Parser], bind: u32, base_name: u32, idx: i64, kw_tok: Token):
+    let obj = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
+    self.set_payload(obj, base_name)
+    let fld = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(kw_tok))
+    self.append_child(fld, obj)
+    let istr = std.string.to_str(idx)
+    let fstr = std.string.concat("_f", istr)
+    safe_free_str(istr)
+    self.set_payload(fld, self.pool.intern(fstr))
+    safe_free_str(fstr)
+    let fid = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
+    self.append_child(fld, fid)
+    self.append_child(bind, fld)
+
+// RFC 0022 P5: emit one binding per member of a parenthesized destructuring
+// pattern, reading each member out of `base_name`. The opening `(` must ALREADY be
+// consumed; this consumes through the matching `)`.
+//
+// A member is a NAME (bind it), `_` (skip), or a NESTED `(...)` pattern â€” the P5
+// addition. Nesting is handled by binding a fresh `__td` temp to `base._f<i>` and
+// RECURSING into it, so `let ((a, b), c) = e` flattens to
+//   __td1 = e ; __td2 = __td1._f0 ; a = __td2._f0 ; b = __td2._f1 ; c = __td1._f1
+// with no new node kinds and no typecheck/lowering changes â€” the nested temp is an
+// ordinary tuple-typed local. Depth is bounded only by recursion.
+pub fn emit_destructure_members(mut self: ptr[Parser], block: u32, base_name: u32, kw_tok: Token, is_mut: bool):
+    mut i := 0 as i64
     while not self.check(TK_R_PAREN) and not self.check(TK_EOF):
         let prev_pos = self.pos
         let nt = self.peek()
-        if nt.kind == TK_IDENT:
+        if nt.kind == TK_L_PAREN:
+            self.consume() // '(' of the nested pattern
+            let sub_bind = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
+            let sub_name = self.fresh_td_name(sub_bind)
+            self.set_payload(sub_bind, sub_name)
+            self.attach_tuple_field_init(sub_bind, base_name, i, kw_tok)
+            self.append_child(block, sub_bind)
+            self.emit_destructure_members(block, sub_name, kw_tok, is_mut)
+        elif nt.kind == TK_IDENT:
             self.consume()
             let ntext = self.token_text(nt)
-            if std.string.len(ntext) == 1 as i64 and ntext[0] == 95 as u8: // '_'
-                (&names).push(0 as u32)
-            else:
-                (&names).push(self.pool.intern(ntext))
+            let is_wild = std.string.len(ntext) == 1 as i64 and ntext[0] == 95 as u8 // '_'
+            if not is_wild:
+                let nm = self.pool.intern(ntext)
+                let bind = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
+                if is_mut:
+                    self.set_flags(bind, FLAG_IS_MUT as u16)
+                self.set_payload(bind, nm)
+                self.attach_tuple_field_init(bind, base_name, i, kw_tok)
+                self.append_child(block, bind)
             @free(ntext as ptr[u8])
         else:
-            self.errorf(nt, "tuple destructuring binding must be a name or `_`")
+            self.errorf(nt, "tuple destructuring binding must be a name, `_`, or a nested `(...)` pattern")
             self.consume()
         if not self.check(TK_R_PAREN):
             self.expect(TK_COMMA)
         if self.pos == prev_pos:
             self.consume()
+        i = i + 1 as i64
     self.expect(TK_R_PAREN)
+
+pub fn parse_tuple_destructure(mut self: ptr[Parser], kw_tok: Token) -> u32:
+    let is_mut = (kw_tok.kind == TK_MUT)
+    // The block must exist BEFORE the pattern is parsed: parsing and emission are
+    // interleaved so a nested pattern can append its temp as it is recognised.
+    let block = self.tree.add_node(NODE_BLOCK, self.token_idx(kw_tok))
+    let tmp_name_id = self.fresh_td_name(block)
+    let tmp_decl = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
+    self.set_payload(tmp_decl, tmp_name_id)
+    self.append_child(block, tmp_decl)
+
+    self.consume() // '('
+    self.emit_destructure_members(block, tmp_name_id, kw_tok, is_mut)
     if self.check_raw(TK_EQ) or self.check_raw(TK_COLON_EQ):
         self.consume()
     else:
         self.errorf(self.peek(), "tuple destructuring requires an initializer `= EXPR`")
     let init = self.parse_expr_with_prec(BP_NONE)
     self.expect_newline()
-
-    let block = self.tree.add_node(NODE_BLOCK, self.token_idx(kw_tok))
-    // Unique temp name from the block's own (unique) node index.
-    let uniq = std.string.to_str(block as i64)
-    let tmp_str = std.string.concat("__td", uniq)
-    safe_free_str(uniq)
-    let tmp_name_id = self.pool.intern(tmp_str)
-    safe_free_str(tmp_str)
-    let tmp_decl = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
-    self.set_payload(tmp_decl, tmp_name_id)
+    // The temp's initializer is attached LAST (it is only parsed now) but the temp
+    // decl is still the block's FIRST statement, so EXPR is evaluated exactly once,
+    // before any binding reads it.
     if init != 0 as u32:
         self.append_child(tmp_decl, init)
-    self.append_child(block, tmp_decl)
-
-    mut i := 0 as i64
-    while i < names.len:
-        let nm = names.data[i]
-        if nm != 0 as u32:
-            let bind = self.tree.add_node(NODE_VAR_DECL, self.token_idx(kw_tok))
-            if is_mut:
-                self.set_flags(bind, FLAG_IS_MUT as u16)
-            self.set_payload(bind, nm)
-            // field access: __td._f<i>
-            let obj = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
-            self.set_payload(obj, tmp_name_id)
-            let fld = self.tree.add_node(NODE_FIELD_EXPR, self.token_idx(kw_tok))
-            self.append_child(fld, obj)
-            let istr = std.string.to_str(i)
-            let fstr = std.string.concat("_f", istr)
-            safe_free_str(istr)
-            self.set_payload(fld, self.pool.intern(fstr))
-            safe_free_str(fstr)
-            let fid = self.tree.add_node(NODE_IDENT, self.token_idx(kw_tok))
-            self.append_child(fld, fid)
-            self.append_child(bind, fld)
-            self.append_child(block, bind)
-        i = i + 1 as i64
-    if names.data != null as ptr[u32]:
-        @free(names.data as ptr[u8])
     return block
 
 pub fn parse_return_stmt(mut self: ptr[Parser]) -> u32:
@@ -2724,6 +2754,31 @@ pub fn parse_while_loop(mut self: ptr[Parser]) -> u32:
 pub fn parse_for_loop(mut self: ptr[Parser]) -> u32:
     let tok = self.expect(TK_FOR)
     let node = self.tree.add_node(NODE_FOR_STMT, self.token_idx(tok))
+    // RFC 0022 P5: destructuring loop variable `for (a, b) in v`. A `(` where a
+    // loop-variable NAME is otherwise required is unambiguous (same tell as the
+    // `let (a, b) = e` form). The loop variable becomes a `__td` temp and the
+    // bindings are prepended to the body, so this reuses the P3/P5 desugar wholesale
+    // and needs no change to for-loop lowering. Pairs directly with the container
+    // APIs that yield tuples: `for (i, x) in v.enumerate()`, `.zip(..)`,
+    // `std.string.char_indices(s)`.
+    if self.check(TK_L_PAREN):
+        // The wrapper block must exist before the pattern is parsed (parse and emit
+        // are interleaved), so the per-iteration bindings land ahead of the body.
+        let wrapper = self.tree.add_node(NODE_BLOCK, self.token_idx(tok))
+        let tmp_name_id = self.fresh_td_name(wrapper)
+        self.set_payload(node, tmp_name_id)
+        self.consume() // '('
+        self.emit_destructure_members(wrapper, tmp_name_id, tok, false)
+        self.expect(TK_IN)
+        let d_iter = self.parse_expr_with_prec(BP_NONE)
+        if d_iter != 0 as u32:
+            self.append_child(node, d_iter)
+        self.expect(TK_COLON)
+        let d_body = self.parse_block()
+        if d_body != 0 as u32:
+            self.append_child(wrapper, d_body)
+        self.append_child(node, wrapper)
+        return node
     let var_tok = self.expect(TK_IDENT)
     let text = self.token_text(var_tok)
     self.set_payload(node, self.pool.intern(text))
