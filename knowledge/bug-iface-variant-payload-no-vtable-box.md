@@ -127,6 +127,14 @@ this one is stage1-side and function-local.
    backend limit (register/spill pressure per call site), not a source-size limit, since
    call-free statements add freely.
 
+**And it is an `-O1` limit, not an intrinsic one.** The exact source that OOMs at `-O1` builds
+**fine at `-O0`**. So there is no hard ceiling on call sites; some `-O1` pass degrades
+superlinearly once the function carries one more, and that pass is the real bug — the RFC 0029
+fix is only its most visible victim. Two practical consequences: the coercion design can be
+validated at `-O0` before anyone fights the limit, and route 3 has a concrete starting point —
+bisect the `-O1` pass list against this repro, which is a two-line source change plus one
+build.
+
 Do NOT start by designing the coercion. Two attempts have already failed for a reason that has
 nothing to do with their design.
 
