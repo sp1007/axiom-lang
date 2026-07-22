@@ -691,7 +691,21 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         mut gsize := g.size as i64
         if gsize < 1 as i64:
             gsize = 1 as i64
-        while (data_buf.len % gsize) != 0 as i64:
+        // Align to the global's natural ALIGNMENT, not to its SIZE. The original
+        // `data_buf.len % gsize` padded up to a multiple of the whole object, which for a
+        // large global rounds the section up to a second full copy of it: a `[i64; 200000]`
+        // (1.6 MB) preceded by any other global padded `.data` to 1.6 MB and then wrote
+        // 1.6 MB more, so the section — and the linked executable — carried 3.2 MB for
+        // 1.6 MB of storage. Alignment never needs to exceed 16 bytes on x86-64.
+        mut gsz32 := 0 as u32
+        mut galign32 := 0 as u32
+        type_size_and_align(table, g.type_id, &gsz32, &galign32)
+        mut galign := galign32 as i64
+        if galign < 1 as i64:
+            galign = 1 as i64
+        if galign > 16 as i64:
+            galign = 16 as i64
+        while (data_buf.len % galign) != 0 as i64:
             push_byte(&data_buf, 0 as u8)
         let goff = data_buf.len as u32
         mut b := 0 as i64
