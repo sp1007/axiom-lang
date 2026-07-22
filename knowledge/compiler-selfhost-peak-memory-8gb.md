@@ -123,6 +123,28 @@ This fits the monotonic never-dropping trajectory exactly: the compiler retains 
 every structure it builds, at a uniform high per-byte cost. **So the work is reducing retention
 and per-node footprint, not finding an algorithmic blowup.**
 
+### The cost is per-TOKEN/NODE, not per-declaration
+
+Two sources of opposite shape, marginal cost taken over the ~264 MB floor:
+
+| source | bytes | peak | marginal | rate |
+|---|---|---|---|---|
+| 1500 tiny functions | 108,092 | 474 MB | 210 MB | **1.99 KB per source byte** |
+| 1 function, 1500 statements | 73,257 | 400 MB | 136 MB | **1.91 KB per source byte** |
+
+Within 4% of each other, and both match the 1.89–2.02 range from the size sweep. Maximising
+the number of functions — and with it symbols, signatures, and types — costs **no more per byte**
+than putting the same statements in a single function.
+
+So the memory is **not** in symbol tables, type tables, or per-declaration structures. It is
+spread uniformly across the token/AST representation. Given ~1.9 KB per source BYTE and a
+token averaging a handful of bytes, the per-node cost is on the order of kilobytes — which for
+an AST node is the anomaly worth chasing.
+
+**Sharpest available handoff:** look at what is allocated per AST node and per token during
+typecheck, not at the tables. `node_types` is already cleared (4 bytes per node, grows by
+doubling, frees correctly), so it is something else attached to nodes.
+
 ### `-ctgc-free` buys nothing here — measured
 
 The obvious lever is the shipped compile-time-GC free pass, since the diagnosis is "nothing is
