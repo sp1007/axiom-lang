@@ -1,12 +1,12 @@
 ---
 name: bug-array-typearg-mono-payload
-description: "OPEN, fully diagnosed, ready to implement: monomorphizing Option/Result with a STRUCTURAL ARRAY type argument records the variant payload_type as 0, so the pattern var is untyped and OP_INDEX falls back to stride 8. Named type args (struct, and tuples via __tupN) work. Fix = set the payload from the concrete arg instead of relying on AST substitution."
+description: "FIXED 82d0565 (A==B 29BAF82C, 500/500): monomorphizing Option/Result with a STRUCTURAL ARRAY type argument records the variant payload_type as 0, so the pattern var is untyped and OP_INDEX falls back to stride 8. Root = register_array OVERLOADS name_id to hold the LENGTH, so the monomorphizer substituted the length as if it were an intern id. Fix = mark an array type unnameable and reuse the existing __tup extra_idx stash. Oracle t_arrpayloadwidth(166)."
 metadata:
   node_type: memory
   type: project
 ---
 
-# OPEN — array type argument loses the mono variant payload type
+# ✅ FIXED `82d0565` — array type argument lost the mono variant payload type
 
 The last survivor of the 2026-07-22 boxed-payload sweep
 ([[probe-boxed-payload-2026-07-22]]). **Diagnosis is complete**; only the implementation
@@ -59,20 +59,30 @@ that substitution.
 2. *"Aliasing the array to a name would work around it."* **Not available** —
    `type Arr3 = [i32; 3]` is a PARSE ERROR; a type alias to an array type is unsupported.
 
-## Fix direction
+## Actual root cause — `name_id` is overloaded as the array LENGTH
 
-Set the monomorphized variant's `payload_type` from the CONCRETE type argument directly,
-rather than relying on the cloned AST's type expression to re-resolve. `finish_generic_
-instantiation` already has `args` in hand and already calls `set_sum_generic_args` for a
-fresh type-alias instantiation — the payload write belongs beside it. That is preferable to
-teaching AST substitution to synthesize array type expressions.
+`register_array` (typetable.ax) stores `name_id: length, extra: elem_id`. **An array type
+has no name at all.** The monomorphizer substitutes a generic param by writing the concrete
+type's NAME into the node, so for `[i32; 3]` it wrote the *length* `3` as if it were an
+intern id — a meaningless name resolving to nothing, hence the empty payload_type.
 
-Fixing this also removes the accidental correctness of `[i64;3]`: with a real payload type
-the DEREF and the index stride both follow the declared element size, so `[u8;N]`,
-`[i16;N]`, `[f32;N]` start working too.
+The fix mechanism already existed: tuple synth-structs have the same
+"registered-but-not-name-resolvable" problem and are handled by stashing the exact type_id
+in `extra_idx`, which the typechecker recovers **generically** whenever the name failed to
+resolve. Only the PRODUCER-side guard was missing. `82d0565` marks an array type unnameable
+so it uses the same stash — no new mechanism.
 
-**Gate when implemented:** generic monomorphization is self-host-critical → A==B plus the
-FULL regression on the newly built compiler, and check `t_arrpayload` still passes for the
-right reason rather than the accidental one.
+**Note the fix direction guessed above was wrong** (writing the payload from `args` in
+`finish_generic_instantiation`). It would have papered over the substitution rather than
+repairing it. A first attempt keyed on `entry.name_id == 0` also failed — never fired,
+precisely because of the length overload — and that dead end is what exposed the real cause.
+
+Gate: A==B `29BAF82C` + full regression 500/500. Oracle `t_arrpayloadwidth(166)` covers
+i32/u8/i16 payloads alongside i64, so the previously-accidental i64 case now sits beside
+widths that exercise the real path.
+
+**Footgun worth remembering: `TypeEntry.name_id` does NOT always hold a name.** For an
+ARRAY it is the length. Any code doing name-based reasoning over arbitrary type entries
+must exclude arrays.
 
 Related: [[probe-boxed-payload-2026-07-22]], [[bug-opt-tuple16-deref-caller-clobber]].
