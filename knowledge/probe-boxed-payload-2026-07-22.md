@@ -102,7 +102,7 @@ in this area.**
 Still unchecked anywhere: arity. `V((i64,i64))` accepts `V(3, 40)` (→ 6) and
 `V(i64,i64)` accepts `V((3,40))` (→ 127), both silently wrong.
 
-## OPEN #3 — RFC 0019 multi-field variant bound to ONE name: SEGFAULT
+## ✅ FIXED #3 — RFC 0019 multi-field variant bound to ONE name SEGFAULTed
 
 ```axiom
 type Shape = Pair(i64, i64) | Empty
@@ -117,10 +117,18 @@ fn main() -> i64:
 ```
 
 The supported form `Pair(x, y)` works (43). Binding a multi-field variant to a single
-name is presumably meant to be unsupported — but it is an accept-then-SEGFAULT, i.e.
-BUG#53 class. Correct outcome is a clean diagnostic at the pattern, the same convention
-used for inline match arms and non-sum scrutinees. This is the cheapest of the three
-(frontend reject, A==B gate).
+name typed the name as field 0 and let the body read `.0`/`.1` off a scalar.
+
+**Fix `1146b75`** — an RFC 0019 synthesized payload binds one name per FIELD, so the
+pattern's arity is now checked against the variant's and a mismatch is a clean diagnostic.
+A==B `FBC2AA3F`, 496/496, oracles `t_mfvarity`(reject) + `t_mfvarityok`(58).
+
+Comparing counts is sound ONLY because the two payload shapes are distinguishable — the
+flagged `__mfv_…` synth struct vs the unflagged `__tup…`. Refuted hypothesis 1 below had
+assumed they collapsed to one type and shelved this reject as unimplementable; that was
+wrong. The guard oracle pins every legitimate shape: `Pair(x, y)`, an unflagged tuple
+payload bound to ONE name, the str wrap `Text(msg)`, a plain scalar payload, and a
+payload-less variant.
 
 ## Method note
 
