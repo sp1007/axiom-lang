@@ -9,23 +9,28 @@
 //
 //   axc build bin/known_fail_iface_variant_payload.ax -o /tmp/t.exe -O1 && /tmp/t.exe
 //
-// SCOPE -- every variant payload position fails identically:
-//     Option[Shape] = Some(Sq(..))            SEGV
+// SCOPE (narrowed 2026-07-23) -- only the Option/Result constructors still fail:
+//     Option[Shape] = Some(Sq(..))            SEGV  <-- this file
 //     Result[Shape, i64] = Ok(Sq(..))         SEGV
-//     user sum   Wrap = Box(Sq(..))           SEGV
 //     fn take(o: Option[Shape]); take(Some(Sq(..)))   SEGV
 //
-// These positions are FINE, which is what localises it to variant payloads:
-//     Vec[Shape] + v.push(Sq(..))             ok
-//     struct Holder: s: Shape                 ok
-//     let s: Shape = Sq(..)                   ok
+// FIXED and now covered by regression oracles (do NOT expect these to fail):
+//     user sum   Wrap = Box(Sq(..))           FIXED 0E1D6F31  (t_ifacesumpayload)
+//     tuple      (Shape, i64) = (Sq(..), 7)   FIXED 909e9e5   (t_ifacetuple)
 //
-// WORKAROUND: coerce through a typed local first, then wrap.
+// Always FINE (never needed the fix):
+//     Vec[Shape] + v.push(Sq(..)) ; struct field s: Shape ; let s: Shape = Sq(..)
+//
+// WORKAROUND for the remaining Option/Result case: coerce through a typed local.
 //     let s: Shape = Sq(side: 3)
 //     let o: Option[Shape] = Some(s)          // works, returns 9
 //
-// See knowledge/bug-iface-variant-payload-no-vtable-box.md for the diagnosis and
-// why this is not a one-line fix.
+// WHY Option/Result is the leftover: user sums lower through
+// lower_variant_construct, which has the declared payload type from
+// find_variant_info; Some/Ok lower through lower_call_expr, which does not, and
+// needs the declared Option[Shape] threaded to the ctor. Neither the OOM nor the
+// "ordering conflict" once feared still applies (cap raised; conflict disproven).
+// See knowledge/bug-iface-variant-payload-no-vtable-box.md.
 
 interface Shape:
     fn area(self: Self) -> i64
