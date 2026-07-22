@@ -1,0 +1,35 @@
+// RFC 0029 regression (exit 42): assigning a concrete struct to an
+// INTERFACE-typed array OR Vec element (`arr[i] = Sq(..)`) must box it. The
+// NODE_FIELD_EXPR assignment branch boxed struct fields; the NODE_INDEX_EXPR
+// branch did not, so an indexed store of a concrete struct into an interface
+// slot stored raw and the next `arr[i].area()` dispatched on struct bytes ->
+// SIGSEGV. Found by probing coercion sites 2026-07-23 (BE15094A).
+//
+// Covers both an ARRAY and a Vec, each reassigned to a DIFFERENT struct type
+// than it was initialised with, so a missing box shows as a crash and a
+// cross-wire shows as a wrong value: array Rec(4,4)=16, Vec Rec(2,13)=26.
+// 16 + 26 = 42.
+
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+struct Rec:
+    w: i64
+    h: i64
+    fn area(self: Rec) -> i64:
+        return self.w * self.h
+
+fn main() -> i64:
+    mut arr: [Shape; 2] = [Sq(side: 1), Sq(side: 1)]
+    arr[0 as i64] = Rec(w: 4, h: 4)
+
+    mut v: Vec[Shape] = Vec.new()
+    v.push(Sq(side: 1))
+    v[0 as i64] = Rec(w: 2, h: 13)
+
+    return arr[0 as i64].area() + v[0 as i64].area()

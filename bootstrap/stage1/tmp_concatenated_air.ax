@@ -18419,7 +18419,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         let rhs_idx = lhs_node.next_sibling
         if rhs_idx == 0 as u32:
             return
-        let val_reg = self.assign_value(node, lhs_idx, rhs_idx)
+        mut val_reg = self.assign_value(node, lhs_idx, rhs_idx)
 
         mut type_id := 0 as u32
         let arr_type = self.mb.node_types[arr_idx as i64]
@@ -18443,6 +18443,15 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: vd_type, dest: data_reg, src1: arr_reg, src2: vd_idx))
                     arr_reg = data_reg
                 type_id = self.mb.node_types[lhs_idx as i64]
+
+        // RFC 0029: `arr[i] = <struct>` where the element type is an interface must
+        // box, exactly as `obj.field = <struct>` does above. The NODE_FIELD_EXPR
+        // branch had the coercion; this indexed-store branch did not, so a
+        // `[Shape;2]` element assigned a concrete struct stored raw and the next
+        // `arr[i].area()` dispatched on struct bytes -> SIGSEGV. type_id is the
+        // element type here (array `entry.extra`, or the index-expr node type for
+        // Vec), which is the interface target; the coerce is a no-op otherwise.
+        val_reg = self.coerce_struct_to_interface(type_id, rhs_idx, val_reg)
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,

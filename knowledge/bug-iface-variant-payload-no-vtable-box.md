@@ -30,6 +30,7 @@ o.unwrap().area()        // SIGSEGV
 | user sum `Wrap = Box(Shape)`, `Box(Sq(..))` | **FIXED** (`0E1D6F31`) |
 | `fn take(o: Option[Shape])`, `take(Some(Sq(..)))` | **SEGV** |
 | **tuple element**, `let t: (Shape, i64) = (Sq(..), 7)` | **FIXED** (`909e9e5`) |
+| **array/Vec element ASSIGN**, `arr[i] = Sq(..)` (`[Shape;N]`/`Vec[Shape]`) | **FIXED** (`BE15094A`) |
 | `Vec[Shape]` + `push(Sq(..))` | ok |
 | `HashMap[i64, Shape]` + `insert(1, Sq(..))` | ok |
 | `mut s: Shape = Sq(..)` then `s = Rec(..)` (reassign) | ok |
