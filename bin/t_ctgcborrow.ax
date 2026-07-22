@@ -1,0 +1,31 @@
+// RFC 0027 path D guard oracle: a BORROWED pointer field must never be freed.
+// `View.borrowed` is pointer-typed just like `Buf.data` in t_ctgcuser, so the TYPE
+// half of the ownership rule accepts it; only the PROVENANCE half rejects it (every
+// write to it is a copy of someone else's pointer, never an allocation). `v` is a
+// non-escaping local, so the free path DOES run on it — the destroy fires, and the
+// question is only whether it drags the borrowed buffer down with it.
+//
+// The check is sharp rather than "did not crash": freed memory usually still reads
+// back its old contents, so instead we let the allocator answer. If `borrowed` were
+// wrongly freed, `e` reuses that exact block and writing 99 through it clobbers d[0].
+//   guard holds  => d[0] still 42
+//   guard broken => d[0] reads 99 (or crashes)
+// on == off == 42.
+
+struct View:
+    borrowed: ptr[i64]
+    off: i64
+
+fn main() -> i64:
+    let d = @alloc(64 as i64) as ptr[i64]
+    d[0 as i64] = 42 as i64
+
+    mut i = 0 as i64
+    while i < 3 as i64:
+        let v = View(borrowed: d, off: i)
+        i = i + 1 as i64
+
+    let e = @alloc(64 as i64) as ptr[i64]
+    e[0 as i64] = 99 as i64
+
+    return d[0 as i64]

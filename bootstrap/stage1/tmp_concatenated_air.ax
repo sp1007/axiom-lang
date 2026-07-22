@@ -15061,38 +15061,139 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
 // so a stray `drop(self, x)` never matches. Called from lower_destroy: when CTGC
 // injects an OP_DESTROY for a non-escaping owned local (RFC 0015 P3, `-ctgc-free`),
 // the drop method runs on that instance right before its block is freed.
-// RFC 0027 (CTGC container free-glue, path C): before freeing the HEADER of a
-// non-drop, non-escaping owned CONTAINER local (Vec/HashMap/HashSet generic-inst),
-// free the owned heap BUFFERS it points at (data / keys/values/hashes/occupied) so
-// they are not leaked. Recognizes the three core stdlib containers by base name and
-// their buffer fields by name (kept in sync with std/collections.ax). ax_free(null)
-// is a no-op, so an unallocated container (cap 0, null buffers) is safe. Reached only
-// under -ctgc-free (OP_DESTROY is injected only then), so the self-host build â€” which
-// never uses the flag â€” is byte-identical (fixpoint-neutral).
-fn emit_container_buffer_frees(mut self: ptr[FuncLowering], reg: u32, type_id: u32):
+// RFC 0027 Â§3 path D (2026-07-22): is this expression an ALLOCATION or a null?
+// The ownership test below frees a pointer field only when every value ever written
+// to it has one of these two provenances. `@alloc`/`@realloc` lex as plain idents
+// (lexer.ax skips the leading `@`), so a heap allocation is a CALL_EXPR to `alloc`;
+// `null as ptr[T]` is a CAST of the `null` ident. Casts are transparent here because
+// an allocation is always spelled `@alloc(..) as ptr[T]`.
+// Anything else â€” a borrow `&x as ptr[u8]`, a parameter, another field, a function
+// result â€” returns false, which classifies the field BORROWED and leaks it. That is
+// the safe direction: a missed free wastes memory, a wrong free is a UAF.
+fn expr_is_alloc_or_null(self: ptr[FuncLowering], idx: u32) -> bool:
+    if idx == 0 as u32 or (idx as i64) >= self.mb.tree.nodes.len:
+        return false
+    let n = self.mb.tree.nodes.data[idx as i64]
+    if n.kind == NODE_CAST_EXPR:
+        return self.expr_is_alloc_or_null(n.first_child)
+    if n.kind == NODE_IDENT:
+        let t = self.mb.get_token_text(n.token_idx)
+        let is_null = t == "null"
+        safe_free_str(t)
+        // A bare identifier is NEVER accepted, even when the local it names provably
+        // holds a fresh allocation. Following the local one binding further was tried
+        // and is UNSOUND: `let d = @alloc(..)` followed by `Buf(data: d)` (owning) and
+        // by `View(borrowed: d)` (borrowing) are syntactically identical, so provenance
+        // cannot separate them â€” the difference is whether anyone ELSE still holds the
+        // pointer, which is an aliasing question. Oracle t_ctgcborrow caught this as a
+        // real use-after-free (the borrowed buffer was freed, and the next allocation
+        // reused and overwrote it). Only a syntactically FRESH allocation expression at
+        // the write site proves sole ownership, because nothing else can hold it yet.
+        return false
+    if n.kind == NODE_CALL_EXPR:
+        let c = n.first_child
+        if c == 0 as u32:
+            return false
+        let cn = self.mb.tree.nodes.data[c as i64]
+        let t = self.mb.get_token_text(cn.token_idx)
+        let is_alloc = t == "alloc" or t == "realloc"
+        safe_free_str(t)
+        return is_alloc
+    return false
+
+// RFC 0027 Â§3 path D: is the field named `fname_id` an OWNED heap buffer?
+//
+// Ownership is DERIVED, not annotated (the design decision of 2026-07-22: infer from
+// the type plus assignment provenance, adding no syntax). A pointer field is owned iff
+//   (a) at least one write to it is an allocation, and
+//   (b) NO write to it has any other provenance.
+// Writes are found in the two places a field can be initialised: a named constructor
+// argument (`Vec[T](data: @alloc(..))`) and a field assignment (`self.data = @alloc(..)`).
+//
+// The scan matches on the field NAME across the whole program, not per declaring type,
+// so an unrelated struct with a same-named borrowed field poisons this one. That is
+// deliberate: it can only ever move a field from owned to borrowed, i.e. from freeing
+// to leaking. Being imprecise in the leak direction is sound; being imprecise in the
+// free direction is a use-after-free.
+fn field_is_owned_heap(self: ptr[FuncLowering], fname_id: u32) -> bool:
+    let fname = self.mb.pool.get_str(fname_id)
+    mut saw_alloc := false
+    mut i := 0 as i64
+    while i < self.mb.tree.nodes.len:
+        let n = self.mb.tree.nodes.data[i]
+        if n.kind == NODE_NAMED_ARG and n.payload == fname_id:
+            // Constructor argument: parse_call_args interns the field name into the
+            // NAMED_ARG's payload, so this is an exact match with no text compare.
+            if self.expr_is_alloc_or_null(n.first_child):
+                saw_alloc = true
+            else:
+                return false
+        elif n.kind == NODE_ASSIGN_STMT:
+            let lhs = n.first_child
+            if lhs != 0 as u32:
+                let ln = self.mb.tree.nodes.data[lhs as i64]
+                // A FIELD_EXPR carries the field name in its own token_idx (same place
+                // the method-call intercept at lower_call_expr reads it from).
+                if ln.kind == NODE_FIELD_EXPR:
+                    let t = self.mb.get_token_text(ln.token_idx)
+                    let hit = t == fname
+                    safe_free_str(t)
+                    if hit:
+                        if self.expr_is_alloc_or_null(ln.next_sibling):
+                            saw_alloc = true
+                        else:
+                            return false
+        i = i + 1 as i64
+    return saw_alloc
+
+// RFC 0027 path C's hand-audited allow-list, retained as a FALLBACK beside path D's
+// derivation. Keeping it is not redundancy for its own sake: these three types are the
+// ones whose free behaviour was validated against the escape analyser on a real corpus,
+// and the derived rule is deliberately conservative (any same-named borrowed field
+// anywhere in the program demotes a field to borrowed). Retaining the audited answer
+// means path D can only ADD coverage for user containers and can never silently
+// REMOVE the coverage path C already shipped. Kept in sync with std/collections.ax.
+fn field_in_core_container(self: ptr[FuncLowering], owner_name: u32, fname_id: u32) -> bool:
+    if owner_name != self.mb.pool.intern("Vec") and owner_name != self.mb.pool.intern("HashMap") and owner_name != self.mb.pool.intern("HashSet"):
+        return false
+    return fname_id == self.mb.pool.intern("data") or fname_id == self.mb.pool.intern("keys") or fname_id == self.mb.pool.intern("values") or fname_id == self.mb.pool.intern("hashes") or fname_id == self.mb.pool.intern("occupied")
+
+// RFC 0027 (CTGC free-glue): before freeing the HEADER of a non-drop, non-escaping
+// owned aggregate local, free the owned heap BUFFERS it points at, so nested heap is
+// reclaimed rather than leaked. ax_free(null) is a no-op, so an unallocated container
+// (cap 0, null buffers) is safe. Reached only under -ctgc-free (OP_DESTROY is injected
+// only then), so the self-host build â€” which never uses the flag â€” is byte-identical
+// (fixpoint-neutral by RFC 0027 Â§2.3).
+//
+// PATH D (2026-07-22) replaced path C's hard-coded allow-list â€” {Vec,HashMap,HashSet} x
+// {data,keys,values,hashes,occupied} â€” with a derivation that reaches USER containers
+// too. A field is freed when it is POINTER-typed (the type half) and every write to it
+// is an allocation (the provenance half). On std/collections.ax this re-derives exactly
+// the five fields path C listed, which is the migration's correctness argument: the
+// general rule reproduces the hand-audited answer instead of being trusted blind.
+//
+// NOT recursed into: a nested aggregate FIELD (a `Vec` inside a struct). Under AXIOM's
+// reference semantics (RFC 0001 Â§5) such a field may alias a live local, so freeing it
+// transitively needs alias tracking the analyser does not have. Nested containers leak
+// (safe) â€” see RFC 0027 Â§9.
+fn emit_owned_field_frees(mut self: ptr[FuncLowering], reg: u32, type_id: u32):
     let ut = self.op_unwrap_type(type_id)
     if (ut as i64) >= self.mb.typetable.entries.len:
         return
     let entry = self.mb.typetable.entries.data[ut as i64]
-    if entry.kind != TYPE_KIND_GENERIC_INST:
-        return
-    let vec_id = self.mb.pool.intern("Vec")
-    let hm_id = self.mb.pool.intern("HashMap")
-    let hs_id = self.mb.pool.intern("HashSet")
-    if entry.name_id != vec_id and entry.name_id != hm_id and entry.name_id != hs_id:
+    if entry.kind != TYPE_KIND_GENERIC_INST and entry.kind != TYPE_KIND_STRUCT:
         return
     if (entry.extra as i64) >= self.mb.typetable.structs.len:
         return
     let si = self.mb.typetable.structs.data[entry.extra as i64]
-    let f_data = self.mb.pool.intern("data")
-    let f_keys = self.mb.pool.intern("keys")
-    let f_values = self.mb.pool.intern("values")
-    let f_hashes = self.mb.pool.intern("hashes")
-    let f_occ = self.mb.pool.intern("occupied")
     mut fi := 0 as i64
     while fi < si.fields.len:
         let f = si.fields.data[fi]
-        if f.name_id == f_data or f.name_id == f_keys or f.name_id == f_values or f.name_id == f_hashes or f.name_id == f_occ:
+        mut is_ptr := false
+        if (f.type_id as i64) < self.mb.typetable.entries.len:
+            if self.mb.typetable.entries.data[f.type_id as i64].kind == TYPE_KIND_POINTER:
+                is_ptr = true
+        if is_ptr and (self.field_in_core_container(entry.name_id, f.name_id) or self.field_is_owned_heap(f.name_id)):
             let fptr = self.fb.fresh_reg()
             self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: f.type_id, dest: fptr, src1: reg, src2: fi as u32))
             self.fb.emit(AirInst(opcode: OP_FREE, type_id: 0 as u32, dest: 0 as u32, src1: fptr, src2: 0 as u32))
@@ -19066,10 +19167,11 @@ pub fn lower_destroy(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
                     // is inert there â€” A==B) and validated on the aggregate-escape corpus.
                     // For a container that owns nested heap (HashMap/Vec) this frees the
                     // header only (inner buffers leak until synthesised free-glue lands) â€”
-                    // RFC 0027: for a Vec/HashMap/HashSet local, free its owned inner
-                    // buffers (data/keys/values/hashes/occupied) BEFORE the header, so the
-                    // nested heap is reclaimed rather than leaked. No-op for other types.
-                    self.emit_container_buffer_frees(reg, sym.type_id)
+                    // RFC 0027 path D: free the local's OWNED pointer buffers BEFORE the
+                    // header, so the nested heap is reclaimed rather than leaked. Ownership
+                    // is derived (pointer-typed field + all writes are allocations), so this
+                    // covers user containers, not just Vec/HashMap/HashSet. No-op otherwise.
+                    self.emit_owned_field_frees(reg, sym.type_id)
                     self.fb.emit(AirInst(
                         opcode: OP_DESTROY,
                         type_id: 0 as u32,

@@ -107,3 +107,67 @@ Backend/codegen change → fixpoint + full regression + the broad `-ctgc-free` s
 
 No source-level change; no ABI change. `-ctgc-free` behavior becomes "frees more" (less leak);
 default builds unchanged. D, if later adopted, subsumes C's hardcoded recognition.
+
+## 9. Amendment 2026-07-22 — path D shipped, with a proven limit on the no-syntax model
+
+User decision (2026-07-22), choosing between the §3 D variants: derive field ownership **from
+the type plus assignment provenance, adding no annotation syntax**. Path D is now implemented on
+that basis (`emit_owned_field_frees`, formerly `emit_container_buffer_frees`).
+
+### The shipped rule
+
+A field is freed before its owner's header iff **both** halves hold:
+
+1. **Type half** — the field's type is `TYPE_KIND_POINTER`. Non-pointer fields, and nested
+   aggregate fields, are never freed.
+2. **Provenance half** — every write to that field, across the whole program (constructor named
+   arguments and `x.f = ..` assignments), is either a **syntactically fresh allocation**
+   (`@alloc`/`@realloc`, through any casts) or `null`; and at least one is a real allocation.
+
+Path C's audited `{Vec,HashMap,HashSet}` × `{data,keys,values,hashes,occupied}` list is **kept as
+a fallback** beside the derivation. It is not redundancy: the derived rule is deliberately
+conservative, so retaining the audited answer guarantees path D can only ADD coverage for user
+containers and can never silently REMOVE what path C already shipped.
+
+### The limit, established by counterexample rather than argument
+
+The natural strengthening — follow a local one binding, so that the idiomatic
+`let d = @alloc(..)` followed by `Buf(data: d)` is recognised — **is unsound, and was caught in
+bring-up as a real use-after-free.** `Buf(data: d)` (owning) and `View(borrowed: d)` (borrowing)
+are *syntactically identical*. What separates them is whether anyone else still holds the
+pointer, which is an **aliasing** question that no amount of provenance analysis answers. The
+`t_ctgcborrow` oracle freed the borrowed buffer and the next allocation overwrote it (returned 99
+instead of 42).
+
+So the decidable fragment of the no-syntax model is exactly "a fresh allocation expression at the
+write site", because nothing else can hold that pointer yet. **This is the concrete evidence that
+§3 D's original framing was right: annotations are what generalise this.** Path D as shipped is
+the sound sublanguage of that design, not a substitute for it.
+
+### Known coverage limits (all in the safe direction — leak, never a wrong free)
+
+- **The idiomatic form is not covered.** `let d = @alloc(..); S(data: d)` — the shape
+  `std/collections.ax` itself uses — is classified borrowed.
+- **Name-sensitivity.** The scan matches field names program-wide, not per declaring type, so one
+  same-named borrowed field anywhere (including bundled stdlib) demotes the field everywhere. In
+  practice `data` is permanently demoted by `Vec[T](data: data)` in `with_capacity`; user
+  containers must use a distinct field name for the derivation to fire. Adding per-type precision
+  would remove this wart but would NOT extend coverage past the limit above.
+- **No recursion into nested aggregate fields.** Under reference semantics (RFC 0001 §5) a nested
+  `Vec`-in-struct field may alias a live local; freeing it transitively needs the alias tracking
+  this design lacks.
+
+### Gate result
+
+Fixpoint A==B `F7E84810EF6544C7950ADCAE2E460ED3B6CE1D443CF1F56026FD06FDBA49CE70` (inert on the
+self-host build by §2.3 — the flag is off there), `ctgc_free_check.sh` 14/14, full regression.
+Oracles: `t_ctgcuser` (user container, correctness) + **`t_ctgcborrow`** (the sharp one — it is
+the oracle that failed loudly on the unsound rule, and is the reason this amendment can state the
+limit as a measured fact).
+
+**A caveat on what the oracles prove.** `t_ctgcuser` pins `on == off`; it canNOT detect a silent
+no-fire, because the runtime allocator does not return a just-freed block to the next same-size
+request in that shape, and a program cannot otherwise observe its own heap. Firing was confirmed
+out-of-band with a temporary trace in `emit_owned_field_frees`. Per the RFC 0028 lesson this is
+recorded rather than papered over: the dangerous direction (over-freeing) has a sharp oracle, the
+inert direction does not.

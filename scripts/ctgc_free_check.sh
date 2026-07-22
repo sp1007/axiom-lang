@@ -36,6 +36,14 @@ rows=(
   "t_ctgcfreeesc|16|16"
   # RFC 0027 container free-glue: scratch container buffers freed, escaping/aliased survive
   "t_ctgccont|42|42"
+  # RFC 0027 path D: a USER container's owned buffer is freed (correctness only -- see the
+  # header of t_ctgcuser.ax for why a no-fire cannot be detected behaviourally here).
+  "t_ctgcuser|42|42"
+  # RFC 0027 path D GUARD (the sharp one): a BORROWED pointer field must never be freed.
+  # This row caught a real use-after-free during path D bring-up -- an earlier rule followed
+  # a local's allocation provenance, which made `View(borrowed: d)` indistinguishable from
+  # `Buf(data: d)`, freed the borrowed buffer, and let the next allocation overwrite it (99).
+  "t_ctgcborrow|42|42"
 )
 
 for row in "${rows[@]}"; do

@@ -1,0 +1,38 @@
+// RFC 0027 path D oracle: a USER container's owned buffer is freed under -ctgc-free.
+// Path C recognised only Vec/HashMap/HashSet by name, so `Buf` below leaked; path D
+// derives ownership from the field's TYPE (pointer) plus its write PROVENANCE (a
+// syntactically fresh allocation at the write site).
+//
+// ⚠️ HONEST LIMITATION — this oracle canNOT detect a silent no-fire (the RFC 0028
+// failure mode). It pins `on == off == 42`, i.e. that the free does not corrupt a
+// correct program; it cannot pin that the free HAPPENED. Two runtime facts block a
+// behavioural assertion: the allocator does not hand a just-freed block back to the
+// next same-size request in this shape (the freed header is popped first), and a
+// program cannot otherwise observe its own heap. Firing was verified out-of-band with
+// a temporary trace in emit_owned_field_frees, which printed FREEING for `buf`.
+// The SHARP half of the pair is t_ctgcborrow, which does fail loudly when the rule
+// over-approximates — that is the oracle guarding the dangerous direction.
+//
+// The field is named `buf`, not `data`, deliberately: the ownership scan matches field
+// names program-wide, and the bundled std/collections.ax writes `Vec[T](data: data)`
+// from a local, which demotes EVERY field named `data` to borrowed. That is the safe
+// direction (leak, never a wrong free), but it does mean coverage is name-sensitive.
+
+struct Buf:
+    buf: ptr[i64]
+    n: i64
+
+fn main() -> i64:
+    mut i = 0 as i64
+    while i < 4 as i64:
+        // Fresh allocation AT the write site: nothing else can hold this pointer yet,
+        // which is what makes sole ownership provable without an annotation.
+        mut b = Buf(buf: @alloc(64 as i64) as ptr[i64], n: 8 as i64)
+        b.buf[0 as i64] = 10 as i64
+        b.buf[1 as i64] = 32 as i64
+        i = i + 1 as i64
+
+    mut last = Buf(buf: @alloc(64 as i64) as ptr[i64], n: 8 as i64)
+    last.buf[0 as i64] = 10 as i64
+    last.buf[1 as i64] = 32 as i64
+    return last.buf[0 as i64] + last.buf[1 as i64]
