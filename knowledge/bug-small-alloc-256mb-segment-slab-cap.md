@@ -79,6 +79,28 @@ could already have disagreed if `Segment` ever gained a field. They now cannot.
 Changing the cap is consequently a **one-line edit**, which is what the fix directions below
 assume. `runtime/axalloc/*.c` still keeps its own copy and would need the matching change.
 
+**SHIPPED at 16384 (1 GB) — but ONLY in `std/mem/alloc.ax`.** That is the allocator
+`concatenate_stdlib` bundles (`main_air.ax:404 read_required_file("std/mem/alloc.ax")`), and it
+is provably the live one for the native self-link path: raising it is what removed the OOM and
+let the tuple/user-sum fixes build. Two OTHER copies were NOT touched and still read 4096:
+
+- `bootstrap/runtime/axalloc.ax:20` — a second `.ax` allocator with the same six functions.
+  Older knowledge notes ([[bug-3hashmap-mono-teardown-crash]], `rfc0009-p3-elf-linux-target-wip`)
+  call it "the self-link allocator", but the code contradicts that: `concatenate_stdlib` reads
+  only `std/mem/alloc.ax`, and from `bootstrap/runtime/` only `panic.ax` and `syscall.ax` are
+  bundled (`main_air.ax:955,963`) — never `axalloc.ax`. Both files define `ax_alloc`; if both
+  were bundled the self-link would fail on a duplicate symbol, and it does not. So
+  `bootstrap/runtime/axalloc.ax` is **superseded for every self-link/native/ELF build** and its
+  4096 does not gate them. It IS still referenced by `tests/codegen/axiom_freestanding_runtime_test.go`,
+  so "fully dead" is unproven — treat it as "not on the self-host path" pending that test`s
+  check. If it is ever reinstated as a bundled allocator, it needs the same raise + derive.
+- `runtime/axalloc/*.c` (4096) — the GCC-backend allocator (`main_air.ax:1439` links
+  `axalloc_compiled.c`), only used on the `-use-gcc` path, not the default self-link build.
+
+So the divergence is real but currently harmless: the one allocator on the hot self-host path
+carries the 1 GB cap; the two at 4096 are off that path. The knowledge that named the wrong file
+as authoritative is corrected here.
+
 `Segment` is 48 bytes (3 pointers + i32 + pointer + u32, padded), and **48 × 4096 = 196,608
 exactly**. So raising the segment count without raising all three `196608` sites writes
 descriptor #4097 past the end of the mapped region — silent heap corruption, in the allocator,
