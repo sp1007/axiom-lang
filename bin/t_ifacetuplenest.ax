@@ -1,0 +1,25 @@
+// RFC 0029 regression (exit 42): interface coercion in a NESTED tuple element.
+// The tuple fix (lower_tuple_lit) must recurse -- the inner tuple is itself an
+// element of the outer one, so the coercion has to fire at construction depth 2.
+// Companion to t_ifacetuple, which covers the flat case.
+//
+// Two different interface values so a cross-wired read cannot reach 42 by luck:
+// inner Sq(4)=16, outer Rec(2,13)=26, 16 + 26 = 42.
+
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+struct Rec:
+    w: i64
+    h: i64
+    fn area(self: Rec) -> i64:
+        return self.w * self.h
+
+fn main() -> i64:
+    let t: ((Shape, i64), Shape) = ((Sq(side: 4), 7), Rec(w: 2, h: 13))
+    return t.0.0.area() + t.1.area()
