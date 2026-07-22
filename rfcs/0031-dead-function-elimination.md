@@ -1,6 +1,6 @@
 # RFC 0031 — Dead function elimination
 
-Status: **DRAFT** — measured end-to-end (`-dfe-report` shipped, inert); pruning NOT yet activated
+Status: **IMPLEMENTED, opt-in** — `-dfe` prunes; default OFF pending broader exposure
 Author: autopilot
 Related: RFC 0030 (`.bss`), [[feedback-no-exe-bloat]], RFC 0011 (static libs / bundling)
 
@@ -156,6 +156,58 @@ Measured, no longer estimated: removing 55,518 bytes of dead `.text` takes `retu
 **77,824 to roughly 22 KB — about a 71% reduction**. The earlier "a few KB / ~90%" guess was
 too optimistic; it assumed the 1/184 count, which the root seeding corrected. 71% of every
 executable is still by far the largest size win available.
+
+## 6b. Activation (`-dfe`, 2026-07-23)
+
+Shipped as an **opt-in flag**, so the default path is byte-identical by construction rather
+than by testing. Measured:
+
+| | plain | `-dfe` | |
+|---|---|---|---|
+| `return 42` | 77,824 | **22,016** | −71.7% |
+| `t_indirectcall` | 78,848 | 22,528 | −71.4% |
+| the compiler itself | 2,552,320 | 2,375,680 | −6.9% (it uses most of itself) |
+
+### What actually validates the root set
+
+Oracles are necessary and nowhere near sufficient — the failure mode is a call into an address
+that was never emitted, and it only fires when that specific path runs. Three things carry the
+weight instead:
+
+1. **The whole suite, re-run under pruning.** `scripts/regression_repros.sh` and
+   `scripts/elf_linux_check.sh` now honour `AXEXTRA`, so `AXEXTRA=-dfe` runs all 511 programs
+   (plus 12 ELF) against a pruned build. 511/511 and 12/12.
+2. **The compiler compiling itself with 138 of its own functions removed** — and producing a
+   binary **byte-identical** to the one the unpruned compiler produces. A 1.96 MB source
+   exercising the entire frontend, backend and linker is a far more demanding program than any
+   oracle, and bit-identity means pruning perturbed nothing it touched.
+3. **A refusal to guess.** Where the analysis has no entry point and no exports — a
+   `--staticlib` or `--shared` build — `dfe_compute` returns null and nothing is pruned.
+   Otherwise an empty root set would compute a "correct" empty reachable set and prune the
+   entire library into an empty archive.
+
+### ELF nearly shipped broken, and COFF could not have told us
+
+`AXEXTRA=-dfe` on the ELF gate came back **4/12 with SIGSEGV** while COFF was at 511/511. On
+`--target linux` there is no `ax_runtime.dll`: the whole `ax_println_*` / `ax_str_eq` /
+`ax_panic` / syscall family is compiled INTO the program (206 functions vs 184 on COFF) and
+reached only through the magic callee indices. The ABI root test consulted
+`is_valid_runtime_dll_symbol` with the raw emitted name, but codegen prefixes AXIOM definitions
+with `ax_`, so those functions appear as `ax_ax_println_str` and never matched. On COFF they
+are imports, absent from `mod.funcs`, so the same omission was invisible. `dfe_is_abi_name`
+now strips one leading `ax_` before consulting the list; ELF ABI roots went 10 → 28 and the
+gate to 12/12. See [[dfe-elf-runtime-is-in-program]].
+
+That is the third root category in this RFC to ship silently matching nothing, after `#[export]`
+(id vs mangled name) and the ABI shadow itself. The recurring shape: **a predicate comparing
+names across a layer boundary, where the mangling is part of the comparison.**
+
+### Why it stays opt-in
+
+Everything above is green, but "no test found a wrong root" is not "the root set is complete",
+and the cost of being wrong is a wild call rather than a bad number. `-dfe` should collect
+real usage — and ideally a second self-host target — before it becomes the default. The
+default-on decision is a user call, not an autopilot one.
 
 ## 7. Status / next step
 

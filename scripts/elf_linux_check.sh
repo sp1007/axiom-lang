@@ -8,7 +8,12 @@ AXC="${AXC:-bin/axc_native.exe}"
 export MSYS2_ARG_CONV_EXCL="*"
 ROOT_WSL="/mnt/d/projects/compiler/Axiom"
 pass=0; fail=0; failed=""
-build() { rm -f "bin/t_$1.elf"; "$AXC" build "bin/$1.ax" -o "bin/t_$1.elf" --target linux -self-link -O1 > "/tmp/elfchk_$1.log" 2>&1; }
+# Extra flags for every build, e.g. AXEXTRA=-dfe. Unquoted so empty adds nothing.
+# The ELF path shares compile_native_binary with COFF, so RFC 0031 pruning applies
+# to it too -- and a pruned ELF is the one thing regression_repros.sh cannot check,
+# since it only ever produces PE.
+AXEXTRA="${AXEXTRA:-}"
+build() { rm -f "bin/t_$1.elf"; "$AXC" build "bin/$1.ax" -o "bin/t_$1.elf" --target linux -self-link -O1 $AXEXTRA > "/tmp/elfchk_$1.log" 2>&1; }
 # exit-code oracles: name|expected
 # `t_bssglobal` pins RFC 0030 P4: a large zero-initialized global is reserved via SHT_NOBITS
 # and p_memsz > p_filesz. It checks BEHAVIOUR under Linux (reads zero, both ends of the

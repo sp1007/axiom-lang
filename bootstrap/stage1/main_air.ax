@@ -772,6 +772,7 @@ pub fn main() -> i32:
     mut jumptable := false // RFC 0028: -jumptable — dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut dfe_report_flag := false // RFC 0031: -dfe-report (measurement only)
+    mut dfe_enabled := false     // RFC 0031: -dfe (actually prune)
     mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report — dump the freeable
                              // set (print, no OP_DESTROY, byte-identical output). Measurement only.
                            // OFF by default so the self-host build stays byte-identical.
@@ -868,6 +869,14 @@ pub fn main() -> i32:
             jumptable = true
         elif opt == "-dfe-report" or opt == "--dfe-report":
             // RFC 0031: print the reachable-function count, emit nothing differently.
+            dfe_report_flag = true
+        elif opt == "-dfe" or opt == "--dfe":
+            // RFC 0031: actually skip emitting unreachable functions. OPT-IN, and
+            // it stays opt-in until the root set has been exercised by something
+            // more demanding than the oracles — the failure mode is a call into an
+            // address that was never emitted, which no size check can detect.
+            // Implies the report, so a build that prunes always says what it pruned.
+            dfe_enabled = true
             dfe_report_flag = true
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
@@ -1180,7 +1189,7 @@ pub fn main() -> i32:
             mut obj_format := "coff"
             if target_linux:
                 obj_format = "elf"
-            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag)
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag, dfe_enabled)
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1

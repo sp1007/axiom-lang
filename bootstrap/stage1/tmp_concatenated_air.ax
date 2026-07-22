@@ -31951,10 +31951,40 @@ pub fn resolve_binary_sym_name(sym_idx: i64, current_fn_name: str, symbols: ptr[
 // lower to a MACH_CALL with the magic callee index -2 rather than a symbol, so `ax_free` has
 // no edge at all. The linker's runtime-ABI allow-list (linker.ax ~L635) is the other root
 // source. Both must be seeded before anything is actually pruned.
-fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], infos: ptr[CompiledFuncInfoVec]):
+// Does this emitted symbol name denote a runtime ABI entry point â€” one the linker
+// binds BY NAME, with no call edge anywhere in the AIR?
+//
+// The allow-list in linker.ax is written in terms of the ABI name (`ax_println_str`),
+// but codegen emits AXIOM definitions with its own `ax_` prefix, so the same function
+// appears here as `ax_ax_println_str`. Testing the raw name alone therefore matches
+// nothing on the one target where it matters most.
+//
+// It matters most on ELF because there is no ax_runtime.dll on Linux: the whole
+// print / str_eq / panic / syscall family is compiled INTO the program as ordinary
+// AXIOM functions, and reached only through the magic negative callee indices. On
+// COFF those same names are DLL imports, absent from mod.funcs, so the missing
+// prefix strip was invisible â€” COFF regression passed 511/511 while every pruned
+// ELF binary segfaulted.
+fn dfe_is_abi_name(nm: str) -> bool:
+    if is_valid_runtime_dll_symbol(nm):
+        return true
+    let n = std.string.len(nm)
+    if n > 3:
+        let p = get_str_ptr(nm)
+        if p[0] == 'a' as u8 and p[1] == 'x' as u8 and p[2] == '_' as u8:
+            if is_valid_runtime_dll_symbol(std.string.slice(nm, 3, n)):
+                return true
+    return false
+
+// Reachability over the AIR call graph, indexed by sym_id. Returns null when the
+// symbol table is empty (nothing to analyse), which every caller must treat as
+// "prune nothing" â€” the conservative direction. Pure: it inspects the module and
+// allocates a result, and changes no compiler state, so computing it when only
+// reporting is exactly as safe as not computing it at all.
+fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], verbose: bool) -> ptr[bool]:
     let nsym = symbols.symbols.len
     if nsym <= 0 as i64:
-        return
+        return null as ptr[bool]
     let reach = @alloc(nsym) as ptr[bool]
     @memset(reach as ptr[void], 0 as u8, nsym)
 
@@ -31988,6 +32018,7 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
     mut total_funcs := 0 as i64
     mut root_exports := 0 as i64
     mut root_abi := 0 as i64
+    mut has_entry := false
     mut fi := 0 as i64
     while fi < mod.funcs.len:
         let f = &mod.funcs.data[fi]
@@ -31995,6 +32026,8 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
             total_funcs = total_funcs + 1 as i64
             let nm = x86_resolve_sym_name(f.sym_id, symbols, pool, table)
             mut is_root := (nm == "main" or nm == "_AX_main_main_v_v")
+            if is_root:
+                has_entry = true
             if not is_root:
                 mut ek := 0 as i64
                 while ek < symbols.export_syms.len:
@@ -32005,7 +32038,7 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
                         ek = symbols.export_syms.len
                     else:
                         ek = ek + 1
-            if not is_root and is_valid_runtime_dll_symbol(nm):
+            if not is_root and dfe_is_abi_name(nm):
                 is_root = true
                 root_abi = root_abi + 1 as i64
             if is_root:
@@ -32036,11 +32069,45 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
                     ii = ii + 1
             gi = gi + 1
 
-    // Bytes, matched back by NAME rather than by position: the emission loop is
-    // followed by several synthetic entries (ax_Ok, ax_Err, ...) pushed into the
-    // same vector, so index correspondence with mod.funcs holds only by accident
-    // of ordering and would break silently the day another stub is appended.
-    mut reach_funcs := 0 as i64
+    // No entry point â‡’ this is not an executable, and the reachability walk had
+    // nowhere to start. A --staticlib or --shared build with no #[export] would
+    // otherwise compute an empty reachable set and prune the ENTIRE library into
+    // an empty archive: the analysis would be "correct" and the output useless.
+    // Returning null makes every caller fall back to emitting everything, which
+    // is the only safe answer when the roots are unknown rather than merely few.
+    if not has_entry and root_exports == 0 as i64:
+        if verbose:
+            ax_printf_local("[dfe] no entry and no exports â€” analysis declined, nothing pruned\n",
+                0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+        @free(reach as ptr[u8])
+        return null as ptr[bool]
+
+    if verbose:
+        mut reach_funcs := 0 as i64
+        mut hi := 0 as i64
+        while hi < mod.funcs.len:
+            let h = &mod.funcs.data[hi]
+            if not h.is_extern and (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
+                reach_funcs = reach_funcs + 1 as i64
+            hi = hi + 1
+        ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi)\n",
+            reach_funcs, total_funcs, root_exports, root_abi, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        fflush(null as ptr[void])
+    return reach
+
+// Bytes, matched back by NAME rather than by position: the emission loop is
+// followed by several synthetic entries (ax_Ok, ax_Err, ...) pushed into the same
+// vector, so index correspondence with mod.funcs holds only by accident of
+// ordering and would break silently the day another stub is appended.
+//
+// Runs after emission, so under -dfe the pruned functions contribute no info entry
+// and their size reads as zero. That is the honest number: with pruning active the
+// dead bytes are not in the binary to be counted.
+fn dfe_report_bytes(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], infos: ptr[CompiledFuncInfoVec], reach: ptr[bool]):
+    if reach == null as ptr[bool]:
+        return
+    let nsym = symbols.symbols.len
     mut reach_bytes := 0 as i64
     mut dead_bytes := 0 as i64
     mut hi := 0 as i64
@@ -32057,20 +32124,16 @@ fn dfe_report(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], 
                 else:
                     ki = ki + 1
             if (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
-                reach_funcs = reach_funcs + 1 as i64
                 reach_bytes = reach_bytes + hsz
             else:
                 dead_bytes = dead_bytes + hsz
         hi = hi + 1
 
-    ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi)\n",
-        reach_funcs, total_funcs, root_exports, root_abi, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     ax_printf_local("[dfe] text bytes: live %d, dead %d (of %d)\n",
         reach_bytes, dead_bytes, reach_bytes + dead_bytes, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     fflush(null as ptr[void])
-    @free(reach as ptr[u8])
 
-pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool, dfe_rep: bool) -> bool:
+pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool, dfe_rep: bool, dfe_on: bool) -> bool:
     let is_elf64 = (format_ptr[0] == 'e' as u8)
     mut abi := "win64"
     if is_elf64:
@@ -32179,11 +32242,40 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 push_coff_symbol(&coff_syms, COFFSymbol(name_str: name, value: 0 as u32, section_num: 0 as i16, sym_type: 0x20 as u16, storage_class: IMAGE_SYM_CLASS_EXTERNAL, num_aux: 0 as u8))
         fi = fi + 1
         
+    // RFC 0031. Computed once, before emission, and used for two things: the
+    // report, and (under -dfe) the decision not to emit. Reporting and pruning
+    // therefore cannot disagree about what is reachable â€” the number printed is
+    // the number acted on.
+    mut dfe_reach := null as ptr[bool]
+    if dfe_rep or dfe_on:
+        dfe_reach = dfe_compute(mod, symbols, pool, table, dfe_rep)
+    // A null result means the analysis declined to run. Pruning must then do
+    // nothing rather than fall back to some partial answer.
+    let dfe_prune = dfe_on and dfe_reach != null as ptr[bool]
+    let dfe_nsym = symbols.symbols.len
+
     fi = 0
     mut func_done_count := 0 as i64
+    mut dfe_pruned := 0 as i64
     while fi < mod.funcs.len:
         let fn_ptr = &mod.funcs.data[fi]
-        if not fn_ptr.is_extern:
+        mut dfe_skip := false
+        if dfe_prune and not fn_ptr.is_extern:
+            if (fn_ptr.sym_id as i64) < dfe_nsym:
+                if not dfe_reach[fn_ptr.sym_id as i64]:
+                    dfe_skip = true
+                    dfe_pruned = dfe_pruned + 1 as i64
+                    // Name every dropped function. Without this the only symptom of
+                    // a missing root is a SIGSEGV in the built program, with nothing
+                    // to connect it back to what was removed (CLAUDE.md Â§9: the IR
+                    // must stay debuggable). Verbose by design â€” the flag is a debug
+                    // flag, and the list is the first thing anyone diagnosing a
+                    // pruned-binary crash needs.
+                    if dfe_rep:
+                        ax_printf_local("[dfe] prune %s\n",
+                            get_str_ptr(x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)) as i64,
+                            0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        if not fn_ptr.is_extern and not dfe_skip:
             let fn_name = x86_resolve_sym_name(fn_ptr.sym_id, symbols, pool, table)
 
             if func_done_count % 10 as i64 == 0 as i64:
@@ -32257,7 +32349,13 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
     // closure are string machinery, among the largest functions in the bundle. Sum
     // the real emitted sizes rather than inferring the win from a ratio.
     if dfe_rep:
-        dfe_report(mod, symbols, pool, table, &func_infos)
+        dfe_report_bytes(mod, symbols, pool, table, &func_infos, dfe_reach)
+        if dfe_prune:
+            ax_printf_local("[dfe] pruned %d functions\n",
+                dfe_pruned, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            fflush(null as ptr[void])
+    if dfe_reach != null as ptr[bool]:
+        @free(dfe_reach as ptr[u8])
 
     // Append identity variant constructors for sum types (Ok, Err, Some, None)
     let ok_offset = all_code.len as u32
@@ -37194,6 +37292,7 @@ pub fn main() -> i32:
     mut jumptable := false // RFC 0028: -jumptable â€” dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut dfe_report_flag := false // RFC 0031: -dfe-report (measurement only)
+    mut dfe_enabled := false     // RFC 0031: -dfe (actually prune)
     mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report â€” dump the freeable
                              // set (print, no OP_DESTROY, byte-identical output). Measurement only.
                            // OFF by default so the self-host build stays byte-identical.
@@ -37290,6 +37389,14 @@ pub fn main() -> i32:
             jumptable = true
         elif opt == "-dfe-report" or opt == "--dfe-report":
             // RFC 0031: print the reachable-function count, emit nothing differently.
+            dfe_report_flag = true
+        elif opt == "-dfe" or opt == "--dfe":
+            // RFC 0031: actually skip emitting unreachable functions. OPT-IN, and
+            // it stays opt-in until the root set has been exercised by something
+            // more demanding than the oracles â€” the failure mode is a call into an
+            // address that was never emitted, which no size check can detect.
+            // Implies the report, so a build that prunes always says what it pruned.
+            dfe_enabled = true
             dfe_report_flag = true
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
@@ -37602,7 +37709,7 @@ pub fn main() -> i32:
             mut obj_format := "coff"
             if target_linux:
                 obj_format = "elf"
-            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag)
+            let success = compile_native_binary(temp_obj, air_builder.module, resolver.symtable, parser.pool, typetable, get_str_ptr(obj_format), self_link, dfe_report_flag, dfe_enabled)
             if not success:
                 ax_puts_local("Error: could not generate native binary code")
                 return 1

@@ -14,6 +14,13 @@ TIMEOUT="${TIMEOUT:-150}"
 # Defender-throttled box (e.g. REGTMP=bin/_regtmp, since bin/ is excluded) to keep
 # per-build time ~1s instead of ~99s. See knowledge/infra-defender-build-throttle.
 REGTMP="${REGTMP:-/tmp}"
+# Extra flags appended to every build, e.g. AXEXTRA=-dfe to re-run the whole
+# suite with RFC 0031 dead-function elimination active. Unquoted on purpose so
+# an empty value adds no argument. This is the only way to exercise the DFE root
+# set against something more demanding than a handful of oracles: a wrong root
+# shows up as a call into an address that was never emitted, and only breadth of
+# real programs finds it.
+AXEXTRA="${AXEXTRA:-}"
 mkdir -p "$REGTMP" 2>/dev/null || true
 pass=0; fail=0; failed=""
 
@@ -620,7 +627,7 @@ for row in "${rows[@]}"; do
   [ -f "$src" ] || { echo "SKIP $name (no $src)"; continue; }
   out_exe="$REGTMP/reg_${name}.exe"
   rm -f "$out_exe"
-  timeout "$TIMEOUT" "$AXC" build "$src" -o "$out_exe" -O1 >/dev/null 2>&1
+  timeout "$TIMEOUT" "$AXC" build "$src" -o "$out_exe" -O1 $AXEXTRA >/dev/null 2>&1
   if [ "$cmp" = "reject" ]; then
     # Expect the compiler to REJECT this program (diagnostic, no exe emitted).
     if [ ! -f "$out_exe" ]; then echo "PASS $name (rejected)"; pass=$((pass+1)); else echo "FAIL $name (expected rejection, got exe)"; fail=$((fail+1)); failed="$failed $name"; fi
@@ -679,7 +686,7 @@ for opt in O2 O3; do
     osrc="bin/${oname}.ax"
     [ -f "$osrc" ] || continue
     oe="$REGTMP/reg_${oname}_${opt}.exe"; rm -f "$oe"
-    timeout "$TIMEOUT" "$AXC" build "$osrc" -o "$oe" -${opt} >/dev/null 2>&1
+    timeout "$TIMEOUT" "$AXC" build "$osrc" -o "$oe" -${opt} $AXEXTRA >/dev/null 2>&1
     if [ ! -f "$oe" ]; then
       echo "FAIL ${oname}@-${opt} (compiler produced no exe — crash?)"; fail=$((fail+1)); failed="$failed ${oname}@-${opt}"
     else
@@ -696,7 +703,7 @@ for jt in "t_jumptable:226" "t_jumptable2:28" "t_jumptable3:27" "t_ifchainjt:53"
   jname="${jt%%:*}"; jwant="${jt##*:}"
   for opt in O0 O1 O2; do
     je="$REGTMP/reg_${jname}_jt_${opt}.exe"; rm -f "$je"
-    timeout "$TIMEOUT" "$AXC" build "bin/${jname}.ax" -o "$je" -jumptable -${opt} >/dev/null 2>&1
+    timeout "$TIMEOUT" "$AXC" build "bin/${jname}.ax" -o "$je" -jumptable -${opt} $AXEXTRA >/dev/null 2>&1
     if [ ! -f "$je" ]; then
       echo "FAIL ${jname}@-jumptable-${opt} (no exe)"; fail=$((fail+1)); failed="$failed ${jname}@jt-${opt}"
     else
