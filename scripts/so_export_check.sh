@@ -81,6 +81,29 @@ PY
   if [ $? -ne 0 ]; then echo "FAIL soglobal dlopen/global"; fail=1; fi
 fi
 
+echo ""
+echo "=== RFC 0032 P2: intra-module call + string-returning export ==="
+SOP="bin/soprobe.so"
+SOP_WSL="$ROOT_WSL/bin/soprobe.so"
+rm -f "$SOP"
+"$AXC" build tests/ffi/soprobe.ax --shared -o "$SOP" --target linux -self-link -O1 > /tmp/so_probe.log 2>&1
+if [ ! -f "$SOP" ]; then echo "FAIL soprobe build"; cat /tmp/so_probe.log; fail=1; else
+  echo "PASS soprobe build ($(stat -c %s "$SOP" 2>/dev/null) bytes)"
+  wsl python3 - "$SOP_WSL" <<'PY'
+import sys, ctypes
+lib = ctypes.CDLL(sys.argv[1])
+lib.ax_calc.restype = ctypes.c_int64
+lib.ax_calc.argtypes = [ctypes.c_int64]
+lib.ax_greet.restype = ctypes.c_char_p
+c = lib.ax_calc(4)   # sum_{i=1..4}(i*i+1) = 2+5+10+17 = 34
+g = lib.ax_greet()
+ok = (c == 34 and g == b'hi-from-so')
+print(f"ax_calc(4)={c} (want 34)  ax_greet()={g!r} -> {'PASS' if ok else 'FAIL'}")
+sys.exit(0 if ok else 1)
+PY
+  if [ $? -ne 0 ]; then echo "FAIL soprobe dlopen/call"; fail=1; fi
+fi
+
 echo "======================================"
 if [ "$fail" -ne 0 ]; then echo "SO_EXPORT_FAILED"; exit 1; fi
 echo "SO_EXPORT_OK"

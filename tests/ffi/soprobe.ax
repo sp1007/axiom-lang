@@ -1,0 +1,21 @@
+// HARNESS: SKIP — a --shared/.so library source, not a runnable program.
+// RFC 0032 P2: harden the .so path across two more cases that must survive rebasing —
+//   ax_calc(n): an export that CALLS AN INTERNAL (non-exported) helper — exercises
+//               intra-module `call rel32`, which is base-independent by construction.
+//   ax_greet(): a STRING-returning export — the literal lives in the image and its
+//               address is taken RIP-relative, so it must resolve after relocation.
+// Build:  axc build tests/ffi/soprobe.ax --shared -o bin/soprobe.so --target linux -self-link -O1
+fn helper(x: i64) -> i64:
+    return x * x + 1
+
+#[export] pub fn ax_calc(n: i64) -> i64:
+    mut acc: i64 = 0
+    mut i: i64 = 1
+    while i <= n:
+        acc = acc + helper(i)
+        i = i + 1
+    return acc
+
+#[export] pub fn ax_greet() -> ptr[u8]:
+    let s = "hi-from-so" as ptr[u8]
+    return s
