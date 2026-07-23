@@ -37,3 +37,24 @@ until then; recorded so it is not a surprise.
 The remaining OPEN interface-coercion gap is Option/Result CONSTRUCTION (`Some(Sq(..))`), which
 is the one site whose fix does not have the interface target locally in hand — see the variant
 bug note.
+
+## RFC 0029 interaction surface — what has been swept (2026-07-23)
+
+Consolidated map so adjacent areas are not re-probed:
+
+- **Coercion, construction side** — tuple/user-sum/array-literal/struct-field-init FIXED; only
+  Option/Result `Some`/`Ok` open ([[bug-iface-variant-payload-no-vtable-box]]).
+- **Coercion, store side** — field/index(array+Vec)/nested/HashMap all correct (this note);
+  deref latent+unreachable.
+- **Conformance checking** — name-presence works; **signature checking is an OPEN soundness
+  bug** ([[bug-iface-conformance-signature-not-checked]]).
+- **Vtable dispatch** — multi-method, method-with-arg, interface-as-return, and
+  declaration-order independence all correct (oracle `t_ifacemethodorder`).
+- **Generics × interface** — CLEAN: generic fn returning T coerced to an interface, generic fn
+  with an interface param, generic struct `Cell[Shape]`, heterogeneous `Vec[Shape]` dispatch
+  through a generic push. All correct O0–O1.
+- **Closures/captures** — CLEAN and soundly restricted ([[probe-closure-capture-guard-sound]]).
+
+Two OPEN items remain, both dedicated-session: Option/Result construction coercion, and
+interface conformance signature checking. Everything else on this surface is fixed or confirmed
+clean.
