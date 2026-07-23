@@ -36,6 +36,30 @@ breaks. s3's reject message is the smoking gun: the payload binder `l` is typed 
 (the RFC 0019 `__mfv_` struct for `Node`), NOT as `Tree` the sum → `match l` sees a struct → rejects;
 and in s2 `sum(l)` passes a mistyped/garbage value → 0.
 
+## ⚠️ ATTEMPTED 2026-07-24e — fix WORKS for the target but broke a mono clone; REVERTED to green
+Implemented the forward-declaration exactly as below (reserve_sum_type + set_sum_variants in
+typetable.ax; reserve+set-sym-type-id before the variant loop in pre_infer_type_alias). Result:
+**s2=7, s3=3 (accept), q1=28 — the bug IS fixed**, non-recursive sums (s4/s5/s6) unchanged, and
+**B==C `095CFB1E`** held. BUT full regression = **529/530, `t_gentree` SEGFAULTS** (the GENERIC
+recursive `Tree[i64]`). Reverted (driver stays `AFA6529F`, A==B green).
+- First refinement TRIED: skip forward-decl when the alias decl has a `NODE_GENERIC_PARAMS` child
+  (generic template). **Did NOT fix t_gentree** — the breakage is the **MONO CLONE** `Tree[i64]`,
+  not the template. Mono strips generic params from clones (`remove_generic_params_child`,
+  mono.ax:533) and re-runs `pre_infer_type_alias(cloned_root)` (:3189), so the clone has NO
+  `NODE_GENERIC_PARAMS` → my check treated it as non-generic → reserved a concrete sum id + set the
+  clone's sym.type_id early → the clone's self-ref field `Tree[i64]` (a NODE_GENERIC_TYPE) got
+  mis-collapsed → segfault. (Curiously `t_gentreestr` = `Tree[str]` still PASSED — the >8B-payload
+  path differs; only the i64 clone broke.)
+- **PRECISE REFINED FIX for next time:** apply forward-declaration ONLY when a variant field is a
+  **BARE self-reference** — a field type node that is NOT `NODE_GENERIC_TYPE` and names the enclosing
+  sum. Genuine non-generic recursive sums use a bare `Tree` field; BOTH generic templates AND mono
+  clones use `Tree[T]`/`Tree[i64]` = `NODE_GENERIC_TYPE` fields, so keying on "has a bare-name self-ref
+  field" cleanly includes s2 and excludes t_gentree. Pre-scan the variant fields (the `ptn` sibling
+  chain at typecheck.ax:2824-2833, BEFORE resolving) for a node with `kind != NODE_GENERIC_TYPE` whose
+  identifier == `sym.name_id` (compare via the field node's resolved payload symbol or its token text
+  against `self.intern.get(sym.name_id)`); reserve only if found. Gate: B==C + FULL 530 regression
+  (t_gentree/t_gentreestr MUST stay 15/26) + new `t_rectreesum`.
+
 ## Distinct from the FIXED bug92
 [[bug92-generic-recursive-multifield-open]] (`Tree[T]=Node(T,Tree[T],Tree[T])`, `938c48b`) was the
 GENERIC recursive case, fixed via `field_is_pointer_sum` recognising a **generic_inst-of-SUM** (kind
