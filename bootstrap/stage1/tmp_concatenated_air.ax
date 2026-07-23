@@ -1555,6 +1555,13 @@ pub struct AstTree:
     extras: IntVec // Custom monomorphic IntVec used from lexer.ax
     src: str
     tokens: TokenVec
+    // The tree's ORIGINAL src buffer as handed to new_ast_tree. clone_subtree_from
+    // grows `src` by re-concatenating cloned token text; every concat leaks the prior
+    // buffer, and for a 2 MB self-host source that leaked ~7.7 GB of ~2 MB buffers.
+    // We now free each spent intermediate concat buffer, but must never free THIS one
+    // (its provenance is the caller's â€” possibly not heap-owned), so it is kept here
+    // to guard the free.
+    orig_src: str
 
 pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     mut nodes := new_node_vec()
@@ -1573,6 +1580,7 @@ pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     tree.nodes = nodes
     tree.extras = new_int_vec()
     tree.src = src
+    tree.orig_src = src
     tree.tokens = tokens
     return tree
 
@@ -1653,6 +1661,13 @@ pub fn clone_subtree_from(mut self: ptr[AstTree], src_tree: ptr[AstTree], node_i
             let new_offset = std.string.len(old_src)
             self.src = std.string.concat(old_src, tok_text)
             @free(get_str_ptr(tok_text))
+            // Free the spent intermediate src buffer. `concat` copied its full contents
+            // into the new self.src, so every offset still resolves; nothing else holds a
+            // pointer into it. Guard: never free the tree's ORIGINAL src (caller-owned,
+            // possibly not heap). Without this the per-token re-concat leaked one ~2 MB
+            // buffer per cloned token (~7.7 GB across a self-host monomorphization run).
+            if get_str_ptr(old_src) != get_str_ptr(self.orig_src):
+                @free(get_str_ptr(old_src))
             
             new_token_idx = self.tokens.len as u32
             self.tokens.push(Token(
