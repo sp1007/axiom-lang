@@ -1620,6 +1620,13 @@ pub fn parse_program(mut self: ptr[Parser]):
             let next = self.peek()
             if next.kind == TK_FN:
                 decl = self.parse_func_decl(true)
+            elif next.kind == TK_ASYNC:
+                // RFC 0033 §3.1: `pub async fn`.
+                self.consume() // 'async'
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+                    if decl != 0 as u32:
+                        self.set_flags(decl, FLAG_IS_ASYNC as u16)
             elif next.kind == TK_STRUCT or next.kind == TK_PACKED:
                 decl = self.parse_struct_decl(true)
             elif next.kind == TK_INTERFACE:
@@ -1635,6 +1642,20 @@ pub fn parse_program(mut self: ptr[Parser]):
             elif next.kind == TK_LET or next.kind == TK_MUT:
                 decl = self.parse_var_decl()
                 self.set_flags(decl, FLAG_IS_PUB as u16)
+        elif tok.kind == TK_ASYNC:
+            // RFC 0033 §3.1: top-level `async fn` / `async pub fn`. In v1 `async` is a
+            // forward-compat marker (FLAG_IS_ASYNC) with no runtime difference; the body
+            // is a normal function. `pub async fn` is handled in the TK_PUB branch above.
+            self.consume() // 'async'
+            let anext = self.peek()
+            if anext.kind == TK_PUB:
+                self.consume()
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+            elif anext.kind == TK_FN:
+                decl = self.parse_func_decl(false)
+            if decl != 0 as u32:
+                self.set_flags(decl, FLAG_IS_ASYNC as u16)
         elif tok.kind == TK_FN:
             decl = self.parse_func_decl(false)
         elif tok.kind == TK_STRUCT or tok.kind == TK_PACKED:

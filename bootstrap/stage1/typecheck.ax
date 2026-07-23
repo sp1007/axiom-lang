@@ -5614,6 +5614,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         else:
             result_type = TYPE_UNKNOWN
         
+    elif kind == NODE_AWAIT_EXPR:
+        // RFC 0033 §3.2: async/await v1 (synchronous cooperative). `await e` evaluates e
+        // to completion and yields its value, so its type is e's type (no Future[T]
+        // wrapper in v1). Inert on the compiler self-build — it uses no `await`.
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            result_type = self.infer_node(child, expected)
+
     elif kind == NODE_CAST_EXPR:
         let expr = self.tree.nodes.data[node_idx].first_child
         mut target_type := TYPE_UNKNOWN

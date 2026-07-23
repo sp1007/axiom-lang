@@ -1,0 +1,16 @@
+// RFC 0033 Phase A — async/await v1 (synchronous cooperative) runtime oracle.
+// Before this change `await e` produced NO code (OP_AWAIT had no selector case) and
+// returned 0/garbage on every platform, and top-level `async fn` did not parse.
+// Exercises: top-level `async fn`, `pub async fn`, nested `await`, and `await` used in
+// a plain (non-async) function. Deterministic exit code = the awaited value = 42.
+
+async fn inner() -> i32:
+    return 40
+
+pub async fn outer() -> i32:
+    let y = await inner()
+    return y + 2 as i32
+
+fn main() -> i32:
+    let r = await outer()
+    return r

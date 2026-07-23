@@ -3555,6 +3555,13 @@ pub fn parse_program(mut self: ptr[Parser]):
             let next = self.peek()
             if next.kind == TK_FN:
                 decl = self.parse_func_decl(true)
+            elif next.kind == TK_ASYNC:
+                // RFC 0033 Â§3.1: `pub async fn`.
+                self.consume() // 'async'
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+                    if decl != 0 as u32:
+                        self.set_flags(decl, FLAG_IS_ASYNC as u16)
             elif next.kind == TK_STRUCT or next.kind == TK_PACKED:
                 decl = self.parse_struct_decl(true)
             elif next.kind == TK_INTERFACE:
@@ -3570,6 +3577,20 @@ pub fn parse_program(mut self: ptr[Parser]):
             elif next.kind == TK_LET or next.kind == TK_MUT:
                 decl = self.parse_var_decl()
                 self.set_flags(decl, FLAG_IS_PUB as u16)
+        elif tok.kind == TK_ASYNC:
+            // RFC 0033 Â§3.1: top-level `async fn` / `async pub fn`. In v1 `async` is a
+            // forward-compat marker (FLAG_IS_ASYNC) with no runtime difference; the body
+            // is a normal function. `pub async fn` is handled in the TK_PUB branch above.
+            self.consume() // 'async'
+            let anext = self.peek()
+            if anext.kind == TK_PUB:
+                self.consume()
+                if self.peek().kind == TK_FN:
+                    decl = self.parse_func_decl(true)
+            elif anext.kind == TK_FN:
+                decl = self.parse_func_decl(false)
+            if decl != 0 as u32:
+                self.set_flags(decl, FLAG_IS_ASYNC as u16)
         elif tok.kind == TK_FN:
             decl = self.parse_func_decl(false)
         elif tok.kind == TK_STRUCT or tok.kind == TK_PACKED:
@@ -12013,6 +12034,14 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         else:
             result_type = TYPE_UNKNOWN
         
+    elif kind == NODE_AWAIT_EXPR:
+        // RFC 0033 Â§3.2: async/await v1 (synchronous cooperative). `await e` evaluates e
+        // to completion and yields its value, so its type is e's type (no Future[T]
+        // wrapper in v1). Inert on the compiler self-build â€” it uses no `await`.
+        let child = self.tree.nodes.data[node_idx].first_child
+        if child != 0 as u32:
+            result_type = self.infer_node(child, expected)
+
     elif kind == NODE_CAST_EXPR:
         let expr = self.tree.nodes.data[node_idx].first_child
         mut target_type := TYPE_UNKNOWN
@@ -27101,6 +27130,13 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         if sel.abi_name == "win64":
             out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RSP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 32 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RAX, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+
+    elif op == OP_AWAIT:
+        // RFC 0033 Â§3.2: async/await v1 (synchronous). The awaited expression already
+        // ran during lowering (src1 holds its value); `await` forwards that value. This
+        // is a target-independent identity move â€” no ABI branch, cross-platform by
+        // construction. Inert on the compiler self-build (emits no OP_AWAIT) â†’ A==B==C.
+        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_FREE or op == OP_DESTROY:
         let arg0 = abi_int_arg_reg(sel.abi_name, 0)
