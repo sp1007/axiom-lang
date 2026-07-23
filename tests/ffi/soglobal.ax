@@ -1,0 +1,17 @@
+// HARNESS: SKIP — a --shared/.so library source, not a runnable program.
+// RFC 0032 P2: a shared object that reads AND mutates a MODULE GLOBAL through its
+// exported functions. Proves global addressing survives being dlopen'd at an arbitrary
+// base — i.e. that OP_GLOBAL_ADDR really is emitted RIP-relative (lea [rip+disp32]) and
+// not as a link-time absolute that would point at the un-relocated image.
+//   ax_bump():   g += 1; return g      (so successive calls yield 1, 2, 3, …)
+//   ax_addg(n):  g += n; return g
+// Build:  axc build tests/ffi/soglobal.ax --shared -o bin/soglobal.so --target linux -self-link -O1
+mut g_counter: i64 = 0
+
+#[export] pub fn ax_bump() -> i64:
+    g_counter = g_counter + 1
+    return g_counter
+
+#[export] pub fn ax_addg(n: i64) -> i64:
+    g_counter = g_counter + n
+    return g_counter

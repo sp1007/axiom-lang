@@ -55,6 +55,32 @@ sys.exit(0 if ok else 1)
 PY
 if [ $? -ne 0 ]; then echo "FAIL dlopen/call"; fail=1; fi
 
+echo ""
+echo "=== RFC 0032 P2: shared object with a MODULE GLOBAL ==="
+SOG="bin/soglobal.so"
+SOG_WSL="$ROOT_WSL/bin/soglobal.so"
+rm -f "$SOG"
+"$AXC" build tests/ffi/soglobal.ax --shared -o "$SOG" --target linux -self-link -O1 > /tmp/so_global.log 2>&1
+if [ ! -f "$SOG" ]; then echo "FAIL soglobal build"; cat /tmp/so_global.log; fail=1; else
+  echo "PASS soglobal build ($(stat -c %s "$SOG" 2>/dev/null) bytes)"
+  # Global addressing must survive relocation: bump 3x -> 1,2,3; then addg(10) -> 13.
+  # Proves OP_GLOBAL_ADDR is RIP-relative (a link-time absolute would fault or read the
+  # wrong address once the .so is mapped at a random base under ASLR).
+  wsl python3 - "$SOG_WSL" <<'PY'
+import sys, ctypes
+lib = ctypes.CDLL(sys.argv[1])
+lib.ax_bump.restype = ctypes.c_int64
+lib.ax_addg.restype = ctypes.c_int64
+lib.ax_addg.argtypes = [ctypes.c_int64]
+seq = [lib.ax_bump(), lib.ax_bump(), lib.ax_bump()]
+g = lib.ax_addg(10)
+ok = (seq == [1, 2, 3] and g == 13)
+print(f"bump->{seq} addg(10)->{g} -> {'PASS' if ok else 'FAIL'}")
+sys.exit(0 if ok else 1)
+PY
+  if [ $? -ne 0 ]; then echo "FAIL soglobal dlopen/global"; fail=1; fi
+fi
+
 echo "======================================"
 if [ "$fail" -ne 0 ]; then echo "SO_EXPORT_FAILED"; exit 1; fi
 echo "SO_EXPORT_OK"
