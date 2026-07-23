@@ -8009,6 +8009,122 @@ pub fn interface_missing_method(self: ptr[TypeChecker], struct_type: u32, iface_
         k = k + 1 as i64
     return 0 as u32
 
+// RFC 0029 signature conformance: read an interface method's declared NON-self param
+// count and return type from the interface decl AST (NODE_METHOD_SIG children). Mirrors
+// interface_method_ret_type's walk (self.tree, NODE_INTERFACE_DECL matched by name; params
+// are NODE_PARAM_DECL, the return is the sole type-annotation child). Returns false when the
+// interface decl or the method sig is NOT in self.tree (a cross-tree / imported interface) so
+// callers conservatively SKIP the signature check rather than risk a false reject on a decl
+// they cannot see. `out_nparams` excludes the `self` receiver.
+pub fn interface_method_sig(mut self: ptr[TypeChecker], iface_type: u32, method_name_id: u32, out_nparams: ptr[i64], out_ret: ptr[u32]) -> bool:
+    out_nparams[0] = -1 as i64
+    out_ret[0] = 0 as u32
+    if (iface_type as i64) >= self.types.entries.len:
+        return false
+    mut di := 0 as i64
+    while di < self.tree.nodes.len:
+        let dn = self.tree.nodes.data[di]
+        // The resolver rewrites NODE_INTERFACE_DECL.payload from the interned name to the
+        // SYMBOL INDEX (see the Phase-0 registration walk), so match the decl via its
+        // symbol's type_id, not by name. Staying in self.tree keeps infer_node (which reads
+        // self.tree) consistent; a cross-tree imported interface simply is not found here and
+        // the caller conservatively skips the signature check.
+        mut decl_matches := false
+        if dn.kind == NODE_INTERFACE_DECL:
+            let isym_idx = dn.payload
+            if isym_idx != 0 as u32 and (isym_idx as i64) < self.symtable.symbols.len:
+                if self.symtable.symbols.data[isym_idx as i64].type_id == iface_type:
+                    decl_matches = true
+        if decl_matches:
+            mut ch := dn.first_child
+            while ch != 0 as u32:
+                let cn = self.tree.nodes.data[ch as i64]
+                if cn.kind == NODE_METHOD_SIG and cn.payload == method_name_id:
+                    mut nparams := 0 as i64
+                    mut ret := 0 as u32
+                    mut mc := cn.first_child
+                    while mc != 0 as u32:
+                        let mcn = self.tree.nodes.data[mc as i64]
+                        if mcn.kind == NODE_PARAM_DECL:
+                            nparams = nparams + 1 as i64
+                        elif is_type_annotation_node(mcn.kind):
+                            ret = self.infer_node(mc, TYPE_UNKNOWN)
+                        mc = mcn.next_sibling
+                    if nparams > 0 as i64:
+                        nparams = nparams - 1 as i64   // drop the `self` receiver
+                    out_nparams[0] = nparams
+                    out_ret[0] = ret
+                    return true
+                ch = cn.next_sibling
+        di = di + 1 as i64
+    return false
+
+// RFC 0029 signature conformance: the concrete struct method's NON-self param count and
+// return type. Mirrors struct_has_method's symbol walk (SYM_FUNC whose unwrapped param[0]
+// is the struct type). Returns false when the struct has no such method.
+pub fn struct_method_sig(self: ptr[TypeChecker], struct_type: u32, method_name_id: u32, out_nparams: ptr[i64], out_ret: ptr[u32]) -> bool:
+    out_nparams[0] = -1 as i64
+    out_ret[0] = 0 as u32
+    let mname = self.intern.get(method_name_id)
+    mut i := 0 as i64
+    while i < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[i]
+        if sym.kind == SYM_FUNC and sym.type_id != TYPE_UNKNOWN and (sym.type_id as i64) < self.types.entries.len:
+            if self.intern.name_matches_method(sym.name_id, mname):
+                let fe = self.types.entries.data[sym.type_id]
+                if fe.kind == TYPE_KIND_FUNC and (fe.extra as i64) < self.types.funcs.len:
+                    let fi = self.types.funcs.data[fe.extra]
+                    if fi.params.len > 0:
+                        mut fp := fi.params.data[0]
+                        while fp != TYPE_UNKNOWN and (fp as i64) < self.types.entries.len:
+                            let pe = self.types.entries.data[fp]
+                            if pe.kind == TYPE_KIND_POINTER or pe.kind == TYPE_KIND_REF:
+                                fp = pe.extra
+                            else:
+                                break
+                        if fp == struct_type:
+                            out_nparams[0] = fi.params.len - 1 as i64
+                            out_ret[0] = fi.ret
+                            safe_free_str(mname)
+                            return true
+        i = i + 1 as i64
+    safe_free_str(mname)
+    return false
+
+// RFC 0029 signature conformance: the name-id of the FIRST interface method the struct
+// implements by NAME but with a MISMATCHED signature (0 if every present method matches).
+// Complements interface_missing_method (name-presence): a same-named method with the wrong
+// arity (F3 dropped arg / F3b garbage extra) or return type (F2) is otherwise accepted and
+// dispatched through the mismatched slot. Deliberately conservative â€” it only rejects on a
+// difference it can PROVE: a param-count mismatch (needs no type resolution), or a return
+// type that differs when BOTH sides resolved to a concrete, non-generic type that is not a
+// `Self` position. Anything it cannot resolve (cross-tree iface, Self/generic return) is
+// skipped, never rejected, so it cannot false-reject correct code.
+pub fn interface_signature_mismatch(mut self: ptr[TypeChecker], struct_type: u32, iface_type: u32) -> u32:
+    let methods = self.types.interface_method_list(iface_type)
+    mut k := 0 as i64
+    while k < methods.len:
+        let m = methods.data[k]
+        mut inp := -1 as i64
+        mut iret := 0 as u32
+        let have_iface = self.interface_method_sig(iface_type, m, &inp, &iret)
+        mut snp := -1 as i64
+        mut sret := 0 as u32
+        let have_struct = self.struct_method_sig(struct_type, m, &snp, &sret)
+        if have_iface and have_struct:
+            // Param-count mismatch (F3/F3b): provable without resolving any type.
+            if inp >= 0 as i64 and snp >= 0 as i64 and inp != snp:
+                return m
+            // Return-type mismatch (F2): only when both resolve to a concrete, non-generic
+            // type and neither is a `Self` position (iface returns `Self` -> the interface
+            // type; the struct impl returns the concrete struct â€” correct conformance).
+            if iret != 0 as u32 and sret != 0 as u32 and iret != sret:
+                if not self.is_generic(iret) and not self.is_generic(sret):
+                    if iret != iface_type and sret != struct_type:
+                        return m
+        k = k + 1 as i64
+    return 0 as u32
+
 // RFC 0029: at any T->I coercion site (let / return / struct-field-init / assignment; the
 // call-arg site has its own inline check) a concrete struct flowing into an interface slot
 // must structurally IMPLEMENT it. Otherwise air_builder builds a vtable slot from a 0
@@ -8037,6 +8153,16 @@ pub fn check_iface_conformance(mut self: ptr[TypeChecker], target_type: u32, src
         ax_printf_local("error: type does not implement interface method '%s' required by the interface type\n", get_str_ptr(mn) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         safe_free_str(mn)
         self.diags_count = self.diags_count + 1 as i64
+    else:
+        // RFC 0029: name-presence is necessary but not sufficient â€” a same-named method
+        // with the wrong arity or return type miscompiles through the vtable slot (drops
+        // an arg / reads garbage / flows a wrong return type). Reject that too.
+        let sigbad = self.interface_signature_mismatch(at, target_type)
+        if sigbad != 0 as u32:
+            let smn = self.intern.get(sigbad)
+            ax_printf_local("error: method '%s' does not match the signature required by the interface (parameter count or return type differs)\n", get_str_ptr(smn) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+            safe_free_str(smn)
+            self.diags_count = self.diags_count + 1 as i64
 
 pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
     let field_name = self.intern.get(field_name_id)

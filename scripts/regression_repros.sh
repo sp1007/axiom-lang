@@ -308,6 +308,10 @@ rows=(
   "t_ifacetuplenest|exit|42"
   "t_ifacesumpayload|exit|42"
   "t_ifacevariantpayload|exit|42"
+  "t_ifacesigok|exit|15"
+  "t_ifacesigretbad|reject|"
+  "t_ifacesigfewerp|reject|"
+  "t_ifacesigmorep|reject|"
   "t_ifacemethodorder|exit|42"
   "t_ifacearrayassign|exit|42"
   # Also pins the IMAGE_FILE_DLL fix: before it, an #[export] in an EXECUTABLE
