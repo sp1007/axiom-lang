@@ -31,7 +31,32 @@ GENERIC-struct** combination itself. Calling the method dispatches to a wrong/un
 **WORKAROUND (works today):** write the method as a FREE FUNCTION `fn m[T](self: ptr[Box[T]]) -> ...`
 outside the struct body (p4c).
 
-## Fix direction (dedicated session — NOT yet attempted)
+## ROOT PINPOINTED (read-only, 2026-07-24e) — parser drops the struct's generic params
+`parse_struct_decl` (parser.ax:1367): the struct's generic params `[T]` are parsed at 1385-1389
+(gp node, `FLAG_IS_GENERIC` set on the STRUCT node). Inline methods are parsed at **1408-1418** via
+`parse_func_decl(...)` and appended as struct children — **but they DON'T receive the struct's `[T]`
+or `FLAG_IS_GENERIC`.** So `fn get(self: ptr[Box[T]])` is a NON-generic function that merely mentions
+`T`; mono never instantiates it for `Box[i64]`, so `b.get()` calls the un-instantiated template body
+with a wrong layout → SIGSEGV. The free-fn form `fn get[T](self)` works because it carries an explicit
+`[T]` → normal `mono.instantiate_function` path.
+
+## Fix plan (dedicated session — likely A==B inert on self-host, which uses the free-fn workaround)
+MULTI-PART (tractable but not a one-liner):
+1. **Parser (parser.ax:1408-1418):** when the struct is generic (gp != 0), give each inline method the
+   struct's generic params + mark it generic. `clone_subtree` (ast.ax:208) can clone the gp subtree;
+   insert it at the METHOD node's correct child position (generic-params come FIRST, before params —
+   check parse_func_decl's child order; append_child adds at END so a front-insert helper or building
+   the method with gp first is needed) and `set_flags(m, FLAG_IS_GENERIC)`.
+2. **Dispatch/mono:** verify `b.get()` on a `Box[i64]` receiver resolves to the method AND infers
+   `T=i64` from the receiver so mono instantiates `get[i64]` (the free-fn form does this via UFCS +
+   arg-type inference; confirm inline-method dispatch reaches the same instantiation, else route it
+   there). Trace with **bash grep** ([[lesson-bash-grep-not-powershell-selectstring]]).
+Gate: A==B expected (compiler declares no inline method on a generic struct — it uses the free-fn
+form, so the change is inert on the self-host); full regression + oracle `t_genstructmethod`(42) +
+a 2-instantiation oracle (`Box[i64]` and `Box[str]`) to prove per-instance mono. B==C if any codegen
+shifts.
+
+## (superseded) Fix direction (dedicated session — NOT yet attempted)
 An inline method in a struct body is (RFC 0002 `current_struct`) parsed with an implicit/typed `self`
 and attached to the struct. For a NON-generic struct it monomorphizes trivially (p4b works). For a
 GENERIC struct `Box[T]`, when `Box[i64]` is instantiated, the struct's inline methods must ALSO be
