@@ -62,6 +62,28 @@ clearly correct, and directly in fib's hot loop. Re-run `perf_fib.ps1` + full re
 EACH; attribute each delta (do NOT batch). Then C (copy-coalescing), D (branch layout), E (regalloc
 volatile preference). Mask-elimination is a separate binary-size win, not the perf gate.
 
+## Opt A — concrete implementation recipe (investigated 2026-07-24e, ready to execute)
+- **Insertion point:** end of `select_all` (x86_selector.ax) — a peephole there applies to ALL
+  backends at once (coff/asm/elf all call `select_all` → liveness → regalloc → emit; see
+  x86_coff.ax:762). Run it on the `MachInstVec` BEFORE `compute_liveness`, so vregs are still
+  virtual and fusing also drops register pressure.
+- **Pattern (fib's 2 cmp sites):** the selector emits `MOV_IMM v, c` IMMEDIATELY followed by
+  `MACH_CMP dst=<reg>, src1=OPND_VREG(v)` (the const is the SRC1 operand of the cmp; dst holds the
+  compared reg). Both the branch-fusion path (fib's `if`) and `select_comparison` produce a bare
+  `MACH_CMP`, so a peephole on `MACH_CMP` catches both.
+- **Fusion:** if `inst[i]` is `MOV_IMM` with dst vreg `v` and a `c` that fits imm32, and `inst[i+1]`
+  is a `MACH_CMP` whose `src1.kind==OPND_VREG && src1.vreg==v`, AND `v` is used EXACTLY ONCE and
+  defined EXACTLY ONCE across the whole fn (mirror `const_shift_amount`'s non-SSA guards — AIR/mach
+  IR is non-SSA, a vreg can have multiple defs), then set `cmp.src1 = OPND_IMM(c)` and drop the
+  MOV_IMM (rebuild the vec without it, or set it to `MACH_NOP` which the emitters already skip —
+  x86_emitter.ax:153 / x86_asm_emitter.ax:143). The encoder already supports `MACH_CMP` with
+  `OPND_IMM` src1 (x86_selector.ax:1402 emits exactly that form for the setcc path).
+- **Guard:** imm must fit signed imm32 (cmp r64,imm32 sign-extends); bail otherwise. Do NOT fuse if
+  `v` has >1 use or >1 def. Adjacency (i+1) keeps it trivially safe (no redef between def and use).
+- **Gate:** B==C MANDATORY (backend), full regression, then `perf_fib.ps1` for the delta. Opt B
+  (lea for reg±const) is a follow-up — its MOV_IMM is NOT adjacent to the sub (`mov $1; mov rsi,rdi;
+  sub`), so it needs the single-use form without the adjacency shortcut.
+
 ## Reality check
 2.59x → 1.05x is a LARGE multi-session program (clang has decades of codegen tuning). Realistic
 near-term goal: knock down the systemic taxes (#2,#3) to get under ~1.5x, then reassess whether the
