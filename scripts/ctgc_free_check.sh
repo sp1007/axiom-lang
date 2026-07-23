@@ -52,7 +52,12 @@ for row in "${rows[@]}"; do
   [ -f "$src" ] || { echo "SKIP $name (no $src)"; continue; }
   off="/tmp/ctgc_off_${name}.exe"; on="/tmp/ctgc_on_${name}.exe"
   rm -f "$off" "$on"
-  timeout "$TIMEOUT" "$AXC" build "$src" -o "$off" -O1 >/dev/null 2>&1
+  # -ctgc-free is now ON BY DEFAULT (RFC 0015 P3 activated), so the "off" build must
+  # explicitly opt OUT via -no-ctgc-free — otherwise both columns would be ON and the
+  # drop-fires-only-when-on distinction (t_drop 0|42) would be lost. This also validates
+  # the -no-ctgc-free escape hatch. (An old compiler that predates the flag ignores the
+  # unknown option and builds default-off anyway, so this stays correct across drivers.)
+  timeout "$TIMEOUT" "$AXC" build "$src" -o "$off" -no-ctgc-free -O1 >/dev/null 2>&1
   timeout "$TIMEOUT" "$AXC" build "$src" -o "$on" -ctgc-free -O1 >/dev/null 2>&1
   if [ ! -f "$off" ] || [ ! -f "$on" ]; then
     echo "FAIL $name (build failed: off=$([ -f "$off" ]&&echo y||echo n) on=$([ -f "$on" ]&&echo y||echo n))"

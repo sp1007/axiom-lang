@@ -37689,7 +37689,12 @@ pub fn main() -> i32:
     mut auto_lib := false // RFC 0011 P4 inc3c: --auto-lib â€” auto-build/cache each non-std
                           // import as a .lib. Opt-in: AXIOM can't yet tell an app-module
                           // (may collide/need stdlib) from a standalone library.
-    mut ctgc_free := false // RFC 0015 P3: -ctgc-free â€” inject OP_DESTROY (compile-time free)
+    mut ctgc_free := true  // RFC 0015 P3: compile-time free is now ON BY DEFAULT â€” inject
+                           // OP_DESTROY (+ container free-glue / drop-glue) for provably
+                           // non-escaping, single-owner local aggregates at block fall-through.
+                           // Gated on a SOUND escape analysis (self-host freeable set = 0, so
+                           // the compiler self-build stays byte-identical). Use -no-ctgc-free
+                           // to opt OUT (debugging / a program that trips a missed escape edge).
     mut jumptable := false // RFC 0028: -jumptable â€” dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut dfe_report_flag := false // RFC 0031: -dfe-report (measurement only)
@@ -37786,6 +37791,11 @@ pub fn main() -> i32:
             show_time = true
         elif opt == "-ctgc-free" or opt == "--ctgc-free":
             ctgc_free = true
+        elif opt == "-no-ctgc-free" or opt == "--no-ctgc-free":
+            // RFC 0015 P3: opt OUT of the now-default compile-time free. Escape hatch for
+            // debugging a suspected early-free / for a program whose aliasing the escape
+            // analysis under-approximates (would become a UAF instead of a safe leak).
+            ctgc_free = false
         elif opt == "-jumptable" or opt == "--jumptable":
             jumptable = true
         elif opt == "-dfe-report" or opt == "--dfe-report":

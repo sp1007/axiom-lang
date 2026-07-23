@@ -1,13 +1,17 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** P1 + P2 Implemented; **P3 partial (drop-typed free only; general free
-  deferred as unsound on the self-host)** — OwnershipChecker live as a mutability-only
-  checker (E4002); EscapeAnalyser ACTIVE with ctor-detection + scalar-field flow
-  refinement marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free behind the opt-in
-  `-ctgc-free` flag but scoped to `drop`-typed locals (RFC 0014 drop-glue). Move-checking
-  removed by design. Flag-off A==B `901475EB`, 330/330. See §8 for the correction: the
-  general free was inert (a reg-lookup bug), and making it real exposed self-host
-  aliasing UAFs — so it is deferred behind a sound escape analysis.
+- **Status:** P1 + P2 + **P3 COMPLETE — compile-time free is now ON BY DEFAULT** (2026-07-24c).
+  OwnershipChecker live as a mutability-only checker (E4002); EscapeAnalyser ACTIVE (sound:
+  self-host freeable set = 0) marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free
+  (general non-drop free + container free-glue RFC 0027 path C/D + drop-glue RFC 0014) runs
+  by default. The historical `-ctgc-free` opt-in flag is retained (now a no-op default-on),
+  and a new `-no-ctgc-free` opt-out is the escape hatch. Move-checking removed by design.
+  **Activation gate GREEN:** fast fixpoint **A==B `AF899BDF`** (the flip is inert on the
+  self-host — freeable=0, compiler reproduces itself byte-identically), full regression
+  **528/528** built by the default-on compiler, `ctgc_free_check.sh` **14/14** (`t_drop`
+  off=0 via `-no-ctgc-free`, on=42). See §8 for the history: general free was once deferred
+  as unsound, but the two escape holes (container-store escape + reassign-to-borrow) were
+  closed, shrinking the self-host freeable set to 0, which made the default flip inert.
 - **Author:** self-host team
 - **Tracking:** BUG#69 (discovered 2026-07-06 while investigating why RFC 0014
   drop-glue never fired)
@@ -279,7 +283,15 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   transitive escape to the escape node, and marks escaping locals with the new
   non-colliding `SYM_FLAG_ESCAPES = 4096`. No consumer reads that flag yet, so the
   activation is fixpoint-neutral. Oracle `bin/t_escape.ax` (exit 41).
-- **P3 Partially implemented / general free DEFERRED** (corrected 2026-07-16) — CTGC
+- **P3 COMPLETE — ON BY DEFAULT** (2026-07-24c, driver `AF899BDF`). The `-ctgc-free`
+  default was flipped from OFF to ON: every provably non-escaping, single-owner local
+  aggregate is now freed at block fall-through by default (general non-drop free +
+  container free-glue + drop-glue). The flip is inert on the self-host (freeable set = 0
+  → fast fixpoint A==B `AF899BDF`, full regression 528/528 under the default-on compiler,
+  `ctgc_free_check.sh` 14/14). A `-no-ctgc-free` opt-out was added as the escape hatch.
+  Everything below is the pre-activation history (drop-typed-only scoping, general-free
+  deferral, and the escape-hole closures that made freeable=0 possible).
+- **(history) P3 Partially implemented / general free DEFERRED** (corrected 2026-07-16) — CTGC
   free is ACTIVE behind the opt-in `-ctgc-free` flag but is currently scoped to
   `drop`-typed locals only (see RFC 0014). **Correction:** the earlier claim that P3
   freed *all* non-escaping owned locals was wrong on two counts. (1) A `lower_destroy`
