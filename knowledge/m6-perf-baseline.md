@@ -84,6 +84,27 @@ volatile preference). Mask-elimination is a separate binary-size win, not the pe
   (lea for reg±const) is a follow-up — its MOV_IMM is NOT adjacent to the sub (`mov $1; mov rsi,rdi;
   sub`), so it needs the single-use form without the adjacency shortcut.
 
+## Opt A — SHIPPED 2026-07-24e (`30d03b0`, driver `AFA6529F`)
+`fuse_cmp_immediate` (x86_selector.ax, runs at end of `select_all` before `fuse_compare_branch`).
+fib's `n<2` is now `cmp $0x2,%rsi` (was `mov $2,rax; cmp rax,rsi`). Gate: **B==C `AFA6529F`** (A≠B
+expected), regression 530/530, ctgc 16/16, fib=203. **Measured delta: ~5% absolute -O3 (975→920 ms),
+gap ratio UNCHANGED (2.58x) — noise-dominated** (clang itself varied 356–376 ms run-to-run; opt A
+removes 1 insn from an ~18-insn loop). ⭐ **Lesson: a single-instruction peephole will NOT dent a
+2.58x gap** — the measurable wins must be structural. The n-2 `mov $2` was correctly NOT fused (it
+feeds a `sub`, i.e. opt B, not a cmp).
+
+## Opt B — NEXT (the larger fib win): lea for reg±const
+fib still has, at BOTH recursion sites, `mov $1,rax; mov rsi,rdi; sub rax,rdi` (n-1) and
+`mov $2,rax; mov rsi,r12; sub rax,r12` (n-2) = 3 insns each → `lea -0x1(%rsi),%rdi` (1 insn). Saves
+~4 insns/loop (vs opt A's 1). **Best done IN the selector's OP_ISUB/OP_IADD lowering** (not a
+post-peephole — the MOV_IMM isn't adjacent to the sub): if src2 is defined by an OP_ICONST with a
+value fitting signed imm32, emit `LEA dst,[src1 ± c]` instead of `mov dst,src1; sub/add dst,cvreg`.
+**SAFE because arithmetic flags are never consumed** in this compiler (comparisons are separate
+OP_LT/OP_EQ → cmp; OP_IADD/ISUB are pure value ops), so LEA (which sets no flags) is a valid
+substitute. Need a `const_value_of_vreg(fn, vreg)` helper (mirror `const_shift_amount`'s
+single-def non-SSA guard). B==C-gate + perf_fib.ps1. Then C (redundant-copy coalescing: `mov
+rcx,rbx; mov rbx,rsi`→`mov rcx,rsi`), D (branch fallthrough), E (regalloc volatile preference).
+
 ## Reality check
 2.59x → 1.05x is a LARGE multi-session program (clang has decades of codegen tuning). Realistic
 near-term goal: knock down the systemic taxes (#2,#3) to get under ~1.5x, then reassess whether the
