@@ -1,21 +1,49 @@
 # RFC 0014 — `drop(self)` hook cho CTGC (drop glue tối giản)
 
-- **Status:** ✅ **Implemented** (2026-07-16) — drop-glue live behind `-ctgc-free`
+- **Status:** ✅ **COMPLETE** — implementable surface closed 2026-07-24 (fixpoint A==B
+  `70D2EEBC`, regression 526/526, ctgc-free 14/14). Drop-glue is live behind `-ctgc-free`
   (opt-in; self-host builds declare no `drop`, so they are byte-identical / A==B).
   `resolve_drop_method` (air_builder.ax) + `lower_destroy` call `Type.drop(self)` before
   freeing the block, for every non-escaping owned local whose type declares `drop`.
   Oracle `bin/t_drop.ax` (drop fires 42× with the flag, 0 without); validated on a drop
   corpus (single-local fires once, escaping/aliased instances never dropped -> no
-  double-drop) + `scripts/ctgc_free_check.sh`. Two bugs were fixed en route: (1) BLOCKER
-  from 2026-07-06 (§8) — CTGC/Escape were no-ops — resolved by RFC 0015 P2/P3; (2) a
-  latent `lower_destroy` reg-lookup bug (used `sym.name_id`, but the local_map is keyed
-  by sym_idx) that had silently discarded every CTGC free. **Scope note:** the FREE is
-  emitted only for `drop`-typed locals (the memory-reclaim half of drop-glue); RFC 0015's
-  GENERAL free of all non-escaping owned locals stays deferred — it is not yet sound on
-  the alias-heavy self-host compiler (RFC 0010 §9; a `-ctgc-free` self-build UAF-crashed
-  once free was made real). Drop types are user-declared and simple, so freeing exactly
-  them is sound (self-build with `-ctgc-free` reproduces the fixpoint, since the compiler
-  has no drop types).
+  double-drop) + `scripts/ctgc_free_check.sh`.
+  - **P0/P2 (mechanism)** ✅ shipped 2026-07-16. Two bugs were fixed en route: (1) BLOCKER
+    from 2026-07-06 (§8) — CTGC/Escape were no-ops — resolved by RFC 0015 P2/P3; (2) a
+    latent `lower_destroy` reg-lookup bug (used `sym.name_id`, but the local_map is keyed
+    by sym_idx) that had silently discarded every CTGC free.
+  - **P1 (double-free guard)** ✅ shipped 2026-07-24 (`ownership.ax`). An implicit
+    copy-by-value of a `drop`-typed VALUE local — `let b = a` / `mut b := a` / `b = a`
+    where `a` is a named variable whose (non-pointer) type declares `drop(self)` — is now
+    REJECTED with **error[E4003]** (AXIOM has no explicit move, so an implicit copy would
+    alias the owned resource into two live locals that both drop it -> double-drop; like
+    Rust's `Drop` types not being `Copy`). Narrow by design: only a bare-IDENT rhs of a
+    non-pointer drop type (a `ptr[T]` copy or a ctor-call rhs is fine). Gated on a one-time
+    `has_drop_types` scan, so it is a zero-cost no-op on every build with no drop types
+    (the compiler + bundled stdlib) → self-host byte-identical. Oracles: `bin/t_dropcopy`
+    (reject) + `bin/t_dropcopyok` (42, anti-over-rejection) + `tests/sema/err_drop_copy.ax`.
+    This closes §5.2 / §6-P1 / §9-#3.
+  - **P3 (bignum auto-free)** ❌ **not achievable via RFC 0014's scope-exit CTGC — formally
+    scoped out.** Root cause (precise): `escape.ax::expr_is_owning` treats a local as
+    *owning* ONLY when its init is a direct `NODE_STRUCT_LIT`/`NODE_ARRAY_LIT` or a ctor
+    call whose callee resolves to `SYM_STRUCT`. `std.bignum` constructs every `BigUint`
+    through helper FUNCTIONS (`bu_alloc`/`bu_new`/`bu_from_u64`/`bu_shl`…) whose callee is
+    `SYM_FUNC`, so no bignum value is ever "owned" → all escape → `drop` never fires for
+    any of them. Compounding this, bignum's leaks are of *intermediate temporaries and
+    reassignments* (`bu_shl`: `mut r := a` then `r = bu_shl1(r)` orphans the previous
+    buffer), which scope-exit CTGC does not reclaim anyway, and `bu_shl`'s `mut r := a` is
+    exactly the copy-by-value that P1 now (correctly) rejects — so a `BigUint.drop` cannot
+    coexist with the current bignum source. Closing the bignum leak requires either
+    **interprocedural return-value ownership** (a value returned by a helper is a fresh
+    owned resource — RFC-scale, §6-P4 territory) or explicit `bu_free`/arena (§7
+    alternative). bignum is a pure, non-self-host library (§10: not blocking), so this is
+    deferred as a documented language-level increment, NOT left dangling.
+  - **Scope note:** the FREE is emitted only for `drop`-typed locals (the memory-reclaim
+    half of drop-glue). RFC 0015's GENERAL free of all non-escaping owned locals is *also*
+    shipped behind the same opt-in flag (the `lower_destroy` `else` branch +
+    `emit_owned_field_frees`, RFC 0027 path C/D) with the escape analyser proven
+    conservative-sound on the self-host build (freeable set = 0). Drop types are
+    user-declared and simple, so freeing exactly them is sound.
 - **Author:** self-host team
 - **Tracking:** giải quyết [[bignum-ctgc-conflict]] (rò rỉ heap thật trong `std.bignum`)
 - **Liên quan:** ctgc.ax (`CtgcInjector`), air_builder.ax (`lower_destroy`, `resolve_op_method`

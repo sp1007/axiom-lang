@@ -1,0 +1,18 @@
+// RFC 0014 P1 (drop-glue double-free guard): copying a value whose type declares
+// `drop(self)` by binding it to another local is REJECTED (E4003) -> no exe.
+// AXIOM has no explicit move, so an implicit copy would alias the owned resource
+// into two live locals that both drop it (double-drop). This program MUST fail to
+// compile — the regression harness expects `reject` (no exe emitted).
+
+mut sink: i64 = 0
+
+struct Res:
+    id: i64
+
+    fn drop(self):
+        sink = sink + self.id
+
+fn main() -> i64:
+    let a = Res(id: 7)
+    let b = a          // E4003: copy-by-value of a drop-typed value
+    return b.id

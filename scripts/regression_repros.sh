@@ -524,6 +524,11 @@ rows=(
   # RFC 0014 — drop-glue oracle: no drop without the flag (0); drop fires 42x under
   # -ctgc-free (see ctgc_free_check.sh)
   "t_drop|exit|0"
+  # RFC 0014 P1 — copy-by-value of a `drop`-typed value is rejected (E4003, would
+  # double-drop; AXIOM has no explicit move). The OK guard proves no over-rejection:
+  # fresh ctor locals + ptr[T] params of the same drop type still compile & run (42).
+  "t_dropcopy|reject|"
+  "t_dropcopyok|exit|42"
   # RFC 0015 P3 precursor — -ctgc-free-report is dump-only (no OP_DESTROY), so the
   # DEFAULT build of this Box-ctor+scalar-borrow shape is byte-identical & runs 20.
   # (The report itself prints [ctgc-freeable] owned; verified inert byte-identity.)

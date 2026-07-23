@@ -1,0 +1,21 @@
+// RFC 0014 P1 guard (anti-over-rejection): the SAME drop type used WITHOUT an
+// implicit value-copy must still compile & run. Only `let b = <drop-var>` is
+// rejected; constructing fresh ctor locals, reading fields, and passing by
+// `ptr[T]` are all fine. Exit 42. (No -ctgc-free here, so drop never fires.)
+
+mut sink: i64 = 0
+
+struct Res:
+    id: i64
+
+    fn drop(self):
+        sink = sink + self.id
+
+fn use_res(r: ptr[Res]) -> i64:
+    return r.id
+
+fn main() -> i64:
+    let a = Res(id: 20)     // fresh ctor local (not a copy) -> OK
+    let b = Res(id: 22)     // another fresh ctor -> OK
+    let x = use_res(&a)     // rhs is a call, not a bare ident -> OK
+    return a.id + b.id      // 42

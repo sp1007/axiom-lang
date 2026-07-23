@@ -1,0 +1,18 @@
+// RFC 0014 P1: a value whose type declares `drop(self)` may not be copied by
+// value (AXIOM has no explicit move; an implicit copy would alias the owned
+// resource into two locals that both drop it -> double-drop). `let b = a` below
+// must be rejected with error[E4003]. Using the type without a value-copy
+// (fresh ctor locals, `ptr[Res]` params) stays legal.
+
+mut sink: i64 = 0
+
+struct Res:
+    id: i64
+
+    fn drop(self):
+        sink = sink + self.id
+
+fn main() -> i64:
+    let a = Res(id: 7)
+    let b = a
+    return b.id

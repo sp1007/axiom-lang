@@ -179,7 +179,13 @@ the only clearly-good tick-sized piece. Rest = user-directed design decisions or
 
 ## RFC follow-ups still open
 - **RFC 0009 P3** — ELF export (`.edata` for ELF); P1/P2 (COFF import/export) shipped.
-- **RFC 0014 drop-glue** — BLOCKED on [[bug69-ctgc-ownership-escape-noop]] (needs escape/ctgc real analysis).
+- ~~**RFC 0014 drop-glue**~~ — ✅ **COMPLETE 2026-07-24** (`70D2EEBC`, 526/526). The "BLOCKED on bug69"
+  label was STALE (bug69 CTGC activation shipped P1+P2+P3 long ago). P0/P2 mechanism shipped 2026-07-16;
+  this session closed **P1** (copy-by-value of a `drop`-typed value → reject **E4003** in ownership.ax,
+  the double-free guard) and formally scoped out **P3** (bignum auto-free — impossible with scope-exit
+  CTGC: `escape.ax::expr_is_owning` only treats direct ctor inits as owning, and bignum constructs via
+  helper functions so no bignum value is ever owned/dropped; needs interprocedural return-value ownership,
+  RFC-scale). See [[rfc0014-drop-glue-complete]].
 - **RFC 0015 P2 SHIPPED `f06d939`** (2026-07-16) — EscapeAnalyser ACTIVE (crash fixed: was a wild-free segfault mis-logged as "non-determinism"; see [[bug69-ctgc-ownership-escape-noop]]), marks escaping locals w/ `SYM_FLAG_ESCAPES=4096`, inert (A==B `184E35B4`, 327/327). **P3 (CTGC free) STILL OPEN, high-risk** — needs borrow/alias tracking (INDEX/FIELD-init borrow-edge, never-free) + module whitelist + fix ctgc.ax guard/flag, else UAF self-host (frees borrow-locals aliasing AST vectors). Unblocks RFC 0014 drop-glue.
 
 ## Note

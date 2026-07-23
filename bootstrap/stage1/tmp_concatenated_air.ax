@@ -12818,6 +12818,10 @@ pub struct OwnershipChecker:
     pub symtable: ptr[SymbolTable]
     pub typetable: ptr[TypeTable]
     pub errors: u32
+    // RFC 0014 P1: true iff the program declares ANY `<Type>.drop(self)` method.
+    // Computed once in check(); when false, the per-site copy-of-drop scan is
+    // skipped entirely (the common case â€” no drop types => zero overhead, inert).
+    pub has_drop_types: bool
 
 pub fn new_ownership_checker(tree: ptr[AstTree], pool: ptr[InternPool], symtable: ptr[SymbolTable], typetable: ptr[TypeTable]) -> ptr[OwnershipChecker]:
     let oc = @alloc(@compiler_intrinsic("size_of")[OwnershipChecker]()) as ptr[OwnershipChecker]
@@ -12826,9 +12830,13 @@ pub fn new_ownership_checker(tree: ptr[AstTree], pool: ptr[InternPool], symtable
     oc.symtable = symtable
     oc.typetable = typetable
     oc.errors = 0 as u32
+    oc.has_drop_types = false
     return oc
 
 pub fn check(mut self: ptr[OwnershipChecker]):
+    // RFC 0014 P1: detect once whether any `<Type>.drop(self)` method exists.
+    // Only then does check_drop_copy run its per-site scan (see type_has_drop).
+    self.has_drop_types = self.scan_has_drop()
     self.check_node(0 as u32)
     if self.errors > 0 as u32:
         ax_puts_local("Ownership check failed.")
@@ -12857,7 +12865,8 @@ pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
         if init_idx != 0 as u32:
             self.check_node(init_idx)
             self.check_move(init_idx)
-        
+            self.check_drop_copy(node_idx, init_idx)
+
     elif kind == NODE_ASSIGN_STMT:
         let lhs_idx = node.first_child
         let rhs_idx = self.tree.nodes.data[lhs_idx].next_sibling
@@ -12874,8 +12883,9 @@ pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
                         let tok = self.tree.tokens.data[node.token_idx]
                         ax_printf_local("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.errors = self.errors + 1 as u32
-            
+
             self.check_move(rhs_idx)
+            self.check_drop_copy(node_idx, rhs_idx)
 
     elif kind == NODE_IDENT:
         let sym_idx = node.payload
@@ -12911,6 +12921,86 @@ pub fn check_move(mut self: ptr[OwnershipChecker], node_idx: u32):
     // Real move semantics would need a language-level RFC (RFC 0015 Â§4.1); until
     // then this stays inert and only the E4002 mutability check is enforced.
     return
+
+// RFC 0014 P1 (drop-glue double-free guard): unwrap ptr/ref layers of a type.
+// Mirrors air_builder.ax::op_unwrap_type but reads this pass's own typetable.
+fn ownership_unwrap_type(self: ptr[OwnershipChecker], t: u32) -> u32:
+    mut u := t
+    mut e := self.typetable.entries.data[u as i64]
+    while e.kind == TYPE_KIND_POINTER or e.kind == TYPE_KIND_REF:
+        u = e.extra as u32
+        e = self.typetable.entries.data[u as i64]
+    return u
+
+// RFC 0014 P1: one-time scan â€” does ANY `<Type>.drop(self)` method exist in the
+// program? Uses the same mangled-name match as air_builder.ax::resolve_drop_method
+// (an inline `fn drop(self)` carries a dotted mangled name resolve_method_sym misses).
+fn scan_has_drop(self: ptr[OwnershipChecker]) -> bool:
+    let method_id = self.pool.intern("drop")
+    mut i := 0 as i64
+    while i < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[i]
+        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.pool, sym.name_id, method_id):
+            let t_entry = self.typetable.entries.data[sym.type_id as i64]
+            if t_entry.kind == TYPE_KIND_FUNC:
+                let fi = self.typetable.funcs.data[t_entry.extra as i64]
+                if fi.params.len == 1 as i64:
+                    return true
+        i = i + 1 as i64
+    return false
+
+// RFC 0014 P1: is `rec_type` a VALUE aggregate whose type declares `drop(self)`?
+// A pointer/ref receiver is NOT a value copy (copying `ptr[T]` copies the pointer,
+// and pointer-typed locals are never CTGC-freed) -> only flag direct value types.
+// The drop method's self param may be `self`(value) OR `ptr[T]`, so unwrap the param
+// and compare to the value receiver type.
+fn type_has_drop(self: ptr[OwnershipChecker], rec_type: u32) -> bool:
+    if rec_type == 0 as u32 or (rec_type as i64) >= self.typetable.entries.len:
+        return false
+    let re = self.typetable.entries.data[rec_type as i64]
+    if re.kind == TYPE_KIND_POINTER or re.kind == TYPE_KIND_REF:
+        return false
+    let method_id = self.pool.intern("drop")
+    mut i := 0 as i64
+    while i < self.symtable.symbols.len:
+        let sym = self.symtable.symbols.data[i]
+        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.pool, sym.name_id, method_id):
+            let t_entry = self.typetable.entries.data[sym.type_id as i64]
+            if t_entry.kind == TYPE_KIND_FUNC:
+                let fi = self.typetable.funcs.data[t_entry.extra as i64]
+                if fi.params.len == 1 as i64:
+                    let fp = self.ownership_unwrap_type(fi.params.data[0] as u32)
+                    if fp == rec_type:
+                        return true
+        i = i + 1 as i64
+    return false
+
+// RFC 0014 P1: reject an implicit copy-by-value of a `drop`-typed value.
+// `let b = a` / `mut b := a` / `b = a` where `a` is a NAMED variable whose type
+// declares `drop(self)` would alias the resource-owning fields into TWO live
+// locals -> a double-drop (or, masked by escape analysis, a silently-skipped
+// drop). AXIOM has no explicit move, so â€” like Rust's `Drop` types not being
+// `Copy` â€” such copies are forbidden and must be restructured (construct in place,
+// pass by `ptr[T]`, or free explicitly). Narrow by design: only a bare IDENT rhs
+// of a non-pointer drop type. Inert unless the program declares a drop method.
+fn check_drop_copy(mut self: ptr[OwnershipChecker], stmt_idx: u32, rhs_idx: u32):
+    if not self.has_drop_types:
+        return
+    if rhs_idx == 0 as u32 or rhs_idx == 0xffffffff as u32:
+        return
+    let rnode = self.tree.nodes.data[rhs_idx]
+    if rnode.kind != NODE_IDENT:
+        return
+    let sym_idx = rnode.payload
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return
+    let sym = self.symtable.symbols.data[sym_idx as i64]
+    if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
+        return
+    if self.type_has_drop(sym.type_id):
+        let tok = self.tree.tokens.data[self.tree.nodes.data[stmt_idx as i64].token_idx]
+        ax_printf_local("error[E4003]: cannot copy a value whose type has a `drop` method (would double-drop) at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        self.errors = self.errors + 1 as u32
 // bootstrap/stage1/escape.ax
 // EscapeAnalyser performs escape analysis using ConnectionGraph.
 
