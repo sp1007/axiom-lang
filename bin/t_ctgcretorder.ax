@@ -1,0 +1,26 @@
+// RFC 0015 P3 return-path free — ORDERED-DESCENT soundness pin. At the early
+// `return a.id`, `a` is initialised (safe to free) but `c` (declared AFTER the return)
+// is NOT — it must NOT be freed on that path. The ctgc pass pushes a freeable local
+// onto its active stack only AFTER descending past its decl, so at a return the whole
+// stack is provably initialised. If that regressed to the old up-front collection,
+// freeing `c` at the early return would free never-initialised memory -> crash / wrong
+// drop_count. Correct: c-path frees only a; not-c path frees a then c -> 3.
+mut drop_count: i64 = 0
+
+struct Res:
+    id: i64
+
+    fn drop(self):
+        drop_count = drop_count + 1
+
+fn f(cond: bool) -> i64:
+    let a = Res(id: 1)      // freeable, declared first
+    if cond:
+        return a.id          // only `a` live here -> free a only
+    let c = Res(id: 2)      // declared AFTER the early return
+    return c.id              // both a and c live -> free both
+
+fn main() -> i64:
+    let x = f(true)          // frees a       -> +1
+    let y = f(false)         // frees a and c -> +2
+    return drop_count        // want 3 (on) / 0 (off)

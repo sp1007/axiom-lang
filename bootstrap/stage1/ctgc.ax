@@ -39,6 +39,25 @@ pub fn run(mut self: ptr[CtgcInjector]):
         return
     self.traverse_and_inject(0 as u32, 0 as u32)
 
+// A local is freeable (CTGC may free it) iff it is a NON-escaping heap aggregate.
+// Reads SYM_FLAG_ESCAPES (4096, sym-flag space) set by the EscapeAnalyser -- NOT the
+// old FLAG_ESCAPES_TO_HEAP (128), which aliases SYM_FLAG_MOVED. Factored out so the
+// block-fall-through pass and (future) callers share ONE predicate; the logic is
+// byte-identical to the original inline collect so fall-through free is unchanged.
+pub fn is_freeable_local(self: ptr[CtgcInjector], sym_idx: u32) -> bool:
+    if sym_idx == 0 as u32:
+        return false
+    let sym = self.symtable.symbols.data[sym_idx]
+    if (sym.flags & SYM_FLAG_ESCAPES) != 0 as u16:
+        return false
+    let type_id = sym.type_id
+    if type_id == 0 as u32 or (type_id as i64) >= self.typetable.entries.len:
+        return false
+    let entry = self.typetable.entries.data[type_id]
+    if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
+        return true
+    return false
+
 pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_idx: u32):
     // Guard: node 0 is the real NODE_PROGRAM root (ast.ax::new_ast_tree), so the
     // historical `node_idx == 0` clause made the pass a permanent no-op. Recursive
@@ -52,38 +71,27 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
 
     if kind == NODE_BLOCK:
         let start_len = self.active_vars.len
-        
-        // 1. Collect all non-escaping heap variables declared at this block level
+
+        // Single ORDERED pass (RFC 0015 P3 return-path free): descend into each child,
+        // then push a freeable var AFTER its decl has been passed, so `active_vars`
+        // reflects program order -- a local is on the stack only once its declaration
+        // has been descended past. This is what makes return-path free sound: at a
+        // NODE_RETURN_STMT (handled below) the ENTIRE stack is provably initialised, so
+        // freeing it never touches a not-yet-declared local. The freeable SET and the
+        // reverse (LIFO) destroy order at fall-through are identical to the old
+        // two-pass collect, so the shipped fall-through free is byte-unchanged.
         mut child_idx := node.first_child
         while child_idx != 0 as u32:
-            let child = self.tree.nodes.data[child_idx]
-            if child.kind == NODE_VAR_DECL:
-                let sym_idx = child.payload
-                if sym_idx != 0 as u32:
-                    let sym = self.symtable.symbols.data[sym_idx]
-                    // Free only NON-escaping heap locals. Read SYM_FLAG_ESCAPES (4096,
-                    // sym-flag space) set by the EscapeAnalyser -- NOT the old
-                    // FLAG_ESCAPES_TO_HEAP (128), which aliases SYM_FLAG_MOVED.
-                    if (sym.flags & SYM_FLAG_ESCAPES) == 0 as u16:
-                        mut is_heap := false
-                        let type_id = sym.type_id
-                        if type_id != 0 as u32 and (type_id as i64) < self.typetable.entries.len:
-                            let entry = self.typetable.entries.data[type_id]
-                            if entry.kind == TYPE_KIND_STRUCT or entry.kind == TYPE_KIND_GENERIC_INST or entry.kind == TYPE_KIND_SUM or entry.kind == TYPE_KIND_OPTION or entry.kind == TYPE_KIND_RESULT:
-                                is_heap = true
-                        
-                        if is_heap:
-                            self.active_vars.push(sym_idx)
-                            self.active_var_decls.push(child_idx)
-            child_idx = child.next_sibling
-
-        // 2. Recursively process children
-        child_idx = node.first_child
-        while child_idx != 0 as u32:
+            let ck = self.tree.nodes.data[child_idx].kind
+            let cpay = self.tree.nodes.data[child_idx].payload
             self.traverse_and_inject(child_idx, node_idx)
+            if ck == NODE_VAR_DECL:
+                if self.is_freeable_local(cpay):
+                    self.active_vars.push(cpay)
+                    self.active_var_decls.push(child_idx)
             child_idx = self.tree.nodes.data[child_idx].next_sibling
 
-        // 3. Inject destroy statements for variables declared in this block at the end of the block
+        // Inject destroy statements for THIS block's vars at fall-through (block end).
         let num_block_vars = self.active_vars.len - start_len
         if num_block_vars > 0 as i64:
             mut idx := self.active_vars.len - 1 as i64
@@ -108,14 +116,29 @@ pub fn traverse_and_inject(mut self: ptr[CtgcInjector], node_idx: u32, parent_id
             self.active_vars.len = start_len
             self.active_var_decls.len = start_len
 
-    // NOTE (RFC 0015 P3 soundness): we deliberately do NOT inject destroys before a
-    // `return`. The return VALUE is often computed from an otherwise-freeable local
-    // (`return tmp.v + 1`), so a destroy inserted before the return would free `tmp`
-    // and THEN read `tmp.v` -> use-after-free. Freeing on return paths safely requires
-    // materialising the return value into a temp first (destroy after the value is
-    // computed); that AST transform is deferred. Until then CTGC frees only at block
-    // fall-through (case above): a local live on a return path simply leaks (safe),
-    // never UAFs.
+    elif kind == NODE_RETURN_STMT:
+        // RFC 0015 P3 return-path free. A `return` exits ALL enclosing scopes, so every
+        // currently-live freeable local must be freed on this path too -- otherwise a
+        // local live on a return path leaks (the old fall-through-only behaviour). We
+        // append the destroys as TRAILING children of the return node; lower_return
+        // lowers them AFTER the return value is materialised, so `return r.field` reads
+        // `r` before `r` is freed (no UAF -- the reason we do NOT inject a plain destroy
+        // *before* the return). Every stack entry is provably initialised here
+        // (ordered-descent above), and the EscapeAnalyser has already excluded any local
+        // whose memory can reach the return value (t_ctgcfreeesc pins that). report_only
+        // must stay byte-identical (no tree mutation), so it appends nothing.
+        let val_child = node.first_child
+        if val_child != 0 as u32:
+            self.traverse_and_inject(val_child, node_idx)
+        if self.free_enabled and self.active_vars.len > 0 as i64:
+            mut ri := self.active_vars.len - 1 as i64
+            while ri >= 0 as i64:
+                let sym_idx = self.active_vars.data[ri]
+                let destroy_node = self.tree.add_node(NODE_DESTROY_STMT, node.token_idx)
+                self.tree.nodes.data[destroy_node].payload = sym_idx
+                self.append_child_node(node_idx, destroy_node)
+                ri = ri - 1 as i64
+
     else:
         mut child_idx := node.first_child
         while child_idx != 0 as u32:

@@ -529,6 +529,11 @@ rows=(
   # plain build (exit 42). The off-by-default behavior (exit 0) is pinned by
   # ctgc_free_check.sh via the -no-ctgc-free opt-out.
   "t_drop|exit|42"
+  # RFC 0015 P3 return-path free (default-on): a drop-typed local live on a RETURN path
+  # is now freed on that path too (not only at block fall-through), so both early()-calls
+  # drop their `r` -> 2; take()'s RETURNED aggregate stays un-dropped (escape exclusion).
+  # The off-behaviour (0, leak) is pinned bidirectionally by ctgc_free_check.sh.
+  "t_ctgcretfree|exit|2"
   # RFC 0014 P1 — copy-by-value of a `drop`-typed value is rejected (E4003, would
   # double-drop; AXIOM has no explicit move). The OK guard proves no over-rejection:
   # fresh ctor locals + ptr[T] params of the same drop type still compile & run (42).

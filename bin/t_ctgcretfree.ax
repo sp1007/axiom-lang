@@ -1,0 +1,29 @@
+// RFC 0015 P3 return-path free oracle. A `drop`-typed, non-escaping local that is
+// live on a RETURN path (the function returns before block fall-through) must be
+// freed/dropped on that path too. `r` is read only by scalar field (`r.id`), so the
+// escape analysis keeps it freeable; both paths of early() return explicitly, so with
+// fall-through-only free `r` leaks (drop never fires -> 0). With return-path free it
+// drops once per call -> 2. `owned` in take() is RETURNED (escapes) -> must NOT drop.
+mut drop_count: i64 = 0
+
+struct Res:
+    id: i64
+
+    fn drop(self):
+        drop_count = drop_count + 1
+
+fn early(cond: bool) -> i64:
+    let r = Res(id: 7)     // freeable (scalar read only); both exits are explicit returns
+    if cond:
+        return r.id         // EARLY return: r live -> must drop here
+    return 0                // other path: r still live -> must drop here too
+
+fn take() -> Res:
+    let owned = Res(id: 5) // RETURNED aggregate -> escapes -> must NOT drop
+    return owned
+
+fn main() -> i64:
+    let a = early(true)
+    let b = early(false)
+    let k = take()         // escapes; drop must not fire for owned
+    return drop_count       // want 2 (return-path free); 0 today (leak)

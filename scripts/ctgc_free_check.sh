@@ -34,6 +34,14 @@ rows=(
   "t_ctgcescape|33|33"
   # general-free (activated) escape oracle: a returned non-drop aggregate must NOT be freed
   "t_ctgcfreeesc|16|16"
+  # RFC 0015 P3 return-path free: a drop-typed local live on a RETURN path (fn returns
+  # before block fall-through) must be freed/dropped on that path too. off=0 (leaks, the
+  # old fall-through-only behaviour) vs on=2 (both early()-calls drop their r; take()'s
+  # RETURNED owned must NOT drop, so on=2 not 3 -- pins the escape exclusion too).
+  "t_ctgcretfree|0|2"
+  # RFC 0015 P3 ordered-descent SOUNDNESS: a local declared AFTER an early return must
+  # not be freed at that return (uninitialised). off=0 vs on=3, no crash.
+  "t_ctgcretorder|0|3"
   # RFC 0027 container free-glue: scratch container buffers freed, escaping/aliased survive
   "t_ctgccont|42|42"
   # RFC 0027 path D: a USER container's owned buffer is freed (correctness only -- see the

@@ -1,6 +1,9 @@
 # RFC 0015 — CTGC / Ownership / Escape activation (BUG#69)
 
-- **Status:** P1 + P2 + **P3 COMPLETE — compile-time free is now ON BY DEFAULT** (2026-07-24c).
+- **Status:** P1 + P2 + **P3 COMPLETE — compile-time free is now ON BY DEFAULT** (2026-07-24c);
+  **return-path free shipped 2026-07-24d** (driver `12DBE1D8`) — a freeable local live on a
+  `return` path is now freed on that path too, closing the last documented completeness gap
+  (see §5 P3 finding 2 and §8). The leak was safe, never a UAF; it is now simply gone.
   OwnershipChecker live as a mutability-only checker (E4002); EscapeAnalyser ACTIVE (sound:
   self-host freeable set = 0) marking escaping locals via `SYM_FLAG_ESCAPES`; CTGC free
   (general non-drop free + container free-glue RFC 0027 path C/D + drop-glue RFC 0014) runs
@@ -291,6 +294,23 @@ Do **not** flip all three passes at once. Sequence by risk, gate each on
   `ctgc_free_check.sh` 14/14). A `-no-ctgc-free` opt-out was added as the escape hatch.
   Everything below is the pre-activation history (drop-typed-only scoping, general-free
   deferral, and the escape-hole closures that made freeable=0 possible).
+- **P3 return-path free — SHIPPED** (2026-07-24d, driver `12DBE1D8`; fast fixpoint A==B — inert
+  on the self-host, freeable=0 — `ctgc_free_check.sh` **16/16**, full regression **530/530**).
+  Finding 2 below is resolved WITHOUT the AST return-value-temp transform it anticipated: the
+  return value is already materialised into a register by `lower_return` *before* the pre-`OP_RETURN`
+  hook (the same point `flush_defers` uses), so return-path frees need no temp. Two changes:
+  (1) `ctgc.ax` rewrites the block traversal to a single **ordered-descent** pass — a freeable local
+  is pushed onto `active_vars` only AFTER its decl is descended past, so at a `NODE_RETURN_STMT` the
+  entire stack is provably initialised; the return branch appends `NODE_DESTROY_STMT` as TRAILING
+  children of the return node (fall-through set + LIFO order byte-unchanged); (2) `air_builder`'s
+  `lower_return` lowers those trailing destroys after materialising `ret_val` and before
+  `flush_defers`, matching fall-through ordering. Soundness rests entirely on the EscapeAnalyser
+  already excluding any local whose memory reaches the return value (pinned by `t_ctgcfreeesc`), so
+  freeing the *non-escaping* remainder after the value is read is safe. Oracles: `t_ctgcretfree`
+  (drop fires on a return path; returned aggregate stays un-dropped) + `t_ctgcretorder` (a local
+  declared AFTER an early return is NOT freed there). Loop / nested-scope / alloc-churn validated
+  (no double-free, values correct). **Remaining gap: `break`/`continue` paths** leak the
+  current-iteration freeable local (same class, same safe leak) — untouched.
 - **(history) P3 Partially implemented / general free DEFERRED** (corrected 2026-07-16) — CTGC
   free is ACTIVE behind the opt-in `-ctgc-free` flag but is currently scoped to
   `drop`-typed locals only (see RFC 0014). **Correction:** the earlier claim that P3

@@ -4685,10 +4685,34 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
 
 pub fn lower_return(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     mut ret_val := 0 as u32
-    if node.first_child != 0 as u32:
-        ret_val = self.lower_expr(node.first_child)
+    let fc = node.first_child
+    // `fc` is the return VALUE, unless it is a NODE_DESTROY_STMT -- which happens for a
+    // VOID `return` that CTGC appended return-path frees to (RFC 0015 P3). Only lower a
+    // value when fc is a real value node.
+    mut has_val := false
+    if fc != 0 as u32:
+        if self.mb.tree.nodes.data[fc as i64].kind != NODE_DESTROY_STMT:
+            has_val = true
+    if has_val:
+        ret_val = self.lower_expr(fc)
         // RFC 0029: `return <struct>` from a fn declared `-> Iface` boxes the struct.
-        ret_val = self.coerce_struct_to_interface(self.fb.ret_type, node.first_child, ret_val)
+        ret_val = self.coerce_struct_to_interface(self.fb.ret_type, fc, ret_val)
+
+    // RFC 0015 P3 return-path free: CTGC appended NODE_DESTROY_STMT nodes as TRAILING
+    // children of this return for every freeable local live on this path. Lower them
+    // AFTER the return value is materialised (so `return r.field` reads `r` before it is
+    // freed -- no UAF) and BEFORE flush_defers, matching the fall-through ordering (a
+    // block's destroys run before the function-tail defers). No-op when -no-ctgc-free
+    // (nothing appended) or when nothing is freeable (self-host set = 0).
+    mut sib := fc
+    if has_val:
+        sib = self.mb.tree.nodes.data[fc as i64].next_sibling
+    while sib != 0 as u32:
+        let snode = self.mb.tree.nodes.data[sib as i64]
+        let nsib = snode.next_sibling
+        if snode.kind == NODE_DESTROY_STMT:
+            self.lower_destroy(sib, snode)
+        sib = nsib
 
     // RFC 0006 (#38.4): run deferred expressions (LIFO) after the return value
     // is computed but before transferring control, on every return path.
