@@ -159,6 +159,26 @@ validation is skipped for simple free calls = the bug's home (add the check + th
 or reject when a non-generic ident callee resolves to FUNC but fp check is bypassed). This is now a
 ~10-minute focused trace, fully set up. STOP fragmenting across ticks.
 
+## ⚠️⚠️ LAYER 8 — META-ERROR FOUND: earlier "didn't fire" traces were POWERSHELL ARTIFACTS
+CRITICAL: reading native trace output through PowerShell `Select-String` (`... 2>&1 | Select-String
+"TAG"`) **silently drops matches** — it reported ZERO hits for traces that a **bash `grep`** showed
+firing 14×. So several LAYER 2–7 conclusions ("f(o) doesn't reach the 5043 loop", "OPTIONSYM never
+fired", "FUNC branch not entered") are **UNRELIABLE / likely FALSE**. ⭐ **ALWAYS read compiler trace
+output with `bash ... | grep`, NEVER PowerShell Select-String.**
+**Re-established on solid (bash-grep) ground:** (1) `f`'s `callee_type` **IS** `TYPE_KIND_FUNC`
+(kind=2, `CALLTRACE`), so the FUNC branch at typecheck.ax:4568 **IS** entered for `f(o)`; (2) the
+per-arg loop at ~4616 **IS** reached. So the fix DOES belong at that loop (LAYER-1 site was right;
+layers 2–7 chased the artifact). REMAINING (clean re-trace, bash grep only): at the 4616 loop, an
+`ARGDBG` for `fnm=="f"` showed `nodetype=0` (node_types UNSET there — so it is NOT "pre-coerced to
+i64" as LAYER 1 guessed; it's simply unresolved at that point) and an ambiguous `symtype/symkind` read
+(needs the arg node's payload→symbol mapping re-derived cleanly — the `pt=4` i64-param line is the
+`f(o)` one; confirm whether its arg symbol type is the Option). **NEXT SESSION (bash grep, ~20 min):**
+at the 4616 loop, for the arg, resolve its TRUE type via `infer_node(anode, TYPE_UNKNOWN)` freshly (or
+the arg-ident symbol's decl type) and print it with bash-grep verification; when the param is a plain
+concrete type and the arg's true type is OPTION/RESULT, reject. The machinery to reject is trivial
+(sits beside the str/num-literal reject at 4625) — only the arg's-true-type read must be gotten right,
+and it must be VERIFIED via bash grep, not Select-String.
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
