@@ -106,6 +106,29 @@ allocator (longer live ranges → spills). A real `lea`/copy win must be **co-de
 allocator** (e.g. teach it to rematerialize `base±c` or avoid the spill), not bolted on after
 selection. Do NOT re-attempt the naive post-selection lea peephole.
 
+## Allocator reorder (prefer-volatiles) — TRIED + REVERTED 2026-07-24e (measured NEUTRAL)
+The greenlit "allocator work" first attempt: `get_allocatable_gprs` reordered per-ABI to try all
+VOLATILE GPRs before callee-saved (so non-call-spanning values avoid prologue pushes). Built,
+**B==C `B06CDC7F`**. Result: **NEUTRAL — fib prologue UNCHANGED (still 5 pushes), self-host driver
+byte-identical in size (delta 0)**, fib -O3 907 vs 936 ms = noise. Reverted. Reason: fib's
+callee-saved regs hold values LIVE ACROSS A CALL, which already forbid volatiles
+(graph_coloring_alloc:867) → they MUST be callee-saved regardless of preference order; the reorder
+only reaches non-spanning values, which weren't the bottleneck.
+
+## ⭐⭐⭐ THREE attempts, one conclusion: the gap is STRUCTURAL, not tweak-shaped
+| attempt | result |
+|---|---|
+| opt A (cmp→imm fusion) | shipped, correct, ~5% -O3, **ratio-neutral** |
+| opt B (lea for reg±const) | **REGRESSED** (regalloc spilled n), reverted |
+| allocator prefer-volatiles reorder | **NEUTRAL** (bottleneck is elsewhere), reverted |
+fib's real cost = redundant copies (`mov rcx,rbx; mov rbx,rsi`) + values kept live across calls +
+greedy-colouring quality. These are coupled and resist incremental change: coalescing the copies
+(opt-B class) perturbs the greedy allocator into spills; reordering preferences doesn't reach
+call-spanning values. **Closing 2.58x→1.05x needs a real allocator+selection overhaul** (SSA-based
+or iterated-coalescing allocation, rematerialization of `base±c`, live-range splitting) — a large
+multi-session rewrite of self-host-critical code, NOT peepholes. **Recommend renegotiating M6 to a
+reachable near-term milestone (≤2x clang) OR an explicit decision to fund the overhaul.**
+
 ## Revised direction (the honest one)
 The 3 remaining "instruction-shaving" peepholes (lea, copy-coalescing, branch fallthrough) all risk
 the same regalloc backfire, AND opt A proved even a clean 1-insn win is noise on a 2.58x gap. The gap

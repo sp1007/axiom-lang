@@ -28187,6 +28187,14 @@ pub struct RegAllocResult:
     // by-address (sret), the heavily-tested aggregate path (cf. LiveIntervalVec).
     pub pad0: i64
 
+// NOTE (M6 perf, 2026-07-24e): a per-ABI "volatile GPRs first" reorder was tried here to
+// shrink prologues (fewer callee-saved pushes). MEASURED NEUTRAL â€” fib's prologue was
+// unchanged and the self-host driver was byte-identical in size. Reason: fib's callee-saved
+// registers hold values LIVE ACROSS A CALL, which forbid volatiles (graph_coloring_alloc:867)
+// and therefore MUST be callee-saved regardless of the preference order; the reorder only
+// reaches non-call-spanning values, which weren't the bottleneck. The real fib cost is
+// structural (redundant copies + greedy-colouring quality + values kept live across calls),
+// not the register preference order. Kept the original order; see [[m6-perf-baseline]].
 pub fn get_allocatable_gprs(out_len: ptr[i64]) -> ptr[u8]:
     let arr = @alloc(12) as ptr[u8]
     arr[0] = REG_RAX
