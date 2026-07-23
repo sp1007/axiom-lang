@@ -296,6 +296,36 @@ pub fn new_type_table() -> ptr[TypeTable]:
 
     return tt
 
+// Forward-declaration for a genuinely SELF-RECURSIVE non-generic sum
+// (`type Tree = Leaf(i64) | Node(Tree,Tree)`): reserve the sum's type_id (empty variants) so a
+// variant field that is a BARE reference to the sum being defined resolves to THIS id, then
+// populate once the fields are resolved. Only used when a bare self-ref field is present (the
+// caller gates on it), so non-recursive sums and generic/mono-clone recursive sums (whose
+// self-refs are `Tree[..]` generic_inst) keep the plain register_sum_type path unchanged. See
+// [[bug-recursive-nongeneric-multifield-sum]]. Pair with set_sum_variants.
+pub fn reserve_sum_type(self: ptr[TypeTable], name_id: u32) -> u32:
+    let s_idx = self.sumtypes.len as u32
+    (&self.sumtypes).push(SumInfo(variants: new_variant_info_vec(), generic_args: U32Vec(data: null as ptr[u32], len: 0, cap: 0)))
+    return (&self.entries).push(TypeEntry(
+        kind: TYPE_KIND_SUM,
+        padding: 0 as u8,
+        flags: 0 as u16,
+        name_id: name_id,
+        size: 16 as u32,
+        align: 8 as u32,
+        extra: s_idx,
+    ))
+
+// Fill in the variants of a sum reserved by reserve_sum_type. The empty placeholder vec is
+// dropped (len 0, null buffer — nothing to free).
+pub fn set_sum_variants(self: ptr[TypeTable], type_id: u32, variants: VariantInfoVec):
+    if (type_id as i64) >= self.entries.len:
+        return
+    let entry = self.entries.data[type_id as i64]
+    if entry.kind != TYPE_KIND_SUM:
+        return
+    self.sumtypes.data[entry.extra as i64].variants = variants
+
 pub fn register_sum_type(self: ptr[TypeTable], name_id: u32, variants: VariantInfoVec) -> u32:
     let s_idx = self.sumtypes.len as u32
     (&self.sumtypes).push(SumInfo(variants: variants, generic_args: U32Vec(data: null as ptr[u32], len: 0, cap: 0)))

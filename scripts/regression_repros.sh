@@ -214,6 +214,10 @@ rows=(
   "t_inlinearmstmt|reject|"
   "t_optstrmatch|exit|10"
   "t_gentree|exit|15"
+  # self-recursive NON-generic multi-field sum (`Tree = Leaf(i64) | Node(Tree,Tree)`, bare
+  # self-ref field). Was a silent miscompile (sum=0, match-on-payload rejected) — forward-declare
+  # the sum type_id before resolving variant fields. Guards t_gentree (generic) stays 15.
+  "t_rectreesum|exit|28"
   "t_gentreestr|exit|26"
   "t_variantshadow|reject|"
   "t_nomethod|reject|"

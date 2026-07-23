@@ -1,0 +1,21 @@
+// Oracle: self-recursive NON-generic multi-field sum (the classic linked-tree / AST shape).
+// `Node`'s fields ARE the enclosing sum `Tree` (a BARE self-reference, not `Tree[T]`). Before
+// the fix, the variant field type resolved to TYPE_UNKNOWN (the sum's type_id was not yet
+// assigned to its symbol when the field was resolved), so the match-bound payload `l`/`r` was
+// typed as the RFC 0019 synth struct instead of `Tree` -> `sum(l)` read garbage (returned 0)
+// and `match l` was rejected. Fix (typecheck.ax): forward-declare the sum's type_id BEFORE
+// resolving variant fields, gated on a BARE self-ref field so generic templates / mono clones
+// (which self-reference as `Tree[..]`) keep the generic_inst path. Expected: 3+4+10+5+6 = 28.
+// See knowledge/bug-recursive-nongeneric-multifield-sum.md.
+type Tree = Leaf(i64) | Node(Tree, Tree)
+
+fn sum(t: Tree) -> i64:
+    match t:
+        Leaf(v):
+            return v
+        Node(l, r):
+            return sum(l) + sum(r)
+
+fn main() -> i64:
+    let t = Node(Node(Leaf(3), Leaf(4)), Node(Leaf(10), Node(Leaf(5), Leaf(6))))
+    return sum(t)

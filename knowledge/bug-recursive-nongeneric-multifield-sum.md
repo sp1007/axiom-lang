@@ -6,7 +6,19 @@ metadata:
   type: project
 ---
 
-## OPEN — self-recursive non-generic multi-field sum variant mistypes match-bound payload
+## ✅ FIXED 2026-07-24e (`03F808DE`, 531/531, B==C) — forward-declare gated on a bare self-ref
+Shipped: `reserve_sum_type`/`set_sum_variants` (typetable.ax) + a pre-scan in `pre_infer_type_alias`
+that reserves the sum's type_id and sets it on the symbol BEFORE resolving variant fields — but ONLY
+when a variant field is a **bare self-reference** (`NODE_TYPE_EXPR` whose `payload == sym_idx`, the
+sum's own symbol). Generic templates and mono clones self-reference as `Tree[..]` (`NODE_GENERIC_TYPE`),
+so the kind check excludes them → t_gentree/t_gentreestr stay 15/26; non-recursive sums take the exact
+original path. Result: s2=7, s3=3 (accept), q1=28, oracle `bin/t_rectreesum.ax` (=28) in the suite.
+Gate: A==B==C `03F808DE`, full regression **531/531**. The critical insight (2nd attempt) was that the
+first, un-gated version reserved for ALL non-generic sums and broke the **mono clone** `Tree[i64]`
+(generic params stripped, so a NODE_GENERIC_PARAMS check missed it) — the bare-self-ref field-kind gate
+is what cleanly separates genuine recursion from clones.
+
+## (history) OPEN — self-recursive non-generic multi-field sum variant mistypes match-bound payload
 **Found by proactive probing on the mature-plateau compiler (driver `AFA6529F`), 2026-07-24e.**
 The classic linked-tree / AST shape miscompiles:
 ```

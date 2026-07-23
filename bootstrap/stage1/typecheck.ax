@@ -2776,6 +2776,30 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                     if self.tree.nodes.data[vc_node].kind == NODE_VARIANT_DECL:
                         variant_count = variant_count + 1 as i64
                     vc_node = self.tree.nodes.data[vc_node].next_sibling
+                // Detect a genuinely SELF-RECURSIVE non-generic sum: a variant field that is a BARE
+                // reference (NODE_TYPE_EXPR, payload == this sum's own symbol) to the sum being
+                // defined — e.g. `Node(Tree, Tree)`. A generic template / mono clone references
+                // itself as `Tree[T]`/`Tree[i64]` (NODE_GENERIC_TYPE, resolved via the generic_inst
+                // path — bug92), so the kind check excludes them; a non-recursive sum has no such
+                // field. Only when found do we forward-declare the sum's type_id (below) so the bare
+                // self-ref resolves instead of yielding TYPE_UNKNOWN and mistyping the match binder.
+                // [[bug-recursive-nongeneric-multifield-sum]].
+                mut has_bare_self_ref := false
+                mut sr_v := self.tree.nodes.data[sum_node].first_child
+                while sr_v != 0 as u32:
+                    let sr_vn = self.tree.nodes.data[sr_v]
+                    if sr_vn.kind == NODE_VARIANT_DECL:
+                        mut sr_f := sr_vn.first_child
+                        while sr_f != 0 as u32:
+                            let sr_fn = self.tree.nodes.data[sr_f]
+                            if sr_fn.kind == NODE_TYPE_EXPR and sr_fn.payload == sym_idx:
+                                has_bare_self_ref = true
+                            sr_f = sr_fn.next_sibling
+                    sr_v = sr_vn.next_sibling
+                mut reserved_sum_id := 0 as u32
+                if has_bare_self_ref:
+                    reserved_sum_id = self.types.reserve_sum_type(sym.name_id)
+                    self.symtable.symbols.data[sym_idx].type_id = reserved_sum_id
                 mut v_node := self.tree.nodes.data[sum_node].first_child
                 while v_node != 0 as u32:
                     let v_node_struct = self.tree.nodes.data[v_node]
@@ -2856,7 +2880,14 @@ pub fn pre_infer_type_alias(mut self: ptr[TypeChecker], node_idx: u32):
                             tag = tag + 1 as u8
                     v_node = next_sibling
                 
-                let type_id = self.types.register_sum_type(sym.name_id, variants)
+                // Self-recursive (bare self-ref): populate the sum reserved above (no 2nd entry).
+                // Otherwise register normally — byte-identical to the pre-fix path.
+                mut type_id := 0 as u32
+                if has_bare_self_ref:
+                    self.types.set_sum_variants(reserved_sum_id, variants)
+                    type_id = reserved_sum_id
+                else:
+                    type_id = self.types.register_sum_type(sym.name_id, variants)
                 self.symtable.symbols.data[sym_idx].type_id = type_id
                 self.set_node_type(node_idx, type_id)
                 
