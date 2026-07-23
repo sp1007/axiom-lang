@@ -20,32 +20,47 @@ Fib(40). Reproducible harness: **`scripts/perf_fib.ps1`** (i64-vs-`int64_t`, bes
 (Absolute ms drift with machine load; the RATIO is the gate. Earlier 1.89x figure used C `long`
 = 32-bit on Windows = unfair; the i64-fair `int64_t` baseline is 2.59x.)
 
-## Profiled root causes (objdump of the bundled binary — AXIOM has NO per-fn symbols, single
-`.text` blob; compare against clang/gcc `fib` which DO have symbols). Ranked by expected ROI:
-1. **Heavy unconditional prologue/epilogue.** Every AXIOM fn pushes up to 8 callee-saved regs
-   (`rbp,rbx,rsi,rdi,r12,r13,r14,r15`) and pops them, regardless of how many it uses (~2). clang's
-   `fib` prologue = `push rsi; push rdi; sub $0x28` (2 regs). On a fn called ~331M times this
-   push/pop tax likely dominates. **Fix = save only callee-saved regs the fn actually allocates**
-   (x86_regalloc / x86_emitter frame setup). Biggest, but touches regalloc/frame → careful B==C.
-2. **Register-materialized immediates + redundant width-masks.** Pervasive pattern
-   `mov $C,%rax; mov $0xff,%rcx; and %rcx,%rax` — (a) the mask is materialised into a scratch reg
-   instead of using the immediate form `and $0xff,%dst`; (b) constants that already fit are masked
-   anyway (`10 & 255`, `65 & 255` = dead). i32 literals also get `and $0xffffffff`. **Fix = peephole:
-   emit `and $imm,%dst` (imm32) directly, and constant-fold `mov $C; and $M` → `mov $(C&M)`; drop the
-   mask when the value provably fits the type width.** Localized emitter/selector peephole — the
-   cleanest first win. Verify it's not narrowing-semantics-load-bearing before dropping.
-3. **No `lea` for add/sub-with-constant.** `n - 1` = `mov $1; and ...; sub` instead of clang's
-   `lea -0x1(%rdi),%ecx`. **Fix = selector recognises reg±smallconst → lea/dec/inc.**
-4. **Excessive register shuffling / stack round-trips.** Long `mov` chains + spill/reload of live
-   values across the call (visible in the syscall wrappers: 7 stores then 7 reloads back-to-back).
-   `cmp` also materialises its constant instead of `cmp $imm,%reg`. **Fix = a copy-coalescing /
-   dead-move peephole pass over machine IR** (may overlap with ssa_opt / regalloc).
+## Profiled root causes — VERIFIED against fib's ACTUAL disassembly
+fib is at **0x140011dd7** in `fib_ax_o2.exe` (found via self-call detection: two `call 0x140011dd7`
+at e12/e2a; AXIOM emits NO per-fn symbols). Its real hot body (⚠️ NOT the runtime syscall wrappers I
+first extrapolated from — those legitimately push 8 regs; fib does not):
+```
+push rbp; mov rsp,rbp; push rbx; push rsi; push rdi; push r12; sub $0x20,rsp   ; 5 callee-saved
+mov rcx,rbx ; mov rbx,rsi                     ; (C) redundant double-copy of n
+mov $0x2,rax ; cmp rax,rsi ; jl base          ; (A) cmp materialises the const
+jmp else                                       ; (D) jcc + unconditional jmp (no fallthrough)
+mov $0x1,rax ; mov rsi,rdi ; sub rax,rdi ; call fib   ; (B) n-1 in 3 insns, should be lea
+mov rax,rdi ; mov $0x2,rax ; mov rsi,r12 ; sub rax,r12 ; call fib  ; (A)+(B) again for n-2
+add rax,rdi ; mov rdi,rax ; <epilogue>
+```
+⭐ **CORRECTION to the first-pass ranking:** #2 below (width-masks) is **INERT for fib** — fib is
+all-`i64`, and `emit_wrap_to_width` (x86_selector.ax:887) masks ONLY i8/i16/i32 (size 1/2/4); i64/u64
+get size 0 → no mask. So mask-elimination shrinks narrow-int code + binary size but does **NOT** move
+the Fib metric. Don't start there for the perf gate. Ranked by ROI **for fib**:
+
+A. **`cmp` materialises its constant** (`mov $2,rax; cmp rax,rsi`, 2 sites) → `cmp $2,rsi`. Cleanest,
+   clearly correct, in the hot loop. **Fix = selector: OP_LT/compare with an ICONST operand → emit
+   the imm form.**
+B. **No `lea`/`dec` for `reg±const`** (`mov $1,rax; mov rsi,rdi; sub rax,rdi`, 2 sites = ~4 wasted
+   insns) → `lea -0x1(rsi),rdi`. **Fix = selector: OP_ISUB/OP_IADD with a small ICONST operand →
+   lea (or inc/dec).** Highest raw insn savings in the loop.
+C. **Redundant copies** (`mov rcx,rbx; mov rbx,rsi` → `mov rcx,rsi`; `mov rax,rdi` after a call).
+   **Fix = copy-coalescing / dead-move peephole over machine IR** (may overlap ssa_opt/regalloc).
+D. **Branch shape**: every `if` = `jcc taken; jmp fallthrough` instead of laying the fallthrough
+   block next → drop the extra `jmp`. **Fix = block layout in the emitter.**
+E. **5 callee-saved vs clang's 2** — fib allocates callee-saved regs (rbx/rsi/rdi/r12) where volatile
+   would avoid push/pop. **Fix = prefer volatile/caller-saved regs in the allocator when no value is
+   live across a call that needs them** — biggest but hardest (regalloc), do LAST.
+
+(Width-masks — historical #2, keep for narrow-int/binary-size, NOT the perf gate: pervasive
+`mov $C; mov $0xff; and` materialises the mask + masks constants that already fit. Fix = immediate
+`and $imm` + const-fold `mov $C; and $M`→`mov $(C&M)`. Localized, but inert on fib.)
 
 ## How to proceed (each = isolated, measured, reversible; backend → B==C MANDATORY before commit)
-Start with **#2 (immediate-AND + const-mask-fold)** — smallest blast radius, clearly correct,
-measurable on perf_fib.ps1, and it also shrinks the binary (helps RFC 0031/0030 goals). Then #3
-(lea), then #1 (lean prologue — biggest but riskiest). Re-run perf_fib.ps1 + full regression + B==C
-after each. Do NOT batch them — attribute each delta.
+Start with **A (immediate cmp)** then **B (lea for reg±const)** — both are selector peepholes,
+clearly correct, and directly in fib's hot loop. Re-run `perf_fib.ps1` + full regression + B==C after
+EACH; attribute each delta (do NOT batch). Then C (copy-coalescing), D (branch layout), E (regalloc
+volatile preference). Mask-elimination is a separate binary-size win, not the perf gate.
 
 ## Reality check
 2.59x → 1.05x is a LARGE multi-session program (clang has decades of codegen tuning). Realistic
