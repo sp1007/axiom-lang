@@ -1,0 +1,45 @@
+// Oracle BUG#92b: a GENERIC multi-field variant whose payload field monomorphizes to a
+// >8-byte type (`str`, 16B) must be CONSTRUCTED with the mono synth-struct layout, the
+// same one `lower_match` reads on extraction. Before the fix, lower_variant_construct
+// used the TEMPLATE synth struct (a generic param defaults to 8B) so the constructor
+// stored the str at an 8B field (dropping its len) and shifted the next field — while
+// the match read a 16B str at offset 0 and the tail field past it. Result: wrong lengths
+// / SIGSEGV on the recursive form. lower_variant_construct now re-derives the payload
+// layout from the ctor expression's concrete mono sum (resolve_mono_sum_for_ctor).
+//
+// Covers three shapes in one exit code:
+//   - leading str field:   Pair(str, i32)
+//   - str field in middle: Rec(i32, str, i32)
+//   - recursive generic tree with str payload: Tree[str]
+// Expected exit:
+//   f  = len("hello")=5 + 5            = 10
+//   h  = 3 + len("hi")=2 + 5           = 10
+//   ds = len("ab")=2 + len("cde")=3 + len("f")=1 = 6
+//   total = 10 + 10 + 6 = 26
+type P[T] = Pair(T, i32) | Nil
+type Rec[T] = R(i32, T, i32) | Empty
+type Tree[T] = Node(T, Tree[T], Tree[T]) | Leaf
+
+fn f(p: P[str]) -> i64:
+    match p:
+        Pair(s, n):
+            return len(s) + (n as i64)
+        Nil:
+            return 0
+
+fn h(r: Rec[str]) -> i64:
+    match r:
+        R(a, s, b):
+            return (a as i64) + len(s) + (b as i64)
+        Empty:
+            return 0
+
+fn ds(t: Tree[str]) -> i64:
+    match t:
+        Node(v, l, r):
+            return len(v) + ds(l) + ds(r)
+        Leaf:
+            return 0
+
+fn main() -> i64:
+    return f(Pair("hello", 5)) + h(R(3, "hi", 5)) + ds(Node("ab", Node("cde", Leaf, Leaf), Node("f", Leaf, Leaf)))

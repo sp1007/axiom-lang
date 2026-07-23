@@ -1,10 +1,20 @@
 ---
 name: bug92-generic-recursive-multifield-open
-description: "OPEN BUG#92 — a GENERIC multi-field variant with a generic_inst/aggregate field (e.g. recursive `Tree[T] = Node(T, Tree[T], Tree[T])`) reads child fields wrong/segfaults: the RFC 0019 synth struct uses TEMPLATE field types (never monomorphized). Non-generic recursive works; generic scalar-only works."
+description: "✅ CLOSED — both halves fixed. BUG#92 main (kind-8 generic_inst-of-sum field read by-address) fixed 938c48b; BUG#92b (payload field that MONOMORPHIZES to >8B, e.g. str, constructed with the TEMPLATE synth-struct layout instead of the mono one) fixed 2026-07-24 via resolve_mono_sum_for_ctor in lower_variant_construct. Generic multi-field variant with str payload now correct (leading/middle str field + recursive Tree[str])."
 metadata: 
   node_type: memory
   type: project
   originSessionId: 73f7537d-461e-4ce6-91c3-169b6cb570f7
+---
+
+✅ **BUG#92b FIXED 2026-07-24** (air_builder change, A==B fixpoint `23C1E261` — INERT on self-build, the compiler has no generic multi-field variant with a >8B mono field).
+
+**Symptom.** `type P[T]=Pair(T,i32)|Nil` with `T=str`: `f(Pair("hello",5))` matching `Pair(s,n): len(s)+n` returned **5 not 10**; recursive `Tree[str]` (`Node(T,Tree[T],Tree[T])`) **SEGFAULT**. Generic i64 multi-field, single-field generic str, non-generic recursive all worked.
+
+**Root cause (as the historical note hypothesized, now confirmed + fixed).** RFC 0019 registers the synth payload struct ONCE at sum declaration with TEMPLATE field types; a generic param `T` defaults to 8 bytes. `lower_variant_construct` derived `payload_type` from `vsym.type_id` = the **TEMPLATE** sum → OP_ALLOC/OP_SET_FIELD used the template layout (str field = 8B slot @0, i32 @8, storing only the str ptr and dropping len). But `lower_match` reads the **MONO** synth struct from the scrutinee's concrete `P[str]` sum (str = 16B @0, i32 @16). Template-vs-mono LAYOUT MISMATCH; only bites when a template field (8B generic) ≠ its mono field (>8B, i.e. str). i64 aligns by luck (mono==8B).
+
+**Fix.** `lower_variant_construct` now takes the ctor expression's inferred type (`node_types[call]`) and calls new helper `resolve_mono_sum_for_ctor(ctor_ty, vname)`: if the inferred type is a concrete mono SUM use it directly; if a GENERIC_INST, find the mono SUM that (a) owns a variant named `vname` and (b) whose `SumInfo.generic_args` equal the generic-inst's args. **Matched by generic_args + variant-name, NOT by name_id** — the mono sum is registered under a MANGLED name while the generic-inst carries the base name (this is exactly why the earlier `resolve_sum_type` attempt in the historical note failed: it matches by name_id and returned the template). When a distinct mono sum is found, `payload_type` is re-derived from IT, so construction and match agree on layout. Inert for scalar/≤8B payloads (template==mono) and non-generic sums (mono_sum==sum_type_id → skipped). 4 call sites updated (2 pass `node_types[idx]`, the 2 no-payload sites pass 0). Oracle `bin/t_gentreestr.ax` (exit 26 = leading-str `Pair(str,i32)` 10 + middle-str `Rec(i32,str,i32)` 10 + recursive `Tree[str]` 6).
+
 ---
 
 ✅ **FIXED 2026-07-10 (i)** — `938c48b`, `origin/main`=`938c48b`, backend change **A==B==C `0657BBEE`** (byte-identical: compiler has no such field itself), **145/145**. Daily-driver rebuilt.

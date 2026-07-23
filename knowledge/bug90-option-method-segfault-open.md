@@ -1,11 +1,14 @@
 ---
 name: bug90-option-method-segfault-open
-description: "BUG#90 PARTIAL FIX — Option/Result .unwrap()/.is_some()/.is_ok() on a TYPED receiver now lower to deterministic pointer-tagged inline logic (backend intercept), fixing the crash/flakiness. REMAINING: an inline UNTYPED receiver (m.get(k).unwrap()) still needs typecheck to propagate the mono'd return type."
+description: "✅ CLOSED — Option/Result .unwrap()/.is_some()/.is_ok()/.is_err() are deterministic + correct on both typed AND untyped (m.get(k).unwrap()) receivers via the backend pointer-tagged inline intercept. Re-verified 2026-07-24 on driver 23C1E261: hashmap-get-unwrap, is_some+two unwraps, Result is_ok+unwrap all correct. The 'remaining untyped receiver' note was already covered; the only spinoff still open is BUG#93 (HashMap.contains self-type-blind method resolution), a SEPARATE bug."
 metadata: 
   node_type: memory
   type: project
   originSessionId: 73f7537d-461e-4ce6-91c3-169b6cb570f7
 ---
+
+✅ **CLOSED 2026-07-24 (re-verified, no code change needed).** Driver `23C1E261`. The "REMAINING: untyped receiver (`m.get(k).unwrap()`)" in the old header was already handled by the backend intercept (see UPDATE below, which the header just hadn't been reconciled with). Fresh probes: `m.get(1).unwrap()` untyped local (42), `is_some()`-guard + two `.get().unwrap()` (30), `Result.is_ok()` + `.unwrap()` (42) — all deterministic. The genuinely-open spinoff is **BUG#93** [[bug93-contains-method-resolution-open]] (HashMap has no `contains`, mis-resolves to `HashSet.contains` — self-type-blind method resolution), which is a distinct method-resolution bug, not an Option/Result method bug.
+
 
 🟢 **BUG#90 PARTIAL FIX** — Option/Result methods on a TYPED receiver now deterministic + correct.
 

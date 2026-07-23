@@ -759,7 +759,7 @@ pub fn lower_ident(mut self: ptr[FuncLowering], node: AstNode) -> u32:
             // RFC 0004: bare no-payload user variant (e.g. `Green`) in expr
             // position. Only user sum types (kind 6); builtin None handled above.
             if self.mb.typetable.entries.data[sym.type_id as i64].kind == TYPE_KIND_SUM:
-                return self.lower_variant_construct(sym_idx, 0 as u32)
+                return self.lower_variant_construct(sym_idx, 0 as u32, 0 as u32)
 
         if sym.kind == SYM_FUNC:
             // Bare top-level function name used as a value -> function pointer.
@@ -2250,7 +2250,7 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if vcsym.kind == SYM_VARIANT and vcsym.type_id != 0 as u32 and (vcsym.type_id as i64) < self.mb.typetable.entries.len:
                 if self.mb.typetable.entries.data[vcsym.type_id as i64].kind == TYPE_KIND_SUM:
                     let payload_arg = callee_node.next_sibling
-                    return self.lower_variant_construct(vcsym_idx, payload_arg)
+                    return self.lower_variant_construct(vcsym_idx, payload_arg, self.mb.node_types[idx as i64])
 
     // RFC 0004: qualified payload-variant construction `EnumType.Ctor(x)`. The
     // callee is a NODE_FIELD_EXPR that typecheck bound to the variant symbol
@@ -2264,7 +2264,7 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
             if fvsym.kind == SYM_VARIANT and fvsym.type_id != 0 as u32 and (fvsym.type_id as i64) < self.mb.typetable.entries.len:
                 if self.mb.typetable.entries.data[fvsym.type_id as i64].kind == TYPE_KIND_SUM:
                     let fpayload_arg = callee_node.next_sibling
-                    return self.lower_variant_construct(fvsym_idx, fpayload_arg)
+                    return self.lower_variant_construct(fvsym_idx, fpayload_arg, self.mb.node_types[idx as i64])
 
     mut is_struct_constructor := false
     mut struct_type_id := 0 as u32
@@ -2506,7 +2506,7 @@ pub fn lower_field_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
                     mut npayload := 0 as u32
                     self.find_variant_info(sym.type_id, sym.name_id, &ntag, &npayload)
                     if npayload == TYPE_UNKNOWN:
-                        return self.lower_variant_construct(sym_idx, 0 as u32)
+                        return self.lower_variant_construct(sym_idx, 0 as u32, 0 as u32)
             if sym.kind != SYM_VAR and sym.kind != SYM_PARAM:
                 return 0 as u32
             let reg = self.locals.local_map_get(sym_idx)
@@ -3210,7 +3210,49 @@ pub fn find_variant_info(self: ptr[FuncLowering], sum_type_id: u32, name_id: u32
 // single payload argument (0 = no payload). The value is an 8-byte pointer to a
 // heap box [tag@0, payload@8]; reuses OP_ALLOC/OP_SET_FIELD (the sum reg type
 // makes field_offset yield 0 and 8 for fields 0 and 1).
-pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32, payload_arg_idx: u32) -> u32:
+// BUG#92b helper: resolve the concrete monomorphized SUM for a variant construction
+// from the ctor expression's inferred type. `ctor_ty` is node_types[call]; `vname` is
+// the variant's name_id (disambiguates which mono sum owns this constructor). Returns a
+// kind-6 SUM type_id, or 0 when none applies (keeping the template layout). Matches a
+// GENERIC_INST to its mono SUM by generic_args equality + variant-name presence rather
+// than by name_id, because the mono sum is registered under a MANGLED name while the
+// generic-inst carries the base name.
+pub fn resolve_mono_sum_for_ctor(self: ptr[FuncLowering], ctor_ty: u32, vname: u32) -> u32:
+    if ctor_ty == 0 as u32 or (ctor_ty as i64) >= self.mb.typetable.entries.len:
+        return 0 as u32
+    let e = self.mb.typetable.entries.data[ctor_ty as i64]
+    if e.kind == TYPE_KIND_SUM:
+        return ctor_ty
+    if e.kind != TYPE_KIND_GENERIC_INST:
+        return 0 as u32
+    if (e.extra as i64) >= self.mb.typetable.generic_insts.len:
+        return 0 as u32
+    let gi_args = self.mb.typetable.generic_insts.data[e.extra as i64]
+    if gi_args.len == 0 as i64:
+        return 0 as u32
+    mut k := 0 as i64
+    while k < self.mb.typetable.entries.len:
+        let e2 = self.mb.typetable.entries.data[k]
+        if e2.kind == TYPE_KIND_SUM and (e2.extra as i64) < self.mb.typetable.sumtypes.len:
+            let si = self.mb.typetable.sumtypes.data[e2.extra as i64]
+            mut args_eq := si.generic_args.len == gi_args.len
+            if args_eq:
+                mut ai := 0 as i64
+                while ai < gi_args.len:
+                    if si.generic_args.data[ai] != gi_args.data[ai]:
+                        args_eq = false
+                        break
+                    ai = ai + 1
+            if args_eq:
+                mut vj := 0 as i64
+                while vj < si.variants.len:
+                    if si.variants.data[vj].name_id == vname:
+                        return k as u32
+                    vj = vj + 1
+        k = k + 1
+    return 0 as u32
+
+pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32, payload_arg_idx: u32, ctor_node_type: u32) -> u32:
     let vsym = self.mb.symbols.symbols.data[variant_sym_idx as i64]
     let sum_type_id = vsym.type_id
     mut tag := -1 as i64
@@ -3218,6 +3260,23 @@ pub fn lower_variant_construct(mut self: ptr[FuncLowering], variant_sym_idx: u32
     self.find_variant_info(sum_type_id, vsym.name_id, &tag, &payload_type)
     if tag < 0 as i64:
         tag = 0 as i64
+
+    // BUG#92b: vsym.type_id is the TEMPLATE sum, whose RFC 0019 synth payload struct
+    // carries TEMPLATE field types (a generic param defaults to 8 bytes). When a payload
+    // field monomorphizes to a >8B type (e.g. `str`, 16B) the template layout (field@0/8B,
+    // next@8) diverges from the MONO synth struct (str@0/16B, next@16) that `lower_match`
+    // reads from the scrutinee's concrete sum -> the constructor would store fields at the
+    // wrong offsets/sizes (str len dropped, next field shifted). If the ctor expression's
+    // inferred type resolves to a concrete mono sum owning this variant, re-derive
+    // payload_type from IT so both sides agree on layout. Inert for scalar/<=8B payloads
+    // (template==mono layout) and non-generic sums (mono_sum == sum_type_id -> skipped).
+    let mono_sum = self.resolve_mono_sum_for_ctor(ctor_node_type, vsym.name_id)
+    if mono_sum != 0 as u32 and mono_sum != sum_type_id:
+        mut m_tag := -1 as i64
+        mut m_payload := 0 as u32
+        if self.find_variant_info(mono_sum, vsym.name_id, &m_tag, &m_payload):
+            if m_payload != 0 as u32:
+                payload_type = m_payload
 
     let box_reg = self.fb.fresh_reg()
     self.fb.emit(AirInst(
