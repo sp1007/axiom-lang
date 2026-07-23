@@ -145,6 +145,20 @@ LET-BINDING of `o` (`let o: Option[i64] = Some(41)`) to confirm `o`'s symbol typ
 implies yes) vs i64. The fix is wherever the Option→i64 identity is first accepted. Six tick-driven
 layers have RULED OUT the easy answers; the remaining work is a single systematic sitting.
 
+## 🔬 LAYER 7 — handler mapped: infer_node:4089 (2336 is `stmt_terminates`, a red herring)
+The real NODE_CALL_EXPR type-checker is `infer_node` at **typecheck.ax:4089**. For `f(o)`: callee is
+NODE_IDENT (4096) → `resolve_free_call_overload` returns `f` unchanged (single fn) →
+`is_generic_call=false` (4113, `f` non-generic). Since the 5043 arg-coercion loop is gated on `not
+is_generic_call`, `f(o)` SHOULD reach it — yet the OPTIONSYM guard never fired there. So the narrow
+remaining mystery is ONE of: (a) `callee_type` for `f` is not resolved to `TYPE_KIND_FUNC` at the
+5037 check (so `fp_data` stays null → the arg-type checks are skipped entirely), or (b) `o`'s
+node/symbol type is already i64 by the time the loop reads it. **ONE trace from 4089 resolves it:**
+print, for `fnm=="f"`, the `callee_type` + `entries[callee_type].kind` right where the FUNC branch is
+decided (~4560-4595), and the arg's symbol type_id. If callee_type isn't FUNC → the whole per-arg
+validation is skipped for simple free calls = the bug's home (add the check + the FUNC dispatch there,
+or reject when a non-generic ident callee resolves to FUNC but fp check is bypassed). This is now a
+~10-minute focused trace, fully set up. STOP fragmenting across ticks.
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
