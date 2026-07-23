@@ -35,6 +35,19 @@ because its return `T` is also its value PARAM `x: T`, so the width is pinned by
 return `T` comes only from the field, decoupled from the `self: ptr[Box[T]]` param. FIX AREA: mono's
 handling of a return type that is a bare generic param — ensure the instantiated function's return
 type_id (and its ABI width) is the concrete `T`. Fresh session; gate B==C (codegen/ABI).
+**ROOT NAILED (probe, 2026-07-24e):** it's the CALL-SITE RESULT TYPE, not the callee's return codegen.
+`let r = s.get()` (unannotated) infers `r` as the wrong type (generic `T` NOT resolved to `str`) → `r`
+gets an 8-byte slot → `r.len` reads garbage/off-slot → SIGSEGV (`use.ax`). With `let r: str = s.get()`
+the slot is 16B so NO crash but `r.len` = 39 (garbage — the value still arrives wrong) (`use2.ax`).
+And `let r = s.get()` with `r` UNUSED runs fine (`asg.ax`=5) — the value is only mis-handled when read.
+⇒ **the call `s.get()` on a mono'd generic method does not resolve its result type to the method's
+CONCRETE return type** (`str`), defaulting to the generic placeholder width. This is the SAME CLASS as
+the shipped [[bug-generic-fn-float-return-default-int]] fix (typecheck.ax:4560, the `flags & 2048`
+mono-instance path that overrides result_type with the instance signature's return) — but that fix is
+on the free-CALL path; the METHOD-CALL path (`b.get()` via NODE_FIELD_EXPR callee) needs the same
+instance-return-type override. FIX: in the call handler, when the callee is a mono'd generic METHOD,
+set the call's result_type from the instantiated method's return type_id (not the template `T`).
+Localized once found; gate B==C. Repros `use.ax`(SEGV)/`use2.ax`(=39 garbage)/`asg.ax`(=5, unused ok).
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
