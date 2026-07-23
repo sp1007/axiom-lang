@@ -61,6 +61,16 @@ generic + receiver + >8B-return breaks. FIX AREA is air_builder/x86 return lower
 method (likely the sret/16B-return path interacting with the self param), NOT the typecheck sites
 already read. Genuine fresh codegen session; gate B==C. This is the ONE bug this session that has no
 working reference to mirror and lives in an unexplored (return-ABI) area — hence banked, not rushed.
+**GENERAL to any >8B `T`, not str-specific** (`s16.ax`: generic method → 16-byte struct P16 also
+SEGVs; `s16n.ax`: non-generic method → P16 works =42). The substitution machinery exists
+(`substitute_type_params` mono.ax:70; subst map built mono.ax:503-522 from the struct/generic params),
+and the i64 (8B) return works — so `T` IS substituted in the return node, yet the >8B return still
+mis-transfers. ⇒ defect is NOT the substitution but how the mono'd function's return type_id/WIDTH
+reaches the return codegen. **NEXT SESSION (trace, bash grep only):** dump the mono'd `get[<T>]`'s
+registered return type_id (is it the concrete 16B type, or a stale 8B placeholder?) at pre_infer of
+the instance + at air_builder's return lowering; the fix is wherever the width defaults to 8B for a
+mono'd generic method's >8B return. Repros: `s16.ax`(SEGV, 16B struct)/`s16n.ax`(=42, non-generic)/
+`use.ax`/`use2.ax`/`asg.ax`. Fully characterized; needs mono/codegen trace instrumentation.
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
