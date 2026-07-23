@@ -1,0 +1,35 @@
+// RFC 0029 oracle: a concrete struct in an INTERFACE-typed Option/Result payload must be
+// boxed into a per-value interface vtable (not stored raw), so unwrap().method() dispatches
+// dynamically. Covers Some, Result Ok, Option through a fn param, and None. Expect 42.
+// Fix: typecheck binds the variant type param to the interface (try_instantiate_variant_call)
+// and air_builder boxes the payload at the Some/Ok/Err ctor (opt_res_ctor_iface).
+interface Shape:
+    fn area(self: Self) -> i64
+
+struct Sq:
+    side: i64
+    fn area(self: Sq) -> i64:
+        return self.side * self.side
+
+struct Rec:
+    w: i64
+    h: i64
+    fn area(self: Rec) -> i64:
+        return self.w * self.h
+
+fn take(o: Option[Shape]) -> i64:
+    if o.is_some():
+        return o.unwrap().area()
+    return -1 as i64
+
+fn main() -> i64:
+    let a: Option[Shape] = Some(Sq(side: 3))
+    mut total := a.unwrap().area()
+    let b: Result[Shape, i64] = Ok(Rec(w: 4, h: 5))
+    if b.is_ok():
+        total = total + b.unwrap().area()
+    total = total + take(Some(Sq(side: 2)))
+    let c: Option[Shape] = None
+    if c.is_none():
+        total = total + 9
+    return total

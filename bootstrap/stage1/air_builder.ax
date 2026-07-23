@@ -2168,6 +2168,20 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                 payload_reg = self.lower_expr(payload_idx)
                 if self.mb.node_types != null as ptr[u32]:
                     payload_t = self.mb.node_types[payload_idx as i64]
+                    // RFC 0029: if the declared Option/Result payload is an INTERFACE (the
+                    // ctor node typed Option[I]/Result[I] by typecheck), box the concrete
+                    // struct payload into an interface value before storing it, so the box's
+                    // 8-byte payload slot holds a vtable box pointer and `unwrap().m()`
+                    // dispatches dynamically. coerce_struct_to_interface self-guards (only
+                    // fires when node_types[payload_idx] is a struct), so this is inert for
+                    // scalar/str/non-interface payloads.
+                    if payload_reg != 0 as u32:
+                        let iface_t = self.opt_res_ctor_iface(self.mb.node_types[idx as i64], variant_ctor)
+                        if iface_t != 0 as u32:
+                            let boxed = self.coerce_struct_to_interface(iface_t, payload_idx, payload_reg)
+                            if boxed != payload_reg:
+                                payload_reg = boxed
+                                payload_t = iface_t
             // RFC 0012: type the box register with a real Option/Result type
             // (kind 11/12), computed LOCALLY from the payload type — NOT `str` (12).
             // The kind-11/12 entry is size-16 (so OP_ALLOC still reserves room for a
@@ -3125,6 +3139,36 @@ pub fn name_has_prefix(s: str, prefix: str) -> bool:
 
 // BUG#90: classify a receiver type as Option (0), Result (1), or neither (-1), seeing
 // through kind 11/12 and a GENERIC_INST/SUM whose base name is Option/Result.
+// RFC 0029: for an Option/Result ctor node typed Option[I] / Result[I, ..] (I an
+// interface, set by typecheck from the declared annotation via try_instantiate_variant_call),
+// return the interface payload type so the Some/Ok/Err lowering can box a concrete-struct
+// payload into an interface value. Returns 0 when the payload is not an interface. `which`
+// is the variant_ctor code (1=Ok, 2=Err, 3=Some).
+pub fn opt_res_ctor_iface(self: ptr[FuncLowering], ctor_ty: u32, which: i64) -> u32:
+    if ctor_ty == 0 as u32 or (ctor_ty as i64) >= self.mb.typetable.entries.len:
+        return 0 as u32
+    let e = self.mb.typetable.entries.data[ctor_ty as i64]
+    mut payload := 0 as u32
+    if e.kind == TYPE_KIND_OPTION:
+        payload = e.extra
+    elif e.kind == TYPE_KIND_RESULT:
+        if which == 2 as i64:
+            payload = e.name_id
+        else:
+            payload = e.extra
+    elif e.kind == TYPE_KIND_GENERIC_INST and (e.extra as i64) < self.mb.typetable.generic_insts.len:
+        let ga = self.mb.typetable.generic_insts.data[e.extra as i64]
+        mut ai := 0 as i64
+        if which == 2 as i64 and ga.len > 1 as i64:
+            ai = 1 as i64
+        if ai < ga.len:
+            payload = ga.data[ai]
+    if payload == 0 as u32 or (payload as i64) >= self.mb.typetable.entries.len:
+        return 0 as u32
+    if self.mb.typetable.entries.data[payload as i64].kind == TYPE_KIND_INTERFACE:
+        return payload
+    return 0 as u32
+
 pub fn opt_res_kind(self: ptr[FuncLowering], type_id: u32) -> i64:
     if type_id == 0 as u32 or (type_id as i64) >= self.mb.typetable.entries.len:
         return -1 as i64

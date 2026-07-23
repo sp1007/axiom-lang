@@ -487,7 +487,18 @@ pub fn try_instantiate_variant_call(mut self: ptr[TypeChecker], callee: u32, sum
                     exp_hint = exp_args.data[gi]
                 let concrete = self.infer_node(call_arg, exp_hint)
                 if concrete != TYPE_UNKNOWN and not self.is_generic(concrete):
-                    args.data[gi] = concrete
+                    mut binding := concrete
+                    // RFC 0029: when the declared payload is an INTERFACE the concrete
+                    // struct payload conforms to (`let o: Option[Shape] = Some(Sq(..))`),
+                    // bind the type param to the INTERFACE, not the concrete struct, so the
+                    // ctor node types as Option[I]/Result[I]. air_builder reads that and boxes
+                    // the payload into an interface value; without it `o.unwrap().area()`
+                    // dispatches through a raw struct pointer -> SIGSEGV. Gated on conformance
+                    // so any non-conforming / non-interface case keeps the concrete binding.
+                    if exp_hint != TYPE_UNKNOWN and (exp_hint as i64) < self.types.entries.len and self.types.entries.data[exp_hint as i64].kind == TYPE_KIND_INTERFACE and (concrete as i64) < self.types.entries.len and self.types.entries.data[concrete as i64].kind == TYPE_KIND_STRUCT:
+                        if self.interface_missing_method(concrete, exp_hint) == 0 as u32:
+                            binding = exp_hint
+                    args.data[gi] = binding
                     bound_any = true
                 break
             gi = gi + 1
