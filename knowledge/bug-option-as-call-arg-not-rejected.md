@@ -106,6 +106,28 @@ arg's resolved (symbol/callee-return) type is OPTION/RESULT, reject "missing .un
 now-well-targeted fix — the arg-coercion loop (5043) and the downstream validation loop (4645) are
 both DEAD ENDS (proven: f(o) doesn't reach 5043; arg is pre-coerced at 4645).
 
+## 🔬 LAYER 5 (2026-07-24e) — `param_arg_match` is overload-only; single-fn `f(o)` has NO arg check
+Read `param_arg_match` (typecheck.ax:1239) and `resolve_free_call_overload` (1250): param_arg_match
+is used ONLY to disambiguate OVERLOADS, and `resolve_free_call_overload` returns early at **:1253**
+(`if next_overload == 0: return sym_idx`) for a NON-overloaded function like `f`. So for a single `f`,
+param_arg_match is never called, and the overload path does no arg-type validation. Combined with the
+earlier layers (f(o) doesn't reach the 5043 arg-coercion loop; the 4645 loop is pre-coerced), the
+conclusion is: **a simple single-function call `f(o)` gets essentially NO arg-vs-param type validation
+for the Option→T case** — the NODE_CALL_EXPR handler infers the result type and lowers, and nothing
+rejects the mismatch. That is the accept-then-miscompile.
+**Therefore the fix must ADD an arg-vs-param check on the general call path** (not piggyback an
+existing one). Best next step for the dedicated session: instrument the NODE_CALL_EXPR handler to
+print the CALLEE NAME (`fnm`) for every processed call while building o3, find the ONE `f` line, and
+see which branch handles its args (the FUNC branch at ~4595 that contains the 5043 loop DOES run for
+resolved funcs — so either f(o)'s `callee_type` isn't FUNC there, or o's node_type is already i64 by
+then). The check itself: in that branch, for each arg vs `fi.params.data[i]`, if the param is a
+concrete non-Option/Result/generic/interface type and the arg's TRUE type (symbol decl type for an
+ident; callee return type for a call) is OPTION/RESULT → reject. Must read the TRUE type, since
+node_types is pre-coerced. Over-reject caught by the 531 regression + fixpoint. **This is a
+dedicated, uninterrupted debug session — five tick-driven layers have peeled the onion but the exact
+branch that consumes f(o)'s args (and where the Option type vanishes) still needs one callee-name
+trace to nail. Do it in one focused sitting, not fragments.**
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
