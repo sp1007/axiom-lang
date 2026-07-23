@@ -27540,6 +27540,68 @@ pub fn emit_param_prologue(sel: ptr[InstructionSelector], out_insts: ptr[MachIns
 // encoding (setcc=0x90+cc, jcc=0x80+cc), so reusing SETCC's cc for the JCC is a
 // verbatim condition transfer; TEST+JNE means "branch when vb!=0" == "branch when
 // cc holds", so the fused JCC uses cc unchanged.
+// PEEPHOLE (pre-regalloc, vreg-level): fold a materialised constant into an adjacent
+// CMP's immediate operand. The selector lowers `n < 2` as
+//   MOV_IMM v <- 2 / CMP n(dst), v(src1)   (the const is CMP's SECOND/source operand)
+// but x86 has a `cmp r64, imm32` form (the encoder already emits it for the setcc path,
+// x86_selector.ax:1402). Collapse the two-inst window
+//   MOV_IMM v,c / CMP n, v   ->   CMP n, imm(c)
+// dropping the dead MOV_IMM and the vreg v (register-pressure relief). This is exactly
+// what clang emits (`cmp $2,%rsi`) and removes 1 hot-path inst per constant compare â€”
+// runs BEFORE fuse_compare_branch so the two compose (the CMP still fuses into a JCC).
+//
+// SAFETY: (1) MOV_IMM must carry a PLAIN integer immediate (src1.kind==OPND_IMM, no
+// reloc label), never the str-lit marker (src1.vreg==2, kind OPND_VREG). (2) the const
+// must sit in the CMP's SRC1 (source) operand, never the dst (`2 < n` keeps the const as
+// dst and is left alone â€” a missed opt, not a miscompile). (3) v must have EXACTLY 2
+// references total (the MOV_IMM def + this one CMP use), so no other consumer loses it â€”
+// the machine IR is non-SSA, so a global occurrence count is required. (4) c must fit a
+// signed imm32 (cmp r64,imm32 sign-extends); bail otherwise. (5) the two insts must be
+// textually adjacent, so nothing redefines v between def and use. `cmp r,imm` sets the
+// same flags as `mov imm->r; cmp r,r`, so the fusion is a verbatim semantic transfer.
+pub fn fuse_cmp_immediate(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 2 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut fused := false
+        if r + 1 < len:
+            let m = &insts[r]
+            let c = &insts[r + 1 as i64]
+            if m.op == MACH_MOV_IMM and m.dst.kind == OPND_VREG and m.src1.kind == OPND_IMM and m.src1.label == 0 as u32 and c.op == MACH_CMP and c.src1.kind == OPND_VREG and c.src1.vreg == m.dst.vreg:
+                let v = m.dst.vreg
+                let imm = m.src1.imm
+                if (v as i64) < n and counts[v as i64] == 2 as i32 and imm >= (0 - 2147483648) as i64 and imm <= 2147483647 as i64:
+                    // Emit the CMP with the constant folded into its immediate operand;
+                    // drop the MOV_IMM (dead â€” v had exactly this one use).
+                    insts[w] = MachInst(op: MACH_CMP, cc: c.cc, padding: c.padding, dst: c.dst, src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: imm), src2: c.src2)
+                    w = w + 1 as i64
+                    r = r + 2 as i64
+                    fused = true
+        if not fused:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+            r = r + 1 as i64
+    @free(counts as ptr[u8])
+    return w
+
 pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     if len < 5 as i64:
         return len
@@ -27671,7 +27733,11 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
             i = i + 1
 
     @free(gr_def_idx as ptr[u8])
-    // Peephole: fuse throwaway compare-then-branch boolean sequences into a direct
+    // Peephole 1 (RFC 0015-adjacent / M6 opt A): fold a materialised constant into an
+    // adjacent CMP's immediate operand (MOV_IMM v,c; CMP n,v -> CMP n,imm(c)). Runs
+    // FIRST so the resulting `CMP n,imm` still composes with fuse_compare_branch below.
+    result.len = fuse_cmp_immediate(result.data, result.len, sel.max_vreg)
+    // Peephole 2: fuse throwaway compare-then-branch boolean sequences into a direct
     // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
     // before liveness/allocation). See fuse_compare_branch for the safety contract.
     result.len = fuse_compare_branch(result.data, result.len, sel.max_vreg)
