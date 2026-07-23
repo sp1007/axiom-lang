@@ -67,3 +67,29 @@ for each interface method, find the struct`s same-named method, and compare
 **Gate discipline:** self-build fixpoint FIRST — if the compiler`s own interface impls trip a
 false reject, that is the over-rejection this file`s neighbours warn about; revert-on-red, do
 not iterate more than once before declaring it needs the structural predicate.
+
+### THE ACTUAL BULK OF THE WORK — interface signatures are not stored
+
+The recipe above assumes both signatures are in hand. The struct method`s is
+(`struct_has_method` already reaches `fi.params`). **The interface method`s is NOT.**
+`interface_method_list` (`typetable.ax:525`) returns `iface_methods.data[..]`, which is a
+`U32Vec` of method **name-ids only** — the type table stores no params or return type for
+interface methods. So there is nothing to compare the struct signature *against* without first
+obtaining the interface method`s declared signature.
+
+Two ways to get it, and this choice is the real design decision:
+
+1. **Enrich `iface_methods`** at interface registration to store each method`s signature
+   (param type-ids + return), not just its name. Cleanest long-term, but touches the interface
+   registration path and the `iface_methods` data structure, and every reader of it.
+2. **Walk the interface`s decl AST** during the conformance check to read each method`s
+   declared params/return on demand. More local, but note the standing hazard recorded in
+   `method_ret_type` (`typecheck.ax:1685`): a symbol`s `decl_node` may index a DIFFERENT
+   module`s AST tree than `self.tree`, so AST walks during typecheck must carry the right tree
+   or they read out of bounds and crash the compiler. That trap is exactly what makes option 2
+   fiddly.
+
+So this is genuinely dedicated-session: the comparison is easy, but the data to compare must
+be produced first, via one of the two structural changes above. The name-presence check
+(`7858aa5`) got away without signatures precisely because it only needed names — which is all
+`iface_methods` holds.
