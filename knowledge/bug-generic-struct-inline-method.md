@@ -25,6 +25,16 @@ PLAIN generic fn returning `T=str` WORKS (`fn id[T](x: T) -> T`, `id[str]("hello
 **receiver + >8B-`T`-return-by-value** combination (likely the sret return-slot ABI conflicting with
 the struct-pointer `self`, or the >8B return not set up when a receiver is present). Separate
 return-value-ABI investigation; repros `/tmp/probe4/gstr2.ax` (SEGV) vs `gstr.ax` (ok, =5).
+**SHARPENED (probe matrix):** NON-generic method→str WORKS (`ng.ax`=5); free-fn(ptr arg)→str WORKS
+(`ng2.ax`=5); plain generic `id[T]->T` with str WORKS (`gstr.ax`=5). ONLY the combination **generic
+method + return type IS the generic `T` (not a direct value param) + `T` mono'd to >8B** fails. So it
+is a MONOMORPHIZATION return-width bug: when `get[T](self: ptr[Box[T]]) -> T` is instantiated with
+`T=str`, the mono'd function's RETURN type/width is not updated from the 8-byte generic placeholder to
+the 16-byte str, so codegen returns it on the wrong (8-byte) ABI path → SIGSEGV. `id[T]` escapes it
+because its return `T` is also its value PARAM `x: T`, so the width is pinned by the arg; `get[T]`'s
+return `T` comes only from the field, decoupled from the `self: ptr[Box[T]]` param. FIX AREA: mono's
+handling of a return type that is a bare generic param — ensure the instantiated function's return
+type_id (and its ABI width) is the concrete `T`. Fresh session; gate B==C (codegen/ABI).
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
