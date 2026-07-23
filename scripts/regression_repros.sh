@@ -546,6 +546,8 @@ rows=(
   # .unwrap()) must REJECT, not accept-then-miscompile (the 8-byte box was read raw as i64).
   # Covers the IDENT-arg form; the call-result form (f(v.get(0))) is a documented follow-up.
   "t_optargreject|reject|"
+  # call-result form: f(v.get(0)) — Option-returning call to a scalar param — also rejects.
+  "t_optargreject2|reject|"
   "t_dropcopyok|exit|42"
   # RFC 0015 P3 precursor — -ctgc-free-report is dump-only (no OP_DESTROY), so the
   # DEFAULT build of this Box-ctor+scalar-borrow shape is byte-identical & runs 20.

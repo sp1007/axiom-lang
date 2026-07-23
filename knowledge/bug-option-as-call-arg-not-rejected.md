@@ -17,11 +17,15 @@ PRIMITIVE scalar, read `symbols[arg.payload].type_id`; if its kind is OPTION/RES
 Passing an aggregate where a scalar is expected is always a type error → cannot over-reject (self-build
 clean). Gate: A==B==C `178da3ca`, regression **532/532** (+`t_optargreject`), positives clean
 (`f(o.unwrap())`, Option→Option param), t_gentree/t_rectreesum intact.
-**REMAINING (follow-up): the CALL-RESULT-arg form** `f(v.get(0))` (o1/o2) is NOT yet caught — the
-arg is a NODE_CALL_EXPR with no symbol, so it needs the callee's RETURN type (also SUM-kind for an
-Option-returning fn). Add a parallel branch: for a non-ident arg, if `infer_node(anode,UNKNOWN)` (or
-the callee return type) is OPTION/RESULT/SUM and the param is a primitive scalar, reject. Verify with
-**bash grep** (not Select-String — see [[lesson-bash-grep-not-powershell-selectstring]]).
+**COMPLETE now (both forms) — driver `cf42579b`, 533/533, B==C.** Extended the same reject to:
+(a) CALL-RESULT args (`f(v.get(0))`, o1) — a non-ident arg's type is read via `infer_node(anode,
+UNKNOWN)` (reliable for a call arg, unlike an ident); (b) STRUCT params (`g(v.get(0))` with `g(p:P)`,
+o2) — the param-kind gate is `PRIMITIVE or STRUCT` (an Option/Result/sum value can never validly go
+to either). Self-build stays clean (no over-reject even on the struct-heavy stdlib); a str/int/float
+LITERAL infers to a primitive so it never trips. Oracles `t_optargreject` (ident) + `t_optargreject2`
+(call-result). o1/o2/o3 all reject; positives (`f(o.unwrap())`, Option→Option param) clean. NOT
+covered (rare, safe): a SUM param receiving a DIFFERENT sum/Option arg (kind SUM vs SUM needs a
+type_id comparison to avoid rejecting the same-sum case) — left as a niche follow-up.
 
 ## (history) OPEN — Option/Result passed to a `T` param is accepted-then-miscompiled (should reject)
 **Found by proactive probing on driver `03F808DE`, 2026-07-24e** (while probing recursive-sum
