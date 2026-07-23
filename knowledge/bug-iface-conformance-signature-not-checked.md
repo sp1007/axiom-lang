@@ -1,9 +1,48 @@
 ---
 name: bug-iface-conformance-signature-not-checked
-description: OPEN — interface conformance checks method NAME-presence only, not signature; a same-named method with wrong arity/return-type is accepted and miscompiles (arg dropped, or garbage read for extra params)
+description: CLOSED 2026-07-24 (f614c11) — interface conformance now checks signature (param count + return type), not just method name; F2/F3/F3b all reject
 metadata:
   type: project
 ---
+
+## ✅ CLOSED 2026-07-24 (`f614c11`) — signature conformance now enforced
+
+All three cases reject: **F2** (return type i64 vs bool), **F3** (fewer params —
+dropped arg), **F3b** (more params — garbage read). Exact-signature impls still
+compile+run; fixpoint **A==B = C7F430A2** (the compiler's own interface impls pass,
+no over-rejection); regression **523/523** (+`t_ifacesigok`=15, +`t_ifacesigretbad`
+/`t_ifacesigfewerp`/`t_ifacesigmorep` reject).
+
+**Implementation** (all in `typecheck.ax`, wired into `check_iface_conformance`'s
+`else` branch after the name-presence check):
+- `interface_method_sig` — reads the interface method's non-self param count +
+  return type from the interface decl AST (`NODE_METHOD_SIG` children; params are
+  `NODE_PARAM_DECL`, the return is the sole type-annotation child).
+- `struct_method_sig` — the concrete struct method's non-self param count + return.
+- `interface_signature_mismatch` — rejects only what it can PROVE differs: a
+  param-count mismatch (no type resolution), or a return type that differs when both
+  are concrete, non-generic, and not a `Self` position. Everything unresolvable
+  (cross-tree iface, Self/generic) is skipped → cannot false-reject.
+
+**⭐ Latent bug found and dodged.** The recipe below said to mirror
+`interface_method_ret_type`'s AST walk, which matches the interface decl by
+`dn.payload == iname` (the interface's NAME id). **That is wrong**: the resolver
+rewrites `NODE_INTERFACE_DECL.payload` from the interned name to the SYMBOL INDEX
+(the Phase-0 registration walk at `typecheck.ax:2544` reads `node.payload` as
+`sym_idx`). So `payload == name_id` essentially never matches;
+`interface_method_ret_type` has carried this bug harmlessly because its one caller
+(`typecheck.ax:4132`) tolerates a 0 return. My first cut copied the same predicate
+and silently found nothing (a `[SIGDBG]` counter showed `have_iface=0` on every
+method). The fix matches the decl via `symbols[dn.payload].type_id == iface_type`
+instead. **Lesson: an existing helper that "works" can be quietly wrong in a way its
+caller masks — verify its predicate against the resolver's node rewrites before
+reusing it, don't assume.** (`interface_method_ret_type` is worth fixing the same
+way in a follow-up, but is out of scope here since its caller already copes.)
+
+Everything below is the pre-fix investigation/recipe, retained for context.
+
+---
+
 
 **Status: OPEN, found by probing 2026-07-23.** Interface conformance
 (`check_iface_conformance` -> `interface_missing_method`, `typecheck.ax:1662/1617`) verifies
