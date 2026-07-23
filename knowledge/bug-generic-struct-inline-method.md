@@ -71,6 +71,21 @@ registered return type_id (is it the concrete 16B type, or a stale 8B placeholde
 the instance + at air_builder's return lowering; the fix is wherever the width defaults to 8B for a
 mono'd generic method's >8B return. Repros: `s16.ax`(SEGV, 16B struct)/`s16n.ax`(=42, non-generic)/
 `use.ax`/`use2.ax`/`asg.ax`. Fully characterized; needs mono/codegen trace instrumentation.
+**✅ TRACED TO THE EXACT SYMPTOM (2026-07-24e, RETDBG at pre_infer_func_signature:3098, bash grep):**
+a mono'd `get` instance registers **`ret_type` = a GENERIC placeholder (kind 7 TYPE_KIND_GENERIC,
+size 0)** — e.g. type_id 53 — instead of the concrete return type; contrast a WORKING mono'd
+`get[i64]` which registers `ret_type=4 (i64), kind 0 PRIMITIVE, size 8`. So the mono'd generic
+method's **return type is never resolved from the generic `T` to the concrete type** (stays kind-7,
+size-0); codegen then emits the return on a wrong/default width → SIGSEGV / garbage. ROOT is that when
+`T` is inferred from a NESTED param position (`self: ptr[Box[T]]`) rather than a direct value param
+(`x: T`, which `id[T]` has and works), the return-type node's `T` is not substituted/resolved to the
+concrete type in `pre_infer_func_signature` (the return `infer_node` at :3082 yields the kind-7
+generic). **RAZOR-SHARP FIX TARGET:** in the mono instantiation, ensure the cloned function's
+return-type node `T` is substituted to the concrete type (like the param `T`s are), OR in
+`pre_infer_func_signature` resolve a kind-7-generic `ret_type` via the instance's type-arg map. Verify
+the mono'd `get[str]`/`get[P16]` then registers a size-16 return. Trace with **bash grep only**
+(RETDBG recipe above). Delicate (mono/generic-inference, self-host-critical) → gate B==C + full
+regression + oracle `t_genmethodbig`(str + 16B-struct return). Fresh focused session.
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
