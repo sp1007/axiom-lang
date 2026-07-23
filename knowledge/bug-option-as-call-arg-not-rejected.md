@@ -35,7 +35,25 @@ Option). This is the sibling site: a CALL ARGUMENT. Same root class (an Option/R
 where its inner T is expected, no auto-unwrap in AXIOM), different site — the arg-vs-param coercion
 check doesn't flag the Option→T mismatch.
 
-## Fix direction (dedicated gated session — NOT yet attempted)
+## ⚠️ ATTEMPTED 2026-07-24e — reject did NOT fire; reverted. KEY finding for next time:
+Added the reject in the per-arg BUG#53 loop (typecheck.ax ~4645, beside the str/num-literal + the
+interface-conformance rejects) gated on `param kind ∉ {OPTION,RESULT,GENERIC,GENERIC_INST,INTERFACE}`
+and `arg type kind ∈ {OPTION,RESULT}`, reading the arg type from `node_types[anode]` (fallback
+`infer_node`). Result: **the reject never fired** (o1/o2/o3 still ran), while positives were clean
+(ok1 `f(o.unwrap())`=42, ok2 Option→Option param=42) and the compiler self-built (no over-reject).
+⭐ **ROOT: `node_types[anode]` for the arg is ALREADY COERCED to the param type** (i64), not the
+Option — by the time this loop runs, an earlier inference/coercion pass has "helpfully" erased the
+Option→i64 mismatch (which is EXACTLY the miscompile: the arg is silently treated as i64). So the
+check saw i64, not Option, and `infer_node(anode)` re-derived the coerced type too (and had
+side-effects — the exit codes shifted). Reverted (driver stays `03F808DE`).
+**Next approach:** do NOT trust `node_types[anode]` here. Read the arg's TRUE type — for an IDENT arg,
+look up its symbol's DECLARED `type_id` (`symbols[node.payload].type_id`); for a call arg
+(`v.get(0)`), the callee's return type. OR, better, find the COERCION site that silently turns an
+Option arg into the param type and make IT reject instead of coerce (grep the arg-coercion path that
+runs before this loop — likely near `infer_node(arg, pt)` at typecheck.ax:568 or the generic-arg
+coercion). That site has the pre-coercion type and is the true home for the diagnostic.
+
+## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
 arg-coercion path), add: if the param type is a concrete non-generic `T` and the arg's resolved
