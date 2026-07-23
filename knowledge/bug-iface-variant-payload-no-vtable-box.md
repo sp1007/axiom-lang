@@ -1,9 +1,50 @@
 ---
 name: bug-iface-variant-payload-no-vtable-box
-description: PARTIAL — user-sum and tuple interface payloads FIXED; Option/Result (Some/Ok) still SIGSEGV, blocked on the lower_call_expr path
+description: CLOSED 2026-07-23 (efc533b) — the whole interface-variant-payload family works; Option/Result Some/Ok/Err now box the payload via a two-part typecheck+air_builder fix
 metadata:
   type: project
 ---
+
+## ✅ CLOSED 2026-07-23 (`efc533b`) — Option/Result half fixed, family complete
+
+The last open half (`Some`/`Ok`/`Err` with an interface payload) is fixed. The
+memory ceiling ([[compiler-selfhost-peak-memory-8gb]]) that blocked every prior
+attempt was lifted first (`5bfd5c7`), so the fix could finally be RUN and observed
+— that was the entire blocker, exactly as the note below predicted.
+
+**The fix, confirmed by reading the code rather than the (self-contradictory) note
+below.** For `let o: Option[Shape] = Some(Sq(..))`, `try_instantiate_variant_call`
+binds the Option type param from `infer_node(payload, exp_hint=Shape)`, which
+returns the CONCRETE `Sq`, so the ctor node typed `Option[Sq]` and air_builder
+derived `box_ty = register_option(Sq)` and stored the raw struct. Two coordinated
+edits:
+
+1. **typecheck** (`try_instantiate_variant_call`): when `exp_hint` is an interface
+   the concrete struct conforms to (`interface_missing_method == 0`), bind the type
+   param to the INTERFACE, not the struct → ctor node types `Option[Shape]`. Inert
+   otherwise (keeps the concrete binding).
+2. **air_builder** (`lower_call_expr` Some/Ok/Err branch): new `opt_res_ctor_iface`
+   reads the ctor node's `Option[I]`/`Result[I]` type; when the payload is an
+   interface it boxes the struct via the existing `coerce_struct_to_interface`
+   before `OP_STORE`, so the box's 8-byte payload slot holds a per-value vtable
+   pointer. `node_types[payload_idx]` stays the concrete `Sq` (coerce needs it a
+   struct), and the interface target comes from the ctor node — resolving the
+   "type recovery" tangle the note agonised over.
+
+Verified: `Some` / `Result Ok` / `Option`-through-fn-param / `None` all correct at
+`-O0..-O3` (oracle `t_ifacevariantpayload` = 42); fast fixpoint **A==B =
+4A5929D0** (inert on self-build); regression **519/519**.
+
+**Lesson: the note below contains a real internal contradiction** — it claims both
+that `coerce_variant_ctor_payload` sets `node_types[payload]` to the interface for
+user sums AND that the payload node "remained the concrete struct". The truth is
+the latter: nothing overwrites the payload node's concrete type, and the interface
+target must come from the CTOR node (which typecheck now types `Option[I]`), not
+the payload node. Reading the two functions settled in minutes what the prose left
+ambiguous. Everything below predates the fix.
+
+---
+
 
 **Status: PARTIAL.** Tuple (`909e9e5`) and user-sum (`0E1D6F31`) interface payloads are FIXED
 and pinned by oracles `t_ifacetuple` / `t_ifacetuplenest` / `t_ifacesumpayload`. **Option/Result
