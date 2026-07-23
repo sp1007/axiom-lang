@@ -86,6 +86,21 @@ return-type node `T` is substituted to the concrete type (like the param `T`s ar
 the mono'd `get[str]`/`get[P16]` then registers a size-16 return. Trace with **bash grep only**
 (RETDBG recipe above). Delicate (mono/generic-inference, self-host-critical) → gate B==C + full
 regression + oracle `t_genmethodbig`(str + 16B-struct return). Fresh focused session.
+**✅✅ TRACED TO THE SUBSTITUTION FAILURE (RNODE trace at pre_infer_func_signature:3082):** the
+return-type node is `NODE_TYPE_EXPR` (kind 46), and its `FLAG_IS_SUBSTITUTED` bit is **0 (UNSET)** for
+the failing `get` instance — mono's `substitute_type_params` did NOT substitute the return node's `T`,
+so `infer_node` yields the template's generic `T` (rettype 53, kind 7). `NODE_TYPE_EXPR` IS in the
+handled-kinds list (mono.ax:81) and does `lookup_subst(name_id)` (mono.ax:106), so **`lookup_subst("T")`
+returned 0 — "T" is not (found) in the subst map** for this instantiation. The subst map is built at
+mono.ax:503-526 by walking the function's `NODE_GENERIC_PARAMS` child → `gp_name_id → args[idx]`.
+⇒ ROOT is EITHER (a) the method instantiation's `args` don't carry the concrete `T` (the type-arg
+inference from a `self: ptr[Box[T]]` receiver didn't produce `T=str`), OR (b) a name_id mismatch
+between the return node's "T" (via `node_text`, since NODE_TYPE_EXPR is NOT in the `has_sym_payload`
+list at mono.ax:88-92 so it uses the token text) and the generic-param's `gp_name_id`. **NEXT (one
+trace, bash grep):** in `substitute_type_params` at the NODE_TYPE_EXPR branch, print `name_id` +
+`lookup_subst` result + dump the subst map contents when processing `get` — that pins (a) vs (b) in
+ONE shot, then the fix is either the method type-arg inference (feed `args`) or the name_id derivation.
+Kept 8B-`T` working (shipped `ccfd1af7`); this is the >8B residual only.
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
