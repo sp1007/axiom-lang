@@ -1,9 +1,48 @@
 ---
 name: compiler-selfhost-peak-memory-8gb
-description: A successful -O1 self-link peaks at ~7.9 GB working set, close enough to the machine limit that one extra call site in a hot function tips it into OOM
+description: RESOLVED 2026-07-23 (5bfd5c7) — self-host peak 7.7GB->1.2GB. Root cause was clone_subtree_from leaking one ~2MB src buffer per cloned token during monomorphization; the fix frees spent intermediates
 metadata:
   type: project
 ---
+
+## ✅ RESOLVED 2026-07-23 (`5bfd5c7`) — peak 7,722 MB → 1,231 MB (−84%)
+
+The headline defect below is FIXED. Root cause was **not** per-node retention,
+mono clones, or the type table — it was a single leak in `clone_subtree_from`
+(`ast.ax`). It rebuilt the destination tree's monolithic `src` string by
+`self.src = std.string.concat(old_src, tok_text)` **once per cloned token** and
+never freed `old_src`. With `src` starting at the full ~2 MB self-host source and
+thousands of tokens cloned across all generic instantiations, each append leaked
+a fresh ~2 MB buffer.
+
+**How it was found (decisive, one instrumented build each):** a temporary
+allocator probe at `__ax_runtime_shutdown` printed the small-vs-large split. Of
+~8 GB live at shutdown, the small pool held only **268 MB** (slab 4099/16384 — far
+from the 1 GB cap, so the get_str-copy small-leak theory was wrong) and **~7.76 GB
+was ~3,936 LIVE large buffers averaging ~1.96 MB each** — almost exactly the
+1.98 MB whole-program `src`. A size histogram put 3,936 of them in the 512 KB–4 MB
+bucket. "~2 MB buffer allocated per cloned token" pointed straight at the concat.
+
+**Fix:** free each spent intermediate concat buffer; `concat` already copies the
+full prior contents forward so every token offset still resolves and nothing else
+holds a pointer into the old buffer. A new `AstTree.orig_src` field guards the
+tree's ORIGINAL caller-owned src (possibly not heap-allocated) so it is never
+freed — the guard fires exactly once, on the first concat. Memory-only; emitted
+bytes unchanged (fixpoint **A==B = E4E10E2D…**, regression **518/518**).
+
+**Lesson:** the extensive prior analysis in this note (below) concluded "per-node
+footprint, ~1.9 KB/source-byte, no O(n²)" and sent the reader to instrument
+per-AST-node in typecheck. That framing was a **dead end** — the real cost was a
+handful (~4 K) of whole-source-sized buffers from ONE quadratic string-append
+loop in monomorphization, invisible to per-node reasoning. The synthetic
+"1.9 KB/byte, linear" measurements were misleading because small test programs
+have few generic instantiations, so the concat leak stayed small and looked like
+a uniform per-byte constant. **The decisive move was measuring the allocation
+SIZE distribution, not reasoning about what attaches to nodes.** Everything below
+predates the fix; keep for the measurement methodology, not the (wrong) handoff.
+
+---
+
 
 **Measured 2026-07-23.** A healthy `-O1 -self-link` build of `tmp_concatenated_air.ax`
 (1.9 MB of source) peaks at **~7,865 MB working set**. That is the build that SUCCEEDS.
