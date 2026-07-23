@@ -6,7 +6,24 @@ metadata:
   type: project
 ---
 
-## OPEN — Option/Result passed to a `T` param is accepted-then-miscompiled (should reject)
+## ✅ FIXED 2026-07-24e (ident-arg form) — driver `178da3ca`, 532/532, A==B==C
+**Root (found only after LAYER 8 corrected the PowerShell tooling artifact):** an annotated
+`Option[i64]` local resolves to a **SUM-kind** type (`TYPE_KIND_SUM`=6), NOT `TYPE_KIND_OPTION`(11) —
+which is why every earlier reject (checking kind 11/12) silently missed it. And at the 4616 arg loop
+`node_types[arg]` is UNSET (not "pre-coerced"), so the arg's true type must be read from its SYMBOL.
+**Fix (typecheck.ax, in the per-arg BUG#53 loop ~4620):** for an IDENT arg whose param is a
+PRIMITIVE scalar, read `symbols[arg.payload].type_id`; if its kind is OPTION/RESULT/**SUM**, reject
+"argument is an Option/Result/sum value but the parameter expects a plain value (missing .unwrap()?)".
+Passing an aggregate where a scalar is expected is always a type error → cannot over-reject (self-build
+clean). Gate: A==B==C `178da3ca`, regression **532/532** (+`t_optargreject`), positives clean
+(`f(o.unwrap())`, Option→Option param), t_gentree/t_rectreesum intact.
+**REMAINING (follow-up): the CALL-RESULT-arg form** `f(v.get(0))` (o1/o2) is NOT yet caught — the
+arg is a NODE_CALL_EXPR with no symbol, so it needs the callee's RETURN type (also SUM-kind for an
+Option-returning fn). Add a parallel branch: for a non-ident arg, if `infer_node(anode,UNKNOWN)` (or
+the callee return type) is OPTION/RESULT/SUM and the param is a primitive scalar, reject. Verify with
+**bash grep** (not Select-String — see [[lesson-bash-grep-not-powershell-selectstring]]).
+
+## (history) OPEN — Option/Result passed to a `T` param is accepted-then-miscompiled (should reject)
 **Found by proactive probing on driver `03F808DE`, 2026-07-24e** (while probing recursive-sum
 variants — the original `sum(v.get(i))` gave 127/O0 vs 112/O1, isolated to this).
 ```

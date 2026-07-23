@@ -542,6 +542,10 @@ rows=(
   # double-drop; AXIOM has no explicit move). The OK guard proves no over-rejection:
   # fresh ctor locals + ptr[T] params of the same drop type still compile & run (42).
   "t_dropcopy|reject|"
+  # BUG#53: an Option/Result/sum value passed where a plain scalar param is expected (forgot
+  # .unwrap()) must REJECT, not accept-then-miscompile (the 8-byte box was read raw as i64).
+  # Covers the IDENT-arg form; the call-result form (f(v.get(0))) is a documented follow-up.
+  "t_optargreject|reject|"
   "t_dropcopyok|exit|42"
   # RFC 0015 P3 precursor — -ctgc-free-report is dump-only (no OP_DESTROY), so the
   # DEFAULT build of this Box-ctor+scalar-borrow shape is byte-identical & runs 20.

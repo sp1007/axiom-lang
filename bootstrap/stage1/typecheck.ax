@@ -4618,6 +4618,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 while anode != 0 as u32 and pchk < fi.params.len:
                                     let ak = self.tree.nodes.data[anode].kind
                                     let pt = fi.params.data[pchk]
+                                    // BUG#53: an Option/Result/sum VALUE passed where a plain SCALAR
+                                    // primitive `T` is expected (forgot `.unwrap()`) — the 8-byte
+                                    // tagged box is read raw as `T` -> garbage (`f(o)` with
+                                    // `o:Option[i64]`, `f(x:i64)` returned 9). Reject. Read the arg's
+                                    // TRUE type from its SYMBOL (ident args) — an annotated
+                                    // `Option[i64]` local resolves to a SUM-kind type here, which is
+                                    // why node_types (unset at this point) and OPTION-kind checks both
+                                    // missed it. Gated to a PRIMITIVE-scalar param + an aggregate-kind
+                                    // (OPTION/RESULT/SUM) ident arg: passing an aggregate where a
+                                    // scalar is expected is always a type error, so this cannot
+                                    // over-reject a valid program. [[bug-option-as-call-arg-not-rejected]]
+                                    if ak == NODE_IDENT and pt != TYPE_UNKNOWN and pt != TYPE_VOID and (pt as i64) < self.types.entries.len and self.types.entries.data[pt as i64].kind == TYPE_KIND_PRIMITIVE:
+                                        let a_ident_sym = self.tree.nodes.data[anode].payload
+                                        if a_ident_sym != 0 as u32 and (a_ident_sym as i64) < self.symtable.symbols.len:
+                                            let a_sty = self.symtable.symbols.data[a_ident_sym].type_id
+                                            if a_sty != 0 as u32 and (a_sty as i64) < self.types.entries.len:
+                                                let a_stk = self.types.entries.data[a_sty as i64].kind
+                                                if a_stk == TYPE_KIND_OPTION or a_stk == TYPE_KIND_RESULT or a_stk == TYPE_KIND_SUM:
+                                                    ax_printf_local("error: argument to '%s' is an Option/Result/sum value but the parameter expects a plain value (missing .unwrap()?)\n", get_str_ptr(fnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                                    self.diags_count = self.diags_count + 1 as i64
                                     let p_str = pt == TYPE_STRING or pt == TYPE_BYTES
                                     let p_num = pt >= TYPE_I8 and pt <= TYPE_USIZE and pt != TYPE_STRING and pt != TYPE_VOID
                                     let a_strlit = ak == NODE_STRING_LIT
