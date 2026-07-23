@@ -1,0 +1,50 @@
+// Oracle (exit 88): std.collections Vec HOFs for_each + reduce.
+//   for_each: side effect into a module global (zero-capture lambda restriction
+//             means effects flow via a named free fn / global).
+//   reduce:   fold using the FIRST element as the initial accumulator, None on
+//             empty; exercised with a named fn AND an inline lambda.
+import std.collections
+
+mut g_acc: i64 = 0
+
+fn accum(x: i64):
+    g_acc = g_acc + x
+
+fn add2(a: i64, b: i64) -> i64:
+    return a + b
+
+fn main() -> i64:
+    mut v: Vec[i64] = Vec.new()
+    v.push(5)
+    v.push(15)
+    v.push(22)
+    // for_each side effect into global: 5+15+22 = 42
+    v.for_each(accum)
+    // reduce with a named fn: 5+15+22 = 42
+    mut r_sum := 0 as i64
+    let r = v.reduce(add2)
+    match r:
+        Some(s):
+            r_sum = s
+        None:
+            r_sum = -100
+    // reduce with an inline lambda: same 42
+    mut l_sum := 0 as i64
+    let rl = v.reduce(|a: i64, b: i64| -> i64 a + b)
+    match rl:
+        Some(s):
+            l_sum = s
+        None:
+            l_sum = -100
+    // empty reduce → None
+    mut empty_ok := 0 as i64
+    mut e: Vec[i64] = Vec.new()
+    let er = e.reduce(add2)
+    match er:
+        Some(x):
+            empty_ok = 0
+        None:
+            empty_ok = 1
+    if g_acc == 42 as i64 and r_sum == 42 as i64 and l_sum == 42 as i64 and empty_ok == 1 as i64:
+        return 88
+    return 0

@@ -87,6 +87,28 @@ pub fn fold[T, U](self: Vec[T], init: U, f: fn(U, T) -> U) -> U:
         i = i + 1
     return acc
 
+// for_each: apply `f` to every element for its side effects (no result). The
+// lambda is zero-capture (RFC 0008 P2 restriction), so effects flow through the
+// element value, a named free fn, or module-level globals.
+pub fn for_each[T](self: Vec[T], f: fn(T)):
+    mut i := 0 as i64
+    while i < self.len:
+        f(self.data[i])
+        i = i + 1
+
+// reduce: left-fold using the FIRST element as the initial accumulator; None on
+// an empty Vec. Unlike `fold`, no separate init/accumulator type — combiner is
+// `fn(T, T) -> T`.
+pub fn reduce[T](self: Vec[T], f: fn(T, T) -> T) -> Option[T]:
+    if self.len == 0 as i64:
+        return None
+    mut acc := self.data[0]
+    mut i := 1 as i64
+    while i < self.len:
+        acc = f(acc, self.data[i])
+        i = i + 1
+    return Some(acc)
+
 // any: true if `pred` holds for at least one element.
 pub fn any[T](self: Vec[T], pred: fn(T) -> bool) -> bool:
     mut i := 0 as i64

@@ -365,6 +365,7 @@ rows=(
   "t_vecmap|exit|45"
   "t_vecfilter|exit|42"
   "t_vecfold|exit|42"
+  "t_vecreduce|exit|88"
   "t_vecmapbool|exit|2"
   "t_vecchain|exit|50"
   "t_vecany|exit|1"
@@ -636,6 +637,9 @@ rows=(
   "t_ifaceglobal|exit|86"
   # RFC 0029 array-literal element coercion: `[Iface; N] = [S(..), C(..)]` boxes elements
   "t_ifacearray|exit|43"
+  # RFC 0029 polymorphic dispatch through Vec[Interface] + mut-reassign to another impl
+  # + 2-method interface (vtable slot ordering).
+  "t_ifacevecpoly|exit|70"
 )
 
 for row in "${rows[@]}"; do

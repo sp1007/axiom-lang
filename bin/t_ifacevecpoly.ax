@@ -1,0 +1,42 @@
+// Oracle (exit 70): RFC 0029 interface dynamic dispatch — polymorphism through a
+// Vec[Interface] plus reassigning a `mut` interface value to a DIFFERENT concrete
+// implementor. Complements t_ifaceconsumer (struct-field) / t_ifacearray (fixed
+// array): here the interface values live in a growable Vec and are dispatched in a
+// loop, and a two-method interface exercises vtable SLOT ORDERING (area vs perim).
+//   Vec: Sq(3) -> 9+12=21 ; Rect(2,5) -> 10+14=24 ; total = 45
+//   mut reassign: Sq(4).area()=16 ; then Rect(3,3).area()=9
+//   45 + 16 + 9 = 70
+interface Shape:
+    fn area(self: Self) -> i64
+    fn perim(self: Self) -> i64
+
+struct Sq:
+    s: i64
+    fn area(self: Sq) -> i64:
+        return self.s * self.s
+    fn perim(self: Sq) -> i64:
+        return self.s * 4
+
+struct Rect:
+    w: i64
+    h: i64
+    fn area(self: Rect) -> i64:
+        return self.w * self.h
+    fn perim(self: Rect) -> i64:
+        return (self.w + self.h) * 2
+
+fn main() -> i64:
+    mut v: Vec[Shape] = Vec.new()
+    v.push(Sq(s: 3))
+    v.push(Rect(w: 2, h: 5))
+    mut total := 0 as i64
+    mut i := 0 as i64
+    while i < v.len:
+        let sh = v.data[i]
+        total = total + sh.area() + sh.perim()
+        i = i + 1
+    mut cur: Shape = Sq(s: 4)
+    let r1 = cur.area()
+    cur = Rect(w: 3, h: 3)
+    let r2 = cur.area()
+    return total + r1 + r2
