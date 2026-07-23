@@ -99,6 +99,23 @@ Two ways to get it, and this choice is the real design decision:
    set, else `self.tree` — use that, not `self.tree` unconditionally, to avoid the cross-tree
    crash.
 
+   **Type-node → type_id is `infer_node(type_node, TYPE_UNKNOWN)`** (the canonical resolver,
+   e.g. `typecheck.ax:739` for a struct field type). So converting an interface method`s
+   param/return AST node to a comparable type_id is one call. TWO residual subtleties keep this
+   out of "mechanical", and are why it is dedicated-session not loop-tail: (a) `infer_node`
+   reads `self.tree`, so resolving nodes that live in the interface`s OWN tree (when
+   `symbol_trees[iface_sym_idx]` differs) needs a tree swap or a tree-parameterized inference —
+   the same cross-tree trap; (b) the interface sig`s param types may be `Self` or generic
+   params, which `infer_node` will not resolve to the concrete struct type, so those positions
+   need special handling (`Self` -> the struct type; a generic param -> match structurally, not
+   by id). Neither is hard, but both miscompile quietly if rushed.
+
+**Tractability verdict (2026-07-24, final):** every data source and helper is now identified and
+source-verified — `NODE_METHOD_SIG` children, `infer_node`, `struct_has_method``s `fi.params`,
+`is_method_compatible``s type_id compare. The fix is NOT mechanical (cross-tree + Self/generic
+handling), so it is correctly a dedicated-session task — but one that starts from a complete,
+verified recipe rather than a blank investigation.
+
 So this is genuinely dedicated-session: the comparison is easy, but the data to compare must
 be produced first, via one of the two structural changes above. The name-presence check
 (`7858aa5`) got away without signatures precisely because it only needed names — which is all
