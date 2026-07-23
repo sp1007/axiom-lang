@@ -128,6 +128,23 @@ dedicated, uninterrupted debug session — five tick-driven layers have peeled t
 branch that consumes f(o)'s args (and where the Option type vanishes) still needs one callee-name
 trace to nail. Do it in one focused sitting, not fragments.**
 
+## 🔬 LAYER 6 — f(o) reaches NONE of the 4 obvious sites; needs a NODE_CALL_EXPR-entry trace
+A callee-name-filtered trace (`fnm == "f"/"g"`) at the FUNC-branch arg loop (4616) **never fired**
+for o3/o2 — so `f(o)`/`g(v.get(0))` do NOT reach that loop either. Net, FOUR sites are now
+definitively ruled out (with trace evidence): (1) downstream arg loop 4645 (pre-coerced),
+(2) arg-coercion loop 5043 (never reached — no OPTIONSYM), (3) FUNC-branch loop 4616 (never reached
+— no FDBG), (4) param_arg_match (overload-only, single fn returns early at 1253). ⇒ **The call's
+arg-vs-param validation for a simple `f(o)` happens on NONE of the obvious paths** — possibly it is
+simply never validated (the miscompile), and the arg's node_type is set to i64 somewhere in ident
+inference / the let-binding before any call check.
+**START HERE next session (systematic, not guess-and-check):** add a trace at the ENTRY of the
+`NODE_CALL_EXPR` case in `infer_node` printing the callee name (`intern.get(symbols[callee.payload].
+name_id)`) + `callee_type` + `entry.kind` for EVERY call; build o3; find the `f` line; that reveals
+which branch consumes it (or that it falls through unvalidated). THEN, separately, trace the
+LET-BINDING of `o` (`let o: Option[i64] = Some(41)`) to confirm `o`'s symbol type_id is Option (ok2
+implies yes) vs i64. The fix is wherever the Option→i64 identity is first accepted. Six tick-driven
+layers have RULED OUT the easy answers; the remaining work is a single systematic sitting.
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
