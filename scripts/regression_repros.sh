@@ -214,6 +214,10 @@ rows=(
   "t_inlinearmstmt|reject|"
   "t_optstrmatch|exit|10"
   "t_gentree|exit|15"
+  # inline method on a GENERIC struct (Box[T] with in-body fn) at two 8-byte instantiations —
+  # was a SIGSEGV (method not monomorphized for the concrete Box[T]); fixed by inheriting the
+  # struct's generic params into inline methods. (>8B-T return-by-value is a separate follow-up.)
+  "t_genstructmethod|exit|48"
   # self-recursive NON-generic multi-field sum (`Tree = Leaf(i64) | Node(Tree,Tree)`, bare
   # self-ref field). Was a silent miscompile (sum=0, match-on-payload rejected) — forward-declare
   # the sum type_id before resolving variant fields. Guards t_gentree (generic) stays 15.

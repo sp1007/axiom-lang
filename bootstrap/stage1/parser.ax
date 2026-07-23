@@ -1364,6 +1364,26 @@ pub fn parse_method_sig(mut self: ptr[Parser]) -> u32:
     self.expect_newline()
     return node
 
+// A generic struct's INLINE method mentions the struct's type params (`self: ptr[Box[T]]`,
+// or `-> T`) but `parse_func_decl` gives it no generic params of its own, so it is a
+// NON-generic function that mono never instantiates for `Box[i64]` -> `b.get()` calls the
+// un-monomorphized template body with a wrong layout -> SIGSEGV. Give the method a CLONE of
+// the struct's generic params as its FIRST child (before params, exactly where parse_func_decl
+// puts them) + mark it generic, making it structurally identical to the working free-function
+// form `fn get[T](self: ptr[Box[T]])`. Only when the method declares no generics of its own
+// (FLAG_IS_GENERIC clear) so a method's own `[U]` is never double-bound. [[bug-generic-struct-inline-method]]
+pub fn inherit_struct_generics(mut self: ptr[Parser], m: u32, struct_gp: u32):
+    if struct_gp == 0 as u32 or m == 0 as u32:
+        return
+    if (self.tree.nodes.data[m].flags & (FLAG_IS_GENERIC as u16)) != 0 as u16:
+        return
+    let cloned = self.tree.clone_subtree(struct_gp)
+    if cloned == 0 as u32:
+        return
+    self.tree.nodes.data[cloned].next_sibling = self.tree.nodes.data[m].first_child
+    self.tree.nodes.data[m].first_child = cloned
+    self.tree.nodes.data[m].flags = self.tree.nodes.data[m].flags | (FLAG_IS_GENERIC as u16)
+
 pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
     mut is_packed := false
     if self.check(TK_PACKED):
@@ -1382,11 +1402,13 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
     self.set_payload(node, struct_name_id)
     @free(name_text as ptr[u8])
 
+    mut struct_gp := 0 as u32
     if self.check(TK_L_BRACKET):
         self.set_flags(node, FLAG_IS_GENERIC as u16)
         let gp = self.parse_generic_params()
         if gp != 0 as u32:
             self.append_child(node, gp)
+            struct_gp = gp
 
     self.expect(TK_COLON)
 
@@ -1408,6 +1430,7 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
         if inner.kind == TK_FN:
             let m = self.parse_func_decl(false)
             if m != 0 as u32:
+                self.inherit_struct_generics(m, struct_gp)
                 self.append_child(node, m)
         elif inner.kind == TK_PUB:
             self.consume()
@@ -1415,6 +1438,7 @@ pub fn parse_struct_decl(mut self: ptr[Parser], is_pub: bool) -> u32:
             if next.kind == TK_FN:
                 let m = self.parse_func_decl(true)
                 if m != 0 as u32:
+                    self.inherit_struct_generics(m, struct_gp)
                     self.append_child(node, m)
             else:
                 let f = self.parse_field_decl(true)

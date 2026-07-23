@@ -1,0 +1,15 @@
+// Oracle: INLINE method on a GENERIC struct at TWO instantiations (i64 + i32) with two methods,
+// proving per-instance monomorphization. Was a SIGSEGV (inline method not instantiated for the
+// concrete Box[T]); fixed by inheriting the struct's generic params into inline methods.
+// NOTE: a >8-byte T (e.g. str) return-by-value from such a method is a separate remaining issue
+// (see knowledge/bug-generic-struct-inline-method.md); this oracle uses 8-byte T.
+struct Box[T]:
+    v: T
+    fn get(self: ptr[Box[T]]) -> T:
+        return self.v
+    fn tag(self: ptr[Box[T]]) -> i64:
+        return 100
+fn main() -> i64:
+    let a = Box[i64](v: 40)
+    let b = Box[i32](v: 8)
+    return a.get() + (b.get() as i64) + a.tag() - b.tag()   // 40 + 8 + 100 - 100 = 48

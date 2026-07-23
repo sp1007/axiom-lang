@@ -6,7 +6,22 @@ metadata:
   type: project
 ---
 
-## OPEN — inline method on a GENERIC struct segfaults when called
+## ✅ FIXED 2026-07-24e (8-byte-T cases) — driver `ccfd1af7`, 534/534, B==C
+The fix turned out to be **parser-only** (the dispatch/mono "just works" once the method is
+structurally identical to the free-fn form): `parse_struct_decl` now calls `inherit_struct_generics`
+on each inline method — clones the struct's generic-params subtree (`clone_subtree`) as the method's
+FIRST child + sets `FLAG_IS_GENERIC` (only when the method declares no generics of its own). So
+`fn get(self: ptr[Box[T]])` becomes effectively `fn get[T](self: ptr[Box[T]])` and mono instantiates
+it per `Box[i64]`/`Box[i32]`. Gate: B==C `ccfd1af7` (A≠seed — added the helper; A==B==C), regression
+**534/534** (+`t_genstructmethod`, two 8-byte instantiations × two methods), p4/p4b/p4c/i2/i4 all
+correct. Inert on the self-host (it uses the free-fn workaround → the parser change adds nothing to
+existing code).
+**REMAINING (separate follow-up): a >8-byte `T` returned BY VALUE** from such a method (`get(self)
+-> T` with `T=str`, 16B) still SIGSEGVs — a return-value-ABI issue, NOT the dispatch bug (i4:
+`Box[str].tag() -> i64` works; only returning the str `T` crashes). Scoped narrowly; the field and
+i64/i32 method-return cases all work now.
+
+## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
 ```
 struct Box[T]:
