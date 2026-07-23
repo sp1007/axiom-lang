@@ -2499,6 +2499,14 @@ pub fn fuse_cmp_immediate(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
+// (M6 opt B — lea for `dst = base ± const` — was PROTOTYPED here and REVERTED 2026-07-24e:
+// it correctly emitted `lea -0x1(%rsi),%rax` but MEASURED a fib REGRESSION (-O3 922→974 ms,
+// 2.59x→2.73x). Removing the `mov dst,base` copy lengthened base's live range, so the
+// allocator SPILLED `n` and reloaded it from the stack before each lea — memory traffic that
+// outweighed the saved instruction. Lesson: a peephole that cuts instruction count can lose to
+// its regalloc interaction; instruction-count is not the metric, measured time is. A real lea
+// win needs to be co-designed with the allocator, not bolted on post-selection. See
+// [[m6-perf-baseline]].)
 pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     if len < 5 as i64:
         return len

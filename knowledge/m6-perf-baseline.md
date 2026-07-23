@@ -93,7 +93,32 @@ removes 1 insn from an ~18-insn loop). ⭐ **Lesson: a single-instruction peepho
 2.58x gap** — the measurable wins must be structural. The n-2 `mov $2` was correctly NOT fused (it
 feeds a `sub`, i.e. opt B, not a cmp).
 
-## Opt B — NEXT (the larger fib win): lea for reg±const
+## Opt B — PROTOTYPED + REVERTED 2026-07-24e (measured fib REGRESSION)
+`fuse_lea_const` (post-selection 3-window `MOV_IMM v,c; MOV dst,base; SUB/ADD dst,v` → `LEA
+dst,[base±c]`) was built, B==C-verified (`59A48AF4`), and emitted the intended `lea -0x1(%rsi),%rax`
+for `n-1`/`n-2` — but **MEASURED SLOWER**: -O3 922→**974 ms**, ratio 2.59x→**2.73x**. Root cause in
+the disasm: removing the `mov dst,base` copy lengthened `base`'s (=`n`) live range, so the register
+allocator **spilled `n` to `-0x18(%rbp)` and reloaded it before each `lea`** — the memory traffic
+outweighed the one saved instruction (the prologue also dropped 5→3 callee-saved but that didn't
+compensate). Reverted. ⭐⭐ **LESSON: instruction count is NOT the perf metric — measured time is.** A
+post-selection peephole that cuts insns can lose badly to its interaction with a naive linear-scan
+allocator (longer live ranges → spills). A real `lea`/copy win must be **co-designed with the
+allocator** (e.g. teach it to rematerialize `base±c` or avoid the spill), not bolted on after
+selection. Do NOT re-attempt the naive post-selection lea peephole.
+
+## Revised direction (the honest one)
+The 3 remaining "instruction-shaving" peepholes (lea, copy-coalescing, branch fallthrough) all risk
+the same regalloc backfire, AND opt A proved even a clean 1-insn win is noise on a 2.58x gap. The gap
+is **structural**: fib spills `n` and shuffles registers because the **linear-scan allocator + the
+non-SSA MOV-heavy selection** are far from clang's. Closing it needs allocator/selection MATURITY
+(better copy handling, rematerialization, fewer spills), not more peepholes — a large program. **The
+≤5% gate is almost certainly not reachable without that.** Recommend to the user: either commit to
+the allocator work (multi-session, high-risk, B==C each step) or **renegotiate M6's target** (e.g.
+"within 2x of clang" as a nearer milestone). Opt A stays (correct, banked). Next low-risk M6 step if
+continuing: broaden `perf_fib.ps1` into a small suite (iterative loop, array sum) so allocator work
+is measured across shapes, not just fib.
+
+## (obsolete) Opt B — original plan: lea for reg±const
 fib still has, at BOTH recursion sites, `mov $1,rax; mov rsi,rdi; sub rax,rdi` (n-1) and
 `mov $2,rax; mov rsi,r12; sub rax,r12` (n-2) = 3 insns each → `lea -0x1(%rsi),%rdi` (1 insn). Saves
 ~4 insns/loop (vs opt A's 1). **Best done IN the selector's OP_ISUB/OP_IADD lowering** (not a
