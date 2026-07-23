@@ -48,6 +48,19 @@ on the free-CALL path; the METHOD-CALL path (`b.get()` via NODE_FIELD_EXPR calle
 instance-return-type override. FIX: in the call handler, when the callee is a mono'd generic METHOD,
 set the call's result_type from the instantiated method's return type_id (not the template `T`).
 Localized once found; gate B==C. Repros `use.ax`(SEGV)/`use2.ax`(=39 garbage)/`asg.ax`(=5, unused ok).
+**FINAL REFINEMENT — it is TWO facets, the deeper one is VALUE TRANSFER, not just result type:**
+`let r: str = s.get()` (correct 16B slot via annotation) STILL gives garbage (`use2.ax`=39, want 5),
+and `let r = s.get()` with `r` UNUSED runs fine (`asg.ax`=5). So even when the type is correct, the
+mono'd `get[str]` **mis-transfers the 16-byte str return VALUE itself** — the crash (unannotated) vs
+garbage (annotated) difference is only the caller's slot size (8B → off-slot read → SIGSEGV; 16B →
+wrong bytes). So beyond the call-site result-TYPE override (facet 1, mirrors the 4560 float-return
+fix), the real defect is in **CODEGEN return-value ABI**: a mono'd generic METHOD (has a `self`
+receiver) returning a >8B `T` by value does not emit/transfer the 16-byte return correctly. Contrast:
+a NON-generic method→str works (ng.ax=5), a plain generic fn→str works (id[str]=5) — only
+generic + receiver + >8B-return breaks. FIX AREA is air_builder/x86 return lowering for the mono'd
+method (likely the sret/16B-return path interacting with the self param), NOT the typecheck sites
+already read. Genuine fresh codegen session; gate B==C. This is the ONE bug this session that has no
+working reference to mirror and lives in an unexplored (return-ABI) area — hence banked, not rushed.
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
