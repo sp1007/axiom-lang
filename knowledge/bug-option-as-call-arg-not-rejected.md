@@ -70,6 +70,29 @@ processed and where its type becomes non-Option. Likely candidates: the overload
 NODE_CALL_EXPR fast path. Fix belongs wherever the arg's true Option type is still visible. This is a
 trace-driven debugging task, not a blind edit — two blind edits have now failed identically.
 
+## 🔬 TRACE DIAGNOSIS 2026-07-24e (4 instrumented iterations) — the reject can't live at any arg site
+Instrumented the regular-call arg loop (typecheck.ax:5043) and compiled o3 (`f(o)`, `o:Option[i64]`,
+`f(x:i64)`). Findings:
+1. The loop IS reached (2065× during o3's build — stdlib calls dominate).
+2. **Across ALL 2065 arg-checks, NO arg ever infers as Option/Result** (`atkind` is never 11/12).
+   For an ident→i64-param call the trace shows `at=4 (i64), atkind=0` — so `infer_node(arg, UNKNOWN)`
+   for `o` returns **i64, not Option[i64]**.
+3. **NO ident arg has an Option/Result SYMBOL type** either (a guard printing only when
+   `symbols[arg.payload].type_id` is OPTION/RESULT never fired for o3).
+⇒ By the time ANY call-arg check runs, `o`'s Option-ness is GONE — not in the inferred arg type, not
+in the symbol type as seen here. So NO arg-site reject can work; both earlier edits were doomed.
+**Two live hypotheses for the fresh session (need one more targeted trace of the `f(o)` call
+specifically — print the CALLEE name + the o-symbol's type_id at its decl):**
+(a) `let o: Option[i64] = Some(41)` mis-types the SYMBOL `o` as i64 (the annotation/`Some` ctor path
+    collapses Option→inner at the let-binding) — then everything downstream is consistently i64 and
+    the 16B box is read as i64 = the miscompile. If so, the fix is at the let-binding type, and it may
+    even make the value CORRECT (not just rejected). CHECK FIRST: does `let o: Option[i64] = Some(41)`
+    give `o` an Option symbol type? (probe `o.is_some()` / dump the symbol.)
+(b) `f(o)` reaches a DIFFERENT call path (overload resolution binds it) that unwraps before 5043.
+The o3 traces are dominated by stdlib; isolate `f(o)` by printing the callee name (`fnm`) so the ONE
+line for the user's `f` is findable. Do NOT edit blind again — 3 blind/site edits have failed
+identically. This is now a let-binding-vs-inference question, answerable with one more scoped trace.
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
