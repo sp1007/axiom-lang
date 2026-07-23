@@ -16,10 +16,15 @@ it per `Box[i64]`/`Box[i32]`. Gate: B==C `ccfd1af7` (A≠seed — added the help
 **534/534** (+`t_genstructmethod`, two 8-byte instantiations × two methods), p4/p4b/p4c/i2/i4 all
 correct. Inert on the self-host (it uses the free-fn workaround → the parser change adds nothing to
 existing code).
-**REMAINING (separate follow-up): a >8-byte `T` returned BY VALUE** from such a method (`get(self)
--> T` with `T=str`, 16B) still SIGSEGVs — a return-value-ABI issue, NOT the dispatch bug (i4:
-`Box[str].tag() -> i64` works; only returning the str `T` crashes). Scoped narrowly; the field and
-i64/i32 method-return cases all work now.
+**REMAINING — a DISTINCT, PRE-EXISTING ABI bug (not caused by this fix):** a generic METHOD (one with
+a `self: ptr[Box[T]]` receiver) that returns a **>8-byte `T` BY VALUE** (`get(self) -> T` with
+`T=str`, 16B) SIGSEGVs — AND it does so in the FREE-FN method form too (`fn get[T](self: ptr[Box[T]])
+-> T`, `gstr2.ax` → SEGV), which this parser fix never touched, so it is pre-existing. Crucially a
+PLAIN generic fn returning `T=str` WORKS (`fn id[T](x: T) -> T`, `id[str]("hello").len` = 5,
+`gstr.ax`), and a method returning an 8-byte type works — so the failure is specifically the
+**receiver + >8B-`T`-return-by-value** combination (likely the sret return-slot ABI conflicting with
+the struct-pointer `self`, or the >8B return not set up when a receiver is present). Separate
+return-value-ABI investigation; repros `/tmp/probe4/gstr2.ax` (SEGV) vs `gstr.ax` (ok, =5).
 
 ## (history) OPEN — inline method on a GENERIC struct segfaults when called
 **Probe-found on driver `cf42579b`, 2026-07-24e.**
