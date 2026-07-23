@@ -1,0 +1,48 @@
+---
+name: bug-generic-struct-inline-method
+description: "OPEN bug (probe-found 2026-07-24e): calling an INLINE method (defined in the struct body) on a GENERIC struct instance SEGFAULTS — regardless of the method body (even `return 7`). Non-generic inline methods work; the SAME method written as a free function `fn m[T](self: ptr[Box[T]])` works (the workaround). So inline methods on generic structs are not monomorphized/dispatched correctly for the instance."
+metadata:
+  node_type: memory
+  type: project
+---
+
+## OPEN — inline method on a GENERIC struct segfaults when called
+**Probe-found on driver `cf42579b`, 2026-07-24e.**
+```
+struct Box[T]:
+    v: T
+    fn get(self: ptr[Box[T]]) -> T:   // INLINE method (in the struct body)
+        return self.v
+fn main() -> i64:
+    let b = Box[i64](v: 42)
+    return b.get()                     // SEGFAULT (want 42), O0 and O1
+```
+
+## Precisely characterized (probe matrix)
+| case | shape | result |
+|---|---|---|
+| p4a | `Box[T]` generic, DIRECT field `b.v` (no method) | ✅ 42 |
+| p4b | NON-generic `Boxi` + inline method `get()` | ✅ 42 |
+| p4c | `Box[T]` generic + FREE-fn method `fn get[T](self: ptr[Box[T]])` | ✅ 42 |
+| **p4** | `Box[T]` generic + **INLINE** method `get()` returning `self.v` | ❌ **SEGV** |
+| **p4d** | `Box[T]` generic + **INLINE** method returning a CONSTANT `7` (no T) | ❌ **SEGV** |
+⇒ The crash is NOT about the generic `T` in the body (p4d has none) — it is the **INLINE-method ×
+GENERIC-struct** combination itself. Calling the method dispatches to a wrong/unmonomorphized address.
+**WORKAROUND (works today):** write the method as a FREE FUNCTION `fn m[T](self: ptr[Box[T]]) -> ...`
+outside the struct body (p4c).
+
+## Fix direction (dedicated session — NOT yet attempted)
+An inline method in a struct body is (RFC 0002 `current_struct`) parsed with an implicit/typed `self`
+and attached to the struct. For a NON-generic struct it monomorphizes trivially (p4b works). For a
+GENERIC struct `Box[T]`, when `Box[i64]` is instantiated, the struct's inline methods must ALSO be
+monomorphized with `T=i64` and their `self: ptr[Box[T]]` bound to `ptr[Box[i64]]` — this apparently
+does not happen (or the call binds to the un-instantiated template body), so `b.get()` calls a bad
+address → SIGSEGV. The free-fn form works because `fn get[T]` goes through the normal generic-free-fn
+monomorphization path (mono.instantiate_function). Likely fix: when monomorphizing a generic struct
+instance, also instantiate its inline methods (mirror the free-fn `[T]` path), and make method-call
+resolution (`b.get()`) target the instantiated method for the concrete `Box[i64]`, not the template.
+INVESTIGATE: how inline methods are registered on a struct (parser `parse_struct_decl`) vs how
+`b.get()` resolves the callee (typecheck method dispatch) vs mono of generic struct instances. Gate:
+B==C (touches mono/dispatch = self-host-critical) + regression + oracle `t_genstructmethod`(42).
+Verify traces with **bash grep**, never PowerShell Select-String ([[lesson-bash-grep-not-powershell-selectstring]]).
+Repro `/tmp/probe4/p4.ax`, `p4d.ax`; contrast `p4b`(non-generic ok)/`p4c`(free-fn ok).
