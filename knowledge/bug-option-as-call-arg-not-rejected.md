@@ -53,6 +53,23 @@ Option arg into the param type and make IT reject instead of coerce (grep the ar
 runs before this loop — likely near `infer_node(arg, pt)` at typecheck.ax:568 or the generic-arg
 coercion). That site has the pre-coercion type and is the true home for the diagnostic.
 
+## ⚠️ ATTEMPT 2 (same session) — coercion-site reject ALSO did not fire; reverted
+Added the inverse reject at the REGULAR-call arg-coercion loop (typecheck.ax ~5140): for a plain
+concrete param (`not param_is_optlike/arr/tup`, param kind ∉ {GENERIC,GENERIC_INST,INTERFACE}),
+reject when `at` (the arg type from `infer_node(arg, pexp)` with `pexp` UNKNOWN for a plain param)
+is OPTION/RESULT. Rationale: at THIS site `pexp` is UNKNOWN for a plain param, so `at` should be the
+TRUE type. Result: **still no reject — o3 unchanged (9)**, positives + t_gentree/q1 clean, self-build
+clean. So `at` is NOT OPTION here either, OR the simple `f(o)` call never reaches this loop (there
+may be an earlier/simpler resolved-free-call path that consumes args before line 5043).
+⭐ **TWO obvious arg-check sites ruled out** (4645 downstream loop = pre-coerced; 5140 coercion loop
+= arg type not visible / path maybe not reached). **The arg's Option type is masked/erased before any
+arg-check the two loops see.** NEXT = INSTRUMENT: add a temporary trace print of `callee`, the taken
+call-branch, and the arg's inferred type for `f(o)` (o3) to find WHERE the simple-ident Option arg is
+processed and where its type becomes non-Option. Likely candidates: the overload-resolution path
+(`resolve_free_call_overload`, ~848/1234) may bind + coerce before the 5043 loop; or an even earlier
+NODE_CALL_EXPR fast path. Fix belongs wherever the arg's true Option type is still visible. This is a
+trace-driven debugging task, not a blind edit — two blind edits have now failed identically.
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
