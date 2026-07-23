@@ -1,0 +1,14 @@
+// RFC 0032 P3 / coverage gap: a runtime smoke test for OP_SPAWN codegen. The regression
+// suite previously exercised spawn NOWHERE, so a broken spawn encoding would ship silently.
+// This spawns an actor (handler stored as a function pointer via the RIP-relative lea the
+// P3 change introduced) and returns a fixed value — deterministic (the handler runs on
+// message dispatch, which this test does not trigger; the point is that the spawn
+// instruction + ax_actor_spawn runtime call produce a runnable binary that does not crash).
+mut g_sink: i64 = 0
+
+fn worker(self: ptr[void], payload: ptr[void], msg_type: u32):
+    g_sink = 1
+
+fn main() -> i32:
+    let id = spawn worker(0 as ptr[void], 0 as ptr[void], 0 as u32)
+    return 5

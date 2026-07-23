@@ -53,14 +53,25 @@ Gate: fast fixpoint **A==B `0FDCAE49`** (daily driver promoted), regression **52
 elf_linux_check **12/12**. ⚠️ `readelf --dyn-syms` shows nothing (no section headers emitted) —
 use `nm -D`. Dynamic block still gated `thunk_count>0` (bundled stdlib always imports libc).
 
-## P2 / P3 status
-- **P2 (RIP-relative globals):** verified-by-design — codegen already RIP-relative; a `.so`
-  touching a module global survives rebasing without a code change. Bank an oracle when convenient.
-- **P3 (OP_SPAWN ABS64):** the one target-independent absolute bake (`x86_selector.ax:1874` →
-  `x86_emitter.ax:184`). **Deferred with caveat:** an `#[export]` fn transitively using `spawn`
-  is unsafe in a rebased `.so`. Fixing it (RIP-relative lea) perturbs the COFF self-build ⇒
-  requires the **B==C backend fixpoint gate**. Not needed for the axmath/leaf use case.
+## P2 / P3 — BOTH SHIPPED, RFC 0032 CLOSED
+- **P2 (RIP-relative globals):** VERIFIED + oracle banked (`30d814b`). `soglobal.so`
+  bump→[1,2,3]/addg(10)→13 under ASLR; `soprobe.so` intra-`.so` call (`ax_calc(4)=34`) +
+  string-return (`ax_greet()='hi-from-so'`) (`9c97294`). All in `scripts/so_export_check.sh`.
+- **P3 (OP_SPAWN ABS64→lea+PC32):** SHIPPED. The ONE grep-confirmed `vreg==1` site in
+  `x86_emitter.ax` (spawn thread-entry) now uses the exact `lea [rip]`+PC32 form as `vreg==3`
+  OP_FUNC_ADDR. Target-independent ⇒ gated by **B==C** (A≠B expected, **B==C `0D46A5C5`**,
+  driver promoted), regression **529/529** (+`bin/t_spawnsmoke.ax` — spawn had ZERO runtime
+  coverage before). ⚠️ **Validation caveat:** proven non-regressing + correct-by-construction on
+  the P2-verified `lea`+PC32 foundation, but NO direct spawn-in-rebased-`.so` oracle — AXIOM
+  `spawn` is actor-model (handler runs on `ax_actor_step` message dispatch, not on spawn), so an
+  end-to-end observation needs actor-message infra in a `.so` (disproportionate). See RFC §7c.
+
+## Lessons
+- `readelf --dyn-syms` needs a section-header table (we emit none) → shows nothing; use `nm -D`.
+- A `.so` with no `PT_GNU_STACK` → glibc tries an exec stack → `dlopen` refuses; emit it.
+- The regression suite exercised `spawn` NOWHERE — a whole IR op with no runtime gate. Found
+  while validating P3; closed with `t_spawnsmoke`. Check op-level coverage before trusting "green".
 
 ## Next (loop stays alive)
-No OPEN bugs. RFC 0032 P2 oracle-bank + P3 spawn fix (gated) are the remaining follow-ups;
-otherwise proactive probing / milestones.
+No OPEN bugs; RFC 0032 fully closed. Backlog = proactive probing / M4-M6 milestones /
+p13 ARM64 backend / p14 allocator size-classes. Needs user direction for the heavy items.

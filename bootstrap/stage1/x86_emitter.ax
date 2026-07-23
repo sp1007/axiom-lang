@@ -181,17 +181,26 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         // ax_printf_local("[Debug emit_mach_inst] MACH_MOV_IMM dst=%d, vreg_flag=%d, imm=%d\n", dst as i64, inst.src1.vreg as i64, imm, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         // fflush(null as ptr[void])
         if dst != REG_NONE:
-            if inst.src1.vreg == 1 as u32: // Symbol index!
-                let offset = buf.len + 2 as i64
+            if inst.src1.vreg == 1 as u32: // OP_SPAWN thread-entry function address
+                // RFC 0032 P3: load the thread-entry address RIP-relative (lea reg,[rip+disp32]
+                // + PC32 reloc), IDENTICAL to the vreg==3 func-address path below, instead of an
+                // absolute movabs. The loaded value is the entry function's runtime VA either
+                // way, but the absolute form baked a link-time address that pointed at the
+                // un-relocated image once a --shared .so is dlopen'd at a random base — so an
+                // #[export] function that transitively `spawn`ed a thread made a wild call in a
+                // rebased .so. This is the only vreg==1 site (grep-confirmed), so the change is
+                // scoped to spawn. It IS target-independent (COFF + ELF), so it perturbs the
+                // self-build spawn bytes → gated by the B==C backend fixpoint, not A==B.
+                let offset = buf.len + 3 as i64
                 push_reloc(&e.relocs, Relocation(
                     offset: offset,
-                    kind: RELOC_ABS64,
+                    kind: RELOC_PC32,
                     padding1: 0 as u8,
                     padding2: 0 as u16,
                     sym_name: imm as u32,
-                    addend: 0 as i64
+                    addend: -4 as i64
                 ))
-                x86_encode_mov_ri64(dst, 0 as i64, buf)
+                x86_encode_lea_rip(dst, 0 as i32, buf)
             elif inst.src1.vreg == 3 as u32: // Function address (RIP-relative, ASLR-safe)
                 // imm = function symbol index (positive → resolve_binary_sym_name
                 // yields the function's code symbol). lea reg,[rip+disp32] + a

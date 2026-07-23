@@ -29,6 +29,7 @@ rows=(
   "tsp|exit|7"
   "tsp2|exit|9"
   "tsp3|exit|12"
+  "t_spawnsmoke|exit|5"
   "tstruct_abi|out|A=7 B=12 C=15 D=6 E=99 "
   "t_movrr|out|072 137 229 "
   "t_modrm|out|229"

@@ -1,6 +1,6 @@
 # RFC 0032 — Position-independent codegen + ET_DYN for ELF shared objects
 
-Status: **P1 IMPLEMENTED** (ET_DYN + `.dynsym` exports, linker-only) — P2 verified-by-design, P3 (spawn ABS64) deferred with caveat. Behind `--target linux --shared`.
+Status: **CLOSED / IMPLEMENTED** — P1 (ET_DYN + `.dynsym` exports, linker-only), P2 (RIP-relative globals, verified), P3 (`OP_SPAWN` → RIP-relative). Behind `--target linux --shared`.
 Author: autopilot
 Related: RFC 0009 (FFI dynamic linking — P3 ELF export), RFC 0029 (interface vtable / `OP_FUNC_ADDR`),
 RFC 0030 (`.bss`), [[session-state-2026-07-24d]]
@@ -191,6 +191,29 @@ path untouched). ⚠️ `readelf --dyn-syms` prints nothing for this file — it
 table, which AXIOM does not emit; `nm -D` (dynamic segment) is the correct tool. The dynamic block
 still requires `thunk_count > 0` (any bundled-stdlib program imports libc, so this holds in
 practice); a truly import-less leaf export is a follow-up.
+
+## 7c. P3 result (SHIPPED 2026-07-24)
+
+The sole image-absolute bake — `OP_SPAWN`'s thread-entry address — was `movabs reg, ABS64(sym)`
+(`x86_emitter.ax`, `vreg==1`, the ONE grep-confirmed site). Changed to `lea reg,[rip+disp32]` +
+`RELOC_PC32(sym)`, byte-for-byte the same encoding as the `vreg==3` `OP_FUNC_ADDR` path. Same
+symbol reference (`sym_name: imm`), just PC-relative — so an `#[export]` function that transitively
+`spawn`s no longer bakes a link-time absolute that would be a wild call once the `.so` is dlopen'd
+at a random base.
+
+The change is **target-independent** (COFF + ELF), so it perturbs the self-build's spawn bytes ⇒
+gated by the **B==C** three-hop fixpoint, not A==B. Gate: **A≠B (expected), B==C `0D46A5C5`**;
+regression **529/529** (added `bin/t_spawnsmoke.ax` — the suite exercised spawn NOWHERE before, a
+real coverage gap); `so_export_check`/`elf_linux_check` still green.
+
+**Validation basis (transparent):** proven **non-regressing** (B==C + 529/529 + byte-identical exit
+behavior old-vs-new across several COFF spawn programs, no crash), and **correct-by-construction on a
+directly-verified foundation** — spawn now forms the handler pointer with the exact `lea`+PC32
+mechanism that P2's `soprobe` already proved resolves correctly (taken-function addresses via
+intra-`.so` calls) in a rebased `.so`. A direct spawn-in-rebased-`.so` actor-dispatch oracle was NOT
+built: AXIOM's `spawn` is actor-model (the handler runs on `ax_actor_step` message dispatch, not on
+spawn), so observing it end-to-end needs actor-message infrastructure inside a `.so` — disproportionate
+for a single-site change resting on the P2-verified mechanism.
 
 ## 8. Open questions
 
