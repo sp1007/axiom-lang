@@ -89,6 +89,16 @@ Two ways to get it, and this choice is the real design decision:
    or they read out of bounds and crash the compiler. That trap is exactly what makes option 2
    fiddly.
 
+   **Verified mechanism (2026-07-24):** interface methods are `NODE_METHOD_SIG` nodes, the
+   direct children of the interface`s `NODE_INTERFACE_DECL` node (`resolver.ax:920` resolves
+   them in the interface`s scope but does NOT register them as `SYM_FUNC` — confirmed, which is
+   why they carry no type-table signature). So option 2 is concretely: from the `SYM_INTERFACE`
+   symbol`s `decl_node`, iterate its children, filter `NODE_METHOD_SIG`, and read each one`s
+   param and return type nodes. The `Self`-typed receiver is the first param of each sig — skip
+   it (subtlety 1). The interface`s decl tree is `symtable.symbol_trees[iface_sym_idx]` when
+   set, else `self.tree` — use that, not `self.tree` unconditionally, to avoid the cross-tree
+   crash.
+
 So this is genuinely dedicated-session: the comparison is easy, but the data to compare must
 be produced first, via one of the two structural changes above. The name-presence check
 (`7858aa5`) got away without signatures precisely because it only needed names — which is all
