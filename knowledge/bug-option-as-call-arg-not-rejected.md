@@ -93,6 +93,19 @@ The o3 traces are dominated by stdlib; isolate `f(o)` by printing the callee nam
 line for the user's `f` is findable. Do NOT edit blind again — 3 blind/site edits have failed
 identically. This is now a let-binding-vs-inference question, answerable with one more scoped trace.
 
+## ✅ ROOT LOCATION DECIDED (no more blind edits needed at arg-loop): the FREE-CALL OVERLOAD path
+Cross-referencing the trace with the `ok2` positive settles it: `ok2` = `takesopt(o)` with
+`takesopt(o: Option[i64])` returns 42, so `o`'s SYMBOL genuinely IS `Option[i64]` (it matches as an
+Option). Yet `OPTIONSYM` never fired for `f(o)` in o3 → therefore **`f(o)` never reaches the 5043
+arg-coercion loop at all**; the simple resolved free-call is bound by the OVERLOAD-RESOLUTION path
+(`resolve_free_call_overload` / the free-call handling ~848–1360, and `param_arg_match`), which
+accepts the `Option[i64]`→`i64` arg without an unwrap check. **THE FIX BELONGS THERE**: in the
+free-call arg-vs-param matching, when a param is a concrete non-Option/Result/generic type and the
+arg's resolved (symbol/callee-return) type is OPTION/RESULT, reject "missing .unwrap()". Trace the ONE
+`f(o)` call through `param_arg_match` / the overload binder to place it exactly. This is a scoped,
+now-well-targeted fix — the arg-coercion loop (5043) and the downstream validation loop (4645) are
+both DEAD ENDS (proven: f(o) doesn't reach 5043; arg is pre-coerced at 4645).
+
 ## Fix direction (dedicated gated session — original notes)
 In the call-argument type check (typecheck.ax, where each arg type is checked against the param
 type — near the existing width/variant-arg checks, cf. the `try_instantiate_variant_call` /
