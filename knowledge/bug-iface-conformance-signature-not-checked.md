@@ -40,3 +40,30 @@ Not a coercion-site bug (that family is [[bug-iface-variant-payload-no-vtable-bo
 [[probe-iface-store-coercion-sites-complete]]); this is the ORTHOGONAL conformance-checking
 axis. RFC 0029's "structural-conformance diagnostic" (`7858aa5`) shipped the name-presence half;
 the signature half was never done.
+
+## Implementation recipe (read-only scouting 2026-07-23)
+
+The fix is more tractable than it first looks, once two subtleties are named:
+
+1. **Skip the `self`/receiver param.** The interface declares `self: Self`, the struct declares
+   `self: Sq` — the receiver types DIFFER and that is correct conformance. Comparing only the
+   NON-self params plus the return type catches all three failing cases (F2 return, F3 fewer, F3b
+   more) and sidesteps the Self-vs-concrete tangle entirely.
+
+2. **Type comparison — no general `types_equal` exists.** But `is_method_compatible`
+   (`typecheck.ax:1389`), which resolves method-to-receiver, compares unwrapped type_ids
+   directly (`unwrapped_param == unwrapped_rec`) and works — evidence that the type table
+   canonicalizes enough (`register_option`/`register_result` dedup by content, primitives are
+   singletons) that raw type_id equality is usable for a first cut. If a false-reject on
+   "equivalent types, different ids" turns up in the gate, THAT is the signal to build a
+   structural predicate; do not build one pre-emptively.
+
+**Raw material is in hand:** the method`s full param list and return live in the `FuncInfo`
+(`fi = self.types.funcs.data[f_entry.extra]`, `fi.params`), reached exactly as
+`is_method_compatible` does. So the recipe is: in `interface_missing_method` (or a sibling),
+for each interface method, find the struct`s same-named method, and compare
+`fi.params[1..]` + return by unwrapped type_id; diagnose on mismatch.
+
+**Gate discipline:** self-build fixpoint FIRST — if the compiler`s own interface impls trip a
+false reject, that is the over-rejection this file`s neighbours warn about; revert-on-red, do
+not iterate more than once before declaring it needs the structural predicate.
