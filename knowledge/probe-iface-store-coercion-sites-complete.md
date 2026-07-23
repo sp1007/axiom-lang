@@ -54,6 +54,10 @@ Consolidated map so adjacent areas are not re-probed:
   with an interface param, generic struct `Cell[Shape]`, heterogeneous `Vec[Shape]` dispatch
   through a generic push. All correct O0–O1.
 - **Closures/captures** — CLEAN and soundly restricted ([[probe-closure-capture-guard-sound]]).
+- **Value semantics** — the boxed interface is a REFERENCE to the struct, consistent with
+  AXIOM aggregate semantics (RFC 0001): `mut sq = Sq(..); let s: Shape = sq; sq.side = 10;
+  s.area()` reflects the mutation. Deterministic and identical O0–O3. Correct, not merely
+  non-crashing.
 
 Two OPEN items remain, both dedicated-session: Option/Result construction coercion, and
 interface conformance signature checking. Everything else on this surface is fixed or confirmed
