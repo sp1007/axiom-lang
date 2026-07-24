@@ -60,22 +60,26 @@ await + pub async fn + await-in-plain-fn, O0 & O1.
 - Design: blocking timer only in v1 (Win `Sleep`/kernel32, Linux `nanosleep` syscall 35).
   Async timer (`sleep_async` suspend/resume) = v2 reactor (epoll/IOCP), deferred.
 
-## Phase C — threads (BLOCKED by a pre-existing miscompile — see [[bug-global-write-param-return-lost]])
-Attempted Windows real threads (CreateThread/WaitForSingleObject; linker imports added in Phase
-B). **Blocked**: a Windows thread entry is `fn(ptr[void]) -> u32` that writes shared state, and
-that exact shape hits a pre-existing codegen bug — **param + non-void return + module-global
-write loses the global write** (O0-independent, not DCE), and a fn-pointer to a `ptr[void]->u32`
-fn crashes. An empty worker spawned via CreateThread also SIGSEGVs (thread-entry ABI / bad
-address). Repro banked `bin/known_fail_global_param_return.ax`; full diagnosis + AIR evidence in
-[[bug-global-write-param-return-lost]]. Broken std/thread.ax + oracle were NOT shipped (would be
-a footgun). The linker CreateThread/WaitForSingleObject imports stay (harmless groundwork).
-Constraints that remain after the miscompile is fixed:
-- Windows: CreateThread path (needs a thread-entry trampoline ABI check).
-- Linux: freestanding ELF, no libc; thread = raw `clone(2)` (fiddly child-stack + exit-syscall),
-  AND Linux ELF heap still BLOCKED ([[rfc0009-p3-elf-linux-target-wip]]) → shared-heap Linux
-  threads deferred; compute-only clone is the eventual path.
-**Fixing [[bug-global-write-param-return-lost]] is the prerequisite and is arguably higher
-priority than threads** — it silently miscompiles ordinary `fn f(x)->T { global=…; return … }`.
+## Phase C — threads (SHIPPED for Windows). std/thread.ax + oracle t_threadv1(42).
+`std/thread.ax`: `thread_spawn(entry: fn(ptr[void])->u32, arg) -> handle` + `thread_join` +
+`threads_supported()`. Windows = REAL preemptive OS threads via kernel32 CreateThread/
+WaitForSingleObject (linker imports shipped in Phase B). Oracle `bin/t_threadv1.ax`: spawn a
+thread that writes a module global, join, read it back = 42 at O0 AND O1 → the thread runs to
+completion and shared memory is visible. **No compiler change** (library + oracle + Phase-B
+linker imports). Linux: `thread_spawn` returns null (deferred — freestanding ELF, no libc, heap
+still blocked [[rfc0009-p3-elf-linux-target-wip]]; needs clone(2)+mmap stack+exit trampoline).
+
+### ⚠️⚠️ The "Phase C blocked by a miscompile" scare was a FALSE ALARM (name collision)
+Earlier this session I mis-diagnosed threads as blocked by a "param + non-void return + module-
+global write loses the write" miscompile (committed `6d6eba5`, since CORRECTED). It was NOT a
+miscompile — every failing minimal test was named `worker`, which collides with the bundled
+`std/scheduler.ax` `struct worker`; `call worker` mis-links to a stdlib symbol so the user fn
+never runs. Every PASSING test used a different name (setit/dbl/wf). The name was the real
+variable. Renaming → correct; threads work. See [[bug-user-fn-stdlib-struct-name-collision]].
+**Lesson: hold the symbol NAME fixed when minimizing — a name colliding with bundled stdlib is
+invisible in a feature matrix. Disassembly (main calling the wrong address) broke the false
+theory.** The bogus `bug-global-write-param-return-lost.md` + `known_fail_global_param_return.ax`
+were deleted.
 
 ## Gate cmd (unchanged): `& scripts/fast_fixpoint.ps1` → cp fpB→axc_native →
 `REGTMP=bin/_regtmp AXC=bin/axc_native.exe bash scripts/regression_repros.sh`.

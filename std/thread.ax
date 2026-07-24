@@ -1,0 +1,44 @@
+// AXIOM Standard Library — std.thread
+//
+// RFC 0033 Phase C: OS threads (concurrency v1). Grammar-clean (no impl/brace).
+//
+//   Windows: REAL preemptive OS threads via kernel32 CreateThread / WaitForSingleObject.
+//   Linux:   DEFERRED. The freestanding ELF target has no libc, and its heap allocator is
+//            still blocked (RFC 0009 P3), so a shared-heap thread cannot run yet. Real Linux
+//            threads need clone(2) + an mmap'd child stack + an exit-syscall trampoline.
+//            thread_spawn returns null on Linux so callers can detect unavailability.
+//
+// The thread entry is a `fn(arg: ptr[void]) -> u32` — pass the function by name. On x86-64 all
+// calling conventions are unified, so the default ABI entry works directly as the CreateThread
+// LPTHREAD_START_ROUTINE (called with the arg in the first integer register).
+//
+// ⚠️ NAMING: do NOT name your entry (or any top-level symbol) after a bundled stdlib name such
+// as `worker` — std/scheduler.ax defines `struct worker`, and a user symbol of the same name
+// silently mis-links (the free-fn/stdlib name-collision family). Use a distinctive name.
+
+extern "C" fn CreateThread(attrs: ptr[void], stack: u64, start: fn(ptr[void]) -> u32, param: ptr[void], flags: u32, tid: ptr[u32]) -> ptr[void]
+extern "C" fn WaitForSingleObject(handle: ptr[void], ms: u32) -> u32
+extern "C" fn CloseHandle(handle: ptr[void]) -> i32
+
+// Spawn an OS thread running `entry(arg)`. Returns an opaque handle, or null on failure or on
+// a platform without thread support (Linux, v1).
+pub fn thread_spawn(entry: fn(ptr[void]) -> u32, arg: ptr[void]) -> ptr[void]:
+    if @compiler_intrinsic("is_windows"):
+        return CreateThread(null as ptr[void], 0 as u64, entry, arg, 0 as u32, null as ptr[u32])
+    else:
+        return null as ptr[void]
+
+// Block until the thread finishes, then release its handle. No-op on a null handle.
+pub fn thread_join(handle: ptr[void]):
+    if handle == null as ptr[void]:
+        return
+    if @compiler_intrinsic("is_windows"):
+        WaitForSingleObject(handle, 0xFFFFFFFF as u32)
+        CloseHandle(handle)
+
+// True if real OS threads are available on this build's target.
+pub fn threads_supported() -> bool:
+    if @compiler_intrinsic("is_windows"):
+        return true
+    else:
+        return false

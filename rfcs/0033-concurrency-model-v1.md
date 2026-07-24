@@ -91,14 +91,18 @@ Everything in v1 is deterministic and identical on Windows and Linux:
   `await`/top-level `async fn`) → A==B==C. Oracle `t_awaitv1`.
 - **Phase B — timer.** Confirm blocking `sleep`/`Instant` compile & run on both targets;
   add a runtime oracle. No new runtime.
-- **Phase C — threads (BLOCKED).** Cross-platform `Thread.spawn`/`join`: Windows via
-  `CreateThread`; Linux via `clone(2)` (compute-only first). Requires a thread-entry trampoline
-  ABI. **Blocked** by a pre-existing codegen miscompile discovered here: a function with a
-  param + a non-void return + a module-global write loses the global write, and a fn-pointer to
-  a `ptr[void]->u32` function crashes — exactly the shape of a thread entry. See
-  `knowledge/bug-global-write-param-return-lost.md`. The linker kernel32 imports
-  (`CreateThread`/`WaitForSingleObject`) are already in place (Phase B) as groundwork; the
-  thread runtime lands once the miscompile is fixed in a dedicated backend session.
+- **Phase C — threads (SHIPPED for Windows; Linux deferred).** `std/thread.ax`:
+  `thread_spawn(entry: fn(ptr[void])->u32, arg) -> handle` + `thread_join(handle)` +
+  `threads_supported()`. Windows uses real preemptive OS threads via kernel32
+  `CreateThread`/`WaitForSingleObject` (linker imports added in Phase B). Oracle `t_threadv1`
+  spawns a thread that writes a module global, joins, and reads it back = 42 (O0 & O1) — proving
+  the thread runs to completion and shared memory is visible. No compiler change (library +
+  oracle + the Phase B linker imports). Linux: `thread_spawn` returns null (deferred — freestanding
+  ELF, no libc, heap still blocked per RFC 0009 P3; real Linux threads need `clone(2)` + mmap'd
+  child stack + exit-syscall trampoline). ⚠️ The earlier "Phase C blocked by a param+return+global
+  miscompile" was WRONG — it was a `worker` name-collision with the bundled `std/scheduler.ax`
+  `struct worker` (see `knowledge/bug-user-fn-stdlib-struct-name-collision.md`); real threads work
+  with a distinctively-named entry. Do NOT name a thread entry `worker`.
 - **Phase D (v2, deferred) — preemptive async.** `Future[T]`, real suspension at `await`,
   reactor-driven `sleep_async`/IO, scheduler multi-threading (`worker_loop` already
   scaffolded). RFC-scale; separate effort.

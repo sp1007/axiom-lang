@@ -1,0 +1,27 @@
+// RFC 0033 Phase C — OS thread runtime oracle (self-contained; Windows real threads).
+// Mirrors std/thread.ax. Tests the full path: a function pointer as a thread entry,
+// CreateThread (kernel32 routing added for this RFC), WaitForSingleObject for join, and
+// shared-global visibility across threads (the entry writes a module global that main reads
+// after the join). Exit 42 proves the spawned thread ran to completion and its write is visible.
+// (Regression runs on Windows; Linux threads are deferred — see std/thread.ax.)
+//
+// NOTE: the entry is deliberately NOT named `worker` — that collides with std/scheduler.ax's
+// bundled `struct worker` and silently mis-links (see knowledge/bug-freefn-stdlib-collision).
+
+mut g_thread_shared: i64 = 0
+
+fn ax_thread_entry_smoke(arg: ptr[void]) -> u32:
+    g_thread_shared = 42 as i64
+    return 0 as u32
+
+extern "C" fn CreateThread(attrs: ptr[void], stack: u64, start: fn(ptr[void]) -> u32, param: ptr[void], flags: u32, tid: ptr[u32]) -> ptr[void]
+extern "C" fn WaitForSingleObject(handle: ptr[void], ms: u32) -> u32
+extern "C" fn CloseHandle(handle: ptr[void]) -> i32
+
+fn main() -> i32:
+    let h = CreateThread(null as ptr[void], 0 as u64, ax_thread_entry_smoke, null as ptr[void], 0 as u32, null as ptr[u32])
+    if h == null as ptr[void]:
+        return 1
+    WaitForSingleObject(h, 0xFFFFFFFF as u32)
+    CloseHandle(h)
+    return g_thread_shared as i32
