@@ -246,6 +246,8 @@ rows=(
   "t_forgotunwrap|reject|"
   "t_optletreject|reject|"
   "t_optletok|exit|37"
+  "t_optasgreject|reject|"
+  "t_optasgok|exit|42"
   "t_unwrapok|exit|42"
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"

@@ -55,8 +55,18 @@ nested `Vec[Vec[i64]]` written correctly = 20.
   container bug. `Vec.get` returns `Option[T]` — a probe that omits `.unwrap()` is ill-formed.
 - Same family as the call-arg and field-access ([[bug-option-as-call-arg-not-rejected]],
   `t_forgotunwrap`) rejects: an Option/Result value used where its inner `T` is expected must be a
-  diagnostic, not a silent box-reinterpret. Remaining un-covered siblings of this class (if any):
-  assignment `x = o` to a plain-typed mut (untested here), and SUM param/binding receiving a
-  DIFFERENT sum (needs a type_id compare) — niche, safe, not yet probed.
+  diagnostic, not a silent box-reinterpret.
+
+## ✅ ASSIGNMENT sibling ALSO FIXED (same session) — driver `C3A821C0`, 542/542, A==B
+Immediately probed the assignment site (the "untested" sibling this note first flagged) and it had the
+**identical silent miscompile**: `x = o` (`o:Option`, `x:i64`) → 8; `x = v.get(0)` → 127; `s.a = o`
+(struct field) → 8 — all accept-then-store-box-raw. Fixed with the same mirror at the NODE_ASSIGN_STMT
+handler (typecheck.ax ~L6329): gate on the LVALUE kind PRIMITIVE/STRUCT + RHS true-type OPTION/RESULT/
+SUM; RHS true type from symbol (IDENT rhs) else **reuse the existing `rhs_inferred`** (the handler
+already infers the RHS with the lvalue hint — capture that return value, do NOT re-infer, same
+t_u64cmp side-effect trap). Oracles `t_optasgreject` (reject) + `t_optasgok` (=42: unwrapped assign +
+Option-lvalue reassign + sum-lvalue reassign, guards over-reject). A==B `C3A821C0`, regression 542/542.
+- Still un-covered (niche, safe): a SUM param/lvalue receiving a DIFFERENT sum/Option (kind SUM vs SUM
+  needs a type_id compare to avoid rejecting the same-sum case) — left as the call-arg note also left it.
 
 Related: [[bug-option-as-call-arg-not-rejected]], [[bug-option-arith-miscompile-open]].

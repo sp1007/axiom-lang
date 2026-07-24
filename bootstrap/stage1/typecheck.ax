@@ -6327,7 +6327,35 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let lhs_ty = self.infer_node(lhs_a, TYPE_UNKNOWN)
             let rhs_a = self.tree.nodes.data[lhs_a].next_sibling
             if rhs_a != 0 as u32:
-                self.infer_node(rhs_a, lhs_ty)
+                let rhs_inferred = self.infer_node(rhs_a, lhs_ty)
+                // BUG#53 (assignment analog of the let-binding/call-arg reject): an
+                // Option/Result/sum VALUE assigned to a plain-typed lvalue (scalar or
+                // struct field) WITHOUT unwrapping was silently accepted, storing the
+                // 8-byte tagged box raw -> garbage (`x = o` -> 8, `x = v.get(0)` -> 127,
+                // `s.a = o` -> 8). Reject, mirroring the NODE_VAR_DECL reject: gate on the
+                // LVALUE kind being PRIMITIVE/STRUCT + the RHS true type kind OPTION/RESULT/
+                // SUM. RHS true type: symbol decl type for an IDENT rhs (an annotated
+                // Option local is SUM-kind here), else REUSE `rhs_inferred` (already
+                // computed with the lvalue hint; a second re-infer would side-effect like
+                // the t_u64cmp regression). Cannot over-reject — a sum lvalue has SUM kind
+                // and is skipped, so `mut s: MySum; s = MakeVariant(..)` is unaffected.
+                // [[bug-option-as-let-binding-not-rejected]]
+                if lhs_ty != TYPE_UNKNOWN and (lhs_ty as i64) < self.types.entries.len:
+                    let lhs_k0 = self.types.entries.data[lhs_ty as i64].kind
+                    if lhs_k0 == TYPE_KIND_PRIMITIVE or lhs_k0 == TYPE_KIND_STRUCT:
+                        let rhs_k0 = self.tree.nodes.data[rhs_a].kind
+                        mut rhs_sty := TYPE_UNKNOWN
+                        if rhs_k0 == NODE_IDENT:
+                            let rhs_sym = self.tree.nodes.data[rhs_a].payload
+                            if rhs_sym != 0 as u32 and (rhs_sym as i64) < self.symtable.symbols.len:
+                                rhs_sty = self.symtable.symbols.data[rhs_sym].type_id
+                        else:
+                            rhs_sty = rhs_inferred
+                        if rhs_sty != TYPE_UNKNOWN and (rhs_sty as i64) < self.types.entries.len:
+                            let rhs_stk = self.types.entries.data[rhs_sty as i64].kind
+                            if rhs_stk == TYPE_KIND_OPTION or rhs_stk == TYPE_KIND_RESULT or rhs_stk == TYPE_KIND_SUM:
+                                ax_printf_local("error: cannot assign an Option/Result/sum value to a plain lvalue; unwrap it first (.unwrap() or match)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
                 // BUG#53 (assignment-path analog of m5): `x = <string literal>` where
                 // x is numeric (or a numeric literal into a str/bytes lvalue) was
                 // silently accepted then miscompiled to garbage. Reject the

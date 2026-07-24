@@ -1,0 +1,13 @@
+// Oracle (positive companion to t_optasgreject): correct assignments must still work —
+// assign an UNWRAPPED scalar, reassign an Option-typed local to another Option, and
+// assign a struct value to a struct lvalue. Guards the assignment reject from over-firing.
+type Col = Red | Green(i64)
+fn main() -> i64:
+    mut x: i64 = 3
+    let o: Option[i64] = Some(40)
+    x = o.unwrap()                 // unwrapped scalar assign: RHS i64, not rejected -> 40
+    mut p: Option[i64] = None
+    p = Some(2)                    // Option lvalue <- Option value: OPTION-kind lvalue, skipped
+    mut c: Col = Red
+    c = Green(0)                   // sum lvalue <- sum value: SUM-kind lvalue, skipped
+    return x + p.unwrap()          // 40 + 2 = 42
