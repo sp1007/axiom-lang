@@ -1,8 +1,34 @@
 # RFC 0031 — Dead function elimination
 
-Status: **IMPLEMENTED, opt-in** — `-dfe` prunes; default OFF pending broader exposure
+Status: **IMPLEMENTED, ON BY DEFAULT** (since `c957193`, 2026-07-24) — pruning is the default;
+`-no-dfe` opts out. Was opt-in until the root set had been exercised by the full regression +
+ELF suites under prune.
 Author: autopilot
 Related: RFC 0030 (`.bss`), [[feedback-no-exe-bloat]], RFC 0011 (static libs / bundling)
+
+## 0. Default-on (2026-07-24f, `c957193`)
+
+User chose to flip `-dfe` on by default. This is NOT inert (the compiler prunes 138/993 of its
+own functions), so it required a pruned-generation **B==C** fixpoint — reached and verified,
+driver `DA7F8D2D` self-reproduces byte-identical under prune. Flipping on surfaced two root-set
+gaps the opt-in flag had latent, both of the "reached by a link-time name bind, no OP_CALL edge"
+class (the compiler could not self-compile under prune until both were fixed):
+
+- **Root kind 4 — extern-"C" shadow.** `resolver` breaks a circular call by re-declaring
+  `ax_driver_load_module` as `extern "C"` and calling that; the linker binds it to the definition
+  by name, leaving no AIR edge. `dfe_compute` now roots any defined function whose emitted symbol
+  matches an extern symbol in the module. The C-runtime externs (`fopen`/`printf`/…) have no
+  matching internal definition, so nothing is over-rooted. Guarded by `t_dfeexternshadow` (bites
+  the old root set: `-dfe` there fails with `unresolved external ax_helper_impl`).
+
+- **OP_SPAWN edge.** `spawn worker(...)` records the actor/thread entry sym in `type_id` (`src1`
+  is the callee reg, not 0, so the OP_CALL branch skips it). The reachability walk now follows
+  `OP_SPAWN → type_id`. Caught by `t_spawnsmoke`; the self-build cannot see this — it uses no
+  `spawn`.
+
+Gate: fast fixpoint A==B, pruned-gen B==C, regression **538/538**, ELF **12/12**, so_export OK
+(`--shared` keeps its export surface under prune), exe_size **4/4** (`--staticlib` `.lib`
+byte-identical with/without prune), ctgc **16/16**. `--staticlib`/`--shared` still never prune.
 
 ## 1. The measurement
 
