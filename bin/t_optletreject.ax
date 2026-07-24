@@ -1,0 +1,10 @@
+// Oracle (reject): an Option/Result/sum value bound to a `let`/`mut` whose ANNOTATED
+// type is a plain scalar (or struct) WITHOUT unwrapping must be REJECTED. Was an
+// accept-then-miscompile: the 8-byte tagged box was stored raw into the scalar slot
+// -> garbage (`let x: i64 = o` returned 8; `let x: i64 = v.get(0)` returned garbage).
+// Sibling of the call-arg reject (t_optargreject). See
+// knowledge/bug-option-as-let-binding-not-rejected.md. Reject-path test.
+fn main() -> i64:
+    let o: Option[i64] = Some(55)
+    let x: i64 = o
+    return x

@@ -9915,6 +9915,43 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if (exp_is_num and rhs_is_strlit) or (exp_is_str and rhs_is_numlit):
                     ax_printf_local("error: type mismatch in `let`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
+            // BUG#53 (let-binding analog of the call-arg reject at ~L4653): an
+            // Option/Result/sum VALUE bound to a `let`/`mut` whose ANNOTATED type is a
+            // plain SCALAR primitive or a STRUCT (the programmer forgot `.unwrap()`) was
+            // silently accepted, then the 8-byte tagged box is read raw as the target
+            // type -> garbage (`let x: i64 = o` with `o:Option[i64]` returned 8; `let
+            // x: i64 = v.get(0)` returned garbage). Reject. Read the RHS's TRUE type from
+            // its SYMBOL for an IDENT init (an annotated `Option[i64]` local resolves to
+            // a SUM-kind type here, which is why an OPTION-kind check on `inferred` alone
+            // misses it), else RE-INFER with TYPE_UNKNOWN (not `exp_type`, which would
+            // coerce a call like `v.get(0)` down to the scalar and hide the box kind).
+            // Gated to a PRIMITIVE/STRUCT annotated type + an OPTION/RESULT/SUM RHS:
+            // binding an aggregate box where a scalar/struct is expected is always a type
+            // error, so this cannot over-reject valid code (an `Option`-annotated local
+            // has an OPTION-kind exp_type and is skipped). [[bug-option-as-let-binding-not-rejected]]
+            if type_node != 0 as u32 and exp_type != TYPE_UNKNOWN and (exp_type as i64) < self.types.entries.len:
+                let exp_k0 = self.types.entries.data[exp_type as i64].kind
+                if exp_k0 == TYPE_KIND_PRIMITIVE or exp_k0 == TYPE_KIND_STRUCT:
+                    let rhs_k0 = self.tree.nodes.data[init_expr].kind
+                    mut rhs_sty := TYPE_UNKNOWN
+                    if rhs_k0 == NODE_IDENT:
+                        let rhs_sym = self.tree.nodes.data[init_expr].payload
+                        if rhs_sym != 0 as u32 and (rhs_sym as i64) < self.symtable.symbols.len:
+                            rhs_sty = self.symtable.symbols.data[rhs_sym].type_id
+                    else:
+                        // Reuse the ALREADY-computed `inferred` (L3477) â€” do NOT re-infer.
+                        // A second `infer_node(init_expr, TYPE_UNKNOWN)` has side effects: for a
+                        // literal RHS like `let big: u64 = 18000000000000000000` it re-defaults the
+                        // int literal to i64 and overwrites node_types, flipping `big > small` to a
+                        // SIGNED compare (t_u64cmp regressed 7->1). `inferred` was derived with the
+                        // real `exp_type` hint; a call like `v.get(0)` still yields its Option/Result
+                        // type there (the hint cannot coerce Option->scalar â€” that IS the miscompile).
+                        rhs_sty = inferred
+                    if rhs_sty != TYPE_UNKNOWN and (rhs_sty as i64) < self.types.entries.len:
+                        let rhs_stk = self.types.entries.data[rhs_sty as i64].kind
+                        if rhs_stk == TYPE_KIND_OPTION or rhs_stk == TYPE_KIND_RESULT or rhs_stk == TYPE_KIND_SUM:
+                            ax_printf_local("error: cannot bind an Option/Result/sum value to a `let`/`mut` of a plain type; unwrap it first (.unwrap() or match)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            self.diags_count = self.diags_count + 1 as i64
             // RFC 0029: `let s: Iface = <struct>` â€” reject a struct that doesn't implement it.
             if type_node != 0 as u32:
                 self.check_iface_conformance(exp_type, init_expr)

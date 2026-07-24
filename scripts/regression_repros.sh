@@ -244,6 +244,8 @@ rows=(
   "t_methodfew|reject|"
   "t_methodok|exit|40"
   "t_forgotunwrap|reject|"
+  "t_optletreject|reject|"
+  "t_optletok|exit|37"
   "t_unwrapok|exit|42"
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"

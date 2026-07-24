@@ -1,0 +1,14 @@
+// Oracle (positive companion to t_optletreject): the CORRECT forms must still compile
+// and run — an Option-annotated local, an unwrapped scalar bind, and a nested
+// Vec[Vec[i64]] retrieved+unwrapped (the probe that surfaced the let-binding gap).
+// Guards against the reject over-firing on valid code.
+fn main() -> i64:
+    let o: Option[i64] = Some(5)          // Option-annotated local: exp_type OPTION-kind, not rejected
+    let x: i64 = o.unwrap()               // unwrapped scalar bind: RHS is i64, not rejected
+    mut outer: Vec[Vec[i64]] = Vec[Vec[i64]]()
+    mut a: Vec[i64] = Vec[i64]()
+    a.push(30)
+    a.push(x)                             // 5
+    outer.push(a)
+    let inner: Vec[i64] = outer.get(0).unwrap()   // Vec[i64] RHS (STRUCT-kind), unwrapped: not rejected
+    return inner.get(0).unwrap() + inner.get(1).unwrap() + 2   // 30 + 5 + 2 = 37
