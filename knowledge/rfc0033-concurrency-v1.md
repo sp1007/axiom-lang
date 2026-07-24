@@ -60,13 +60,22 @@ await + pub async fn + await-in-plain-fn, O0 & O1.
 - Design: blocking timer only in v1 (Win `Sleep`/kernel32, Linux `nanosleep` syscall 35).
   Async timer (`sleep_async` suspend/resume) = v2 reactor (epoll/IOCP), deferred.
 
-## Phase C — threads (PENDING). Constraints:
-- No OS-thread primitive exists (grep CreateThread/pthread/clone = 0 in .ax).
-- Windows: feasible via kernel32 `CreateThread`/`WaitForSingleObject` (add to linker list +
-  thread-entry trampoline ABI).
-- Linux: freestanding ELF, no libc; thread = raw `clone(2)` syscall (fiddly child-stack setup,
-  child must exit via syscall). AND **Linux ELF heap is still BLOCKED** ([[rfc0009-p3-elf-linux-target-wip]])
-  → shared-heap Linux threads deferred; compute-only clone is the eventual path.
+## Phase C — threads (BLOCKED by a pre-existing miscompile — see [[bug-global-write-param-return-lost]])
+Attempted Windows real threads (CreateThread/WaitForSingleObject; linker imports added in Phase
+B). **Blocked**: a Windows thread entry is `fn(ptr[void]) -> u32` that writes shared state, and
+that exact shape hits a pre-existing codegen bug — **param + non-void return + module-global
+write loses the global write** (O0-independent, not DCE), and a fn-pointer to a `ptr[void]->u32`
+fn crashes. An empty worker spawned via CreateThread also SIGSEGVs (thread-entry ABI / bad
+address). Repro banked `bin/known_fail_global_param_return.ax`; full diagnosis + AIR evidence in
+[[bug-global-write-param-return-lost]]. Broken std/thread.ax + oracle were NOT shipped (would be
+a footgun). The linker CreateThread/WaitForSingleObject imports stay (harmless groundwork).
+Constraints that remain after the miscompile is fixed:
+- Windows: CreateThread path (needs a thread-entry trampoline ABI check).
+- Linux: freestanding ELF, no libc; thread = raw `clone(2)` (fiddly child-stack + exit-syscall),
+  AND Linux ELF heap still BLOCKED ([[rfc0009-p3-elf-linux-target-wip]]) → shared-heap Linux
+  threads deferred; compute-only clone is the eventual path.
+**Fixing [[bug-global-write-param-return-lost]] is the prerequisite and is arguably higher
+priority than threads** — it silently miscompiles ordinary `fn f(x)->T { global=…; return … }`.
 
 ## Gate cmd (unchanged): `& scripts/fast_fixpoint.ps1` → cp fpB→axc_native →
 `REGTMP=bin/_regtmp AXC=bin/axc_native.exe bash scripts/regression_repros.sh`.
