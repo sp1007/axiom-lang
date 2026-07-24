@@ -1,0 +1,16 @@
+// RFC 0031 DFE root kind 4: a function reached ONLY by name through an
+// extern-"C" forward declaration must survive dead-function elimination.
+//
+// This mirrors the compiler's own resolver -> ax_driver_load_module cycle-break:
+// `helper_impl` is defined and native-emitted under symbol `ax_helper_impl`, and
+// `main` reaches it exclusively through the extern `ax_helper_impl` (bound by name
+// at link time). There is no OP_CALL edge to the definition, so without root kind 4
+// the -dfe walk prunes `helper_impl` and the self-link fails with an unresolved
+// external `ax_helper_impl`. Expected exit: 42.
+extern "C" fn ax_helper_impl(x: i64) -> i64
+
+fn helper_impl(x: i64) -> i64:
+    return x * 2 as i64
+
+fn main() -> i64:
+    return ax_helper_impl(21) as i64

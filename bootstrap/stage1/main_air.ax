@@ -807,7 +807,15 @@ pub fn main() -> i32:
     mut jumptable := false // RFC 0028: -jumptable — dense int match -> O(log N) compare tree
                            // for provably non-escaping, single-owner local aggregates.
     mut dfe_report_flag := false // RFC 0031: -dfe-report (measurement only)
-    mut dfe_enabled := false     // RFC 0031: -dfe (actually prune)
+    mut dfe_enabled := true       // RFC 0031: dead-function elimination is now ON BY DEFAULT —
+                                  // skip emitting functions unreachable from the root set (entry +
+                                  // #[export] + indirect-call/vtable roots). Every exe drops the
+                                  // ~75KB fixed stdlib overhead (return 42: 77,824 -> 22,016 B, -71.7%).
+                                  // Evidence base for flipping on: the compiler self-compiles
+                                  // byte-identically under prune (pruned generation reaches B==C), the
+                                  // full regression + ELF suite run green with pruning, and --staticlib
+                                  // is guarded off (a library must keep its whole public surface). Use
+                                  // -no-dfe to opt OUT (debugging a suspected missing root -> wild call).
     mut ctgc_report := false // RFC 0015 P3 precursor: -ctgc-free-report — dump the freeable
                              // set (print, no OP_DESTROY, byte-identical output). Measurement only.
                            // OFF by default so the self-host build stays byte-identical.
@@ -923,6 +931,11 @@ pub fn main() -> i32:
             // when diagnosing; that combination is what turned the ELF SIGSEGV
             // into a named function in a single build.
             dfe_enabled = true
+        elif opt == "-no-dfe" or opt == "--no-dfe":
+            // RFC 0031: opt OUT of the now-default dead-function elimination. Escape hatch for
+            // debugging a suspected incomplete root set (a call into an address that was never
+            // emitted), or to compare byte output against the un-pruned image.
+            dfe_enabled = false
         elif opt == "-ctgc-free-report" or opt == "--ctgc-free-report":
             ctgc_report = true
         opt_idx = opt_idx + 1

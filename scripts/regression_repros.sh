@@ -330,6 +330,10 @@ rows=(
   # Also pins the IMAGE_FILE_DLL fix: before it, an #[export] in an EXECUTABLE
   # forced the DLL characteristic and Windows refused to load the image at all.
   "t_dfeexport|exit|42"
+  # RFC 0031 DFE root kind 4: a function reached ONLY through an extern-"C" forward
+  # declaration (bound by name at link, no OP_CALL edge to the definition) must not be
+  # pruned. Bites on the old root set: -dfe there fails with unresolved 'ax_helper_impl'.
+  "t_dfeexternshadow|exit|42"
   "t_globarrnoinit|exit|40"
   # RFC 0017 P2 — aggregate-global write paths (user-code block-copy, not just init)
   "t_globwholeassign|exit|42"

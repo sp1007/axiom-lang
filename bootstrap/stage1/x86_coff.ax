@@ -493,6 +493,7 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
     mut total_funcs := 0 as i64
     mut root_exports := 0 as i64
     mut root_abi := 0 as i64
+    mut root_extern := 0 as i64
     mut has_entry := false
     mut fi := 0 as i64
     while fi < mod.funcs.len:
@@ -516,6 +517,33 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
             if not is_root and dfe_is_abi_name(nm):
                 is_root = true
                 root_abi = root_abi + 1 as i64
+            if not is_root:
+                //   4. reached by NAME through an extern-"C" forward declaration.
+                //      A module breaks a circular call — resolver -> ax_driver_load_module,
+                //      whose definition lives in the driver — by re-declaring the target as
+                //      `extern "C"` and calling THAT. The linker then binds the extern
+                //      reference to the definition by name, so, exactly like the ABI-name
+                //      shadows above, no OP_CALL edge to the definition exists for the walk
+                //      to follow: the definition looks call-less and gets pruned, producing
+                //      an `unresolved external symbol` at self-link. A defined function
+                //      whose emitted symbol equals an extern declaration's name in this same
+                //      module is therefore a root. The C-runtime externs (fopen, printf,
+                //      syscall, ...) have no internal definition with a matching mangled
+                //      name, so nothing matches them and this over-roots nothing.
+                mut xj := 1 as i64
+                while xj < nsym:
+                    let xs = &symbols.symbols.data[xj]
+                    let xs_extern = ((xs.flags & 4 as u16) != 0 as u16)
+                    if xs_extern and (xj != (f.sym_id as i64)):
+                        let xn = x86_resolve_sym_name(xj as u32, symbols, pool, table)
+                        if std.string.len(xn) > 0 as i64 and xn == nm:
+                            is_root = true
+                            root_extern = root_extern + 1 as i64
+                            xj = nsym
+                        else:
+                            xj = xj + 1
+                    else:
+                        xj = xj + 1
             if is_root:
                 if (f.sym_id as i64) < nsym:
                     reach[f.sym_id as i64] = true
@@ -537,6 +565,15 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
                         tgt = inst.type_id
                     elif inst.opcode == OP_FUNC_ADDR:
                         tgt = inst.src1
+                    elif inst.opcode == OP_SPAWN:
+                        // `spawn worker(...)` records the actor/thread entry function's
+                        // sym_id in type_id (air_builder.lower_spawn, from the callee
+                        // ident's payload); src1 holds the lowered callee reg, not 0, so
+                        // the OP_CALL branch above does not fire. The entry is reached ONLY
+                        // through this spawn — no direct call edge — so without following
+                        // it here the walk prunes the handler and the spawn relocation is
+                        // left dangling (unresolved external, a garbage symbol name).
+                        tgt = inst.type_id
                     if tgt != 0 as u32 and (tgt as i64) < nsym:
                         if not reach[tgt as i64]:
                             reach[tgt as i64] = true
@@ -566,8 +603,8 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
             if not h.is_extern and (h.sym_id as i64) < nsym and reach[h.sym_id as i64]:
                 reach_funcs = reach_funcs + 1 as i64
             hi = hi + 1
-        ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi)\n",
-            reach_funcs, total_funcs, root_exports, root_abi, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi + %d extern-shadow)\n",
+            reach_funcs, total_funcs, root_exports, root_abi, root_extern, 0 as i64, 0 as i64, 0 as i64)
         fflush(null as ptr[void])
     return reach
 
