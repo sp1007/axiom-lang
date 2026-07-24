@@ -69,4 +69,18 @@ Option-lvalue reassign + sum-lvalue reassign, guards over-reject). A==B `C3A821C
 - Still un-covered (niche, safe): a SUM param/lvalue receiving a DIFFERENT sum/Option (kind SUM vs SUM
   needs a type_id compare to avoid rejecting the same-sum case) — left as the call-arg note also left it.
 
-Related: [[bug-option-as-call-arg-not-rejected]], [[bug-option-arith-miscompile-open]].
+## Soundness re-confirmed 2026-07-24g (post-ship probing)
+Verified NO over-reject on valid generic code: generic free-fn calls returning a plain type bound to a
+plain local (`let s: str = identity[str]("hi")`, `let n: i64 = identity[i64](42)`, inferred form) all
+compile+run; `b.get()` method calls returning str don't reject. Decisive: the **A==B self-build is
+byte-identical**, and the 2 MB compiler source is saturated with generic-call-bound-to-local patterns —
+an over-reject there would have failed self-compilation. The ONE edge that trips the reject is a
+**malformed** call `get[str](b)` passing a `Box[str]` VALUE to a `ptr[Box[T]]` param (unresolved generic
+inference yields a bogus SUM-kind → the reject fires with a misleading "Option/Result/sum" message). It
+is on ALREADY-invalid code (the idiomatic `b.get()` form doesn't reject), so not a regression of valid
+code — at most a diagnostic-quality nit. Encountered while re-confirming the separate >8B generic-method
+return bug ([[bug-generic-struct-inline-method]], still reproduces on driver `C3A821C0`: R1 inline
+method→str = 127, R3m free-fn method→str = 74 — backend 16B-return-with-receiver codegen, B==C, fresh
+session per that note).
+
+Related: [[bug-option-as-call-arg-not-rejected]], [[bug-option-arith-miscompile-open]], [[bug-generic-struct-inline-method]].
