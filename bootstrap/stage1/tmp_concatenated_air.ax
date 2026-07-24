@@ -34053,7 +34053,10 @@ pub fn get_dll_for_symbol(name: str) -> str:
         name == "CreateDirectoryA" or name == "RemoveDirectoryA" or name == "DeleteFileA" or
         name == "MoveFileA" or name == "CopyFileA" or name == "GetFileAttributesA" or
         name == "GetCommandLineA" or name == "GetEnvironmentVariableA" or name == "SetEnvironmentVariableA" or
-        name == "GetCommandLineW"):
+        name == "GetCommandLineW" or
+        // RFC 0033 timer/thread (kernel32, not ucrtbase): Sleep + monotonic clock + threads.
+        name == "Sleep" or name == "QueryPerformanceCounter" or name == "QueryPerformanceFrequency" or
+        name == "GetSystemTimeAsFileTime" or name == "CreateThread" or name == "WaitForSingleObject"):
         return "kernel32.dll"
         
     let ptr = get_str_ptr(name)

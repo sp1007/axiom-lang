@@ -1,0 +1,56 @@
+// AXIOM Standard Library — std.timer
+//
+// RFC 0033 Phase B: cross-platform BLOCKING timer + monotonic clock (concurrency v1).
+//
+// Written in the grammar the compiler actually parses (indent bodies, free functions —
+// NO `impl` blocks or brace bodies), unlike std/time.ax which uses `impl Duration { ... }`
+// that the parser has no rule for. v1 provides only the BLOCKING primitives; an async
+// (suspending) timer belongs to the v2 reactor (epoll/IOCP) and is out of scope here.
+
+pub struct AxTimespec:
+    pub tv_sec: i64
+    pub tv_nsec: i64
+
+// Linux syscall gate (dead-code-folded away on Windows via is_windows).
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+// Windows kernel32 primitives (unresolved-but-unused on Linux; the calls are folded away).
+extern "C" fn Sleep(dwMilliseconds: u32)
+extern "C" fn QueryPerformanceCounter(lpPerformanceCount: ptr[i64]) -> i32
+extern "C" fn QueryPerformanceFrequency(lpFrequency: ptr[i64]) -> i32
+
+// Block the current thread for `ms` milliseconds.
+//   Windows: Sleep (kernel32).   Linux: nanosleep(2) = syscall 35.
+pub fn sleep_ms(ms: i64):
+    if ms <= 0 as i64:
+        return
+    if @compiler_intrinsic("is_windows"):
+        Sleep(ms as u32)
+    else:
+        mut req := AxTimespec(tv_sec: ms / 1000 as i64, tv_nsec: (ms % 1000 as i64) * 1000000 as i64)
+        mut rem := AxTimespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+        let preq = &req
+        let prem = &rem
+        syscall(35 as u64, preq as u64, prem as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+// Monotonic clock in nanoseconds, for measuring elapsed time (NOT wall-clock).
+//   Windows: QueryPerformanceCounter / Frequency (kernel32).
+//   Linux: clock_gettime(CLOCK_MONOTONIC=1) = syscall 228.
+pub fn now_ns() -> i64:
+    if @compiler_intrinsic("is_windows"):
+        mut counter := 0 as i64
+        mut freq := 0 as i64
+        QueryPerformanceCounter(&counter)
+        QueryPerformanceFrequency(&freq)
+        if freq == 0 as i64:
+            return 0 as i64
+        // Split to avoid overflow: whole seconds * 1e9 + fractional-ticks * 1e9 / freq.
+        return counter / freq * 1000000000 as i64 + (counter % freq) * 1000000000 as i64 / freq
+    else:
+        mut ts := AxTimespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+        let pts = &ts
+        syscall(228 as u64, 1 as u64, pts as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        return ts.tv_sec * 1000000000 as i64 + ts.tv_nsec
+
+// Milliseconds elapsed since a prior now_ns() reading.
+pub fn elapsed_ms_since(start_ns: i64) -> i64:
+    return (now_ns() - start_ns) / 1000000 as i64

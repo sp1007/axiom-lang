@@ -1,0 +1,52 @@
+// RFC 0033 Phase B — cross-platform blocking timer runtime oracle (self-contained).
+// Mirrors std/timer.ax (kept self-contained because the native -self-link bundle path only
+// wires a fixed stdlib list; bundling a timer into every program would bloat exes). Tests
+// the real cross-platform plumbing end-to-end: monotonic now_ns() + blocking sleep_ms(),
+// and the linker kernel32 routing added for Sleep / QueryPerformanceCounter. A 60ms sleep
+// must measure >= 30ms of monotonic elapsed time (and < 5s) — fails hard if Sleep/QPC
+// misroute (kernel32 vs ucrtbase) or return garbage. Lower bound is generous; load only
+// makes it LONGER.
+
+struct AxTimespec:
+    tv_sec: i64
+    tv_nsec: i64
+
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+extern "C" fn Sleep(dwMilliseconds: u32)
+extern "C" fn QueryPerformanceCounter(lpPerformanceCount: ptr[i64]) -> i32
+extern "C" fn QueryPerformanceFrequency(lpFrequency: ptr[i64]) -> i32
+
+fn sleep_ms(ms: i64):
+    if ms <= 0 as i64:
+        return
+    if @compiler_intrinsic("is_windows"):
+        Sleep(ms as u32)
+    else:
+        mut req := AxTimespec(tv_sec: ms / 1000 as i64, tv_nsec: (ms % 1000 as i64) * 1000000 as i64)
+        mut rem := AxTimespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+        let preq = &req
+        let prem = &rem
+        syscall(35 as u64, preq as u64, prem as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+
+fn now_ns() -> i64:
+    if @compiler_intrinsic("is_windows"):
+        mut counter := 0 as i64
+        mut freq := 0 as i64
+        QueryPerformanceCounter(&counter)
+        QueryPerformanceFrequency(&freq)
+        if freq == 0 as i64:
+            return 0 as i64
+        return counter / freq * 1000000000 as i64 + (counter % freq) * 1000000000 as i64 / freq
+    else:
+        mut ts := AxTimespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+        let pts = &ts
+        syscall(228 as u64, 1 as u64, pts as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        return ts.tv_sec * 1000000000 as i64 + ts.tv_nsec
+
+fn main() -> i32:
+    let t0 = now_ns()
+    sleep_ms(60 as i64)
+    let e = (now_ns() - t0) / 1000000 as i64
+    if e >= 30 as i64 and e < 5000 as i64:
+        return 42
+    return 1
