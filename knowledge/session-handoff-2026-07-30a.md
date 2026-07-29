@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 7509184 (code cuối ở bcf7746), driver A==B+B==C 42F49C73, 575/575 (+lượt -O0 575/575), KHÔNG còn bug OPEN. Đã SỬA 3 silent bug: (1) literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả); (2) aggregate local không initializer bind vào NULL (segfault mọi opt level); (3) HOLE#7 hàm user trùng tên stdlib + param interface không hề được gọi. CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD 7509184 (code cuối ở bcf7746), driver A==B+B==C 42F49C73, 575/575 (+lượt -O0 575/575), KHÔNG còn bug OPEN. Đã SỬA 3 silent bug: (1) literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả); (2) aggregate local không initializer bind vào NULL (segfault mọi opt level); (3) HOLE#7 hàm user trùng tên stdlib + param interface không hề được gọi. CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. Floor cả 4 shape ĐÃ soi (fib: full variant study; 3 shape kia: alignment + biến thể cấu trúc) và ĐỨNG VỮNG. Còn 1 câu hỏi cho USER: đo mốc bằng perf counter thay wall-clock?"
 metadata:
   type: project
 ---
@@ -12,8 +12,8 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `7509184`
-- HEAD **`7509184`** đã push; driver `bin/axc_native.exe` = **`42F49C73`** (`A==B` VÀ `B==C`).
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `e6e41c6`
+- HEAD **`e6e41c6`** đã push; driver `bin/axc_native.exe` = **`42F49C73`** (`A==B` VÀ `B==C`).
   Gate: **575/575** (code cuối cùng ở `bcf7746`; commit sau chỉ là memory),
   **lượt `-O0` toàn suite 575/575**, **KHÔNG còn bug OPEN**, ELF 12/12, ctgc 16/16, exe_size 4/4,
   lib_collision 6/6, so_export ✓.
@@ -78,13 +78,12 @@ metadata:
 - **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
   VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
-- **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**): (a) biến thể cấu trúc
-  cho 3 floor còn lại để chốt mốc; (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
+- **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**; mục (a) cũ — biến thể cấu trúc cho 3 floor — **ĐÃ LÀM XONG**, xem mục FLOOR ở trên): (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
   cao hơn allocator, KHÔNG đụng code self-host-critical; (c) `axiom-bug-probe` — **rất đáng làm**:
   phiên này probe ra **3 silent bug** (1 sai kết quả, 1 crash, 1 hàm không hề được gọi) — **cả ba** đều ở vùng **chưa có test** chứ không phải regression, và **cả ba đã được sửa trong phiên**.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
-- 🧹 **VÙNG ĐÃ QUÉT SẠCH cuối phiên — ĐỪNG probe lại** (2 batch, 0 phát hiện):
+- 🧹 **VÙNG ĐÃ QUÉT SẠCH cuối phiên — ĐỪNG probe lại** (batch 3–4, 0 phát hiện):
   (a) **literal lớn trong ngữ cảnh GENERIC**: `ident[T](-3000000000)`, `Box[i64](v: ...)`,
   `Vec[i64].push(...)`, array literal `[-3000000000, 5]` — đúng ở cả -O0/-O1.
   (b) **aggregate không-initializer, các biến thể**: tuple, array-of-struct, struct lồng,
