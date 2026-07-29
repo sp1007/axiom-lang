@@ -1,0 +1,22 @@
+// Oracle (exit 42): TWO-type-param generic struct with a nested ptr-self method — exercises
+// the multi-gen_param path of the auto-ref inference fix (bug-generic-struct-inline-method).
+// Pins both a large-i64 (non-truncation) and a str return through Pair[A,B].geta / KV[K,V].getval.
+struct Pair[A, B]:
+    a: A
+    b: B
+    fn geta(self: ptr[Pair[A, B]]) -> A:
+        return self.a
+struct KV[K, V]:
+    key: K
+    val: V
+    fn getval(self: ptr[KV[K, V]]) -> V:
+        return self.val
+fn main() -> i64:
+    let p: Pair[i64, i64] = Pair[i64, i64](a: 5000000123, b: 7)
+    let x: i64 = p.geta()
+    let kv: KV[i64, str] = KV[i64, str](key: 1, val: "hello")
+    let s: str = kv.getval()
+    mut acc: i64 = s.len
+    if x == 5000000123:
+        acc = acc + 37
+    return acc
