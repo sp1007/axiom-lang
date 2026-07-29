@@ -58,6 +58,20 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
   ⇒ Nới cửa sổ cho fold PHYS-source (bỏ qua MỘT lệnh không chạm `vT`) là ứng viên **ĐÃ ĐƯỢC
   XÁC NHẬN TRÊN IR THẬT**, khác hẳn giả thuyết shape-A đã bị bác ở trên.
 
+  ### ❓ QUAN SÁT CHƯA GIẢI THÍCH ĐƯỢC trong chính bản dump này — **đừng xây tiếp lên nó**
+  Hàm 17-lệnh (2 `MOV vX,PHYS` ở đầu ⇒ 2 tham số ⇒ **khớp `sumto`**, vì `main()` không tham số)
+  lại chứa **`MACH_LOAD` (27) và `MACH_STORE` (28)** ở lệnh 10–13. Nhưng disassembly CUỐI của
+  vòng lặp `sumto` **KHÔNG có một truy cập bộ nhớ nào**:
+  `cmp / je / lea / mov / add / mov / mov / jmp`.
+  ⇒ Một trong ba điều sau đúng, **tôi chưa xác định được cái nào**: (a) hàm 17-lệnh đó KHÔNG phải
+  `sumto` (filter dump là `result.len < 30`, `sumto` có thể dài hơn nên bị bỏ qua và tôi đã gán
+  sai); (b) tôi giải mã opcode sai; (c) có LOAD/STORE thật bị loại ở tầng sau mà tôi chưa hiểu.
+  ⚠️ **Hệ quả**: câu "lệnh 0–3 là chuỗi copy tham số **của `sumto`**" ở mục (2) bên dưới
+  **CHƯA ĐƯỢC XÁC MINH** ở phần *thuộc hàm nào*. Bản thân **mẫu xen kẽ** (`MOV vA,phys ;
+  MOV vB,phys ; MOV vC,vA ; MOV vD,vB`) là **có thật trong IR của MỘT hàm nào đó** — điều đó
+  không đổi — nhưng đừng tin nó là `sumto` cho tới khi dump lại **có in kèm TÊN HÀM**.
+  (Không sửa kết luận ưu tiên bên dưới: nó dựa trên **tần suất entry**, đúng bất kể hàm nào.)
+
   ### 📉 (2) TRẦN GIÁ TRỊ ĐÃ TÍNH — **thấp trên MỌI shape hiện có**, chưa đáng cài
   Chuỗi copy tham số nằm ở **ENTRY**, chạy **một lần mỗi LỜI GỌI**. Trên `t_tailrecloop`:
   `sumto` được gọi **2 000** lần, mỗi lần chạy **10 000** vòng nội bộ ⇒ entry chiếm
