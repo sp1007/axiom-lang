@@ -6,6 +6,51 @@ metadata:
   type: project
 ---
 
+## ⚡⭐⭐⭐ 2026-07-29g `6141531` — COALESCING SHIPPED: xorshift **313,7 → 218,8 ms (−30,2%)**, ĐÚNG BẰNG asm floor (217,4 ⇒ **1,006x**)
+
+Việc mà handoff 07-29f đã định giá trước (trần 89,8 ms) — **đo được 94,9 ms**, tức là ước lượng
+lần này ĐÚNG, lần đầu tiên trong file này sau bốn lần sai hai bậc độ lớn. Khe hở 1,42x của
+xorshift ĐÓNG. Đo ghép cặp xen kẽ, **lặp lại 2 vòng độc lập**, không chồng lấp: −30,5% rồi
+−30,2%. Shape khác: fib −2,2%/−2,6%, arrwalk −1,8%, callloop +0,5% (nhiễu).
+
+**Cài gì**: `coalesce_dest_copy` trong `x86_selector.ax` (peephole 1c, TRƯỚC regalloc), 2 hình dạng:
+- A: `MOV vT,vD ; OP vT,C ; MOV vD,vT` → `OP vD,C` (ADD/SUB/IMUL/AND/OR/XOR/SHL/SAR/SHR)
+- B: `LEA vT,[vI+1] ; MOV vI,vT` → `LEA vI,[vI+1]` (bộ đếm vòng lặp)
+
+Thân vòng lặp phát ra nay **giống hệt NASM viết tay** (`mov rdx,rax; shl rdx,13; xor rax,rdx` ×3),
+và `push %rbx` biến mất khỏi prologue.
+
+⭐⭐ **VÌ SAO ĐÂY KHÔNG PHẢI copy-prop đã bị bỏ (07-29e), và vì sao lần này KHÔNG spill**: bản cũ
+propagate **XUÔI** (thay use của dest bằng src) ⇒ **KÉO DÀI** live range ⇒ allocator spill ⇒ fib
+−6,5%. Bản này fold temp **NGƯỢC** vào một biến vốn đã sống suốt vùng đó rồi **XOÁ HẲN** temp ⇒
+số vreg sống đồng thời tại mọi điểm **không tăng, có thể giảm 1** ⇒ **về cấu trúc không thể gây
+spill**. Đây là phân biệt cần nhớ: "xoá copy" không phải một loại việc — hướng fold quyết định.
+
+⭐⭐⭐ **VÌ SAO `move_partner` BIAS TRONG ALLOCATOR KHÔNG BAO GIỜ VỚI TỚI ĐƯỢC** (trả lời câu hỏi
+bỏ ngỏ của handoff 07-29f — giả thuyết 1 ĐÚNG, không phải giả thuyết 2 "first-move-wins"): bias chỉ
+bỏ cạnh interference khi 2 live range **chạm biên** (`x86_regalloc.ax:817`). Ở đây `vD` là biến
+**LOOP-CARRIED**: mô hình interval **gộp mọi def của nó thành MỘT range phủ cả vòng lặp**, nên temp
+nằm **HẲN BÊN TRONG** ⇒ hai bên interfere THẬT dưới mô hình đó. Không tô màu thiên vị nào gỡ được.
+⇒ **Bài học tổng quát: copy quanh một biến loop-carried phải bị xoá TRƯỚC regalloc; allocator dùng
+interval gộp-def về nguyên tắc không thấy được rằng giá trị CŨ đã chết.** (Và vì thế George–Appel
+iterated coalescing cũng sẽ KHÔNG giải quyết được ca này nếu vẫn nuôi bằng interval gộp-def.)
+
+**An toàn = MỘT tiêu chí, không phải dataflow**: `counts[vT]` trên TOÀN hàm phải bằng đúng số slot
+mà chính pattern chiếm (3 cho A, 2 cho B) ⇒ chứng minh vT không dùng ở đâu khác, **không cần suy
+luận CFG** — đúng thứ giả định mà copy-prop cũ đã sai (nó tin thứ tự vật lý = thứ tự topological).
+Liền kề (adjacent) đã tự chứng minh không nhánh nào rơi vào giữa, vì `MACH_LABEL` là một slot thật.
+
+⭐ **Oracle `t_coalescedest`(42) ĐƯỢC HIỆU CHUẨN, không phải giả định** — cả 2 guard đã thấy NỔ:
+nới `counts == 3` thành `>= 3` ⇒ exit **8** (đúng dòng `reused_temp`); hoán vị toán hạng khi fold ⇒
+exit **6** = `subchain`+`shiftchain`, trong khi `xorstep` (giao hoán) vẫn xanh ⇒ **các dòng đó
+không phải đồ trang trí**. 9 dòng, có cả guard âm: float ALU (ngoài whitelist), field struct
+(không liền kề), temp còn được đọc lại.
+
+Gate: seed == A == B `2077495B` (tự tái tạo) và B == C, regression **561/561**, ELF 12/12,
+ctgc 16/16, exe_size 4/4, lib_collision 6/6, so_export ✓.
+
+---
+
 **M6 perf gate = FOCUS (user-chosen 2026-07-24e).** Target: AXIOM within 5% of clang -O2 on
 Fib(40). Reproducible harness: **`scripts/perf_fib.ps1`** (i64-vs-`int64_t`, best-of-7, pins exit
 203, prints `M6_PERF_OK`/`M6_PERF_GAP`). Re-run it after EVERY codegen change to measure the delta.
