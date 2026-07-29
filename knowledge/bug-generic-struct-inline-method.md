@@ -1,12 +1,42 @@
 ---
 name: bug-generic-struct-inline-method
-description: "OPEN bug (probe-found 2026-07-24e): calling an INLINE method (defined in the struct body) on a GENERIC struct instance SEGFAULTS — regardless of the method body (even `return 7`). Non-generic inline methods work; the SAME method written as a free function `fn m[T](self: ptr[Box[T]])` works (the workaround). So inline methods on generic structs are not monomorphized/dispatched correctly for the instance."
+description: "FULLY FIXED 2026-07-24g (641D2653, 543/543, A==B): generic type-arg inference through a nested ptr-self param (self: ptr[Hold[T]]) defaulted T to i32 for ANY generic fn (inline method OR free-fn, UFCS or direct) — str returns crashed, i64 returns silently TRUNCATED. The long-banked '>8B return codegen' framing was WRONG; root was a 2-line auto-ref gap in infer_generic_type_args. Earlier 8B-T inline-method dispatch fix shipped ccfd1af7. Oracle t_genptrselfmono."
 metadata:
   node_type: memory
   type: project
 ---
 
-## ✅ FIXED 2026-07-24e (8-byte-T cases) — driver `ccfd1af7`, 534/534, B==C
+## ✅✅ FULLY FIXED 2026-07-24g — driver `641D2653`, 543/543, A==B — ROOT WAS NOT ">8B RETURN CODEGEN"
+**The entire ">8B return codegen / sret-with-receiver" framing below (banked across many ticks) was
+WRONG.** A clean re-probe with a UNIQUELY-named method (`fetchxq`, to avoid the stdlib-`get` trace
+pollution the notes kept hitting) + an `XQCALL` trace at the OP_CALL selection showed the mono'd
+instance was named **`ax__AX_std_Hold__i32__...fetchxq__i32`** with `ret_tid=3 size=4 kind=0` — i.e.
+`Hold[str]` was being monomorphized as **`Hold[i32]`**. The type param `T` was DEFAULTING TO i32.
+- **The "8-byte-T works" evidence was a coincidence:** `Hold[i64]`.item=42 also mono'd as i32 and
+  returned 42 only because 42 fits in 4 bytes. `bigval` (i64 = 5000000123 > 2^32) returned the
+  TRUNCATED low 32 bits → the i64 case was ALSO broken, just invisibly.
+- **NOT inline-method-specific, NOT >8B-specific:** the free-fn forms (`h.fetchxq2()` UFCS AND
+  `fetchxq3(h)` direct) truncated identically. It is ANY generic fn whose `T` appears ONLY inside a
+  nested `ptr[Hold[T]]` param.
+**ROOT (typecheck.ax `infer_generic_type_args` ~L990/L1026):** the `ptr[..]`-param handling recursed
+into the inner type ONLY when the ARG type was itself POINTER/REF kind. But for UFCS/auto-ref calls
+the receiver `h: Hold[i64]` is passed as a VALUE (not yet `ptr[Hold[i64]]`), so the condition failed,
+the recursion was skipped, `T` never bound, and mono defaulted it to i32. Vec/HashMap methods escape
+this because they are backend-intercepted builtins, not routed through this inference.
+**FIX:** in both `ptr` branches (the `is_ptr` NODE_GENERIC_TYPE case and NODE_PTR_TYPE), add an `else`:
+when the arg is NOT pointer/ref (the auto-ref case), recurse matching the inner param against the arg
+DIRECTLY (the arg IS the pointee). 2 small edits, typecheck-only. Gate: fast fixpoint **A==B
+`641D2653`** (self-host inert — the compiler's own generic-ptr-self code was already correct or unused
+via this path), regression **543/543** (+`t_genptrselfmono`: inline method str-return=5 + i64>2^32
+non-truncation + free-fn direct, O0==O1=42). Oracle `bin/t_genptrselfmono.ax`.
+⭐ **LESSON:** a bug banked as "return-value ABI codegen, no working reference, needs deep session" was
+actually a 2-line **type-INFERENCE** fix — the wrong layer entirely. The misdirection came from (1)
+tracing on the common name `get` (stdlib pollution, self-corrected once but the conclusion drifted),
+and (2) the i64 case "passing" hid that mono was wrong for it too. A unique-named repro + a call-site
+trace printing the MANGLED instance name (`Hold__i32`) exposed the real cause in one build. When a bug
+resists a documented layer, re-probe with a unique name and read the mono'd SYMBOL NAME, not the codegen.
+
+## (superseded) ✅ FIXED 2026-07-24e (8-byte-T cases) — driver `ccfd1af7`, 534/534, B==C
 The fix turned out to be **parser-only** (the dispatch/mono "just works" once the method is
 structurally identical to the free-fn form): `parse_struct_decl` now calls `inherit_struct_generics`
 on each inline method — clones the struct's generic-params subtree (`clone_subtree`) as the method's

@@ -1,0 +1,22 @@
+// Oracle (exit 42): generic type-arg inference through a nested `ptr[Hold[T]]` param.
+// Was BUG#: T defaulted to i32 for any generic fn whose T appears only inside a ptr-self
+// param (inline method OR free-fn, UFCS or direct) -> str return crashed (127) and i64
+// returns silently TRUNCATED to i32. Fixed in infer_generic_type_args (auto-ref: match the
+// inner param against a value arg). See knowledge/bug-generic-struct-inline-method.md.
+struct Hold[T]:
+    item: T
+    fn fetchit(self: ptr[Hold[T]]) -> T:
+        return self.item
+fn freeget[T](self: ptr[Hold[T]]) -> T:
+    return self.item
+fn main() -> i64:
+    let hs: Hold[str] = Hold[str](item: "hello")
+    let s: str = hs.fetchit()                 // inline method, >8B str return
+    let hi: Hold[i64] = Hold[i64](item: 5000000123)
+    let v: i64 = hi.fetchit()                 // i64 > 2^32: must NOT truncate to i32
+    let hf: Hold[i64] = Hold[i64](item: 100)
+    let w: i64 = freeget(hf)                  // free-fn direct call
+    mut acc: i64 = s.len                      // 5
+    if v == 5000000123:
+        acc = acc + 37                        // -> 42 only if no truncation
+    return acc + w - 100                      // 42 + 100 - 100 = 42

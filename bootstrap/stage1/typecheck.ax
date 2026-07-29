@@ -995,6 +995,13 @@ pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u3
                     if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
                         let inner_arg_type = entry.extra
                         self.infer_generic_type_args(arg_idx, inner_arg_type, gen_params, inferred, src_tree)
+                    else:
+                        // AUTO-REF: a value arg passed to a `ptr[..]` param (UFCS `h.m()` or
+                        // `m(h)` where `h: Hold[i64]` binds a `self: ptr[Hold[T]]`). The arg IS
+                        // the pointee, so match the inner param type against the arg DIRECTLY —
+                        // else T is never inferred from the nested `Hold[T]` and defaults to i32,
+                        // mis-monomorphizing the whole instance ([[bug-generic-struct-inline-method]]).
+                        self.infer_generic_type_args(arg_idx, arg_type, gen_params, inferred, src_tree)
             elif is_slice:
                 let arg_idx = base_node.next_sibling
                 if arg_idx != 0 as u32:
@@ -1031,6 +1038,11 @@ pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u3
             if entry.kind == TYPE_KIND_POINTER or entry.kind == TYPE_KIND_REF:
                 let inner_arg_type = entry.extra
                 self.infer_generic_type_args(inner_node_idx, inner_arg_type, gen_params, inferred, src_tree)
+            else:
+                // AUTO-REF: value arg to a `ptr[..]` param (see the NODE_GENERIC_TYPE `is_ptr`
+                // branch above). Match the inner param against the arg directly so a nested
+                // `ptr[Hold[T]]` still infers T. [[bug-generic-struct-inline-method]]
+                self.infer_generic_type_args(inner_node_idx, arg_type, gen_params, inferred, src_tree)
     elif kind == NODE_SLICE_TYPE:
         let inner_node_idx = src_tree.nodes.data[tn_idx].first_child
         if inner_node_idx != 0 as u32:

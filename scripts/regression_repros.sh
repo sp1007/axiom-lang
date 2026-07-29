@@ -248,6 +248,7 @@ rows=(
   "t_optletok|exit|37"
   "t_optasgreject|reject|"
   "t_optasgok|exit|42"
+  "t_genptrselfmono|exit|42"
   "t_unwrapok|exit|42"
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"
