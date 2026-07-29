@@ -214,6 +214,41 @@ the 553-oracle regression is what caught it. (3) Reassuringly, B converged to th
 `1D9E3AE2` when seeded from both the trusted baseline and the buggy intermediate — seed-independence
 is a cheap extra signal that a fixpoint is real.
 
+## ⭐⭐⭐⭐⭐ 2026-07-29b — THE CODEGEN BACKLOG IS NOW **PRICED** (`scripts/perf_asm_variants.ps1`)
+Rather than implement-then-measure (which cost three sessions), take the hand-written NASM floor
+and re-introduce AXIOM's codegen habits ONE AT A TIME in assembly. Each delta is that habit's
+price, measured, with zero compiler risk. fib(40), best of 7 (V0 reruns at 537–541 ms ⇒ noise ±3):
+
+| variant | ms | delta | verdict |
+|---|---|---|---|
+| V0 floor (early exit, no rbp, 2 csr, lea/dec) | 537.7 | – | |
+| V1 + frame BEFORE the early-exit test | 538.2 | **+0.5** | **shrink wrapping is WORTHLESS** |
+| V2 + rbp frame pointer | 521.1 | **−17.1** | **frame-pointer omission is WORTHLESS** (even slightly faster) |
+| V3 + copy chain + 3rd callee-saved | 622.3 | **+101.2** | ← register **coalescing** |
+| V3b + `mov/sub` instead of `lea`/`dec` | 737.6 | **+115.3** | ← instruction **selection** (biggest) |
+| V4 + `jcc`+`jmp` instead of fallthrough | 779.9 | **+42.3** | ← block **layout** |
+
+V4 is a faithful transcription of what AXIOM emits and lands at 780 vs AXIOM's 817 (~4.5%
+residual) ⇒ **the codegen gap is fully explained**, and the sum of the three real items (~258 ms)
+is essentially all of it.
+
+⛔ **DO NOT IMPLEMENT shrink wrapping or frame-pointer omission.** Both measure zero. push/pop of
+a hot stack are nearly free on modern x86 (dedicated stack engine, L1-hot lines); the intuition
+that "half of fib's 331M calls pay a useless prologue" is arithmetically true and
+performance-irrelevant. This was predicted at 10–20% and measured at 0.1% — the estimate was
+wrong by two orders of magnitude. Note clang does not shrink-wrap fib either.
+
+⭐ **Priority (measured, not guessed): (1) selection `lea`/`dec` for `reg±const`, (2) register
+coalescing, (3) block layout.** ⚠️ The 2026-07-24e `lea` attempt REGRESSED — but the pricing shows
+the `lea` FORM is worth ~115 ms, so that failure was about *where* the transform lived (a
+post-selection peephole that lengthened a live range and provoked a spill), not about its value.
+Do it inside the selector's OP_IADD/OP_ISUB lowering, co-designed with coalescing.
+
+⭐⭐ **METHOD** — this is the reusable win: an assembly harness prices an optimization BEFORE any
+compiler code is written. Two of five candidates turned out to be worth nothing, which no amount
+of reasoning about instruction counts revealed. Price first, then implement.
+See also [[rfc0034-ir-pipeline-evolution]] for how this reprioritizes a mid-end redesign.
+
 ## Revised direction (the honest one)
 The 3 remaining "instruction-shaving" peepholes (lea, copy-coalescing, branch fallthrough) all risk
 the same regalloc backfire, AND opt A proved even a clean 1-insn win is noise on a 2.58x gap. The gap
