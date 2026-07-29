@@ -58,7 +58,29 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
   ⇒ Nới cửa sổ cho fold PHYS-source (bỏ qua MỘT lệnh không chạm `vT`) là ứng viên **ĐÃ ĐƯỢC
   XÁC NHẬN TRÊN IR THẬT**, khác hẳn giả thuyết shape-A đã bị bác ở trên.
 
-  ### ❓ QUAN SÁT CHƯA GIẢI THÍCH ĐƯỢC trong chính bản dump này — **đừng xây tiếp lên nó**
+  ### ✅ ĐÃ GIẢI QUYẾT — **tôi ĐỌC SAI dump: hàm 17-lệnh KHÔNG PHẢI `sumto`**
+  Dump lại, in **một dòng mỗi hàm** (name_id + số tham số + số lệnh), **KHÔNG lọc theo kích cỡ**:
+  ```
+  [probeID] name_id=739 params=2 insts=23   <- sumto  (name_id cao nhất, khai báo sau cùng)
+  [probeID] name_id=740 params=0 insts=16   <- main
+  ```
+  ⇒ **`sumto` có 23 lệnh, không phải 17.** Hàm 17-lệnh mà tôi đọc là **một hàm stdlib 2-tham-số**
+  được bundle — và ở đó `LOAD`/`STORE` là **hoàn toàn hợp lý**. Cả hai điều bí ẩn tan cùng lúc.
+
+  ⭐ **Nguyên nhân đọc sai**: output bị **cắt bởi `Select-Object -First 40`**, tôi lấy dump CUỐI
+  CÙNG NHÌN THẤY rồi gán cho `sumto`. Bộ lọc `result.len < 30` thực ra ĐÃ bắt cả `sumto` (23) lẫn
+  `main` (16) — chúng chỉ nằm **dưới chỗ bị cắt**.
+  ⇒ **Bài học: khi dump nhiều mục, PHẢI in định danh trên MỖI mục và ĐỪNG cắt output** — nếu
+  không, "mục cuối cùng tôi thấy" bị nhầm thành "mục tôi đang tìm". Đây là biến thể của bài học 5
+  (bằng chứng sai tầng), nhưng ở tầng **công cụ quan sát**, không phải tầng compiler.
+
+  ⚠️ **HỆ QUẢ CHO MỤC (2) BÊN DƯỚI**: mẫu xen kẽ `MOV vA,phys ; MOV vB,phys ; MOV vC,vA ;
+  MOV vD,vB` là của **hàm stdlib 17-lệnh đó**, **KHÔNG phải `sumto`**. Nó vẫn là mẫu THẬT trong IR
+  thật (nên fold-window vẫn là ứng viên hợp lệ), nhưng **mọi suy luận gắn nó với khe hở −15,27%
+  của `sumto` đều VÔ CĂN CỨ**. Stream 23-lệnh của `sumto` **chưa từng được đọc** — đó mới là chỗ
+  phải xem nếu muốn truy khe hở đó.
+
+  ### ~~❓ QUAN SÁT CHƯA GIẢI THÍCH~~ (đã giải quyết ngay trên; giữ lại để thấy đường suy luận)
   Hàm 17-lệnh (2 `MOV vX,PHYS` ở đầu ⇒ 2 tham số ⇒ **khớp `sumto`**, vì `main()` không tham số)
   lại chứa **`MACH_LOAD` (27) và `MACH_STORE` (28)** ở lệnh 10–13. Nhưng disassembly CUỐI của
   vòng lặp `sumto` **KHÔNG có một truy cập bộ nhớ nào**:
