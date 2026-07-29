@@ -1,0 +1,34 @@
+// Oracle (POSITIVE, exit 105): guards the fn-vs-type collision reject against
+// OVER-rejection. Everything here is legal and must keep compiling:
+//   - a distinctively-named top-level fn (no bundled-stdlib clash)
+//   - a real fn-vs-fn OVERLOAD set (same name, different arity) -- the adjacent
+//     path in SymbolTable.define, which must still merge into an overload chain
+//   - a user struct plus a free-fn method on it, whose names do NOT collide
+// Pairs with t_fnstructcollide (the reject side).
+mut g: i64 = 0
+
+struct zqbox:
+    v: i64
+
+fn zqscale(self: ptr[zqbox], k: i64) -> i64:
+    return self.v * k
+
+fn zqpick(a: i64) -> i64:
+    return a + 1 as i64
+
+fn zqpick(a: i64, b: i64) -> i64:
+    return a + b
+
+fn zqworker(n: i64) -> i64:
+    g = 42 as i64
+    return n + 100 as i64
+
+fn main() -> i32:
+    let w = zqworker(5 as i64)          // 105
+    let one = zqpick(9 as i64)          // 10   (1-arg overload)
+    let two = zqpick(4 as i64, 6 as i64) // 10   (2-arg overload)
+    mut b := zqbox(v: 5 as i64)
+    let s = (&b).zqscale(2 as i64)      // 10
+    if one != 10 as i64 or two != 10 as i64 or s != 10 as i64 or g != 42 as i64:
+        return 1 as i32
+    return w as i32

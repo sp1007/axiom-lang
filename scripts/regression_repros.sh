@@ -678,6 +678,12 @@ rows=(
   # RFC 0029 polymorphic dispatch through Vec[Interface] + mut-reassign to another impl
   # + 2-method interface (vtable slot ordering).
   "t_ifacevecpoly|exit|70"
+  # fn-vs-TYPE name collision: `fn worker` clashed with the bundled `struct worker`
+  # (std/scheduler.ax) and SILENTLY aliased its symbol -> the user function was never
+  # called (wrong answer, no diagnostic). Now rejected; the OK row guards against
+  # over-rejecting legal fn-vs-fn overload sets and distinctly-named functions.
+  "t_fnstructcollide|reject|"
+  "t_fnstructok|exit|105"
 )
 
 for row in "${rows[@]}"; do

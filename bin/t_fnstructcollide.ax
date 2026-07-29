@@ -1,0 +1,15 @@
+// Oracle (REJECT): a top-level function whose name matches a bundled stdlib STRUCT.
+// `struct worker` lives in std/scheduler.ax, which is bundled into EVERY program, and
+// SymbolTable.define keeps one namespace per scope: on a fn-vs-struct clash it returned
+// the EXISTING (struct) symbol, so `worker(5)` linked to the struct's symbol and this
+// function was never called -- a silent wrong answer (got 8, wanted 105).
+// See knowledge/bug-user-fn-stdlib-struct-name-collision.md. Must be REJECTED.
+mut g: i64 = 0
+
+fn worker(n: i64) -> i64:
+    g = 42 as i64
+    return n + 100 as i64
+
+fn main() -> i32:
+    let r = worker(5 as i64)
+    return r as i32

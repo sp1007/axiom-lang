@@ -3416,6 +3416,24 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             
     elif kind == NODE_FUNC_DECL:
         let sym_idx = self.tree.nodes.data[node_idx].payload
+        // Silent-miscompile guard: fn-vs-TYPE name collision.
+        // `SymbolTable.define` (resolver.ax ~L574) keeps ONE namespace per scope and
+        // only merges FUNC-with-FUNC into an overload chain; on any OTHER cross-kind
+        // clash it returns the EXISTING symbol. A top-level `fn worker` therefore
+        // ALIASES the bundled `struct worker` (std/scheduler.ax, bundled into every
+        // program), so this decl's payload is the STRUCT's symbol, every `worker(..)`
+        // call links elsewhere, and the user function is never called — a wrong answer
+        // with no diagnostic at all. Detect it exactly: a FUNC_DECL whose resolved
+        // symbol is not a function. Reject rather than mis-link; proper per-module
+        // symbol namespacing is the cross-library-collision RFC (task #2).
+        if sym_idx != 0 as u32:
+            let clash = self.symtable.symbols.data[sym_idx]
+            if clash.kind == SYM_STRUCT or clash.kind == SYM_INTERFACE or clash.kind == SYM_TYPE_ALIAS or clash.kind == SYM_VARIANT:
+                mut cname := "?"
+                if clash.name_id != 0 as u32:
+                    cname = self.intern.get(clash.name_id)
+                ax_printf_local("error: function '%s' has the same name as a type already in scope (a bundled stdlib type or an earlier declaration); calls would link to the type's symbol instead of this function - rename the function\n", get_str_ptr(cname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.diags_count = self.diags_count + 1 as i64
         mut ret_type := TYPE_UNKNOWN
         if sym_idx != 0 as u32:
             let sym = self.symtable.symbols.data[sym_idx]
