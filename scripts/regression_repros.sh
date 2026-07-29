@@ -43,6 +43,8 @@ rows=(
   "t_coalescedest|exit|42"
   "t_aluimmfold|exit|42"
   "t_negbiglitcmp|exit|42"
+  "t_localarrnoinit|exit|12"
+  "t_localstructnoinit|exit|12"
   "t_param5|out|A38"
   "t_strip|out|a.b len exit print"
   "t_alias|out|A=1 B=0 "
@@ -826,7 +828,7 @@ done
 # Kept to the O0-sensitive cases rather than sweeping all 564 at -O0: a full sweep doubles
 # runtime for one extra failure. `AXEXTRA=-O0 scripts/regression_repros.sh` runs the whole
 # suite that way when a wider check is wanted (it is green as of 2026-07-30).
-for z in "t_negbiglitcmp:42" "t_tostr:88"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

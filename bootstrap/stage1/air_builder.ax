@@ -4472,14 +4472,52 @@ pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         ))
         self.locals.local_map_put(name_id, reg)
     else:
+        // A declaration with no initializer. For a SCALAR, binding the name to a zero
+        // constant is right: `mut x: i64` then `x = 7` works, and that behaviour is what
+        // the language already promises.
+        //
+        // For an AGGREGATE it is not. An array or struct variable holds a POINTER to its
+        // storage, so OP_ICONST bound the name to integer 0 -- a null pointer -- and the
+        // first element or field store wrote through it. `mut arr: [i64; 2]` followed by
+        // `arr[0] = 7` SEGFAULTED at every optimisation level, with no diagnostic: the
+        // compiler exited 0 and emitted a binary that died. Same for `mut p: P` with a
+        // struct type.
+        //
+        // Reserving the storage here makes aggregates behave the way scalars already do.
+        // This is a consistency fix, not a semantic choice -- rejecting the form instead
+        // would have contradicted the scalar case, which has always worked. Covering
+        // struct, array AND tuple together on purpose: fixing only the array shape this
+        // was reported from would repeat the partial-fix mistake recorded in
+        // bug-f32-compare-float-literal, where a rule was added on one branch and its
+        // sibling forgotten.
+        //
+        // Nothing changes for scalars: they take the same OP_ICONST path as before.
+        mut decl_type := 0 as u32
+        if node.payload != 0 as u32 and (node.payload as i64) < self.mb.symbols.symbols.len:
+            let dsym = self.mb.symbols.symbols.data[node.payload as i64]
+            if dsym.type_id != 0 as u32:
+                decl_type = dsym.type_id as u32
+        mut is_aggregate := false
+        if decl_type != 0 as u32 and (decl_type as i64) < self.mb.typetable.entries.len:
+            let dkind = self.mb.typetable.entries.data[decl_type as i64].kind
+            is_aggregate = dkind == TYPE_KIND_STRUCT or dkind == TYPE_KIND_ARRAY or dkind == TYPE_KIND_TUPLE
         let reg = self.fb.fresh_reg()
-        self.fb.emit(AirInst(
-            opcode: OP_ICONST,
-            type_id: type_id,
-            dest: reg,
-            src1: 0 as u32,
-            src2: 0 as u32,
-        ))
+        if is_aggregate:
+            self.fb.emit(AirInst(
+                opcode: OP_ALLOC,
+                type_id: decl_type,
+                dest: reg,
+                src1: 0 as u32,
+                src2: 0 as u32,
+            ))
+        else:
+            self.fb.emit(AirInst(
+                opcode: OP_ICONST,
+                type_id: type_id,
+                dest: reg,
+                src1: 0 as u32,
+                src2: 0 as u32,
+            ))
         self.locals.local_map_put(name_id, reg)
 
 // RFC 0006 (#38.1): lower the RHS value of an assignment, applying compound
