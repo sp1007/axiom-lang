@@ -688,6 +688,12 @@ rows=(
   # std/string.ax `concat`) aliased the function symbol and reported that function's
   # arity for a plain struct construction. Now names the collision.
   "t_structfncollide|reject|"
+  # CTGC free (default-ON) must stay observationally inert across every loop exit
+  # (fall-through / continue / break) and on an early return with a live freeable
+  # local. break+continue are deliberately NOT freed yet (safe leak) -- these pin the
+  # behaviour so activating them surfaces any UAF/double-free at once.
+  "t_ctgcloopexit|exit|42"
+  "t_ctgcvecexit|exit|42"
 )
 
 for row in "${rows[@]}"; do

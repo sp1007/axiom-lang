@@ -1,0 +1,49 @@
+// Oracle (exit 42): CTGC free (default-ON since AF899BDF) must stay observationally
+// INERT across every loop exit. Covers the three paths a freeable local can leave a
+// scope by -- fall-through, `continue`, `break` -- plus an early `return` with a live
+// freeable local (the 12DBE1D8 return-path free). RFC 0015 P3 deliberately leaves
+// break/continue paths UN-freed (a safe leak); this oracle exists so that when they
+// are activated, any UAF/double-free shows up immediately. Verified identical with
+// and without -no-ctgc-free at O0/O1/O2.
+mut dc: i64 = 0
+
+struct R:
+    id: i64
+
+    fn drop(self):
+        dc = dc + 1
+
+// loop body with a freeable local exercised on THREE exits: fall-through,
+// `continue`, and `break` (the two paths RFC 0015 P3 left un-freed).
+fn loopy(n: i64) -> i64:
+    mut i = 0 as i64
+    mut acc = 0 as i64
+    while i < n:
+        let r = R(id: i)
+        i = i + 1 as i64
+        if r.id == 2 as i64:
+            continue
+        if r.id == 4 as i64:
+            break
+        acc = acc + r.id
+    return acc
+
+// early return with a freeable local live on the returning path (new 12DBE1D8 code)
+fn early(k: i64) -> i64:
+    let a = R(id: k)
+    if a.id > 1 as i64:
+        let b = R(id: 100 as i64)
+        return a.id + b.id
+    return a.id
+
+fn main() -> i32:
+    let x = loopy(10 as i64)      // 0 + 1 + 3 = 4
+    if x != 4 as i64:
+        return 11 as i32
+    let y = early(5 as i64)       // 5 + 100 = 105
+    if y != 105 as i64:
+        return 12 as i32
+    let z = early(0 as i64)       // 0
+    if z != 0 as i64:
+        return 13 as i32
+    return 42 as i32

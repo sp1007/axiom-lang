@@ -1,0 +1,33 @@
+// RFC 0027 container free-glue x control-flow exits: a Vec local's buffer is freed
+// at scope exit when the Vec does not escape. Returning one must NOT free it.
+fn build(n: i64) -> i64:
+    mut v := Vec[i64].new()
+    mut i = 0 as i64
+    while i < n:
+        v.push(i)
+        i = i + 1 as i64
+        if i == 3 as i64:
+            continue
+        if i == 6 as i64:
+            break
+    mut s = 0 as i64
+    mut j = 0 as i64
+    while j < v.len:
+        s = s + v.get(j).unwrap()
+        j = j + 1 as i64
+    return s
+
+fn escaper(n: i64) -> Vec[i64]:
+    mut v := Vec[i64].new()
+    v.push(n)
+    v.push(n + 1 as i64)
+    return v
+
+fn main() -> i32:
+    let s = build(10 as i64)          // pushes 0..5 then breaks -> 0+1+2+3+4+5 = 15
+    if s != 15 as i64:
+        return 11 as i32
+    let e = escaper(10 as i64)        // escapes -> must NOT be freed
+    if e.get(0).unwrap() + e.get(1).unwrap() != 21 as i64:
+        return 12 as i32
+    return 42 as i32
