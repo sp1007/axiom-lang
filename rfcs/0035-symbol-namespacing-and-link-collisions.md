@@ -206,6 +206,24 @@ Sequencing for P2, each step independently gated:
   Note for step 2: symbols that are NOT owned by the unit (bundled stdlib, runtime/ABI names)
   must keep their present names — the qualifier applies to the unit's OWN definitions only.
 
+- **Both sites are already located, and each already has the module name in hand.**
+  1. **App side — `register_module_from_lib`** (`main_air.ax:1539`), which takes `mod_name: str`
+     as a parameter. Its own comment states the defect in so many words: *"The symbol carries
+     only SYM_FLAG_PUB, so cgen mangles the call target as plain `ax_<name>`, which matches the
+     library's exported symbol."* That match is exactly what makes two libraries indistinguishable.
+     This is where an imported symbol would be marked as owned by `mod_name`.
+  2. **Library side — the `--staticlib` compilation**, where the unit's own name is known from
+     the source/output path, and `build_lib_iface_text` (`linker.ax:1495`) writes the `F` lines
+     that the app later reads back. The emitted symbol and the iface entry must agree.
+
+  Because `--auto-lib` is opt-in and currently BROKEN for same-name libraries (RFC 0035 §2), a
+  first increment can change ONLY that path: qualify a library's own public symbols and the
+  imports registered from a `.lib`. The self-host build uses neither, so it should be inert —
+  which also gives a clean `A==B` signal that nothing else moved. **But note the trap this RFC
+  already fell into once: `A==B` inert is ALSO what a dead no-op looks like.** Any such increment
+  must be accompanied by the §2 repro (two libraries, same function name, both called, expected
+  30) actually returning 30, not merely by a green gate.
+
 ## 8. Migration
 
 P1 (shipped) is additive and inert on the normal path. P2 must land in one commit with all the
