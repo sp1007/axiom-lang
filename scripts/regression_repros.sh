@@ -684,6 +684,10 @@ rows=(
   # over-rejecting legal fn-vs-fn overload sets and distinctly-named functions.
   "t_fnstructcollide|reject|"
   "t_fnstructok|exit|105"
+  # Mirror direction: a user TYPE named after a bundled FUNCTION (`struct concat` vs
+  # std/string.ax `concat`) aliased the function symbol and reported that function's
+  # arity for a plain struct construction. Now names the collision.
+  "t_structfncollide|reject|"
 )
 
 for row in "${rows[@]}"; do

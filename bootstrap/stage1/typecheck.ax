@@ -3495,9 +3495,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
 
     elif kind == NODE_STRUCT_DECL:
         let sym_idx = self.tree.nodes.data[node_idx].payload
+        // Mirror of the fn-vs-type guard in NODE_FUNC_DECL above: the same
+        // `define` fall-through aliases a user STRUCT to an existing FUNCTION of
+        // that name (e.g. `struct concat` vs the bundled std/string.ax `concat`).
+        // That direction does not silently miscompile - the ctor call resolves to
+        // the function - but it produces a baffling diagnostic about the FUNCTION's
+        // arity for what is plainly a struct construction. Name the real problem.
+        if sym_idx != 0 as u32:
+            let sclash = self.symtable.symbols.data[sym_idx]
+            if sclash.kind == SYM_FUNC:
+                mut sname := "?"
+                if sclash.name_id != 0 as u32:
+                    sname = self.intern.get(sclash.name_id)
+                ax_printf_local("error: type '%s' has the same name as a function already in scope (a bundled stdlib function or an earlier declaration); constructing it would resolve to that function instead - rename the type\n", get_str_ptr(sname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.diags_count = self.diags_count + 1 as i64
         if sym_idx != 0 as u32:
             result_type = self.symtable.symbols.data[sym_idx].type_id
-            
+
         mut child := self.tree.nodes.data[node_idx].first_child
         while child != 0 as u32:
             let child_node = self.tree.nodes.data[child]

@@ -58,8 +58,18 @@ FAILING minimal test happened to be named `worker` while every PASSING one was n
 `setit`/`dbl`/`wf`. The name was the real independent variable. **When minimizing, hold the SYMBOL
 NAME fixed (or vary it explicitly as its own axis)** — cf. [[bug80-free-call-overload-collision]].
 
+## Mirror direction, found by probing right after the fix (same session)
+A user **TYPE named after a bundled FUNCTION** (`struct concat` vs std/string.ax `concat`) hits
+the identical `define` fall-through in reverse: the struct decl is handed the FUNCTION's symbol.
+That direction does **not** silently miscompile — the ctor call resolves to the function, so it
+is rejected — but the diagnostic was `error: 'concat' expects 2 argument(s), found 1` for a plain
+struct construction, naming the wrong problem entirely. Added the symmetric check
+(NODE_STRUCT_DECL whose resolved symbol kind is SYM_FUNC) so the collision is named. A==B
+`8761FDA5`, regression 549/549. §8: diagnostics are product features, not a secondary concern.
+
 ## Oracles
 - `t_fnstructcollide` (reject) — `fn worker` + bundled `struct worker`.
+- `t_structfncollide` (reject) — mirror: `struct concat` + bundled `fn concat`.
 - `t_fnstructok` (exit 105) — over-rejection guard: distinct fn name, a real fn-vs-fn OVERLOAD
   set (1-arg + 2-arg, the adjacent path in `define`), user struct + free-fn method.
 (`bin/known_fail_worker_name_collision.ax` deleted — superseded by the reject oracle.)
