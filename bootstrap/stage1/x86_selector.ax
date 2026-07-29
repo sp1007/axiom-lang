@@ -2883,10 +2883,24 @@ pub fn coalesce_dest_copy(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
         if not folded and r + 1 < len:
             let b0 = &insts[r]
             let b1 = &insts[r + 1 as i64]
+            // b1's destination may be a PHYSICAL register as well as a vreg. The physical case
+            // is the argument-setup sequence in front of every call: selection emits
+            // `LEA vT,[vI+k] ; MOV rcx,vT`, and restricting this to vreg destinations left the
+            // copy in place at every call site. fib pays two of them per recursive call, and a
+            // literal NASM transcription showed its surplus copies are worth 8.6% -- they are
+            // NOT free, contrary to the older "copies are invisible in latency-bound code" note.
+            // Folding is still a verbatim transfer: LEA reads its sources before writing its
+            // destination, the two instructions are adjacent so nothing can read rcx in between,
+            // and rcx was already being written at this point by the MOV -- the write only moves
+            // one instruction earlier.
             if b0.op == MACH_LEA and b0.dst.kind == OPND_VREG:
-                if b1.op == MACH_MOV and b1.dst.kind == OPND_VREG and b1.src1.kind == OPND_VREG and b1.src2.kind == OPND_NONE:
+                if b1.op == MACH_MOV and (b1.dst.kind == OPND_VREG or b1.dst.kind == OPND_PHYS) and b1.src1.kind == OPND_VREG and b1.src2.kind == OPND_NONE:
                     let vt = b0.dst.vreg
-                    if b1.src1.vreg == vt and b1.dst.vreg != vt:
+                    // A vreg destination must differ from vT; a physical one cannot alias it.
+                    mut dst_ok := b1.dst.kind == OPND_PHYS
+                    if b1.dst.kind == OPND_VREG:
+                        dst_ok = b1.dst.vreg != vt
+                    if b1.src1.vreg == vt and dst_ok:
                         if (vt as i64) < n and counts[vt as i64] == 2 as i32:
                             let g_op = b0.op
                             let g_cc = b0.cc
