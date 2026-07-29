@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 1faefc9 pushed, driver B==C B289E6C4, 564/564. Ship: peephole 1d + 1e, căn lề hàm 16-byte, LEA fold sang thanh ghi vật lý. M6-codegen CHƯA tuyên bố đạt: floor của fib bị đặc tả sai VÀ 13,6% khe hở không phải codegen."
+description: "HANDOFF 2026-07-30a — HEAD 1a61166, driver B==C 0E24570B, 564/564. CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
