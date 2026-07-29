@@ -1332,6 +1332,64 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
     @free(sp_def_idx as ptr[u8])
     return result
 
+// True if this operand still names a virtual register with no machine register
+// behind it, after spill rewriting has run.
+fn operand_unallocated(o: MachOperand, allocs: ptr[RegAllocation]) -> bool:
+    if o.kind != OPND_VREG:
+        return false
+    if o.vreg == 0 as u32:
+        // vreg 0 is the pipeline's "no register" placeholder — compute_liveness and
+        // every reference table skip it, so it is not a real value.
+        return false
+    // Deliberately NOT bounds-checked against RegAllocResult.max_vreg: that field is
+    // known to read back garbage-large on this backend (see BUG#17 at the merge loops),
+    // and insert_spill_code already indexes allocs[] by any operand vreg, so the array
+    // is sized for every vreg the instructions can name.
+    let a = allocs[o.vreg as i64]
+    if a.spilled:
+        return true
+    return a.phys == REG_NONE
+
+// VERIFICATION LAYER (§9). By the time spill rewriting is done, every operand must
+// name a real machine register. A surviving OPND_VREG that is spilled or unallocated
+// is an internal invariant violation — and it is NOT benign: emitter_resolve_reg
+// returns REG_NONE (255) for it, and the encoders mask that straight into a 3- or
+// 4-bit register field, so the access silently lands in %r15 / %xmm15 instead of
+// failing. Only 4 of the emitter's 62 resolve sites test for REG_NONE, so the other
+// ~58 will encode the sentinel as a real register without a word.
+//
+// That is precisely how a spilled float ALU destination (MACH_FADD/FSUB/FMUL/FDIV
+// missing from get_dst_behavior) corrupted results for months: the codegen was wrong
+// at construction, every gate stayed green, and only a hand-written probe found it.
+// This check turns that whole family into a diagnosable event at the point where the
+// invariant breaks, instead of a wrong answer much later.
+//
+// Reports at most 10 instructions so a systemic break cannot flood the build, and
+// returns the total count (0 == clean).
+pub fn verify_all_operands_allocated(insts: ptr[MachInst], len: i64, allocs: ptr[RegAllocation], max_vreg: u32, fn_name: str) -> i64:
+    mut bad := 0 as i64
+    mut i := 0 as i64
+    while i < len:
+        let inst = &insts[i]
+        let d = operand_unallocated(inst.dst, allocs)
+        let s1 = operand_unallocated(inst.src1, allocs)
+        let s2 = operand_unallocated(inst.src2, allocs)
+        if d or s1 or s2:
+            bad = bad + 1 as i64
+            if bad <= 10 as i64:
+                ax_puts_local("internal error: unallocated vreg reaches the emitter (would encode as r15/xmm15) in:")
+                ax_puts_local(fn_name)
+                ax_printf_local("  inst #%d op=%d  dst_bad=%d src1_bad=%d src2_bad=%d\n", i, inst.op as i64, d as i64, s1 as i64, s2 as i64, 0 as i64, 0 as i64, 0 as i64)
+        i = i + 1
+    // FATAL on purpose. The alternative is emitting an instruction that reads or writes
+    // a register nobody assigned, which produces a plausible-looking binary that is
+    // simply wrong — the failure mode this check exists to end. Calibrated by deleting
+    // the float-ALU line from get_dst_behavior and rebuilding: it then names
+    // `main / op=33 (MACH_FADD) / dst_bad=1`, i.e. the exact defect, at the exact site.
+    if bad > 0 as i64:
+        ax_panic("codegen: unallocated virtual register reached the emitter (see report above)")
+    return bad
+
 pub fn is_float_vreg(fn_ptr: ptr[AirFunc], vreg: u32, table: ptr[TypeTable], symbols: ptr[SymbolTable]) -> bool:
     if vreg == 0 as u32:
         return false

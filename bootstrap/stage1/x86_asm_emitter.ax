@@ -655,7 +655,11 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: ptr[Sym
             let frame = compute_frame(cs_regs, cs_len, alloc_res.spill_count, local_bytes, abi)
             
             let final_insts = insert_spill_code(mach_insts.data, mach_insts.len, alloc_res.allocs, &frame, fn_ptr, table, symbols)
-            
+            // §9 verification: nothing may still be a virtual register here. See
+            // verify_all_operands_allocated — an unallocated operand would be encoded
+            // silently as r15/xmm15 rather than reported.
+            let unalloc = verify_all_operands_allocated(final_insts.data, final_insts.len, alloc_res.allocs, alloc_res.max_vreg, fn_name)
+
             // Emit ASM
             emit_function(file, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, format, symbols, pool, table)
             ax_fprintf_local(file, "\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
