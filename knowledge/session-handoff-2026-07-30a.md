@@ -61,8 +61,20 @@ metadata:
   | arrwalk | **1,08x** | |
   | callloop | **1,08–1,12x** | |
 
-- ⚠️ **VẪN CHƯA "chốt" mốc**, vì floor của xorshift/arrwalk/callloop mới chỉ bác bỏ được MỘT
-  giả thuyết (căn lề thân vòng lặp), chưa làm nghiên cứu biến thể đầy đủ như fib.
+- ✅ **FLOOR CỦA 3 SHAPE CÒN LẠI ĐÃ ĐƯỢC SOI BẰNG BIẾN THỂ CẤU TRÚC — chúng ĐỨNG VỮNG**
+  (`scripts/floor_struct_variants.ps1`, ghép cặp 3 vòng xen kẽ). Thử dạng KHÁC VỀ CẤU TRÚC, đúng
+  loại thí nghiệm đã lộ khiếm khuyết V0 của fib:
+  | shape | floor | biến thể | delta |
+  |---|---|---|---|
+  | xorshift | 215,5 | 214,2 (unroll ×2) | −0,61% |
+  | arrwalk | 341,4 | 337,3 (unroll ×2) | −1,20% |
+  | callloop | 60,9 | 61,4 (loop control 2 lệnh thay vì 3) | **+0,78% CHẬM HƠN** |
+  ⇒ Không biến thể nào nhanh hơn đáng kể; cải thiện lớn nhất (arrwalk −1,2%) chỉ đẩy tỷ lệ AXIOM
+  từ 1,08x lên ~1,09x — **vô nghĩa với gate 15%**. ⭐ callloop: bỏ MỘT lệnh khỏi loop control lại
+  **CHẬM HƠN** — thêm một lần "số lệnh ≠ chi phí".
+  ⚠️ **Giới hạn trung thực**: mỗi shape chỉ thử MỘT biến thể cấu trúc (unroll / dạng loop control),
+  không vét cạn. Nhưng cộng với thí nghiệm căn lề (đã bác) và lập luận cấu trúc (cả ba thân vòng
+  đã là chuỗi phụ thuộc tối thiểu), **kết luận mốc KHÔNG đổi**.
 - **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
   VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
