@@ -111,8 +111,8 @@ arrwalk 1,08x, callloop 1,08–1,12x ⇒ **cả 4 shape đều TRONG mốc M6-co
 
 ⚠️ **NHƯNG CHƯA tuyên bố mốc HOÀN TẤT**: chỉ floor của fib được soi bằng nghiên cứu biến thể.
 Ba floor còn lại là **một** bản viết tay duy nhất, **chưa hề kiểm tra xem có phải bản nhanh nhất
-của thuật toán đó không** — đúng khiếm khuyết đã phát hiện ở V0 của fib. **Việc kế tiếp: làm
-biến thể cho xorshift/arrwalk/callloop trước khi chốt M6-codegen.**
+của thuật toán đó không** — đúng khiếm khuyết đã phát hiện ở V0 của fib. **Đã kiểm một phần** (`scripts/floor_check_variants.ps1`): giả thuyết khả dĩ nhất — **căn lề THÂN VÒNG LẶP** (entry đã căn, nhưng đích nhảy lùi thì không) — **BỊ BÁC BỎ cho cả ba**: xorshift −0,09%, arrwalk +0,85%, callloop +0,30%, đều vắt qua 0. Cộng lập luận cấu trúc: thân vòng của cả ba **đã là chuỗi phụ thuộc tối thiểu** (xorshift = 3 bước shift-xor phụ thuộc; arrwalk = pointer-chase thuần ở độ trễ load; callloop = lea→add→and 3 chu kỳ). ⚠️ **Nhưng đây là MỘT giả thuyết, không phải nghiên cứu biến thể đầy đủ như fib** — bằng chứng YẾU HƠN. Muốn chốt mốc thì thử thêm dạng khác về CẤU TRÚC (như V1 của fib khác V0 ở chỗ có rbp).
+
 
 ## Trạng thái (CUỐI PHIÊN — con số CHÍNH XÁC ở đây, các mục bên trên là lịch sử theo thứ tự thời gian)
 - HEAD **`1a61166`**, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
