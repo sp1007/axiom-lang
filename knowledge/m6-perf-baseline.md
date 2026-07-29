@@ -1,5 +1,6 @@
 ---
 name: m6-perf-baseline
+NEXT_TARGET_2026_07_30: "coalesce_dest_copy shape A across ONE intervening instruction — PRICED at −15.27%, design below, NOT implemented"
 description: "M6 perf milestone (Fib(40) <=5% of clang) — the FOCUS after RFC 0015 closed. Reproducible baseline: AXIOM -O3 = 2.59x clang -O2 (i64-fair). Profiled the gap to 4 systemic codegen taxes; prioritized optimization backlog. Harness scripts/perf_fib.ps1."
 metadata:
   node_type: memory
