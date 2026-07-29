@@ -145,6 +145,26 @@ ngược chiều: **đã chứng minh guard mới sẽ KHÔNG nổ nhầm.**
 ⇒ **Thứ tự đề xuất**: cài **(1)** cho gate nhận interface (ứng viên user sẽ được nhận ⇒
 `n_gated==1` ⇒ chạy đúng 36), rồi thêm **(2)** làm lưới; **gate cả hai cùng một commit** và
 đăng ký `t_ifacefnbuiltinname` (36) vào suite cả `-O1` lẫn `-O0`.
+
+### 🔧 THIẾT KẾ FIX (1) — đã đủ CƠ HỌC để viết thẳng
+**Vì sao gate trượt (suy ra từ số liệu probe, khớp mọi quan sát):** `arg0_type` được suy từ
+**BIỂU THỨC ĐỐI SỐ** `Sq(s: 6)` ⇒ nó là **struct CỤ THỂ `Sq`**, trong khi param của hàm user là
+**interface `Shape`**. Gate hỏi "`Sq` có tương thích `Shape` không?" và `is_method_compatible`
+**không biết `Sq` implement `Shape`** ⇒ trượt. Khớp hoàn hảo với việc `fn get(p: Sq)` CHẠY ĐÚNG
+(param `Sq` == arg `Sq`, khớp chính xác).
+
+**Helper CẦN DÙNG đã có sẵn** (không phải viết mới):
+- `interface_missing_method(self, struct_type: u32, iface_type: u32) -> u32` (`typecheck.ax:1702`)
+  — trả **0** khi struct implement ĐỦ mọi method của interface.
+- (tham khảo) `check_iface_conformance` (`:1833`) đã dùng đúng ý này cho field initializer
+  RFC 0029, và `types.entries.data[t].kind == TYPE_KIND_INTERFACE` là cách nhận diện interface.
+
+**Nhánh cần thêm vào `free_call_gate`** (`typecheck.ax:1241`), song song các nhánh sẵn có:
+> nhận ứng viên nếu **param[0] là INTERFACE** và **arg0 là STRUCT implement nó**
+> (`interface_missing_method(arg0_type, param0) == 0`).
+
+⚠️ Giữ đúng tinh thần bảo thủ của gate: **chỉ NỚI thêm** một điều kiện chấp nhận, không sửa/bỏ
+điều kiện nào đang có ⇒ không thể làm hẹp tập ứng viên của các ca đang chạy đúng.
 ⚠️ Oracle hai chiều vẫn bắt buộc — xem cảnh báo guard bên dưới.
 
 ### 🔎 (đã bị PROBE thay thế) đọc code — giả thuyết cũ, GIỮ LẠI để thấy chỗ suy luận sai
