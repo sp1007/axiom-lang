@@ -126,6 +126,33 @@ RFC 0031 already prunes dead functions). Debuggers and `nm` output become less r
 demangler in `axc` would be a follow-up. P2 is a flag day for any prebuilt `.lib`, which must be
 rebuilt — acceptable now, when no `.lib` is distributed outside this repo.
 
+## 7bis. P2 PREREQUISITE — there is no module identity to mangle with yet (found 2026-07-29)
+
+P2 cannot begin with the mangler. **`Symbol` (`resolver.ax:59`) has no module field**:
+
+```
+name_id, kind, padding, flags, type_id, decl_node, scope_id, next_overload
+```
+
+`scope_id` is a lexical scope, not a module, and the existing flag-2048 path had to fall back on
+`sym_idx` precisely because nothing better exists — which is the root cause in §2. So the first
+sub-task of P2 is **giving the symbol table a stable module id**, derived from the canonical
+import path, and only then changing `x86_resolve_sym_name`.
+
+Two hazards to plan for, both already recorded in this repo:
+- `Symbol` is a **fixed-layout struct populated positionally** in places; BUG#21 was exactly a
+  field-order/omission bug of this kind in `LinkerSymbol`, where a missing field shifted `defined`
+  into `size` and made every parsed symbol read as undefined. Adding a field means auditing every
+  construction site, not just the declaration.
+- The module id must be a pure function of the canonical path (§4), so it must be computed where
+  the import path is still known — the resolver — and not re-derived later from a table index.
+
+Sequencing for P2, each step independently gated:
+1. add the module id to `Symbol` + populate it in the resolver (inert: nothing reads it yet, so
+   this should be `A==B`);
+2. switch `x86_resolve_sym_name` to the module-qualified scheme, retiring flag 2048;
+3. update the cross-layer name predicates of §4 in the SAME commit as step 2.
+
 ## 8. Migration
 
 P1 (shipped) is additive and inert on the normal path. P2 must land in one commit with all the
