@@ -27,9 +27,26 @@ NHẤT trong binary fib nằm ở **runtime helper bundled** (`imul $0x1000`→`
 thước, nhưng `shl` mã hoá ngắn hơn `imul` imm32 ⇒ mọi thứ sau đó dịch **16 byte** ⇒ fib rơi vào
 alignment khác. **Cùng hiện tượng đã bank 2026-07-29f cho xorshift** (+4,6% từ một thay đổi ÍT
 lệnh hơn, chuỗi phụ thuộc không đổi). ⛔ **ĐỪNG "sửa" bằng cách nhét lại lệnh chết.**
-⇒ Hệ quả: **con số 1,13x của fib trước đây một phần là MAY MẮN.** Cách sửa đúng là **căn lề
-(align) các hot branch target / function entry về 16 byte** — việc RIÊNG, phải đo RIÊNG, và nó
-sẽ làm ỔN ĐỊNH cả 4 con số. **Đây là việc kế tiếp được đề xuất.**
+⇒ Hệ quả: **con số 1,13x của fib trước đây một phần là MAY MẮN.**
+
+## ⛔⛔ ĐÃ THỬ VÀ ĐÃ REVERT: **căn lề 16-byte cho FUNCTION ENTRY — KHÔNG phục hồi fib**
+Đây chính là "việc kế tiếp" mà tôi tự đề xuất ở trên. **Đã cài, đã gate XANH, đã đo, và ĐÃ
+REVERT** — ghi lại để phiên sau **ĐỪNG THỬ LẠI**.
+- Cài đặt: pad `0x90` tới bội số 16 trong `all_code` **TRƯỚC** khi chốt `current_offset`
+  (`x86_coff.ax` ~L830). An toàn theo cấu trúc: mọi symbol value + reloc per-function đều
+  rebase theo `info.offset` nên tự tính cả padding. Đã xác nhận: mọi function entry kết thúc
+  bằng `0`, 524 NOP đệm, `B==C 522BEA6B`, **564/564**, ELF/ctgc/exe_size/lib_collision/so_export
+  đều xanh. ⇒ **Thay đổi ĐÚNG, không phải bug.**
+- Đo 2 vòng khớp chặt: fib **1,18 / 1,19** (trước: 1,19/1,20 — **KHÔNG phục hồi về 1,13**),
+  xorshift 0,99/1,00, arrwalk 1,09/1,09, callloop 1,12/1,10 (trước 1,07/1,10 — hơi xấu đi).
+  ⇒ **Lợi ích đo được = 0.**
+- Revert theo §10 + tiền lệ của chính dự án (precolored-bias bị revert vì "lợi ích không đo được
+  thì không đánh đổi độ phức tạp ở thành phần self-host-critical").
+⭐ **Giá trị chẩn đoán của kết quả ÂM này**: căn lề *entry* của fib **không** lấy lại được 1,13x
+⇒ thứ nhạy cảm **KHÔNG phải vị trí đầu hàm**. Nghi can còn lại: căn lề **branch target / loop
+header BÊN TRONG** hàm (đắt hơn nhiều — phải chèn padding giữa hàm ⇒ dịch mọi label offset và
+fixup), hoặc hiệu ứng uop-cache/I-cache mà entry alignment không chạm tới. **Đừng lặp lại thí
+nghiệm entry-alignment.**
 
 ⭐⭐ **Thứ tự 1e SAU 1c là load-bearing, và GATE KHÔNG THỂ THẤY ĐIỀU ĐÓ.** 1c khớp theo
 `counts[vT]==3`; viết `ADD vT,vT` thêm mention thứ TƯ ⇒ vô hiệu hoá 1c. Trên `x = x * 2` trong
