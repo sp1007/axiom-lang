@@ -590,3 +590,60 @@ constant as `7 as i64`, which does not fold, so it passed against a compiler wit
 deliberately removed. Rewritten with bare literals; the imm32-range and 8-byte-cast-hop guards
 now both fire on a broken build (exit 136). The single-def guard has NO shape that reaches it
 and the test says so rather than implying coverage it does not have.
+
+## ⭐⭐⭐⭐ 2026-07-29f — xorshift PRICED, and it PARTLY REVERSES "reg-reg movs are free"
+
+Same method as the fib pricing: take the hand-written NASM floor and re-introduce AXIOM's
+habits one at a time. Best-of-7, 3 alternating rounds, all three exit 61.
+
+The variants were written to `bin/bench/w{0,1,2}.asm`, which is **gitignored**, so the two
+deltas are reproduced here rather than referenced. W0 is `bin/bench/xorshift_hand.asm`. W1
+replaces its `dec rcx; jnz .loop` with AXIOM's loop shape, body untouched:
+
+```
+    xor rcx, rcx
+.test:  cmp rcx, 120000000
+        jb .body
+        jmp .done
+.body:  <same three xorshift steps>
+        lea rdx, [rcx+1]
+        mov rcx, rdx
+        jmp .test
+```
+
+W2 additionally replaces each step `mov rdx,rax; shl rdx,N; xor rax,rdx` with AXIOM's
+five-instruction form `mov rdx,rax; shl rdx,N; mov rbx,rax; xor rbx,rdx; mov rax,rbx`.
+Assemble with `nasm -f win64` + `gcc` (use BACKSLASH paths -- nasm fails to open a
+forward-slash output path on this box).
+
+| variant | ms | delta | verdict |
+|---|---|---|---|
+| W0 floor (`dec rcx; jnz`, bottom-tested) | 213.4 | – | |
+| W1 + AXIOM's loop shape (`cmp/jb` at top, `jmp` back, `lea`+`mov` counter) | 213.7 | **+0.3** | **loop rotation is WORTHLESS** |
+| W2 + AXIOM's 3-mov body | 303.4 | **+89.8** | ← the whole gap |
+
+AXIOM itself measures 308 ms, so W2 (303.4) explains **90 of the 94.6 ms gap**: xorshift's
+1.42x is FULLY accounted for by the body shape.
+
+⛔ **DO NOT IMPLEMENT LOOP ROTATION / bottom-testing.** Predicted at ~13% by counting taken
+branches (two per iteration instead of one); **measured 0.1%**. Third time in this file an
+estimate of this shape was wrong by two orders of magnitude, after shrink wrapping and
+frame-pointer omission. Taken branches are essentially free here — predictor plus loop buffer.
+
+### ⚠️ The correction: copies are NOT universally free
+The 2026-07-29e refutation concluded that `mov r,r` is eliminated at register rename and so
+removing copies cannot buy time. **That is true on fib and FALSE on xorshift.** The only thing
+W2 adds over W1 is two extra register-to-register moves per xorshift step — `mov %rax,%rbx`
+before the xor and `mov %rbx,%rax` after, where the floor writes `xor rax,rdx` in place — and
+they cost **89.8 ms, 30% of the program**.
+
+Arithmetic: the floor runs ~6.2 cycles/iteration, which is exactly its dependency-chain length
+(3 steps x 2 cycles) — latency-bound, so free copies would be invisible. W2 runs ~8.8
+cycles/iteration, i.e. it is NOT latency-bound: the extra copies push it into a
+throughput/rename-width limit, where "eliminated at rename" still consumes issue bandwidth.
+
+⇒ **The right statement is: removing copies buys nothing in a LATENCY-BOUND loop (fib) and buys
+a lot in a THROUGHPUT-BOUND one (xorshift).** The earlier blanket "coalescing is worth zero" was
+generalised from a single shape. George-Appel iterated coalescing is back on the table — but it
+must be priced against xorshift, NOT fib, and the concrete target is the destructive-2-operand
+copy pair (`mov dst,src1; op dst,src2` where dst could have been coalesced into src1).
