@@ -90,6 +90,29 @@ shape sẽ liên tục cho ra số 0 tự tin cho những thứ đáng vài ph�
   Đã thêm khối 12 biến sống đồng thời để ép allocator dùng thanh ghi cao; nay phá là crash.
   **Bài học: encoder mới phải có test chạm r8–r15, nếu không nửa trường REX không có coverage.**
 
+## 🔎 ĐÃ ĐIỀU TRA (read-only, cuối phiên) — **MACH_LEA KHÔNG có index/scale**, và đó là nút thắt chung
+Đã đọc thẳng nguồn, không suy đoán:
+- `x86_encode_lea(dst, base, disp)` (`x86_encoding.ax:322`) chỉ nhận **base + displacement**.
+- `x86_encode_modrm_rm` (`x86_modrm.ax:102`) chỉ phát **SIB** cho đúng ca bắt buộc
+  (`base & 7 == 4`, tức RSP/R12), và khi đó **hard-code index = 0x04 = "không có index",
+  scale = 0** (`x86_modrm.ax:134`). **REX.X không bao giờ được set** ở đường này.
+⇒ `lea (%rdx,%rdx,2)` hay `mov (%rbx,%rax,8),%rsi` **hiện KHÔNG diễn đạt được**.
+
+**Đây là nút thắt CHUNG của 3 mục backlog còn lại**, nên làm nó TRƯỚC sẽ mở khoá cả ba:
+1. `imul $2/$3` → LEA scale (callloop) — ⭐ **LEA KHÔNG ghi cờ nào cả**, nên đây là thay thế
+   *verbatim*, **không cần phân tích flags** (khác hẳn `IMUL → SHL`, vốn đổi cờ và sẽ phải chứng
+   minh không JCC/SETCC nào đọc cờ ở giữa). LEA scale phủ k ∈ {2,3,4,5,8,9}: `x*3` =
+   `lea (%r,%r,2)`. Latency 1 thay vì 3, mà `imul` đang nằm TRONG chuỗi tích luỹ.
+2. Địa chỉ có scale cho index mảng (arrwalk) — mục ĐẮT NHẤT của arrwalk vì `imul` nằm trong
+   chuỗi pointer-chasing.
+3. `base + idx*k` tổng quát.
+
+**Việc cần làm (ước lượng, chưa code):** thêm cách mang index-vreg + scale trong `MachInst`
+(dùng `src2` cho index vreg — regalloc đã đếm `src2` là một operand nên liveness tự đúng; scale
+nhét vào `padding` hoặc `imm`), một encoder SIB thật (set cả **REX.X** cho index r8–r15 — xem
+bài học REX.R của `imul_ri` ở trên: nửa trường REX không có test thì không có coverage), và mở
+rộng `format_operand` cho đường asm-text. Backend ⇒ **B==C bắt buộc**.
+
 ## Backlog còn lại (sau callloop)
 - RFC 0035: method/global/ctor vẫn scheme cũ (`axS_`/`axG_`/`axC_`); P3 (E0501 → error) vẫn bị
   chặn bởi shim runtime trùng lặp hợp lệ.
