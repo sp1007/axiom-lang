@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 7509184 (code cuối ở bcf7746), driver A==B+B==C 42F49C73, 575/575 (+lượt -O0 575/575), KHÔNG còn bug OPEN. Đã SỬA 3 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD 7509184 (code cuối ở bcf7746), driver A==B+B==C 42F49C73, 575/575 (+lượt -O0 575/575), KHÔNG còn bug OPEN. Đã SỬA 3 silent bug: (1) literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả); (2) aggregate local không initializer bind vào NULL (segfault mọi opt level); (3) HOLE#7 hàm user trùng tên stdlib + param interface không hề được gọi. CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
@@ -69,8 +69,7 @@ metadata:
 - **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**): (a) biến thể cấu trúc
   cho 3 floor còn lại để chốt mốc; (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
   cao hơn allocator, KHÔNG đụng code self-host-critical; (c) `axiom-bug-probe` — **rất đáng làm**:
-  phiên này probe ra **2 silent bug trong ~1 giờ** (1 sai kết quả, 1 crash), cả hai đều ở vùng
-  **chưa có test** chứ không phải regression.
+  phiên này probe ra **3 silent bug** (1 sai kết quả, 1 crash, 1 hàm không hề được gọi) — **cả ba** đều ở vùng **chưa có test** chứ không phải regression, và **cả ba đã được sửa trong phiên**.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
 - 🧹 **VÙNG ĐÃ QUÉT SẠCH cuối phiên — ĐỪNG probe lại** (2 batch, 0 phát hiện):
