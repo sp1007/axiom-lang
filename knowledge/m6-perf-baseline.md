@@ -409,6 +409,51 @@ Acting on them, the pass was narrowed to parameter snapshots only, which **halve
 from a <5% delta at best-of-5, and always check whether a binary-size change is just the new
 code you added.**
 
+### 📏 2026-07-29e — M6-codegen RE-PRICED from labeled disassembly (replaces the NASM-diff pricing)
+
+⭐ **METHOD (use this, not archaeology).** The self-linked exe is stripped, so finding a function
+in it by hand is hopeless — I burned several attempts on it. Instead build the benchmark as a
+library, which keeps a COFF symbol table:
+```
+axc build benchmarks/fib.ax -O3 -o fib.lib --staticlib --no-stdlib -self-link
+objdump -t fib.lib | grep fib          # -> ax_fib
+objdump -d fib.lib | sed -n '/ax_fib/,/^$/p'
+```
+That yields the whole function, labeled, in one command.
+
+**What `ax_fib` actually looks like at -O3 (31 instructions):**
+```
+push %rbp; mov %rsp,%rbp; push %rbx; push %rsi; push %rdi; sub $0x28,%rsp
+mov %rcx,%rax; mov %rax,%rbx        ; cmp $0x2,%rbx ; jl .base
+mov $0x1,%rax; mov %rbx,%rsi; sub %rax,%rsi; mov %rsi,%rcx; call ax_fib
+mov %rax,%rsi
+mov $0x2,%rax; mov %rbx,%rdi; sub %rax,%rdi; mov %rdi,%rcx; call ax_fib
+add %rax,%rsi; mov %rsi,%rax
+add $0x28,%rsp; pop %rdi; pop %rsi; pop %rbx; pop %rbp; ret
+```
+
+**Findings — three hypotheses die, two concrete costs remain:**
+1. **ZERO spills.** Not one `rbp`/`rsp`-relative access in the body. Spill traffic is NOT the
+   gap, so "the allocator spills `n`" (asserted in the older sections below) is **false at -O3**.
+2. **The two copies are free.** `mov %rcx,%rax; mov %rax,%rbx` is eliminated at register rename —
+   consistent with, and now independently confirming, the coalescing refutation above.
+3. **A 40-byte stack frame is reserved and NEVER REFERENCED.** `sub $0x28,%rsp` + `add $0x28,%rsp`
+   on every one of ~331M calls, for a function with no locals and no spills.
+4. **Three callee-saved registers are pushed/popped = 6 memory ops per call**, and at least one
+   is unnecessary: `rdi` holds `n-2` and is consumed by `mov %rdi,%rcx` BEFORE the call, so it
+   never spans a call and did not need to be callee-saved at all. `get_allocatable_gprs` hands
+   out RAX,RCX,RDX,**RBX,RSI,RDI**,R8,R9,… — callee-saved registers come BEFORE the volatile
+   R8/R9 in the order, so a short-lived value takes one purely by list position.
+
+⚠️ Before acting on (4): "allocator reorder (prefer-volatiles)" was already **tried and measured
+NEUTRAL** (see below). But that attempt predates this data — it was a blind reorder, not a
+targeted "don't give a callee-saved register to a value that does not span a call". The
+distinction is testable and the interference/`spans_call` information is already computed.
+
+⇒ The remaining honest candidates for M6-codegen are **per-call frame overhead** (items 3+4:
+up to 8 memory ops + 2 stack adjustments per call that carry no information), not copies and not
+spills. Both are prologue/epilogue shaped, which is also why they scale with fib's call count.
+
 ### ⛔⛔⛔ 2026-07-29e — "the rest is REGISTER COALESCING, worth ~90–100 ms" is **REFUTED BY MEASUREMENT**
 The section below (kept for history) is the single largest remaining M6 item. It is wrong, and
 the refutation is direct rather than inferential: **the copies were removed, and nothing got
