@@ -28389,7 +28389,18 @@ pub fn coalesce_dest_copy(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
             // destination, the two instructions are adjacent so nothing can read rcx in between,
             // and rcx was already being written at this point by the MOV -- the write only moves
             // one instruction earlier.
-            if b0.op == MACH_LEA and b0.dst.kind == OPND_VREG:
+            // b0 may also be `MOV vT, <phys>` -- the parameter-entry copy. Selection lands an
+            // incoming argument in a vreg and a later copy moves it to the vreg that actually
+            // holds the variable, so fib opens with `mov %rcx,%rax ; mov %rax,%rbx` where one
+            // instruction would do. Restricted to a PHYSICAL source on purpose: the deleted
+            // temp lets the source's live range reach one instruction further, and for a
+            // physical ABI register that is not something the vreg allocator prices, so this
+            // cannot reproduce the pressure failure that killed the general forward
+            // copy-propagation (-6.5% on fib, 2026-07-29e). A vreg source is NOT admitted here.
+            mut b0_ok := b0.op == MACH_LEA
+            if b0.op == MACH_MOV and b0.src1.kind == OPND_PHYS and b0.src2.kind == OPND_NONE:
+                b0_ok = true
+            if b0_ok and b0.dst.kind == OPND_VREG:
                 if b1.op == MACH_MOV and (b1.dst.kind == OPND_VREG or b1.dst.kind == OPND_PHYS) and b1.src1.kind == OPND_VREG and b1.src2.kind == OPND_NONE:
                     let vt = b0.dst.vreg
                     // A vreg destination must differ from vT; a physical one cannot alias it.
