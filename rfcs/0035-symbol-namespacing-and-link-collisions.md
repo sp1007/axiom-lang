@@ -169,10 +169,25 @@ Sequencing for P2, each step independently gated:
 - **The module id has a real source.** `ModuleInfo` (`resolver.ax:322`) already carries
   `name_id` and `file_path`, and `LazyResolver.modules` tracks every imported module;
   `lazy_resolver_register_import` defines a `SYM_MODULE` symbol per import. `file_path` is the
-  canonical path §4 asks for. **Open question for step 1:** whether the resolver knows the
-  *current* module while walking a loaded module's AST, or whether that context has to be
-  threaded through — that is the one thing left to establish before writing code, and it decides
-  whether step 1 is a field-plus-assignment or also a plumbing change.
+  canonical path §4 asks for.
+- **ANSWERED — no plumbing change is needed.** `lazy_resolver_preload_module`
+  (`resolver.ax:1166`) already brackets module loading: it saves the symbol table's scope stack,
+  swaps in a fresh one, calls `ax_ax_driver_load_module(mod, self.symtable, self.typetable)`,
+  then restores. The symbol table is SHARED across that call — every symbol the loaded module
+  defines lands in the same `SymbolTable` — and `mod` is in hand at exactly that point. So step 1
+  is:
+  1. a `module_id: u32` field on `Symbol`;
+  2. a `current_module` cursor on `SymbolTable`, set and restored around that one call site,
+     mirroring the save/restore discipline already there;
+  3. `SymbolTable.define` stamps the cursor onto each new symbol.
+
+  Symbols defined outside any preload (the root compilation unit) get the sentinel `0`, meaning
+  "root module", which is correct and needs no special case. This is a field plus one bracketed
+  assignment, not a threading change.
+
+  Note for step 2: that `extern "C"` boundary is the same one RFC 0031 had to special-case for
+  its DFE root set (a call by name leaves no AIR edge), so it is a known-sharp edge — the module
+  cursor must be set on the RESOLVER side of the call, not inside the driver.
 
 ## 8. Migration
 
