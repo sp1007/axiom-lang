@@ -27,6 +27,14 @@ regression **567/567** (+3 dòng mới), **lượt `-O0` toàn suite 564/564**.
 Đã thêm vào `regression_repros.sh`: khối **`-O0`-only** (`t_negbiglitcmp` + `t_tostr`) — xem mục
 "bài học hạ tầng" ở dưới.
 
+### Vị trí ĐÃ KIỂM sau khi sửa (đều ĐÚNG ở -O0/-O1/-O3)
+`match` arm literal âm lớn (`-3000000000:`), field init của struct, phần tử mảng, số hạng số học
+(`x + -3000000000`), tham số lời gọi, toán hạng so sánh, binding. ⇒ fix phủ cả họ, không chỉ ca
+đã repro.
+⚠️ **Ghi chú cho người sau**: cú pháp match của AXIOM là `-3000000000:` (dấu HAI CHẤM), **KHÔNG
+phải `=>`** — `=>` đã bị bác ở quyết định D2. Tôi từng viết `=>` khi probe và tưởng nhầm là lỗi
+compiler; nó chỉ là lỗi cú pháp của tôi.
+
 ---
 ## (bối cảnh chẩn đoán, giữ lại)
 Tìm được bằng probe 2026-07-30 (driver `0E24570B`), khi kiểm
