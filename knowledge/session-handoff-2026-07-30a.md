@@ -81,10 +81,43 @@ vòng lặp: sau-1c → `add %rax,%rax`; trước-1c → `mov %rax,%rdx ; add %r
 ⭐ Flags KHÔNG cần phân tích (giả định ban đầu của tôi là SAI): `IMUL` để SF/ZF/AF/PF
 **undefined** theo ISA ⇒ không consumer đúng đắn nào đọc cờ xuyên qua nó.
 
+## 🏁⭐⭐⭐ `1a61166` — FOLD COPY NẠP THAM SỐ: fib **−13,9%**, và MỌI floor đều nói fib ĐẠT
+Mở rộng shape B cho producer `MOV vT, <phys>` (copy tham số vào). fib mở đầu bằng
+`mov %rcx,%rax ; mov %rax,%rbx` → nay chỉ `mov %rcx,%rbx`. **Chỉ nhận nguồn VẬT LÝ** (thanh ghi
+ABI không do allocator vreg định giá ⇒ về cấu trúc không thể tái hiện thất bại của copy-prop cũ).
+Driver **`0E24570B`** (B==C), 564/564, phụ trợ xanh hết.
+
+**ĐO GHÉP CẶP 4 cặp xen kẽ** (vì "xoá 1 lệnh được 14%" tự nó KHÔNG đáng tin):
+`OFF 587,0 ms → ON 505,2 ms = **−13,93%**` (−12,95…−15,26; cùng dấu cả 4 cặp).
+⇒ Một lệnh không thể tốn 14% thời gian chạy ⇒ **hiệu ứng NGƯỠNG ở front-end** (thân hàm ngắn
+hơn rơi sang phía tốt của ranh giới fetch/uop-cache). **KHÔNG tuyên bố cơ chế** — cần perf counter.
+
+### ⚠️ ĐÍNH CHÍNH commit `7d5218c`
+Tôi đã bank 13,6% chưa giải thích được của W-series là **"không phải codegen"**, vì bản chép
+NGUYÊN VĂN sang NASM chạy nhanh hơn binary AXIOM 13,6% với cùng hệt từng lệnh. **Suy luận đó
+QUÁ MẠNH.** Hiệu ứng bị kích hoạt bởi **kích thước + nội dung CHÍNH XÁC của hàm phát ra**, nên
+nó **CÓ thể với tới từ codegen** — thay đổi một lệnh vừa đẩy fib qua ngưỡng. Khe hở là THẬT;
+kết luận của tôi về "cái gì có thể xử lý nó" mới là sai.
+
+### 📐 CÂU HỎI VỀ FLOOR NAY THÀNH VÔ NGHĨA (đo back-to-back)
+| | ms | tỷ lệ fib |
+|---|---|---|
+| AXIOM fib | 510,5 | — |
+| V3 (đúng hình dạng AXIOM) | 495,8 | **1,030x** |
+| V1 (viết tay nhanh nhất) | 486,4 | **1,050x** |
+
+⇒ **fib ĐẠT gate 15% với MỌI định nghĩa floor, kể cả nghiêm nhất.** Cộng xorshift 1,00x,
+arrwalk 1,08x, callloop 1,08–1,12x ⇒ **cả 4 shape đều TRONG mốc M6-codegen.**
+
+⚠️ **NHƯNG CHƯA tuyên bố mốc HOÀN TẤT**: chỉ floor của fib được soi bằng nghiên cứu biến thể.
+Ba floor còn lại là **một** bản viết tay duy nhất, **chưa hề kiểm tra xem có phải bản nhanh nhất
+của thuật toán đó không** — đúng khiếm khuyết đã phát hiện ở V0 của fib. **Việc kế tiếp: làm
+biến thể cho xorshift/arrwalk/callloop trước khi chốt M6-codegen.**
+
 ## Trạng thái (CUỐI PHIÊN — con số CHÍNH XÁC ở đây, các mục bên trên là lịch sử theo thứ tự thời gian)
-- HEAD **`1faefc9`**, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
+- HEAD **`1a61166`**, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
   untracked — **của user, đừng đụng**).
-- Daily driver `bin/axc_native.exe` = **`B289E6C4`** (B==C; A!=B là bình thường vì codegen đổi).
+- Daily driver `bin/axc_native.exe` = **`0E24570B`** (B==C; A!=B là bình thường vì codegen đổi).
 - Gate đầy đủ XANH: regression **564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4,
   lib_collision 6/6, so_export ✓.
 - ⚠️ **Baseline TIỀN ĐỊNH mới nhất** (so floor V0 hiện tại): fib **1,14/1,15**, xorshift
