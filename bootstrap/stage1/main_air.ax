@@ -665,6 +665,43 @@ fn strip_lib_dll_ext(path: str) -> str:
                 return std.string.slice(path, 0, n - 4)
     return std.string.slice(path, 0, n)
 
+// RFC 0035 P2: the canonical qualifier for a module, as a PURE function of its canonical
+// name — the property §4 requires and the reverted `sym_idx` scheme lacked. It must map the
+// two spellings of the same module to one string, because the library and the app reach it
+// from opposite directions and never share a table:
+//   library side, from the source path passed to `--staticlib`:  "pkg/mod.ax" -> "pkg_mod"
+//   app side, from the import name in `import pkg.mod`:          "pkg.mod"    -> "pkg_mod"
+// `ensure_import_libs` builds the library path as `replace(mod_name, ".", "/") + ".ax"`, so
+// the two inputs are the same name in different separators by construction, and this
+// collapses both. Determinism (§3) holds: no hashing, no ordering, no table index.
+// Returns a fresh heap string. Written as one explicit mapping loop rather than a chain of
+// std.string.replace calls: `replace` returns its INPUT unchanged when there is no match, so
+// freeing each intermediate is a use-after-free on exactly the inputs that need no
+// substitution — which is most module names, and which segfaulted the resolver on the first
+// attempt here.
+fn module_qualifier(spec: str) -> str:
+    mut n := std.string.len(spec)
+    let p = get_str_ptr(spec)
+    if n > 3:
+        if p[n - 3] == '.' as u8 and p[n - 2] == 'a' as u8 and p[n - 1] == 'x' as u8:
+            n = n - 3
+    if n > 4:
+        if p[n - 4] == '.' as u8 and p[n - 3] == 'l' as u8 and p[n - 2] == 'i' as u8 and p[n - 1] == 'b' as u8:
+            n = n - 4
+    mut buf := @alloc(n + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        let c = p[i]
+        if c == '/' as u8 or c == 92 as u8 or c == '.' as u8:
+            buf[i] = '_' as u8
+        else:
+            buf[i] = c
+        i = i + 1
+    buf[n] = 0 as u8
+    let res = alloc_str_from_raw(buf, n)
+    @free(buf)
+    return res
+
 // RFC 0011 P4 (increment 3d): does this source file declare itself a `library`? Scans the
 // first meaningful (non-blank, non-`//`) line for a `library <name>` marker. A module that
 // opts in this way is treated as a separately-compilable library (import-driven `.lib`)
@@ -1068,6 +1105,15 @@ pub fn main() -> i32:
         ax_puts_local("[Debug] Creating symbol table...")
         fflush(null as ptr[void])
     mut symtable := new_symbol_table(parser.pool)
+    // RFC 0035 P2: when this compilation IS a library, its own public functions carry the
+    // unit's name into their emitted symbols. Scoped to --staticlib deliberately: that is
+    // the only path whose output is linked into a DIFFERENT compilation, so it is the only
+    // path where two units can collide, and an ordinary program build stays byte-identical.
+    // `filename`, not `args[0]` — args[0] is argv[0], the compiler's own exe path (which
+    // ensure_import_libs passes as `self_exe`). Using it produced the qualifier
+    // `D:_projects_compiler_Axiom_axA_exe`, which is how this was caught.
+    if is_staticlib:
+        symtable.unit_qualifier = module_qualifier(filename)
     if not is_dump_air:
         ax_puts_local("[Debug] Creating type table...")
         fflush(null as ptr[void])
@@ -1604,12 +1650,38 @@ fn register_module_from_lib(mod: ptr[ModuleInfo], st: ptr[SymbolTable], tt: ptr[
                 ret = iface_resolve_tok(toks.data[t], &smap_names, &smap_ids)
             let func_type = tt.register_function(params, ret)
             let local_name_id = intern.intern_string(fname)
+            // RFC 0035 P2: the symbol's NAME is the module-qualified base, so cgen emits the
+            // very name the library emitted for itself (`ax_libpa_helper`) instead of the
+            // bare `ax_<name>` that makes two libraries indistinguishable — the defect this
+            // function's own comment describes. The LOCAL name still drives every lookup:
+            // register_lib_symbol binds `libpa.helper` in the global scope and records the
+            // export under `local_name_id`, so source-level resolution is unchanged.
+            // Distinct names also stop SYM_FLAG_MODDUP from firing on two same-named
+            // imports, which is what produced the call to `ax_helper__m<sym_idx>` that no
+            // library ever defined.
+            //
+            // Derived from `lib_path`, NOT from the `mod_name` parameter: a probe here
+            // showed mod_name arriving EMPTY on this path (`intern.get(mod.name_id)` in
+            // ax_driver_load_module), while lib_path is provably intact — file_exists()
+            // just opened it. lib_path is `replace(mod_name, ".", "/") + ".lib"` computed
+            // in the caller, so it carries the same canonical name in the same separator
+            // form the library itself was compiled under, which is what makes the two
+            // sides agree. (mod_name being empty is pre-existing and separate: the
+            // `mod.NAME` binding register_lib_symbol writes from it is dead weight, since
+            // resolution reaches these symbols through the ModuleExport list instead.)
+            let q_mod = module_qualifier(lib_path)
+            let q_sep = std.string.concat(q_mod, "_")
+            let q_full = std.string.concat(q_sep, fname)
+            let qual_name_id = intern.intern_string(q_full)
+            @free(get_str_ptr(q_mod))
+            @free(get_str_ptr(q_sep))
+            @free(get_str_ptr(q_full))
             let sym_idx = st.symbols.len as u32
             (&st.symbols).push(Symbol(
-                name_id: local_name_id,
+                name_id: qual_name_id,
                 kind: SYM_FUNC,
                 padding: 0 as u8,
-                flags: SYM_FLAG_PUB,
+                flags: SYM_FLAG_PUB | SYM_FLAG_MODQUAL,
                 type_id: func_type,
                 decl_node: 0 as u32,
                 scope_id: 0 as u32,

@@ -1,6 +1,6 @@
 # RFC 0035 — Module-namespaced symbols and link-time collision detection
 
-- Status: **P1 SHIPPED (diagnostic)** / P2–P3 PROPOSED
+- Status: **P1 SHIPPED (diagnostic)** / **P2 SHIPPED for the `.lib` path** (see §9) / P3 PROPOSED
 - Author: autopilot, 2026-07-29
 - Approved in advance by the user (standing decision D3, `knowledge/user-decisions-2026-07-29.md`):
   the real cure is pre-approved, RFC + `B==C` still mandatory.
@@ -230,3 +230,63 @@ P1 (shipped) is additive and inert on the normal path. P2 must land in one commi
 name-matching predicates of §4 updated together, gated on `B==C` plus the full regression, ELF,
 `so_export`, exe-size and ctgc suites, and it should carry an oracle built on the §2 repro (two
 libraries, same function name, both actually called, correct answer 30).
+
+## 9. What P2 shipped (2026-07-29, fixpoint `DC4FD242`, 557/557)
+
+The §2 repro returns **30**. That, and not the gate, is the evidence — §7bis records this same
+RFC reaching a clean `A==B` on a change that was a structural no-op, so an inert green result
+is the one thing that cannot distinguish a working increment from a dead one here.
+
+**The qualifier is the compilation unit's canonical name**, mapped through one pure function
+(`module_qualifier`, `main_air.ax`) that collapses the two spellings the two sides hold:
+`libpa.ax` / `libpa.lib` on the library side and the import name `libpa` on the app side, with
+`/`, `\` and `.` all folding to `_`. No hash, no ordering, no table index — so `pkg/mod.ax`
+compiled alone and `import pkg.mod` resolved elsewhere compute the same string with nothing
+shared between the compilations. This is the property §2 shows `sym_idx` cannot have.
+
+Two sites, one name, both returning ahead of the `ax_<Struct>_<fn>` method decoration so the
+definition and the reference cannot disagree for a function whose first parameter is a struct:
+
+- **Library side** — `SymbolTable.unit_qualifier`, set by the driver only for `--staticlib`,
+  read by `x86_resolve_sym_name` for the unit's own public functions. Scoped to `--staticlib`
+  because that is the only output linked into a *different* compilation, which keeps every
+  ordinary build byte-identical.
+- **App side** — `SYM_FLAG_MODQUAL` (8192) on the body-less symbols
+  `register_module_from_lib` registers from a `.lib` interface, whose `name_id` is set to the
+  qualified base. The local name still drives all lookup (global-scope `mod.fn` binding and
+  the `ModuleExport` list), so source-level resolution is untouched, and the now-distinct
+  name_ids also stop flag 2048 from firing — which is what produced the call to
+  `ax_helper__m1755` that nothing defined.
+
+**Runtime/ABI names are excluded** by reading `is_valid_runtime_dll_symbol` from `linker.ax`
+rather than restating the list, testing both the source spelling and the default emitted one.
+The §4 warning about cross-layer name predicates turned out to need no further work: the DFE
+root set already computes every name it compares *through* `x86_resolve_sym_name`, so it moved
+with the scheme automatically, and `#[export]` already matched on intern-id as well as name.
+
+Gate: `A==B DC4FD242` (inert on the self-host build, as intended), regression **557/557**,
+ELF 12/12, ctgc 16/16, exe-size 4/4, so_export ✓, and the new
+`scripts/lib_collision_check.sh` 5/5 — **calibrated**: on the shipped compiler it fails 3 of 5
+with exactly the §2 symptoms (`unresolved external symbol 'ax_helper__m1755'`, both libraries
+emitting plain `ax_helper`), while its two over-qualification guards pass on both compilers.
+
+### Still open after P2
+
+- **Methods, globals and constructors keep the old scheme.** `axS_`/`axG_`/`axC_` from §4 are
+  not implemented; only free functions are qualified, because only they cross the `.lib`
+  interface today. fn-vs-struct therefore still rests on the typecheck rejection.
+- **P2 is a flag day, and nothing detects it.** The `.lib` staleness manifest hashes only the
+  library source, so a `.lib` built by an older compiler is considered fresh and is silently
+  linked against the new names. The oracle deletes stale `.lib`s for this reason. A compiler
+  identity in the manifest would close it.
+- **`mod_name` reaches `register_module_from_lib` empty** (probed, which is why the qualifier
+  is derived from `lib_path`). The `mod.NAME` global binding written from it is therefore dead
+  — resolution reaches these symbols through the `ModuleExport` list. Harmless today, but it
+  is a live trap for anyone who reads that code and assumes the binding works.
+- **Multi-segment non-std module paths do not resolve at call sites.** `import bin.libcol.liba`
+  compiles the library correctly but `bin.libcol.liba.helper()` fails with
+  "undefined name 'bin'". Pre-existing — the shipped compiler fails identically — and the
+  reason the oracle uses single-segment module names.
+- **P3 (E0501 as an error)** is still blocked as §5 describes: the benign duplicated runtime
+  shims remain, since each library embeds its own copy and those names are deliberately not
+  qualified.

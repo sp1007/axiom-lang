@@ -47,6 +47,15 @@ pub const SYM_FLAG_MODDUP: u16 = 2048
 // Consumed by CTGC (RFC 0015 P3) to decide which locals are safe to free; no
 // consumer is wired yet, so setting it is behaviourally inert (fixpoint A==B).
 pub const SYM_FLAG_ESCAPES: u16 = 4096
+// RFC 0035 P2: this symbol's `name_id` is ALREADY the module-qualified emitted base
+// (`libpa_helper`), so the mangler must emit `ax_<name_id>` verbatim and apply no further
+// decoration. Set on the body-less symbols registered from a `.lib` interface
+// (`register_module_from_lib`), which is how an importing compilation computes the same
+// name the library emitted for itself — from the module name in the import, with no shared
+// table and no table index. The early return also keeps a library function whose first
+// parameter is a struct from picking up the `ax_<Struct>_<fn>` method decoration on the
+// importing side only, which would silently disagree with the definition.
+pub const SYM_FLAG_MODQUAL: u16 = 8192
 
 // ScopeKind constants
 pub const SCOPE_GLOBAL: u8 = 0
@@ -415,6 +424,14 @@ pub struct SymbolTable:
     pub dll_bind_dlls: U32Vec
     // RFC 0009 P2: name_ids of #[export] functions (for PE export table).
     pub export_syms: U32Vec
+    // RFC 0035 P2: the canonical name of the COMPILATION UNIT, when that unit is being
+    // built as a library (`--staticlib`); empty for an ordinary program build. It is the
+    // qualifier `x86_resolve_sym_name` prepends to the unit's OWN public functions, so two
+    // libraries that both define `helper` emit distinct symbols. Deliberately a property of
+    // the unit and not of each symbol: AXIOM's native path has no module nesting at compile
+    // time (each `axc build` is ONE flat unit), which is why the earlier per-symbol
+    // `module_id` + resolution cursor was always zero and had to be reverted.
+    pub unit_qualifier: str
 
 pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     let st = @alloc(@compiler_intrinsic("size_of")[SymbolTable]()) as ptr[SymbolTable]
@@ -428,6 +445,7 @@ pub fn new_symbol_table(mut intern: ptr[InternPool]) -> ptr[SymbolTable]:
     st.dll_bind_syms = new_u32_vec()
     st.dll_bind_dlls = new_u32_vec()
     st.export_syms = new_u32_vec()
+    st.unit_qualifier = ""  // RFC 0035 P2: set by the driver only for --staticlib builds
 
     // Prepopulate global scope
     mut global_scope := Scope(kind: SCOPE_GLOBAL, padding1: 0 as u8, padding2: 0 as u16, parent_id: 0 as u32, depth: 0 as u32, entries: null as ptr[ScopeEntry], count: 0, capacity: 0)
