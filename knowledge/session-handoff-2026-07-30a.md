@@ -122,6 +122,35 @@ giữa các phiên. callloop giảm 79,2→77,4 ms tuyệt đối TRONG KHI máy
 ⇒ Floor **test base case TRƯỚC prologue** = **shrink-wrapping**. AXIOM trả trọn 5 lệnh prologue
 + 5 lệnh epilogue cho **mọi** lời gọi base — tức khoảng **một nửa** số lời gọi.
 
+### ✅ ĐÃ ĐỊNH GIÁ LẠI XONG (4 biến thể NASM, **có `align 16`**, xen kẽ 4 vòng, lặp 2 lần)
+| biến thể | ms | vs V0 |
+|---|---|---|
+| V0 shrink-wrap, KHÔNG rbp — **floor hiện tại** | 513,6 | — |
+| V1 shrink-wrap, **CÓ rbp** | **483,3** | **−5,9%** |
+| V2 prologue-trước, KHÔNG rbp | 515,4 | +0,4% |
+| V3 prologue-trước, CÓ rbp — **ĐÚNG hình dạng AXIOM** | 492,6 | −4,1% |
+
+**1. Shrink-wrapping chỉ đáng ~0,4–0,7% ⇒ phán quyết 2026-07-29 ("+0,5 ms, vô giá trị") LÀ ĐÚNG.**
+Nghi ngờ của tôi ở mục trên **SAI**; ghi lại để không ai đào lại lần thứ ba.
+
+**2. CÓ frame pointer NHANH HƠN 4–6% trên shape này** (V1<V0, V3<V2; nhất quán 2 lần chạy, đã
+khống chế alignment; **frame size hai bên BẰNG NHAU = 64 byte** nên không phải do khác cỡ frame).
+AXIOM **đã có sẵn** rbp frame ⇒ ⛔ **"bỏ frame pointer" KHÔNG chỉ vô giá trị mà CÓ HẠI — ĐỪNG LÀM.**
+(Không suy đoán cơ chế: đây là con số đo được, chưa giải thích.)
+
+**3. ⭐⭐⭐ FLOOR CỦA fib ĐANG BỊ ĐẶC TẢ SAI, VÀ NÓ TÂNG BỐC AXIOM.** V0 vừa **không** phải hình
+dạng AXIOM phát (AXIOM có rbp, không shrink-wrap = **V3**), vừa **không** phải bản nhanh nhất
+(**V1**). Hệ quả về con số:
+- so với floor hiện tại V0: **608/513 = 1,18x** (đang báo cáo)
+- so với ĐÚNG hình dạng AXIOM V3: **608/493 = 1,23x**
+- so với bản viết tay NHANH NHẤT cùng thuật toán V1: **608/483 = 1,26x**
+⇒ **Khoảng cách thật của fib LỚN HƠN 1,18x**, và câu "chỉ còn ~2,6%" ở trên **là SAI, đã rút lại**.
+⚠️ **CẦN USER QUYẾT** (D1 là quyết định của user nên tôi KHÔNG tự đổi thước đo): nên định nghĩa
+floor là **V1** (bản viết tay nhanh nhất cùng thuật toán — hợp với mục đích "đo chất lượng
+codegen") hay **V3** (cùng hình dạng)? Cả hai đều làm mốc khó hơn con số đang báo cáo.
+⇒ **Và không ứng viên nào trong hai cái trên đóng được gate**: chỗ tốn kém của fib nằm ở nơi khác.
+
+### (bối cảnh cũ, giữ lại) hai ứng viên này từng bị định giá và loại
 ⚠️ **CẢ HAI ứng viên này ĐÃ TỪNG BỊ ĐỊNH GIÁ VÀ LOẠI** (2026-07-29, bằng `perf_asm_variants.ps1`):
 shrink-wrapping **+0,5 ms**, bỏ rbp frame **−17 ms** — đều bị coi là "vô giá trị/nhiễu".
 **CẦN ĐỊNH GIÁ LẠI, vì hai lý do CỤ THỂ chứ không phải vì hoài nghi chung:**
