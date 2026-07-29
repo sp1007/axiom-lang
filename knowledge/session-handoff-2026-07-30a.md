@@ -98,8 +98,15 @@ metadata:
   lỗi rõ ràng. (Tôi từng tưởng BUILDFAIL này là defect; nó là compiler ĐÚNG.)
   (d) **for-loop trên `Vec`** → 12 đúng; **for trên `str` UTF-8** (`"héllo"`) → 5 đúng, -O0==-O1.
   (e) **interface dispatch** trực tiếp (`let sh: Shape = sq; sh.area()`) → 36 đúng.
-  ⇒ Probe tiếp nên nhắm vùng KHÁC hẳn: `spawn`/thread, `defer` × control-flow lồng, HashMap
-  iteration, generic × interface, Result/`?`-style error path, bignum/float biên.
+  (f) **HashMap với KHOÁ âm lớn** (`m.insert(-3000000000, 7)` rồi `.get(...).unwrap()`) → **42
+  ĐÚNG** ⇒ fix literal phủ cả khoá HashMap. (g) **Result** `Ok`/`Err` + match → 42 ĐÚNG.
+  (h) `defer` trong **vòng lặp** → **chẩn đoán ĐÚNG ĐẮN, có nêu LÝ DO**: *"`defer` inside a loop or
+  conditional is not supported (static registration would run it when the branch is not taken, or
+  only once in a loop); move it to the function body top level"* ⇒ KHÔNG phải bug.
+  ⇒ **Tổng kết probe phiên này: 4 batch. Batch 1–2 ra 3 bug THẬT (đã sửa hết); batch 3–4 SẠCH.**
+  ⇒ Bề mặt dễ tiếp cận nay đã sạch; probe tiếp nên nhắm vùng **thật sự chưa chạm**: `spawn`/thread
+  + message passing, generic × interface (vtable trên type generic), bignum/float biên,
+  `--staticlib`/`--shared` đường multi-lib, và **tổ hợp 3 feature** thay vì 2.
 
 ### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
 0. **Gate không chạy ở cấu hình nào thì mù ở cấu hình đó.** Suite build `-O1`+ ⇒ cả một lớp
