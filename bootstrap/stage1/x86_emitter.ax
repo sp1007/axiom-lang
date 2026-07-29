@@ -295,8 +295,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             x86_encode_sub_rr(dst, src, buf)
     elif op == MACH_IMUL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_imul_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_imul_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_imul_rr(dst, src, buf)
     elif op == MACH_IDIV:
         let src = emitter_resolve_reg(inst.src1, allocs)
         x86_encode_idiv_r(src, buf)
@@ -313,16 +316,25 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         x86_encode_not_r(dst, buf)
     elif op == MACH_AND:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_and_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_and_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_and_rr(dst, src, buf)
     elif op == MACH_OR:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_or_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_or_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_or_rr(dst, src, buf)
     elif op == MACH_XOR:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_xor_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_xor_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_xor_rr(dst, src, buf)
     elif op == MACH_SHL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         if inst.src1.kind == OPND_IMM:

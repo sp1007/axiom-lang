@@ -28146,6 +28146,132 @@ pub fn drop_dead_mov_imm(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
+// The ALU ops that have an `OP r64, imm32` encoding AND whose immediate lives in src1 under
+// the destructive two-operand model. Deliberately NOT the shifts: the selector already emits
+// `SHL vD, imm` directly for a constant shift count, so admitting them here would buy nothing
+// while forcing a second, different width argument (imm8, hardware-masked to 6 bits) through
+// the same fold. Deliberately NOT CMP either -- fuse_cmp_immediate already owns that pattern
+// and runs earlier, because its result has to compose with fuse_compare_branch.
+fn mach_alu_takes_imm32(op: u16) -> bool:
+    return op == MACH_ADD or op == MACH_SUB or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_IMUL
+
+// PEEPHOLE 1d (M6): fold a materialised constant into the ALU operand that consumes it.
+//   MOV_IMM vC,k ; ALU vD,vC              ->  ALU vD,imm(k)
+//   MOV_IMM vC,k ; MOV vT,vD ; ALU vT,vC  ->  MOV vT,vD ; ALU vT,imm(k)
+//
+// âš ï¸ THE SECOND WINDOW IS THE ONE THAT MATTERS, and the first version of this pass had only
+// the first. Selection materialises a binop's constant operand BEFORE emitting the destructive
+// form's `MOV vT, lhs` copy, so for every user-level `x OP const` the MOV_IMM and its consumer
+// are TWO apart, not adjacent. Written with the adjacent window alone, this fold fired on
+// exactly zero of callloop's four constants -- it matched only compiler-internal width masks,
+// which happen to be emitted next to their AND. It was caught by dumping the actual
+// instruction stream this pass sees, and it could NOT have been caught by reading the emitted
+// assembly: there the pair shows up adjacent (`mov $0x2,%rbx; imul %rbx,%rdx`), because
+// downstream stages do not preserve this ordering. The disassembly is evidence about the
+// finished binary, not about the array a pre-allocation peephole matches on.
+//
+// WHY, and why the earlier "immediate folding is worthless" measurement does not apply. This
+// candidate was priced by hand-written NASM on 2026-07-24e and scored -0.5/-13 ms, i.e. noise,
+// so it was dropped. That pricing was done on FIB, which is latency-bound: a constant load sits
+// off the recursion's dependency chain and is invisible there. The exact same mistake was made
+// about register coalescing, which measured 0 on fib and then -30% on xorshift once it was
+// priced on a throughput-bound shape. callloop is the throughput-bound shape here, and its
+// asm floor (added the commit before this one) puts it at 1.28x -- the ONLY shape of the four
+// that misses the M6-codegen gate of 15%. Its 13-instruction loop body spends FOUR
+// instructions doing nothing but moving a constant into a register so the next instruction can
+// read it:
+//     mov $0x2,%rbx ; imul %rbx,%rdx        ->  imul %rdx,%rdx,2
+//     mov $0x3,%rdx ; imul %rdx,%rax        ->  imul %rax,%rax,3
+//     mov $0xfffff,%rax ; and %rax,%rcx     ->  and %rcx,0xfffff
+// Every one of those loads is a real uop on the critical path of a throughput-bound loop.
+//
+// Runs BEFORE coalesce_dest_copy (1c) rather than after, and that ordering is load-bearing
+// rather than cosmetic: 1c's shape A requires `MOV vT,vD ; OP vT,C ; MOV vD,vT` to be textually
+// ADJACENT, and a compound assignment against a constant (`acc = acc & 1048575`) emits the
+// MOV_IMM *between* the first copy and the op, splitting the window so 1c cannot fire at all.
+// Removing the MOV_IMM first closes the window back up. It cannot work the other way round:
+// this fold only ever deletes an instruction that 1c does not match on.
+//
+// SAFETY, same single criterion the three folds before it use: `counts[vC]` is the number of
+// operand slots the WHOLE function mentions vC in, so requiring exactly 2 (the MOV_IMM's def
+// plus this one use) proves no other instruction can observe the register -- no CFG reasoning
+// and no dependence on block ordering, which is the assumption the reverted copy-propagation
+// got wrong. Beyond that:
+//   (1) The constant must be a PLAIN integer: `src1.kind == OPND_IMM` AND `src1.vreg == 0` AND
+//       no reloc label. MACH_MOV_IMM is overloaded as the carrier for string-literal, function-
+//       address, global-address and spawn-entry relocations, and every one of those forms is
+//       discriminated by a marker in src1.vreg (1,2,3,4) -- checking vreg explicitly means this
+//       does not silently start folding addresses if a fifth marker is ever added.
+//   (2) k must fit a SIGNED imm32: all these encodings sign-extend the immediate to 64 bits,
+//       so `x & 0xFFFFFFFF` must stay a register op rather than become `and r64,-1`.
+//   (3) The constant must sit in the ALU's src1 (the source), never its dst. `5 - x` keeps the
+//       constant as the destination of a destructive SUB, and that shape simply does not match
+//       (a MOV_IMM's dst is the ALU's dst, not its src1) -- a missed fold, not a miscompile.
+//   (4) Adjacency, so nothing can redefine vC between its def and its use.
+// Flags are unaffected: `and r,imm` sets exactly what `mov imm->r; and r,r` sets, and the
+// deleted MOV_IMM never wrote flags to begin with.
+pub fn fold_alu_immediate(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 2 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut folded := false
+        if r + 1 < len:
+            let m = &insts[r]
+            if m.op == MACH_MOV_IMM and m.dst.kind == OPND_VREG and m.src1.kind == OPND_IMM and m.src1.vreg == 0 as u32 and m.src1.label == 0 as u32:
+                let vc = m.dst.vreg
+                let imm = m.src1.imm
+                if (vc as i64) < n and counts[vc as i64] == 2 as i32 and imm >= (0 - 2147483648) as i64 and imm <= 2147483647 as i64:
+                    // Locate the consumer: either the next instruction, or the one after it
+                    // across a single interposed MACH_MOV (see the window note above).
+                    mut ai := 0 as i64
+                    mut have := false
+                    let n1 = &insts[r + 1 as i64]
+                    if mach_alu_takes_imm32(n1.op):
+                        ai = r + 1 as i64
+                        have = true
+                    elif n1.op == MACH_MOV and r + 2 < len:
+                        let n2 = &insts[r + 2 as i64]
+                        if mach_alu_takes_imm32(n2.op):
+                            ai = r + 2 as i64
+                            have = true
+                    if have:
+                        let a = &insts[ai]
+                        if a.dst.kind == OPND_VREG and a.src1.kind == OPND_VREG and a.src1.vreg == vc and a.src2.kind == OPND_NONE:
+                            // Keep the interposed copy, in its original position relative to
+                            // the op; only the now-dead MOV_IMM disappears.
+                            if ai == r + 2 as i64:
+                                insts[w] = insts[r + 1 as i64]
+                                w = w + 1 as i64
+                            insts[w] = MachInst(op: a.op, cc: a.cc, padding: a.padding, dst: a.dst, src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: imm), src2: a.src2)
+                            w = w + 1 as i64
+                            r = ai + 1 as i64
+                            folded = true
+        if not folded:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+            r = r + 1 as i64
+    @free(counts as ptr[u8])
+    return w
+
 // The two-operand ALU ops: `OP d, s` means `d = d OP s`, so the destination is an implicit
 // SOURCE as well. That is what forces select_binop to prefix every one of them with a
 // `MOV dest, src1` copy, and it is the precondition coalesce_dest_copy relies on.
@@ -28519,6 +28645,11 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // select_inst leaves behind. Placed after the CMP fusion so it also sweeps up any
     // MOV_IMM that fusion orphaned, and before the rest so they see fewer instructions.
     result.len = drop_dead_mov_imm(result.data, result.len, sel.max_vreg)
+    // Peephole 1d (M6): fold a materialised constant into the ALU operand that reads it.
+    // BEFORE 1c on purpose â€” a compound assignment against a constant emits the MOV_IMM in the
+    // middle of the three-instruction window 1c matches on, so removing it here is what lets 1c
+    // fire at all on those. See fold_alu_immediate.
+    result.len = fold_alu_immediate(result.data, result.len, sel.max_vreg)
     // Peephole 1c (M6): fold the destructive two-operand form's copy pair into the op itself.
     // After 1b, so the counts it reasons about are not inflated by constants already known
     // dead, and before allocation, because the allocator's interval model provably cannot
@@ -31198,6 +31329,18 @@ pub fn x86_encode_imul_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, 0xAF as u8)
     push_byte(buf, modrm)
 
+// REX.W 69 /r id â€” `imul r64, r/m64, imm32`. Unlike the group-1 ops below this is x86's
+// only THREE-operand integer form, so the destructive `vD = vD * k` we are encoding becomes
+// `imul dst, dst, k`: dst names both the reg field and the r/m field, which is why the REX
+// R and B bits are both driven from it.
+pub fn x86_encode_imul_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, reg_needs_rex(dst), false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | ((reg_hw_reg(dst) & 7 as u8) << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x69 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
 pub fn x86_encode_cqo(buf: ptr[ByteVec]):
     push_byte(buf, encode_rex(true, false, false, false))
     push_byte(buf, 0x99 as u8)
@@ -31304,6 +31447,35 @@ pub fn x86_encode_xor_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, rex)
     push_byte(buf, 0x31 as u8)
     push_byte(buf, modrm)
+
+// The rest of the group-1 immediate forms: `REX.W 81 /d id`, identical in shape to
+// x86_encode_add_ri (/0), x86_encode_sub_ri (/5) and x86_encode_cmp_ri (/7) above, differing
+// only in the opcode-extension digit carried in the ModRM reg field. imm32 is SIGN-extended to
+// 64 bits by the hardware, which is why the folding peephole refuses any constant outside
+// signed-imm32 range rather than truncating it.
+pub fn x86_encode_and_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
+pub fn x86_encode_or_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (1 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
+pub fn x86_encode_xor_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (6 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
 
 pub fn x86_encode_shl_cl(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))
@@ -32284,8 +32456,11 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
             x86_encode_sub_rr(dst, src, buf)
     elif op == MACH_IMUL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_imul_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_imul_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_imul_rr(dst, src, buf)
     elif op == MACH_IDIV:
         let src = emitter_resolve_reg(inst.src1, allocs)
         x86_encode_idiv_r(src, buf)
@@ -32302,16 +32477,25 @@ pub fn emit_mach_inst(mut e: ptr[MachEmitter], inst: MachInst, allocs: ptr[RegAl
         x86_encode_not_r(dst, buf)
     elif op == MACH_AND:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_and_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_and_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_and_rr(dst, src, buf)
     elif op == MACH_OR:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_or_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_or_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_or_rr(dst, src, buf)
     elif op == MACH_XOR:
         let dst = emitter_resolve_reg(inst.dst, allocs)
-        let src = emitter_resolve_reg(inst.src1, allocs)
-        x86_encode_xor_rr(dst, src, buf)
+        if inst.src1.kind == OPND_IMM:
+            x86_encode_xor_ri(dst, inst.src1.imm as i32, buf)
+        else:
+            let src = emitter_resolve_reg(inst.src1, allocs)
+            x86_encode_xor_rr(dst, src, buf)
     elif op == MACH_SHL:
         let dst = emitter_resolve_reg(inst.dst, allocs)
         if inst.src1.kind == OPND_IMM:

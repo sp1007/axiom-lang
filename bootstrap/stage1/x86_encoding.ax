@@ -103,6 +103,18 @@ pub fn x86_encode_imul_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, 0xAF as u8)
     push_byte(buf, modrm)
 
+// REX.W 69 /r id — `imul r64, r/m64, imm32`. Unlike the group-1 ops below this is x86's
+// only THREE-operand integer form, so the destructive `vD = vD * k` we are encoding becomes
+// `imul dst, dst, k`: dst names both the reg field and the r/m field, which is why the REX
+// R and B bits are both driven from it.
+pub fn x86_encode_imul_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, reg_needs_rex(dst), false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | ((reg_hw_reg(dst) & 7 as u8) << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x69 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
 pub fn x86_encode_cqo(buf: ptr[ByteVec]):
     push_byte(buf, encode_rex(true, false, false, false))
     push_byte(buf, 0x99 as u8)
@@ -209,6 +221,35 @@ pub fn x86_encode_xor_rr(dst: u8, src: u8, buf: ptr[ByteVec]):
     push_byte(buf, rex)
     push_byte(buf, 0x31 as u8)
     push_byte(buf, modrm)
+
+// The rest of the group-1 immediate forms: `REX.W 81 /d id`, identical in shape to
+// x86_encode_add_ri (/0), x86_encode_sub_ri (/5) and x86_encode_cmp_ri (/7) above, differing
+// only in the opcode-extension digit carried in the ModRM reg field. imm32 is SIGN-extended to
+// 64 bits by the hardware, which is why the folding peephole refuses any constant outside
+// signed-imm32 range rather than truncating it.
+pub fn x86_encode_and_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (4 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
+pub fn x86_encode_or_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (1 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
+
+pub fn x86_encode_xor_ri(dst: u8, imm: i32, buf: ptr[ByteVec]):
+    let rex = encode_rex(true, false, false, reg_needs_rex(dst))
+    let modrm = (MOD_REG_DIRECT << 6 as u8) | (6 as u8 << 3 as u8) | (reg_hw_reg(dst) & 7 as u8)
+    push_byte(buf, rex)
+    push_byte(buf, 0x81 as u8)
+    push_byte(buf, modrm)
+    push_u32_le(buf, imm as u32)
 
 pub fn x86_encode_shl_cl(reg: u8, buf: ptr[ByteVec]):
     let rex = encode_rex(true, false, false, reg_needs_rex(reg))

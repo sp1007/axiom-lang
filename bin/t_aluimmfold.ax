@@ -1,0 +1,121 @@
+// Oracle for PEEPHOLE 1d (fold_alu_immediate) and the four ALU immediate encodings it is the
+// only producer of: x86_encode_and_ri, or_ri, xor_ri (group-1 /4 /1 /6) and imul_ri (0x69).
+// Before this fold, MACH_AND/OR/XOR/IMUL had no immediate form at all, so a wrong ModRM
+// opcode-extension digit would silently encode a DIFFERENT operation -- `and` written with
+// /1 is `or`, with /6 is `xor` -- and every one of those still produces a plausible number.
+//
+// Every constant below is chosen so a plausible bug changes the answer:
+//   - operands above 2^32 catch an immediate path that truncates to 32 bits;
+//   - negative immediates catch a missing sign-extension (imm32 is sign-extended to 64 bits);
+//   - the 0xFFFFFFFF mask does NOT fit a signed imm32, so it must stay in register form --
+//     folding it anyway yields `and r64,-1`, i.e. the value unchanged, which this pins;
+//   - `100 - x` keeps its constant as the destructive SUB's DESTINATION, the shape the fold
+//     must decline; folding it regardless would compute x - 100.
+// Each check returns its own code so a failure names itself instead of just missing 42.
+fn main() -> i64:
+    let v: i64 = 5000000123
+
+    // AND: mask fits imm32, operand exceeds 2^32.
+    mut a: i64 = v
+    a = a & 1048575
+    if a != 389755:
+        return 1
+
+    // OR with a small positive immediate, result still above 2^32.
+    mut b: i64 = v
+    b = b | 255
+    if b != 5000000255:
+        return 2
+
+    // XOR, same width story.
+    mut c: i64 = v
+    c = c ^ 1048575
+    if c != 5000269188:
+        return 3
+
+    // IMUL by a positive immediate (the 3-operand 0x69 form).
+    mut d: i64 = 123456789
+    d = d * 3
+    if d != 370370367:
+        return 4
+
+    // IMUL by a NEGATIVE immediate: sign extension of the imm32 operand.
+    mut e: i64 = 1000000
+    e = e * -7
+    if e != -7000000:
+        return 5
+
+    // ADD of the most negative imm32 -- the exact boundary the fold's range test allows.
+    mut f: i64 = v
+    f = f + -2147483648
+    if f != 2852516475:
+        return 6
+
+    // SUB with the constant in source position (foldable).
+    mut g: i64 = v
+    g = g - 2000000000
+    if g != 3000000123:
+        return 7
+
+    // 0xFFFFFFFF does NOT fit a SIGNED imm32: must stay a register operand.
+    // If folded, this would sign-extend to -1 and leave v unchanged (5000000123).
+    mut h: i64 = v
+    h = h & 4294967295
+    if h != 705032827:
+        return 8
+
+    // XOR with -1 (all bits set after sign extension) must complement all 64 bits,
+    // not just the low 32.
+    mut i: i64 = 12345
+    i = i ^ -1
+    if i != -12346:
+        return 9
+
+    // Constant in DESTINATION position of a non-commutative op: the fold must decline.
+    // A fold here would compute 7 - 100 = -93 instead of 93.
+    let x: i64 = 7
+    let j: i64 = 100 - x
+    if j != 93:
+        return 10
+
+    // The same constant used twice: reference counting must see counts != 2 for at least
+    // one of the materialisations, and the result must be right either way.
+    let k: i64 = 1000
+    let m: i64 = (v & 1048575) + k - k
+    if m != 389755:
+        return 11
+
+    // Twelve values multiplied by immediates and all kept live until the final sum, so the
+    // allocator is forced to place some of them in r8-r15. This exists because
+    // x86_encode_imul_ri is the ONLY one of the four new encoders that needs REX.R (its dst
+    // names both the ModRM reg and rm field), and the checks above never reach a high register:
+    // deleting the R bit left them all returning 42. A guard that cannot fail is not a guard.
+    mut p1: i64 = 11
+    mut p2: i64 = 22
+    mut p3: i64 = 33
+    mut p4: i64 = 44
+    mut p5: i64 = 55
+    mut p6: i64 = 66
+    mut p7: i64 = 77
+    mut p8: i64 = 88
+    mut p9: i64 = 99
+    mut p10: i64 = 110
+    mut p11: i64 = 121
+    mut p12: i64 = 132
+    p1 = p1 * 3
+    p2 = p2 * 5
+    p3 = p3 * 7
+    p4 = p4 * 11
+    p5 = p5 * 13
+    p6 = p6 * 17
+    p7 = p7 * 19
+    p8 = p8 * 23
+    p9 = p9 * 29
+    p10 = p10 * 31
+    p11 = p11 * 37
+    p12 = p12 * 41
+    let tot: i64 = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11 + p12
+    if tot != 22352:
+        return 12
+
+    return 42
