@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD aab9ec1, driver A==B+B==C BF00A447, 573/573 (+lượt -O0), CÒN 1 bug OPEN (hàm user trùng tên stdlib + param interface ⇒ overload chọn nhầm bản stdlib). Đã SỬA 2 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD 0950d01 (code cuối ở aab9ec1), driver A==B+B==C BF00A447, 573/573 (+lượt -O0), CÒN 1 bug OPEN (hàm user trùng tên stdlib + param interface ⇒ overload chọn nhầm bản stdlib). Đã SỬA 2 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
@@ -12,9 +12,10 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `aab9ec1`
-- HEAD **`aab9ec1`** đã push; driver `bin/axc_native.exe` = **`BF00A447`** (`A==B` VÀ `B==C`).
-  Gate: **571/571**, **lượt `-O0` toàn suite 567/567**, ELF 12/12, ctgc 16/16, exe_size 4/4,
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `0950d01`
+- HEAD **`0950d01`** đã push; driver `bin/axc_native.exe` = **`BF00A447`** (`A==B` VÀ `B==C`).
+  Gate: **573/573** (code cuối cùng ở `aab9ec1`; các commit sau chỉ là test + memory),
+  **lượt `-O0` toàn suite xanh**, ELF 12/12, ctgc 16/16, exe_size 4/4,
   lib_collision 6/6, so_export ✓.
 - 🐞 **CÒN 1 BUG OPEN** (probe-found cuối phiên, **CHƯA sửa**):
   [[bug-user-fn-builtin-name-iface-param]] — hàm user trùng tên hàm stdlib bundled
