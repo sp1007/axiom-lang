@@ -7,6 +7,40 @@ metadata:
 
 # HANDOFF 2026-07-30a — **ĐỌC ĐẦU TIÊN**
 
+## ⚠️ CẬP NHẬT CUỐI PHIÊN (`60a975a`) — đã ship **peephole 1e**, và mốc VẪN CHƯA ĐẠT, nhưng shape trượt ĐÃ ĐỔI
+`IMUL vD,imm(2)` → `ADD vD,vD`; `IMUL vD,imm(2^k)` → `SHL vD,imm(k)`. Driver mới **`A2AD800D`**
+(seed==A==B==C), 564/564. Đo ghép cặp 2 vòng:
+
+| shape | trước 1e | sau 1e | |
+|---|---|---|---|
+| callloop | 1,21 / 1,23 | **1,07 / 1,10** | ✅ nay TRONG mốc |
+| arrwalk | 1,14 / 1,15 | **1,08 / 1,09** | ✅ (`imul $8` của index mảng) |
+| xorshift | 1,00 / 1,01 | 1,01 / 1,01 | phẳng |
+| fib | 1,13 / 1,13 | **1,19 / 1,20** | ❌ **rơi RA NGOÀI mốc** |
+
+⇒ **M6-codegen vẫn CHƯA ĐẠT, nhưng shape chặn nay là `fib` chứ không phải `callloop`.**
+
+⭐ **fib regress là ALIGNMENT, đã QUY TRÁCH NHIỆM chứ không đoán**: fib không có phép nhân nào,
+nên 1e không thể đổi instruction selection của nó. Build cả 2 chiều rồi diff: thay đổi lệnh DUY
+NHẤT trong binary fib nằm ở **runtime helper bundled** (`imul $0x1000`→`shl $0xc` cho page size,
+`imul $0x8`→`shl $0x3` cho mảng con trỏ); **thân hàm fib đệ quy KHÔNG ĐỔI**. `.text` cùng kích
+thước, nhưng `shl` mã hoá ngắn hơn `imul` imm32 ⇒ mọi thứ sau đó dịch **16 byte** ⇒ fib rơi vào
+alignment khác. **Cùng hiện tượng đã bank 2026-07-29f cho xorshift** (+4,6% từ một thay đổi ÍT
+lệnh hơn, chuỗi phụ thuộc không đổi). ⛔ **ĐỪNG "sửa" bằng cách nhét lại lệnh chết.**
+⇒ Hệ quả: **con số 1,13x của fib trước đây một phần là MAY MẮN.** Cách sửa đúng là **căn lề
+(align) các hot branch target / function entry về 16 byte** — việc RIÊNG, phải đo RIÊNG, và nó
+sẽ làm ỔN ĐỊNH cả 4 con số. **Đây là việc kế tiếp được đề xuất.**
+
+⭐⭐ **Thứ tự 1e SAU 1c là load-bearing, và GATE KHÔNG THỂ THẤY ĐIỀU ĐÓ.** 1c khớp theo
+`counts[vT]==3`; viết `ADD vT,vT` thêm mention thứ TƯ ⇒ vô hiệu hoá 1c. Trên `x = x * 2` trong
+vòng lặp: sau-1c → `add %rax,%rax`; trước-1c → `mov %rax,%rdx ; add %rdx,%rdx ; mov %rdx,%rax`.
+**Nhưng compile chính nguồn 2 MB của compiler theo CẢ HAI thứ tự cho ra BYTE-IDENTICAL**
+(`413C6A12`), vì trong đó không có chỗ nào viết `x = x * 2^k` dạng compound assignment ⇒
+**A==B/B==C vẫn XANH dù thứ tự SAI.** Lại một ca "gate xanh chứng minh số không".
+
+⭐ Flags KHÔNG cần phân tích (giả định ban đầu của tôi là SAI): `IMUL` để SF/ZF/AF/PF
+**undefined** theo ISA ⇒ không consumer đúng đắn nào đọc cờ xuyên qua nó.
+
 ## Trạng thái
 - HEAD `1172648`, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
   untracked — **của user, đừng đụng**).
