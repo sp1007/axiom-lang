@@ -34032,6 +34032,44 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
             mut str_lit_counter := 0 as i32
             emit_function_binary(&emitter, fn_name, final_insts.data, final_insts.len, alloc_res.allocs, &frame, is_windows, pool, &str_lit_counter, self_link)
             
+            // Align every function entry to 16 bytes (M6). This is a MEASUREMENT FIX, not a
+            // speed optimization, and it is important not to confuse the two -- it does not
+            // make code faster and can leave a given build slightly slower than a lucky
+            // unaligned placement.
+            //
+            // Without it a function's address depends on the exact byte length of every
+            // function emitted before it, so an unrelated change elsewhere silently moves hot
+            // code onto a different alignment. Peephole 1e shortened two instructions inside
+            // bundled runtime helpers (imul-imm32 -> shl), everything after them shifted 16
+            // bytes, and fib -- whose own body was proven byte-identical -- read 5% slower.
+            // The same effect produced a phantom "xorshift +4.6%" on 2026-07-29f.
+            //
+            // MEASURED, on fib, best-of-9, four alternating pairs each:
+            //     unaligned:  1e costs  +5.1%   (+3.4 .. +7.3, same sign every pair)
+            //     aligned:    1e costs  -0.2%   (-0.84 .. +0.51, straddling zero)
+            // So the sensitivity is real and this removes it.
+            //
+            // âš ï¸ THE FIRST EVALUATION OF THIS CHANGE CONCLUDED "benefit zero" AND REVERTED IT.
+            // That compared aligned-with-1e against UNALIGNED-with-1e -- alignment's effect on
+            // a single build. The point of the change is to make DIFFERENT builds comparable,
+            // so the experiment had to be run on the DELTA between two builds, which is the
+            // table above. Judging a determinism fix by whether one number improved is the
+            // wrong yardstick.
+            //
+            // Honest cost: fib now reads ~605 ms deterministically, against 580 for the lucky
+            // unaligned placement and 609 for the unlucky one -- so it lands near the middle of
+            // a spread it used to sample at random. A consequence worth stating: fib's earlier
+            // 1.13x, which passed the 15% M6-codegen gate, was that lottery coming up well. The
+            // deterministic figure is ~1.18x, and it MISSES. Better to know that than to keep a
+            // number that is right one run in three.
+            //
+            // Safe by construction: the padding goes in BEFORE current_offset is captured, so
+            // every symbol value and every per-function relocation (rebased by info.offset
+            // later) already accounts for it. The bytes are 0x90 and sit between functions,
+            // which are only ever entered at their recorded symbol -- nothing falls through
+            // into them, since each function's last instruction is a ret.
+            while (all_code.len % 16 as i64) != 0 as i64:
+                push_byte(&all_code, 0x90 as u8)
             let current_offset = all_code.len as u32
             push_bytes(&all_code, emitter.code.data, emitter.code.len)
             
