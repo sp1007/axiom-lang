@@ -209,6 +209,68 @@ main:
     ret
 "@
 
+# arrwalk: the hot half is a SERIAL pointer chase (`idx = tbl[idx]`), so the floor is about
+# dependency-chain length, not instruction count. Everything loop-invariant is hoisted (the
+# table base) and the index scaling lives in the addressing mode, which is what keeps the chain
+# at load-latency: idx -> load -> idx. Note RIP-relative addressing cannot carry an index
+# register, so the base genuinely has to be materialised into one -- once, before the loop.
+# The fill loop runs 65536 times against the walk's 40M and is not the measurement.
+$srcs["arrwalk"].asm = @"
+default rel
+section .bss
+tbl:    resq 65536
+section .text
+global main
+main:
+    lea     r9, [tbl]
+    mov     r10, 2654435761
+    xor     rax, rax
+.fill:
+    mov     rdx, rax
+    imul    rdx, r10
+    add     rdx, 12345
+    and     rdx, 65535
+    mov     [r9 + rax*8], rdx
+    inc     rax
+    cmp     rax, 65536
+    jb      .fill
+    xor     rax, rax
+    xor     rcx, rcx
+    mov     r8, 40000000
+.walk:
+    mov     rax, [r9 + rax*8]
+    add     rcx, rax
+    dec     r8
+    jnz     .walk
+    mov     rax, rcx
+    and     rax, 255
+    ret
+"@
+
+# callloop: work() is INLINED here on purpose. AXIOM already inlines it (confirmed in the
+# disassembly -- the emitted loop body contains no call), so a floor that kept the call would
+# not be measuring the same program, and the AXIOM/asm ratio would silently credit the backend
+# for an inlining decision made upstream. With it inlined the constant `c*3` folds to 21 and
+# `b*2` folds into the LEA, which is exactly the codegen quality this column is meant to bound.
+$srcs["callloop"].asm = @"
+default rel
+section .text
+global main
+main:
+    mov     rax, 1
+    xor     rcx, rcx
+    mov     r8, 60000000
+.loop:
+    lea     rax, [rax + rcx*2]
+    add     rax, 21
+    and     rax, 1048575
+    inc     rcx
+    cmp     rcx, r8
+    jb      .loop
+    and     rax, 255
+    ret
+"@
+
 $order = @("fib","xorshift","arrwalk","callloop")
 
 # NASM is optional: without it the asm floor column is skipped, everything else still runs.
