@@ -1,13 +1,35 @@
 ---
 name: bug-negative-literal-compare-o0
-description: "OPEN BUG (probe-found 2026-07-30) — LITERAL ÂM có |v| > 2^31 bị TRUNCATE về i32 ở -O0, ở MỌI vị trí không có hint kiểu i64 (toán hạng so sánh VÀ tham số lời gọi); đúng ở -O1+. Root: unary minus rồi wrap-to-width về i32 (neg; shl 32; sar 32). Silent miscompile; t_tostr đã bắt được từ lâu nhưng suite không chạy -O0."
+description: "✅ FIXED 2026-07-30 (A==B + B==C 99225522, 567/567, -O0 sweep 564/564) — literal nguyên KHÔNG vừa i32 nay được suy kiểu i64 thay vì i32. Trước đó bị truncate ở -O0 tại mọi vị trí không có hint kiểu (toán hạng so sánh VÀ tham số lời gọi). Fix 1 dòng điều kiện theo ĐỘ LỚN ở typecheck.ax NODE_INT_LIT."
 metadata:
   type: project
 ---
 
-# 🐞 OPEN — literal ÂM ngoài dải i32 bị truncate ở `-O0` (so sánh VÀ tham số lời gọi)
+# ✅ FIXED — literal ÂM ngoài dải i32 bị truncate ở `-O0` (so sánh VÀ tham số lời gọi)
 
-**Tình trạng: OPEN, chưa sửa.** Tìm được bằng probe 2026-07-30 (driver `0E24570B`), khi kiểm
+## ✅ ĐÃ SỬA 2026-07-30 — fix theo ĐỘ LỚN ở `NODE_INT_LIT`
+`typecheck.ax` ~L5595: literal nguyên **không có hint kiểu** trước đây mặc định **i32 BẤT KỂ ĐỘ
+LỚN**. Nay: nếu giá trị **không vừa i32** thì mặc định **i64**.
+```axiom
+let lit_val = parse_comptime_int(self.node_text(node_idx))
+if lit_val > 2147483647 as i64 or lit_val < (0 - 2147483648) as i64:
+    result_type = TYPE_I64
+else:
+    result_type = TYPE_I32
+```
+⭐ **Cố ý theo ĐỘ LỚN, không phải đổi mặc định thành i64 toàn bộ**: mọi literal vừa i32 **giữ
+NGUYÊN kiểu cũ**, nên không thể xáo trộn code thường, chọn overload, hay hành vi so sánh u64 mà
+`t_u64cmp` đang ghim. **Literal duy nhất bị đổi kiểu là những cái mà kiểu hiện tại VỐN ĐÃ SAI** —
+i32 không biểu diễn được chúng.
+
+**Gate**: `A == B` **VÀ** `B == C` = **`99225522`** (frontend nhưng đo cả hai cho chắc),
+regression **567/567** (+3 dòng mới), **lượt `-O0` toàn suite 564/564**.
+Đã thêm vào `regression_repros.sh`: khối **`-O0`-only** (`t_negbiglitcmp` + `t_tostr`) — xem mục
+"bài học hạ tầng" ở dưới.
+
+---
+## (bối cảnh chẩn đoán, giữ lại)
+Tìm được bằng probe 2026-07-30 (driver `0E24570B`), khi kiểm
 tra chéo các thay đổi codegen của phiên. **KHÔNG do các thay đổi phiên này gây ra** — chúng chỉ
 động tới peephole ALU/IMUL/copy và căn lề, không động tới kiểu của literal hay `emit_wrap_to_width`.
 

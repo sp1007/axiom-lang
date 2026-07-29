@@ -5596,7 +5596,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
         if expected == TYPE_I8 or expected == TYPE_I16 or expected == TYPE_I32 or expected == TYPE_I64 or expected == TYPE_U8 or expected == TYPE_U16 or expected == TYPE_U32 or expected == TYPE_U64 or expected == TYPE_F32 or expected == TYPE_F64 or expected == TYPE_ISIZE or expected == TYPE_USIZE:
             result_type = expected
         else:
-            result_type = TYPE_I32
+            // An un-hinted integer literal defaults to i32, but ONLY if it actually fits in
+            // one. Defaulting a larger value to i32 assigns it a type that cannot represent
+            // it, and that lie is not harmless: emit_wrap_to_width narrows every arithmetic
+            // result to its inferred width, so `-3000000000` was lowered as `neg ; shl 32 ;
+            // sar 32` and silently lost every bit above 32. A bare literal hid the defect --
+            // codegen materialises its full value with no arithmetic to wrap -- so it only
+            // surfaced where the literal fed an operation: `if c == -3000000000` took the
+            // wrong branch and `to_str(-9223372036854775808)` printed "0". Both are -O0 only,
+            // because SSA constant folding at -O1+ replaces the sequence with a movabs of the
+            // right value and hides it.
+            //
+            // Deliberately magnitude-based rather than a blanket switch to i64: every literal
+            // that fits i32 keeps exactly the type it had, so this cannot perturb ordinary
+            // code, overload selection, or the u64 comparison behaviour pinned by t_u64cmp.
+            // The only literals that change are ones whose current type is already wrong.
+            let lit_val = parse_comptime_int(self.node_text(node_idx))
+            if lit_val > 2147483647 as i64 or lit_val < (0 - 2147483648) as i64:
+                result_type = TYPE_I64
+            else:
+                result_type = TYPE_I32
             
     elif kind == NODE_FLOAT_LIT:
         // Coerce a float literal to the expected float type, mirroring the integer

@@ -42,6 +42,7 @@ rows=(
   "t_leafold|exit|42"
   "t_coalescedest|exit|42"
   "t_aluimmfold|exit|42"
+  "t_negbiglitcmp|exit|42"
   "t_param5|out|A38"
   "t_strip|out|a.b len exit print"
   "t_alias|out|A=1 B=0 "
@@ -811,6 +812,30 @@ for jt in "t_jumptable:226" "t_jumptable2:28" "t_jumptable3:27" "t_ifchainjt:53"
       if [ "$je_exit" = "$jwant" ]; then echo "PASS ${jname}@-jumptable-${opt} (exit=$jwant)"; pass=$((pass+1)); else echo "FAIL ${jname}@-jumptable-${opt} (exit: got '$je_exit' want $jwant)"; fail=$((fail+1)); failed="$failed ${jname}@jt-${opt}"; fi
     fi
   done
+done
+
+# --- -O0-ONLY regressions: defects that SSA constant folding hides at -O1 and above ---
+# Every row above builds at -O1 or higher, and that left a whole class of defects invisible.
+# The one that proved it: an un-hinted integer literal too large for i32 was still TYPED i32,
+# so emit_wrap_to_width narrowed `-3000000000` to 32 bits (`neg ; shl 32 ; sar 32`) and
+# `if c == -3000000000` took the wrong branch. At -O1+ the SSA constant folder replaces the
+# sequence with a movabs of the correct value, so the suite was green while the compiler
+# miscompiled. t_tostr had been catching it since the day it was written -- via
+# to_str(-9223372036854775808), which printed "0" -- and nobody had ever run it at -O0.
+#
+# Kept to the O0-sensitive cases rather than sweeping all 564 at -O0: a full sweep doubles
+# runtime for one extra failure. `AXEXTRA=-O0 scripts/regression_repros.sh` runs the whole
+# suite that way when a wider check is wanted (it is green as of 2026-07-30).
+for z in "t_negbiglitcmp:42" "t_tostr:88"; do
+  zname="${z%%:*}"; zwant="${z##*:}"
+  ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
+  timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1
+  if [ ! -f "$ze" ]; then
+    echo "FAIL ${zname}@-O0 (no exe)"; fail=$((fail+1)); failed="$failed ${zname}@O0"
+  else
+    "$ze" >/dev/null 2>&1; ze_exit=$?
+    if [ "$ze_exit" = "$zwant" ]; then echo "PASS ${zname}@-O0 (exit=$zwant)"; pass=$((pass+1)); else echo "FAIL ${zname}@-O0 (exit: got '$ze_exit' want $zwant)"; fail=$((fail+1)); failed="$failed ${zname}@O0"; fi
+  fi
 done
 
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---
