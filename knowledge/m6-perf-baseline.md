@@ -249,6 +249,45 @@ compiler code is written. Two of five candidates turned out to be worth nothing,
 of reasoning about instruction counts revealed. Price first, then implement.
 See also [[rfc0034-ir-pipeline-evolution]] for how this reprioritizes a mid-end redesign.
 
+### Refinement after two more variants (V3c/V3d) — it is COPIES, not arithmetic
+| step | delta | reading |
+|---|---|---|
+| V3b → V3c (fold const into the SUB immediate) | −0.5 / −13 ms (2 runs) | **noise — immediate-folding is NOT worth it** |
+| V3c → V3d (compute the arg straight into `rcx`) | −38.5 ms | coalescing with a PRECOLORED reg |
+| V3d → V3 (`lea`/`dec` + result already in rax) | −53 ms | more copy elimination |
+The model that fits every row: **≈20–27 ms per instruction removed from the recursive path**
+(≈331M calls). So the target is total hot-path instruction count, and almost every removable
+instruction is a `mov`. That also retires the old "immediate operand folding" idea
+([[perf-immediate-operand-folding-inert]]) on VALUE grounds, independently of its cast-guard bug.
+
+## ✅ SHIPPED 2026-07-29c — block layout: thread jump-to-jump, drop fallthrough jumps
+**fib 817 → 654 ms (−20%), 2.30x → 1.87x clang, 1.51x → 1.24x of the ASM floor.** Largest single
+win in this milestone's history, from ~90 lines. `thread_and_drop_jumps` (x86_selector.ax, runs
+last in `select_all`). The block lowering emitted every `if` as `JCC taken; JMP fallthrough`, and
+the fallthrough target was usually a block whose whole body was ANOTHER `JMP`:
+```
+cmp; jl base; jmp L_X; <else body>; ... base: ...; L_X: jmp <else body>
+```
+i.e. two unconditional jumps to reach the instruction that was already next. Two local rewrites:
+(1) **thread** a JMP/JCC whose target block's first real instruction is an unconditional JMP,
+retargeting to that JMP's destination (depth-capped for `L: jmp L`); (2) **drop** a JMP whose
+target label is reachable by passing only LABELs, since control already arrives there. Labels are
+zero-byte pseudo-instructions, so "only LABELs in between" really is "the next instruction".
+Conditional jumps are only ever RETARGETED, never deleted, so no path is created or destroyed;
+LABELs are never removed, so jump tables (RFC 0028) that reference them still resolve.
+Gate: B==C `958F3BF5`, regression 553/553, ctgc 16/16, exe-size 4/4, ELF 12/12.
+⭐ Priced at +42/+72/+108 ms for ONE extra jump; delivered 163 ms because our code had TWO.
+⭐ Blocks orphaned by threading are left in place (a few dead bytes); dead-block removal is a
+separate, later cleanup — it changes nothing observable.
+
+### Remaining measured backlog for fib (now 1.24x of floor)
+Everything left is **register coalescing**: the param copy chain (`mov rax,rcx; mov rax→rbx`),
+the arg temp→`rcx` copies, and the final `mov rax,rsi`. Worth ~90–100 ms combined. The named
+algorithm is **George & Appel iterated coalescing with precolored nodes**; today there is only a
+one-partner, first-wins colouring BIAS (`move_partner`), which cannot coalesce into precoloured
+registers at all. That is the next item — and it is also what RFC 0034 §3.1 says Typed SSA would
+make tractable.
+
 ## Revised direction (the honest one)
 The 3 remaining "instruction-shaving" peepholes (lea, copy-coalescing, branch fallthrough) all risk
 the same regalloc backfire, AND opt A proved even a clean 1-insn win is noise on a 2.58x gap. The gap

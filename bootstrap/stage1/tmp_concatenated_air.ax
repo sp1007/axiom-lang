@@ -27983,6 +27983,110 @@ pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64
     @free(counts as ptr[u8])
     return w
 
+// PEEPHOLE (pre-regalloc, control flow only): thread jump-to-jump chains and delete jumps
+// that merely fall through to the next instruction.
+//
+// The block lowering emits every `if` as `JCC taken; JMP fallthrough`, and the fallthrough
+// target is frequently a block whose entire body is one more `JMP`. fib's `n < 2` compiled to
+//   cmp; jl base; jmp L_X; <else body>; ... ; base: ...; L_X: jmp <else body>
+// -- two unconditional jumps to reach code that was already the next instruction. Measured
+// price of just ONE such extra jump on fib(40): +42..+108 ms across runs (see
+// scripts/perf_asm_variants.ps1, V3b -> V4), i.e. the largest single-instruction effect in the
+// whole pricing table, because a taken branch also costs prediction and I-cache density.
+//
+// Two rewrites, both purely local:
+//   (1) THREAD: a JMP/JCC whose target label starts a block whose first real instruction is an
+//       unconditional JMP is retargeted to that JMP's destination. Sound because the
+//       intervening block does nothing else -- only LABELs may sit in between. Depth-capped so
+//       a self-loop (`L: jmp L`) terminates.
+//   (2) FALLTHROUGH: a JMP whose target label is reachable from it by passing only LABELs is
+//       deleted outright, because control already arrives there.
+// Order matters: threading first, since it is what turns `jmp L_X` into a jump to the very next
+// label that (2) can then delete.
+//
+// SAFETY: labels are pseudo-instructions that emit no bytes (x86_emitter records their offset),
+// so "only LABELs in between" really does mean "the next instruction executed". Conditional
+// jumps are only ever RETARGETED, never removed, so no path is created or destroyed. Runs
+// before liveness/allocation, so removing a JMP cannot invalidate an allocation, and it shrinks
+// the CFG the liveness dataflow then walks.
+pub fn thread_and_drop_jumps(insts: ptr[MachInst], len: i64) -> i64:
+    if len < 2 as i64:
+        return len
+    // Compact (label -> index) table: label ids are sparse (synthesized ones start at
+    // 1,000,000), so an array indexed BY label id would be megabytes per function. The count of
+    // labels in one function is small, so a linear probe over a compact table is cheaper.
+    mut nlab := 0 as i64
+    mut c := 0 as i64
+    while c < len:
+        if insts[c].op == MACH_LABEL:
+            nlab = nlab + 1
+        c = c + 1
+    if nlab == 0 as i64:
+        return len
+    let lab_id = @alloc(nlab * 4) as ptr[u32]
+    let lab_idx = @alloc(nlab * 8) as ptr[i64]
+    mut w2 := 0 as i64
+    c = 0
+    while c < len:
+        if insts[c].op == MACH_LABEL:
+            lab_id[w2] = insts[c].dst.label
+            lab_idx[w2] = c
+            w2 = w2 + 1
+        c = c + 1
+
+    // (1) thread jump -> jump
+    mut ji := 0 as i64
+    while ji < len:
+        let jop = insts[ji].op
+        if (jop == MACH_JMP or jop == MACH_JCC) and insts[ji].dst.kind == OPND_LABEL:
+            mut target := insts[ji].dst.label
+            mut hops := 0 as i64
+            while hops < 8 as i64:
+                mut ti := -1 as i64
+                mut s := 0 as i64
+                while s < nlab:
+                    if lab_id[s] == target:
+                        ti = lab_idx[s]
+                        s = nlab
+                    else:
+                        s = s + 1
+                if ti < 0 as i64:
+                    hops = 8
+                else:
+                    // first REAL instruction at/after the label
+                    mut k = ti + 1 as i64
+                    while k < len and insts[k].op == MACH_LABEL:
+                        k = k + 1
+                    if k < len and insts[k].op == MACH_JMP and insts[k].dst.kind == OPND_LABEL and insts[k].dst.label != target:
+                        target = insts[k].dst.label
+                        hops = hops + 1
+                    else:
+                        hops = 8
+            insts[ji].dst.label = target
+        ji = ji + 1
+
+    // (2) drop a JMP that only falls through
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut drop := false
+        if insts[r].op == MACH_JMP and insts[r].dst.kind == OPND_LABEL:
+            let want = insts[r].dst.label
+            mut k = r + 1 as i64
+            while k < len and insts[k].op == MACH_LABEL:
+                if insts[k].dst.label == want:
+                    drop = true
+                    k = len
+                else:
+                    k = k + 1
+        if not drop:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+        r = r + 1 as i64
+    @free(lab_id as ptr[u8])
+    @free(lab_idx as ptr[u8])
+    return w
+
 pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr[SymbolTable], pool: ptr[InternPool]) -> MachInstVec:
     mut actual_max_vreg := 0 as u32
     mut vi := 0 as i64
@@ -28074,6 +28178,9 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
     // before liveness/allocation). See fuse_compare_branch for the safety contract.
     result.len = fuse_compare_branch(result.data, result.len, sel.max_vreg)
+    // Peephole 3 (M6 block layout): thread jump-to-jump chains and delete jumps that only fall
+    // through. Runs LAST so it also cleans up any layout the two fusions above leave behind.
+    result.len = thread_and_drop_jumps(result.data, result.len)
     return result
 // bootstrap/stage1/x86_regalloc.ax
 // Liveness Analysis and Graph-Coloring Register Allocation for x86-64 in self-hosted AXIOM.

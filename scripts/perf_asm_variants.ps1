@@ -214,6 +214,101 @@ fib:
     ret
 "@
 
+# ---- V3c: V3b but with the constant folded into the SUB's immediate operand.
+#      This is the SAFE half of the selection fix: it removes the MOV_IMM and its vreg
+#      (pressure goes DOWN) while KEEPING the `mov dst,base` copy, so it cannot repeat the
+#      2026-07-24e lea regression (which lengthened base's live range and provoked a spill).
+#      The delta V3b->V3c is what immediate-folding alone buys; V3c->V3 is the extra that
+#      only `lea`/`dec` can buy, i.e. the price of taking the riskier step. ----
+$variants["V3c +imm-fold sub"] = @"
+default rel
+section .text
+global fib
+global main
+fib:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    sub     rsp, 40
+    mov     rax, rcx
+    mov     rbx, rax
+    cmp     rbx, 2
+    jl      .base
+    mov     rsi, rbx
+    sub     rsi, 1
+    mov     rcx, rsi
+    call    fib
+    mov     rsi, rax
+    mov     rdi, rbx
+    sub     rdi, 2
+    mov     rcx, rdi
+    call    fib
+    add     rsi, rax
+    mov     rax, rsi
+    add     rsp, 40
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+.base:
+    mov     rax, rbx
+    add     rsp, 40
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+"@
+
+# ---- V3d: V3c but the argument is computed DIRECTLY INTO rcx (the call-arg register)
+#      instead of into a temp vreg that is then copied. No lea, no dec -- still `sub imm`.
+#      V3c->V3d isolates COALESCING WITH A PRECOLORED REGISTER; V3d->V3 is then all that
+#      `lea`/`dec` itself is worth. This is the measurement that decides whether to build a
+#      coalescer (George-Appel, precolored nodes) or a selection change. ----
+$variants["V3d +arg coalesce"] = @"
+default rel
+section .text
+global fib
+global main
+fib:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    rsi
+    push    rdi
+    sub     rsp, 40
+    mov     rax, rcx
+    mov     rbx, rax
+    cmp     rbx, 2
+    jl      .base
+    mov     rcx, rbx
+    sub     rcx, 1
+    call    fib
+    mov     rsi, rax
+    mov     rcx, rbx
+    sub     rcx, 2
+    call    fib
+    add     rsi, rax
+    mov     rax, rsi
+    add     rsp, 40
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+.base:
+    mov     rax, rbx
+    add     rsp, 40
+    pop     rdi
+    pop     rsi
+    pop     rbx
+    pop     rbp
+    ret
+"@
+
 # ---- V4: V3b + the jcc-then-unconditional-jmp block layout (no fallthrough).
 #      This is a faithful transcription of what AXIOM actually emits today. ----
 $variants["V4 =AXIOM shape"] = @"
