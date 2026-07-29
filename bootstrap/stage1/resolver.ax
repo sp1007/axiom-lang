@@ -177,9 +177,17 @@ pub fn push(mut self: ptr[SymbolVec], sym: Symbol) -> u32:
         mut new_cap := 16 as i64
         if self.cap != 0:
             new_cap = self.cap * 2
-        let new_data = @alloc(new_cap * 24) as ptr[Symbol] // Symbol is 24 bytes
+        // Stride comes from size_of(Symbol), NOT a literal. It was `24` in both places
+        // with a "Symbol is 24 bytes" comment — a magic number that silently becomes
+        // wrong the moment a field is added to Symbol, under-allocating this buffer and
+        // corrupting the heap on the very next push. This repo has already paid for that
+        // pattern once, in the allocator, where the segment slab size was spelled 196608
+        // in three places and the real cap in a fourth. Same fix: derive it.
+        // (RFC 0035 P2 adds a module id to Symbol, which is what surfaced this.)
+        let sym_size = @compiler_intrinsic("size_of")[Symbol]() as i64
+        let new_data = @alloc(new_cap * sym_size) as ptr[Symbol]
         if self.data != null as ptr[Symbol]:
-            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * 24)
+            @memcpy(new_data as ptr[u8], self.data as ptr[u8], self.len * sym_size)
             @free(self.data as ptr[u8])
         self.data = new_data
         self.cap = new_cap
