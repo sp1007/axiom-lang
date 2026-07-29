@@ -1,0 +1,21 @@
+// Oracle (exit 42): comparing an f32 value against a float LITERAL. Was miscompiled — the
+// literal defaulted to f64, so `c == 4.0` with c:f32 did a mixed-precision compare and
+// returned false. The comparison branch of NODE_BINARY_EXPR lacked the float-literal width
+// coercion the arithmetic branch already had. Covers let-bound f32, f32 param, and both
+// operand orders + a lt comparison.
+fn viaparam(c: f32) -> bool:
+    return c == 4.0
+fn main() -> i64:
+    let a: f32 = 1.5
+    let b: f32 = 2.5
+    let c: f32 = a + b            // 4.0
+    mut acc: i64 = 0
+    if c == 4.0:                  // f32 == float-literal
+        acc = acc + 10
+    if 4.0 == c:                  // literal on the left
+        acc = acc + 10
+    if c > 3.0:                   // lt/gt with literal
+        acc = acc + 10
+    if viaparam(4.0):             // f32 param == literal
+        acc = acc + 12
+    return acc                    // 10+10+10+12 = 42

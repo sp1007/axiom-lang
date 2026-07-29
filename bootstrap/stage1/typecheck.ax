@@ -4050,6 +4050,18 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     self.infer_node(rhs, t1)
                 elif lhs_lit and not rhs_lit and tc_is_numeric(t2) and t1 != t2:
                     self.infer_node(lhs, t2)
+                // RFC 0006 float-literal width inference for COMPARISONS (mirror of the
+                // arithmetic branch below): a float literal defaults to f64, so `c == 4.0`
+                // with `c: f32` compared f32 bits against an f64 literal -> mixed-precision
+                // compare -> silently WRONG (`4.0f32 == 4.0` returned false). Coerce the
+                // float-literal operand to the other operand's concrete float width so both
+                // sides are the same precision. Same-width / pure-f64 code is unchanged.
+                let lhs_flit = self.tree.nodes.data[lhs].kind == NODE_FLOAT_LIT
+                let rhs_flit = self.tree.nodes.data[rhs].kind == NODE_FLOAT_LIT
+                if rhs_flit and not lhs_flit and (t1 == TYPE_F32 or t1 == TYPE_F64) and t1 != t2:
+                    self.infer_node(rhs, t1)
+                elif lhs_flit and not rhs_flit and (t2 == TYPE_F32 or t2 == TYPE_F64) and t1 != t2:
+                    self.infer_node(lhs, t2)
 
                 // BUG#53: a comparison mixing a str/bytes operand and a numeric
                 // operand (`s == 5`) silently compares the str's {ptr,len} against an
