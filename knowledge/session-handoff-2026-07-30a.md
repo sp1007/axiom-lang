@@ -140,6 +140,16 @@ metadata:
 4. **Định giá codegen trên MỘT shape liên tục cho ra "số 0 tự tin"** — immediate-folding bị chấm
    nhiễu trên fib rồi đáng 14% trên callloop.
 5. **Disassembly là bằng chứng về BINARY ĐÃ XONG, không phải về mảng mà peephole pre-alloc khớp.**
+6. 🔧 **COMMIT XANH CÓ THỂ RỖNG — kiểm DIFF, đừng kiểm exit code.** `perl -0pi -e` thất bại ÂM
+   THẦM (anchor không khớp, hoặc dấu `/` trong phần thay thế phá delimiter) nhưng `git commit`
+   ngay sau đó vẫn thành công ⇒ commit trông đúng, message đầy đủ, **nội dung không có gì**.
+   Đã xảy ra thật: `6a0f718` ghi **1 dòng** frontmatter "design below" trỏ vào **hư không**; thiết
+   kế thật chỉ nằm trong commit message. Phát hiện muộn 40 phút, đã vá ở `8364250`.
+   ⇒ **Dùng `Edit` thay `perl` cho text có dấu `/`**, và **`git show --stat` sau khi commit doc**.
+   ⭐ Đây chính là bài học số 3 ("gate xanh có thể chứng minh SỐ KHÔNG") áp cho chính việc ghi
+   memory — tôi đã dạy nó cho compiler cả phiên rồi tự vi phạm ở tầng công cụ.
+   (Đã audit toàn bộ commit doc của phiên: **chỉ `6a0f718` rỗng**; 16/16 artifact đã claim đều
+   tồn tại và được track.)
 
 ---
 
