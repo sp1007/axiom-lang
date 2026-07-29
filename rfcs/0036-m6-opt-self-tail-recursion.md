@@ -1,6 +1,47 @@
 # RFC 0036 — M6-opt: self-tail-recursion to loop (and why the accumulator transform is NOT proposed)
 
-- Status: **PROPOSED** (design only; no code in this RFC)
+> # ⛔⛔ WITHDRAWN — **THE PROPOSED TRANSFORM IS ALREADY IMPLEMENTED**
+>
+> Withdrawn within the hour, by the pricing experiment §6 demanded. AXIOM **already** converts a
+> self-tail-call into a jump to the entry block. Emitted `sumto` (driver `42F49C73`, `-O3`)
+> contains **no `call` at all**:
+> ```
+> push %rbp ; mov %rsp,%rbp ; push %rbx ; sub $0x28,%rsp   <- prologue ONCE
+> cmp  %rdx,%rax ; je base
+> lea  -0x1(%rax),%rdx          <- n-1
+> mov  %rcx,%rbx ; add %rax,%rbx <- acc+n
+> mov  %rdx,%rax ; mov %rbx,%rcx <- reassign the parameters
+> jmp  <entry>                   <- JUMP BACK, no call
+> ```
+> That is §3's design, already shipped. The suite even names it: **`t_selfrec`, `t_selfrec2`** —
+> which I should have read *before* writing this RFC. Same failure recorded repeatedly in
+> `knowledge/`: **reconcile a proposed item against what has already shipped before designing it.**
+> The pricing gave it away — AXIOM measured **0.355x** of a NASM floor written to model "the shape
+> AXIOM emits", i.e. nearly 3x FASTER than its own supposed shape, which is only possible if the
+> shape assumption was wrong.
+>
+> ### What the experiment DID establish (the useful residue)
+> On the new tail-recursive shape, 20M calls, paired 3 alternating rounds:
+>
+> | variant | ms | |
+> |---|---|---|
+> | NASM real-recursion (what I wrongly assumed AXIOM emits) | 63.7 | not relevant |
+> | **AXIOM as it compiles today** | **22.6** | already loop-form |
+> | **NASM loop floor** (ideal transform output) | **16.2** | |
+>
+> ⇒ **AXIOM is 1.40x of the loop floor on a tail-recursive shape.** The gap is NOT a missing opt
+> pass — it is the parameter shuffle (`mov %rdx,%rax ; mov %rbx,%rcx`) plus a prologue the
+> hand-written form does not need. That is **M6-codegen** territory, in the same family as the
+> copy folds shipped this session, and it is a *newly measured* gap on a shape the suite never had.
+>
+> ⇒ **Real next step for M6-opt**: not this transform. Either (a) close the parameter-shuffle gap
+> on tail-recursive functions (codegen, cheap, now measurable), or (b) revisit the accumulator
+> transform for genuinely non-tail recursion like `fib` — with §2's objections still standing.
+>
+> The design below is kept **only** as the record of what was proposed and why it was wrong to
+> propose. Do not implement it.
+
+- Status: **WITHDRAWN 2026-07-30 — already implemented; see the banner above**
 - Author: autopilot, 2026-07-30
 - Approved in advance by the user (standing decision D4, `knowledge/user-decisions-2026-07-29.md`):
   self-written + self-approved RFCs are authorized; the fixpoint gate still binds.
