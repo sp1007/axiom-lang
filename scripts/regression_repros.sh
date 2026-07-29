@@ -39,6 +39,7 @@ rows=(
   "t_cp2|out|7"
   "t_cpaddr|exit|7"
   "t_cse|exit|98"
+  "t_leafold|exit|42"
   "t_param5|out|A38"
   "t_strip|out|a.b len exit print"
   "t_alias|out|A=1 B=0 "

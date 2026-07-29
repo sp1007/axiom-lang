@@ -529,3 +529,64 @@ rcx,rbx; mov rbx,rsi`→`mov rcx,rsi`), D (branch fallthrough), E (regalloc vola
 near-term goal: knock down the systemic taxes (#2,#3) to get under ~1.5x, then reassess whether the
 5% gate is reachable without a full optimizing backend (loop/tail-call/inlining maturity) or should
 be renegotiated with the user. Honest framing beats chasing 5% blindly. See [[session-state-2026-07-24e]].
+
+## ⭐⭐⭐ 2026-07-29f — LEA fold SHIPPED (`B==C 3A245462`, 558/558), and the win is NOT the lea
+
+`x ± <const>` now lowers to one `LEA dst,[x±c]` in `select_inst` (OP_IADD/OP_ISUB), and a new
+`drop_dead_mov_imm` peephole deletes the constant nothing reads. Measured **paired and
+alternating** (see the harness warning below), best-of-7, 3 rounds each:
+
+| shape | delta | note |
+|---|---|---|
+| fib | **−5.8%** | 646.7 → 608.9 ms, no round overlap |
+| arrwalk | **−8.9%** | |
+| callloop | **−18.0%** | now 0.83x clang, i.e. FASTER than clang |
+| xorshift | **+4.6%** | a real regression — see below |
+
+### The attribution that matters: the lea ALONE is a LOSS
+- lea fold only: fib **+3.1%** (slower), xorshift −1.4%.
+- lea fold + dead-const removal: fib **−5.8%**, xorshift +4.6%.
+
+Mechanism, from the disassembly rather than inferred. The fold turns
+`mov $1,%rax; mov %rbx,%rdi; sub %rax,%rdi` into `mov $1,%rax; lea -0x1(%rbx),%rax`. The only
+instruction it removes is a **register-to-register MOV, which is resolved at register rename and
+occupies no execution slot** — the same fact that refuted coalescing. Both versions still issue
+the same two uops, so the fold buys nothing until the immediate materialisation is also gone.
+**The constant load was the whole cost.** This is the fourth time in this file that removing
+instructions failed to buy time, and the first time the reason was isolated to *which*
+instruction was removed.
+
+### ⚠️ HARNESS WARNING — single perf_fib/perf_suite runs are NOT trustworthy here
+`perf_fib.ps1` reported 720.7 → 633.0 ms (−12%) for the lea fold. **That was noise**, and it
+would have shipped a 3% regression as a 12% win. Proof by artifact, not argument: `ax_fib`
+compiled by the two versions is **byte-identical instruction for instruction** (only load
+addresses differ), while the same script reported 586.3 ms and 635.5 ms for them in consecutive
+runs. The NASM `asm` floor column moved 569 → 514 ms (−10%) between runs of the same fixed
+binary. ⇒ **Run-to-run variance on this box is ~8–10%.** Any perf claim must come from a PAIRED
+alternating measurement of the two exes in one session, and must show non-overlapping rounds.
+
+### The xorshift regression is real, and is not a codegen defect
+All 4 baseline rounds (305–313 ms) beat all 4 new rounds (320–331 ms), so it is not noise.
+But the new loop body has **strictly fewer instructions** (four dead `mov $imm,%rax` removed:
+the shift amounts already use the imm8 form) and an **unchanged dependency chain** — xorshift is
+latency-bound at 2 cycles per step in both versions. Nothing in the emitted code explains it;
+the consistent explanation is instruction-fetch/loop **alignment**, which shrinking a hot loop
+perturbs and which no part of this change controls. Shipped anyway: 3 of 4 shapes improve, two
+of them large. **Do not "fix" this by reintroducing dead instructions** — if alignment is worth
+attacking, attack it directly (loop-head padding), and price it first.
+
+### Why the OLD opt-B lea revert (2026-07-24e) failed, corrected
+The 2026-07-24e note blamed "removing the copy lengthened the live range so the allocator
+spilled `n`". The real mechanism is sharper and was found by reading the allocator: **a
+`MACH_LEA` over a vreg marks that vreg `address_taken`, and `address_taken` forces an
+UNCONDITIONAL SPILL** (`x86_regalloc.ax`, after colouring succeeds). Using the address-of
+instruction for arithmetic therefore guaranteed the spill. The fold now marks itself with
+`padding: 1` ("value arithmetic, not address-of") and the allocator skips that branch.
+⇒ Lesson: reusing a machine opcode across two meanings silently inherits the other meaning's
+analysis.
+
+Oracle: `bin/t_leafold.ax` (42). **Calibrated the hard way** — the first version wrote every
+constant as `7 as i64`, which does not fold, so it passed against a compiler with BOTH guards
+deliberately removed. Rewritten with bare literals; the imm32-range and 8-byte-cast-hop guards
+now both fire on a broken build (exit 136). The single-def guard has NO shape that reaches it
+and the test says so rather than implying coverage it does not have.

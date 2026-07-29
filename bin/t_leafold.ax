@@ -1,0 +1,84 @@
+// M6 codegen oracle: `x ± <const>` folded into a single LEA (x86_selector, OP_IADD/OP_ISUB).
+// Each case targets one condition the fold is gated on, so a broken gate changes the ANSWER
+// rather than only the instruction count.
+//
+// CALIBRATION NOTE, learned the hard way: the first version of this file wrote every constant
+// as `7 as i64` and passed against a compiler with BOTH guards deliberately removed -- the
+// cast made nothing fold, so the code under test never ran. Keep the bare-literal forms below,
+// and re-verify with a broken build after changing them.
+fn addc(x: i64) -> i64:
+    return x + 7
+
+fn subc(x: i64) -> i64:
+    return x - 5
+
+// Same fold reached through a CAST hop (`ICONST -> CAST`), the other common spelling.
+fn addcast(x: i64) -> i64:
+    return x + (7 as i64)
+
+// Constant OUTSIDE signed imm32. The LEA displacement is 32-bit, so this must NOT fold; if it
+// does, the value is truncated and the answer is wrong by ~2^32.
+fn bigc(x: i64) -> i64:
+    return x + 5000000000
+
+// Negative addend folds to a negative displacement; subtracting a negative folds to a
+// positive one.
+fn negc(x: i64) -> i64:
+    return x - 9
+
+fn subneg(x: i64) -> i64:
+    return x + 4
+
+fn loopsum() -> i64:
+    mut k := 0
+    mut s := 0
+    while k < 5:
+        s = s + k
+        k = k + 1
+    return s
+
+// A constant assigned on two paths. NOT calibrated, and said so rather than implied: with the
+// single-def guard deliberately removed this case still answers correctly, so no shape was
+// found that actually reaches it -- an addend whose chain ends in something other than an
+// ICONST (a loop counter) is rejected one branch earlier, and these two assignments appear to
+// land in distinct vregs. The guard is kept because its two siblings (const_shift_amount,
+// const_divisor_pow2) document real miscompiles from exactly this omission, and it costs one
+// scan. This row still pins the ANSWERS for a shape the fold has to get right.
+fn multidef(x: i64, pick: bool) -> i64:
+    mut c := 1
+    if pick:
+        c = 2
+    return x + c
+
+// NARROWING cast: `300 as u8` is 44, so folding at the PRE-cast value adds 300 where the
+// program adds 44. The value is chosen to differ across the cast on purpose -- an earlier
+// version used 200, which survives u8 unchanged and therefore proved nothing.
+fn narrowcast(x: i64) -> i64:
+    let c = 300 as u8
+    return x + (c as i64)
+
+pub fn main() -> i32:
+    mut bad := 0
+    if addc(10) != 17:
+        bad = bad + 1
+    if subc(10) != 5:
+        bad = bad + 2
+    if addcast(10) != 17:
+        bad = bad + 4
+    if bigc(1) != 5000000001:
+        bad = bad + 8
+    if negc(20) != 11:
+        bad = bad + 16
+    if subneg(38) != 42:
+        bad = bad + 32
+    if loopsum() != 10:
+        bad = bad + 64
+    if narrowcast(42) != 86:
+        bad = bad + 128
+    if multidef(10, true) != 12:
+        bad = bad + 256
+    if multidef(10, false) != 11:
+        bad = bad + 512
+    if bad != 0:
+        return bad as i32
+    return 42 as i32

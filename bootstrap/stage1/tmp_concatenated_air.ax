@@ -26494,6 +26494,68 @@ pub fn const_divisor_pow2(fn_ptr: ptr[AirFunc], vreg: u32) -> i64:
         depth = depth + 1
     return -1 as i64
 
+// M6 codegen: the constant addend of `x + c` / `x - c`, when it can be folded into a single
+// LEA displacement. Returns the value and sets `out_ok`; `out_ok` false means "not foldable"
+// and the caller must emit the general MOV+ADD/SUB form.
+//
+// Casts and copies are chased through, but ONLY while every hop's result type is an 8-byte
+// int. That restriction is the correctness argument, not caution: a NARROWING cast changes the
+// value, so folding `x + (1000 as u8)` as `+1000` would add 1000 where the program adds 232.
+// Widening or same-width 8-byte casts leave the 64-bit pattern alone, and LEA sign-extends its
+// displacement, so `x + (c as i64)` and `x + (c as u64)` both compute exactly what the
+// unfolded MOV+ADD computed. Chasing matters in practice: `n - 1` folds without it, but the
+// equally common `n - 1 as i64` lowers as ICONST -> CAST and would not.
+//
+// Carries the same NON-SSA single-def guard as const_shift_amount and const_divisor_pow2, and
+// for the same reason: AIR is not SSA, so a vreg can have several definitions. A loop
+// induction variable is defined by its init ICONST and again by its increment, and a
+// first-match scan would fold `x + k` into `lea [x + <k's ENTRY value>]` -- a constant where
+// the program wrote a variable.
+pub fn const_addend_imm32(sel: ptr[InstructionSelector], vreg: u32, mut out_ok: ptr[bool]) -> i64:
+    out_ok[0] = false
+    let fn_ptr = sel.fn_ptr
+    let imm32_lo = 0 as i64 - 2147483648 as i64
+    let imm32_hi = 2147483647 as i64
+    mut cur = vreg
+    mut depth = 0 as i64
+    while depth < 16 as i64:
+        if cur == 0 as u32:
+            return 0 as i64
+        mut def_count := 0 as i64
+        mut dscan := 0 as i64
+        while dscan < fn_ptr.insts.len:
+            if fn_ptr.insts.data[dscan].dest == cur:
+                def_count = def_count + 1 as i64
+            dscan = dscan + 1
+        if def_count != 1 as i64:
+            return 0 as i64
+        mut found := false
+        mut i := 0 as i64
+        while i < fn_ptr.insts.len:
+            let inst = &fn_ptr.insts.data[i]
+            if inst.dest == cur:
+                if inst.opcode == OP_ICONST:
+                    let v = (inst.src1 as i64) | ((inst.src2 as i64) << (32 as i64))
+                    // The LEA displacement field is a SIGNED 32-bit immediate. A constant
+                    // outside that range must not be folded -- it would be truncated silently.
+                    if v >= imm32_lo and v <= imm32_hi:
+                        out_ok[0] = true
+                        return v
+                    return 0 as i64
+                if inst.opcode == OP_CAST or inst.opcode == OP_COPY or inst.opcode == OP_MOVE:
+                    // Value-preserving hops only: see the narrowing-cast argument above.
+                    if not sel_type_is_8byte_int(sel, inst.type_id):
+                        return 0 as i64
+                    cur = inst.src1
+                    found = true
+                    break
+                return 0 as i64
+            i = i + 1
+        if not found:
+            return 0 as i64
+        depth = depth + 1
+    return 0 as i64
+
 pub fn sel_type_is_8byte_int(sel: ptr[InstructionSelector], tid: u32) -> bool:
     if tid == 9 as u32 or tid == 10 as u32:
         return false
@@ -26776,13 +26838,39 @@ pub fn select_inst(mut sel: ptr[InstructionSelector], inst: ptr[AirInst], mut ou
         out_insts.push(MachInst(op: MACH_FTOI, cc: 0 as u8, padding: fw, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
 
     elif op == OP_IADD:
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // M6 codegen: `x + <const>` -> one `LEA dst,[x+c]` instead of `MOV dst,x; ADD dst,c`.
+        // Priced before being written (scripts/perf_asm_variants.ps1, V3->V3b = 115 ms on
+        // fib): this is the largest measured item left in the codegen gap, and the only one
+        // of the three that has not shipped.
+        //
+        // SAFE ON FLAGS: LEA sets none, and nothing in this backend consumes arithmetic
+        // flags -- comparisons lower separately through OP_LT/OP_EQ to their own CMP.
+        //
+        // The `padding: 1` marks this LEA as VALUE arithmetic rather than address-of. It is
+        // load-bearing, not decoration: the allocator treats a LEA over a vreg as taking that
+        // vreg's ADDRESS and then FORCES it to be spilled (x86_regalloc.ax, address_taken),
+        // so without the flag this "optimization" would push `n` into memory on every call
+        // and lose far more than the instruction it saves.
+        mut add_ok := false
+        let add_c = const_addend_imm32(sel, inst.src2, &add_ok)
+        if add_ok and sel_type_is_8byte_int(sel, inst.type_id) and sel_type_is_8byte_int(sel, get_register_type(sel, inst.src1)):
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 1 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: add_c)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_ADD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         emit_wrap_to_width(sel, inst.dest, inst.type_id, out_insts)
 
     elif op == OP_ISUB:
-        out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
-        out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+        // Mirror of the IADD fold above; see it for the flag-safety and `padding: 1` rationale.
+        // The displacement is NEGATED, so the most-negative i32 is excluded -- its negation
+        // does not fit the signed 32-bit displacement field.
+        mut sub_ok := false
+        let sub_c = const_addend_imm32(sel, inst.src2, &sub_ok)
+        if sub_ok and sub_c > (0 as i64 - 2147483648 as i64) and sel_type_is_8byte_int(sel, inst.type_id) and sel_type_is_8byte_int(sel, get_register_type(sel, inst.src1)):
+            out_insts.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 1 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64 - sub_c)))
+        else:
+            out_insts.push(MachInst(op: MACH_MOV, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src1, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
+            out_insts.push(MachInst(op: MACH_SUB, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.dest, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_VREG, phys: 0 as u8, padding: 0 as u16, vreg: inst.src2, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_NONE, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)))
         emit_wrap_to_width(sel, inst.dest, inst.type_id, out_insts)
 
     elif op == OP_IMUL:
@@ -28002,14 +28090,62 @@ pub fn fuse_cmp_immediate(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
-// (M6 opt B â€” lea for `dst = base Â± const` â€” was PROTOTYPED here and REVERTED 2026-07-24e:
-// it correctly emitted `lea -0x1(%rsi),%rax` but MEASURED a fib REGRESSION (-O3 922â†’974 ms,
-// 2.59xâ†’2.73x). Removing the `mov dst,base` copy lengthened base's live range, so the
-// allocator SPILLED `n` and reloaded it from the stack before each lea â€” memory traffic that
-// outweighed the saved instruction. Lesson: a peephole that cuts instruction count can lose to
-// its regalloc interaction; instruction-count is not the metric, measured time is. A real lea
-// win needs to be co-designed with the allocator, not bolted on post-selection. See
-// [[m6-perf-baseline]].)
+// (M6 opt B â€” lea for `dst = base Â± const` â€” was PROTOTYPED here and REVERTED 2026-07-24e
+// after MEASURING a fib regression, diagnosed then as "the allocator spills base". It now
+// lives in select_inst's OP_IADD/OP_ISUB instead, and the spill had a concrete cause the old
+// diagnosis missed: a LEA over a vreg makes the allocator treat that vreg as ADDRESS-TAKEN and
+// spill it unconditionally, which the `padding: 1` marker now excludes. See
+// [[m6-perf-baseline]] and the comment on the fold itself.)
+
+// Delete a materialised constant nothing reads. The LEA fold above consumes its addend as an
+// immediate but does not remove the MOV_IMM that produced it, so `x - 1` was left emitting
+// `mov $0x1,%rax; lea -0x1(%rbx),%rax` â€” two instructions where the whole point was one, with
+// the first writing a register the second immediately overwrites.
+//
+// This is the part that actually costs time. A register-to-register MOV is resolved at
+// register rename and occupies no execution slot (measured repeatedly in this project), so
+// replacing `mov r,r; sub` with `lea` removes only free work; the immediate materialisation is
+// a real uop. Measured on fib: the fold WITHOUT this pass is +3.1% (a loss).
+//
+// `counts[v] == 1` means the vreg is written once and never read â€” the same reference-count
+// idiom fuse_cmp_immediate uses, where 2 means one def plus one use. MOV_IMM has no other
+// effect, so dropping a dead one is safe. A physical destination is never touched: those are
+// ABI slots whose value is read by something outside this vreg accounting.
+pub fn drop_dead_mov_imm(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 1 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut drop := false
+        let m = &insts[r]
+        if m.op == MACH_MOV_IMM and m.dst.kind == OPND_VREG:
+            let v = m.dst.vreg as i64
+            if v < n and counts[v] == 1 as i32:
+                drop = true
+        if not drop:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+        r = r + 1 as i64
+    @free(counts as ptr[u8])
+    return w
+
 pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     if len < 5 as i64:
         return len
@@ -28249,6 +28385,10 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // adjacent CMP's immediate operand (MOV_IMM v,c; CMP n,v -> CMP n,imm(c)). Runs
     // FIRST so the resulting `CMP n,imm` still composes with fuse_compare_branch below.
     result.len = fuse_cmp_immediate(result.data, result.len, sel.max_vreg)
+    // Peephole 1b (M6): drop constants nothing reads, which is what the LEA fold in
+    // select_inst leaves behind. Placed after the CMP fusion so it also sweeps up any
+    // MOV_IMM that fusion orphaned, and before the rest so they see fewer instructions.
+    result.len = drop_dead_mov_imm(result.data, result.len, sel.max_vreg)
     // Peephole 2: fuse throwaway compare-then-branch boolean sequences into a direct
     // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
     // before liveness/allocation). See fuse_compare_branch for the safety contract.
@@ -28862,7 +29002,12 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                         let v = inst.src1.vreg
                         if v < graph_size as u32:
                             is_arg_vreg[v] = true
-        elif inst.op == MACH_LEA:
+        elif inst.op == MACH_LEA and inst.padding != 1 as u8:
+            // `padding == 1` marks a LEA the selector emitted as VALUE arithmetic
+            // (`x + <const>` folded into one instruction), not as taking a vreg's address.
+            // Without that exclusion the fold would be self-defeating: reaching this branch
+            // forces the base vreg to be SPILLED unconditionally below, so `n` would move to
+            // memory on every call to save one register-only instruction.
             if inst.src1.kind == OPND_VREG:
                 let v = inst.src1.vreg
                 if v < graph_size as u32:

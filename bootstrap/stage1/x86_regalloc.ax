@@ -604,7 +604,12 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                         let v = inst.src1.vreg
                         if v < graph_size as u32:
                             is_arg_vreg[v] = true
-        elif inst.op == MACH_LEA:
+        elif inst.op == MACH_LEA and inst.padding != 1 as u8:
+            // `padding == 1` marks a LEA the selector emitted as VALUE arithmetic
+            // (`x + <const>` folded into one instruction), not as taking a vreg's address.
+            // Without that exclusion the fold would be self-defeating: reaching this branch
+            // forces the base vreg to be SPILLED unconditionally below, so `n` would move to
+            // memory on every call to save one register-only instruction.
             if inst.src1.kind == OPND_VREG:
                 let v = inst.src1.vreg
                 if v < graph_size as u32:
