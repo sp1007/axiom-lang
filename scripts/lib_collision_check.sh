@@ -53,10 +53,6 @@ fn main() -> i32:
     return axlibcola.helper() + axlibcolb.helper()
 EOF
 
-# Stale `.lib`s MUST go first. The staleness manifest hashes only the library SOURCE, so a
-# `.lib` produced by a compiler with a different mangling scheme is considered fresh and is
-# not rebuilt -- the flag day RFC 0035 §7 calls out. Without this the oracle would report a
-# failure that a rebuild fixes, or worse, pass on a stale pair.
 rm -f axlibcola.lib axlibcolb.lib axlibcola.lib.manifest axlibcolb.lib.manifest
 rm -f "$TMP/axappcol.exe"
 
@@ -115,6 +111,29 @@ if strings -a axlibcola.lib | grep -q "^F helper 0 -> i32$"; then
 else
   echo "FAIL iface_local_name (iface no longer exports the local name)"
   fail=$((fail+1))
+fi
+
+# The MECHANISM the AX_LIB_SCHEME_ID flag-day guard rests on: a manifest whose stored value
+# is not the one this compiler computes forces a rebuild, and the rebuilt pair still links and
+# runs. Deliberately NOT claimed as a test of the scheme id itself -- an unrecognised hash
+# makes any compiler, old or new, rebuild, so this row would pass without the guard. What the
+# guard adds is that a library from an OLDER SCHEME now produces such a mismatch, which is a
+# property of two compilers and cannot be asserted from inside one run; it was calibrated once
+# against the pre-guard binary (its manifest for the same source differs, so the library is
+# rebuilt rather than linked at the wrong names) and is recorded in RFC 0035 §9.
+if [ -f axlibcola.lib.manifest ]; then
+  printf 'AXLIB1\n\001\002\003\004\005\006\007\010' > axlibcola.lib.manifest
+  before=$(md5sum axlibcola.lib | cut -d' ' -f1)
+  "$AXC" build axappcol.ax -o "$TMP/axappcol2.exe" --auto-lib -O1 > "$TMP/build2.log" 2>&1
+  after=$(md5sum axlibcola.lib | cut -d' ' -f1)
+  "$TMP/axappcol2.exe" >/dev/null 2>&1; got2=$?
+  if grep -q "building library from source" "$TMP/build2.log" && [ "$got2" = "30" ]; then
+    echo "PASS stale_manifest_rebuild (foreign-scheme .lib rebuilt, exit=30)"
+    pass=$((pass+1))
+  else
+    echo "FAIL stale_manifest_rebuild (exit=$got2, lib $before -> $after; see $TMP/build2.log)"
+    fail=$((fail+1))
+  fi
 fi
 
 echo "lib_collision_check: $pass passed, $fail failed"

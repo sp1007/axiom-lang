@@ -67,9 +67,20 @@ tên cố định; iface vẫn ghi tên LOCAL (`F helper 0 -> i32`). Trên compi
 triệu chứng §2**, còn 2 guard chống over-qualify thì pass ở CẢ HAI bản — nên nó thật sự phân
 biệt được, không phải test luôn xanh.
 
-⚠️ **Script phải tự xoá `.lib` cũ**: manifest staleness chỉ hash NGUỒN thư viện, nên `.lib` do
-compiler cũ tạo bị coi là "fresh" và **không được build lại** — flag day (RFC §7) mà hiện KHÔNG
-có gì phát hiện. Muốn đóng: thêm định danh compiler vào manifest.
+## Flag day ĐÃ ĐÓNG (cùng phiên): `AX_LIB_SCHEME_ID`
+
+Manifest staleness vốn chỉ hash NGUỒN thư viện ⇒ `.lib` do compiler scheme CŨ tạo bị coi là
+"fresh" và link thẳng vào tên không ai phát. Nay hằng `AX_LIB_SCHEME_ID` (main_air.ax, hiện
+= 2) được trộn vào giá trị ghi/so trong manifest qua **một hàm duy nhất** `lib_manifest_hash`
+(mọi producer/consumer phải đi qua nó, nếu không sẽ thấy lib stale vĩnh viễn). **Bump khi nào**:
+tên public phát ra của build `--staticlib` đổi, hoặc format `__axiom_iface` đổi.
+
+⭐ **Hiệu chuẩn phải dùng HAI binary** — không thể khẳng định từ trong một lần chạy: cùng một
+nguồn, compiler TRƯỚC guard ghi `d93a771928dbb2fc`, compiler SAU ghi `fb955e482b400e93`; bản
+mới thấy stale → **rebuild** (`[import] building library from source`) → chạy đúng. Chiều
+ngược lại cũng kiểm: lib đang up-to-date rebuild **0 lần** (cache không hỏng). Row
+`stale_manifest_rebuild` trong oracle CHỈ chứng minh *cơ chế* (manifest lạ ⇒ rebuild) — nó sẽ
+pass cả khi không có guard, và comment trong script nói đúng như vậy thay vì nhận vơ.
 
 ## Còn mở sau P2
 

@@ -38468,6 +38468,31 @@ fn djb2_hash_str(s: str) -> u64:
         i = i + 1
     return h
 
+// RFC 0011 Â§3.4 / RFC 0035 Â§9 â€” identity of the LINK-TIME CONTRACT a `.lib` was built under.
+// The staleness manifest hashes only the library SOURCE, so a `.lib` produced by a compiler
+// that emitted different symbol names is considered fresh and is linked as-is. RFC 0035 P2
+// made that concrete: libraries built before it export `ax_helper` while callers built after
+// it reference `ax_libpa_helper`, and nothing in the build detects the mismatch â€” the user
+// sees an unresolved external naming a function they can see is defined, or worse, a silent
+// first-match bind to the wrong body.
+//
+// Folding this into the stored hash makes every `.lib` from an older scheme mismatch and be
+// rebuilt, which is the correct and quiet outcome. BUMP IT whenever the emitted symbol name
+// for a library's public surface changes â€” i.e. whenever x86_resolve_sym_name's output moves
+// for a `--staticlib` build, or the `__axiom_iface` format changes.
+//   1 = pre-RFC-0035 (plain `ax_<name>`)
+//   2 = RFC 0035 P2 (module-qualified `ax_<unit>_<name>`)
+pub const AX_LIB_SCHEME_ID: u64 = 2
+
+// The value stored in, and compared against, a `.lib` staleness manifest: the source hash
+// mixed with the scheme id, using the same djb2 step as the hash itself so the mixing adds
+// no new arithmetic to reason about. Every producer and consumer of the manifest must go
+// through here â€” a site that compares a raw djb2(src) would see every library as stale
+// forever, which is why there is one function rather than the constant inlined at each site.
+fn lib_manifest_hash(src: str) -> u64:
+    let h = djb2_hash_str(src)
+    return ((h << 5 as u64) + h) + AX_LIB_SCHEME_ID
+
 // Read the u64 hash from a lib manifest ("AXLIB1\n" + 8 bytes LE). 0 if absent/invalid.
 fn read_lib_manifest_hash(path: str) -> u64:
     let nt = str_to_null_terminated(path)
@@ -38608,7 +38633,7 @@ fn ensure_import_libs(tree: ptr[AstTree], pool: ptr[InternPool], self_exe: str, 
                 // --auto-lib forces every non-std import.
                 if file_exists(ax_path) and (force_all or source_is_library(ax_path)):
                     let src_x = read_file_content(ax_path)
-                    let h = djb2_hash_str(src_x)
+                    let h = lib_manifest_hash(src_x)
                     mut need_build := true
                     if file_exists(lib_path):
                         let man = std.string.concat(lib_path, ".manifest")
@@ -38895,7 +38920,7 @@ pub fn main() -> i32:
     // unchanged (its hash matches the manifest) and the .lib still exists.
     mut lib_src_hash := 0 as u64
     if is_staticlib:
-        lib_src_hash = djb2_hash_str(src)
+        lib_src_hash = lib_manifest_hash(src)
         if std.string.len(output_file) > 0 and file_exists(output_file):
             let man_check = std.string.concat(output_file, ".manifest")
             let prev_hash = read_lib_manifest_hash(man_check)

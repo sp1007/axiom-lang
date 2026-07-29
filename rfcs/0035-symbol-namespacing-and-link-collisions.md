@@ -275,10 +275,15 @@ emitting plain `ax_helper`), while its two over-qualification guards pass on bot
 - **Methods, globals and constructors keep the old scheme.** `axS_`/`axG_`/`axC_` from §4 are
   not implemented; only free functions are qualified, because only they cross the `.lib`
   interface today. fn-vs-struct therefore still rests on the typecheck rejection.
-- **P2 is a flag day, and nothing detects it.** The `.lib` staleness manifest hashes only the
-  library source, so a `.lib` built by an older compiler is considered fresh and is silently
-  linked against the new names. The oracle deletes stale `.lib`s for this reason. A compiler
-  identity in the manifest would close it.
+- ~~**P2 is a flag day, and nothing detects it.**~~ **CLOSED** by `AX_LIB_SCHEME_ID`
+  (`main_air.ax`), folded into the value stored in and compared against the staleness
+  manifest, so a `.lib` built under an older symbol scheme mismatches and is rebuilt instead
+  of being linked at names nobody emits. Bump it whenever a `--staticlib` build's emitted
+  public names or the `__axiom_iface` format change. Calibrated across two binaries, which is
+  the only way this property can be observed: a library built by the pre-guard compiler stores
+  `d93a771928dbb2fc` for a source the guarded compiler stores `fb955e482b400e93` for, and the
+  guarded compiler rebuilds it (`[import] building library from source`) and runs correctly;
+  an up-to-date library still rebuilds zero times, so caching is intact.
 - **`mod_name` reaches `register_module_from_lib` empty** (probed, which is why the qualifier
   is derived from `lib_path`). The `mod.NAME` global binding written from it is therefore dead
   — resolution reaches these symbols through the `ModuleExport` list. Harmless today, but it
