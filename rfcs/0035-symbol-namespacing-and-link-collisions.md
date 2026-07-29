@@ -153,6 +153,27 @@ Sequencing for P2, each step independently gated:
 2. switch `x86_resolve_sym_name` to the module-qualified scheme, retiring flag 2048;
 3. update the cross-layer name predicates of §4 in the SAME commit as step 2.
 
+### Groundwork done 2026-07-29 (so step 1 does not have to re-derive it)
+
+- **The stride footgun is already defused** (`518264c`). `SymbolVec.push` spelled Symbol's size
+  as the literal `24` in both the allocation and the memcpy. Adding a field would have
+  under-allocated the buffer and corrupted the heap from inside the symbol table on the next
+  push, with nothing reporting it. It now derives from
+  `@compiler_intrinsic("size_of")[Symbol]()`, the idiom `air.ax` already uses. Shipped
+  separately and proven inert (`A==B`), so the field addition cannot be blamed for a corruption
+  it would merely have triggered.
+- **There are only 7 `Symbol(...)` construction sites** — `resolver.ax` x4 (`:477`, `:517`,
+  `:561`, `:576`) and `main_air.ax` x3 (`:1570`, `:1608`, `:1631`). Small enough to audit by
+  hand, which is required: they are positional, and BUG#21 was exactly a field-order mistake of
+  this kind.
+- **The module id has a real source.** `ModuleInfo` (`resolver.ax:322`) already carries
+  `name_id` and `file_path`, and `LazyResolver.modules` tracks every imported module;
+  `lazy_resolver_register_import` defines a `SYM_MODULE` symbol per import. `file_path` is the
+  canonical path §4 asks for. **Open question for step 1:** whether the resolver knows the
+  *current* module while walking a loaded module's AST, or whether that context has to be
+  threaded through — that is the one thing left to establish before writing code, and it decides
+  whether step 1 is a field-plus-assignment or also a plumbing change.
+
 ## 8. Migration
 
 P1 (shipped) is additive and inert on the normal path. P2 must land in one commit with all the
