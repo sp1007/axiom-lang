@@ -27,9 +27,27 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
 - ✅ **VẪN ĐÚNG**: khe hở **−15,27%** giữa hình dạng vòng lặp AXIOM phát ra và bản coalesce
   (đo NASM, hai biến thể đều exit 128). Và **1,32x so loop floor** trên shape tail-recursive.
 - ⛔ **BỊ BÁC BỎ**: nguyên nhân là `coalesce_dest_copy` shape A trượt do lệnh xen giữa.
-- ❓ **CHƯA BIẾT**: cái gì thực sự sinh ra các `mov` thừa đó. **Bước tiếp theo BẮT BUỘC**: dump
-  instruction stream **TRƯỚC regalloc** cho `sumto` (in `result.data` cuối `select_function`),
-  đối chiếu với disassembly cuối, rồi mới kết luận. **ĐỪNG thiết kế fix nào trước bước đó.**
+- ✅ **ĐÃ DUMP XONG (2026-07-30)** — stream TRƯỚC regalloc của `sumto` (17 lệnh, in `result.data`
+  ở cuối `select_function`). **Hai phát hiện, đều KHÔNG thể suy ra từ disassembly:**
+
+  **(1) CÓ SELF-MOVE trong IR**: lệnh 5 và 6 là `MOV v1,v1` và `MOV v2,v2`.
+  Emitter có peephole bỏ self-move GPR sau regalloc (`if dst != src`) nên **binary không thấy**,
+  nhưng chúng **NẰM TRONG IR** khi các peephole chạy. ⚠️ **Hệ quả nghi vấn (chưa kiểm)**:
+  `MOV v1,v1` nhắc `v1` **HAI lần** ⇒ **làm phồng `counts[v1]`** ⇒ có thể **phá test
+  `counts[vT]==3`** của `coalesce_dest_copy` và `counts[vC]==2` của các fold khác. Nếu đúng,
+  **xoá self-move TRƯỚC các peephole 1x** có thể mở khoá chúng — rẻ và an toàn (self-move là no-op
+  thật sự). **PHẢI ĐO, đừng tin lập luận này.**
+
+  **(2) Chuỗi copy tham số bị XEN KẼ**: lệnh 0–3 =
+  `MOV v12,phys ; MOV v13,phys ; MOV v1,v12 ; MOV v2,v13`.
+  Fold PHYS-source đã ship hôm nay (`MOV vT,phys ; MOV vD,vT` → `MOV vD,phys`) **cần LIỀN KỀ**,
+  mà ở đây producer (0) và consumer (2) **cách nhau 2** vì hai tham số **xen kẽ nhau**.
+  ⇒ Nới cửa sổ cho fold PHYS-source (bỏ qua MỘT lệnh không chạm `vT`) là ứng viên **ĐÃ ĐƯỢC
+  XÁC NHẬN TRÊN IR THẬT**, khác hẳn giả thuyết shape-A đã bị bác ở trên.
+
+  ⚠️ **Cả hai vẫn PHẢI định giá trước khi cài** — 4 lệnh này nằm ở **entry**, chạy MỘT lần mỗi
+  lời gọi, không phải trong thân vòng lặp; còn self-move thì post-regalloc đã bị xoá nên tác
+  động (nếu có) là **gián tiếp qua counts[]**, không phải bớt lệnh.
 - ⇒ Thiết kế bên dưới (kể cả câu hỏi "guard có hiệu chuẩn được không") **giữ lại chỉ để làm
   chứng cứ về chỗ suy luận sai**. **ĐỪNG CÀI.**
 
