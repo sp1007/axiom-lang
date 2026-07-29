@@ -280,6 +280,47 @@ Gate: B==C `958F3BF5`, regression 553/553, ctgc 16/16, exe-size 4/4, ELF 12/12.
 ⭐ Blocks orphaned by threading are left in place (a few dead bytes); dead-block removal is a
 separate, later cleanup — it changes nothing observable.
 
+## ⛔⛔ 2026-07-29e — copy propagation RE-TRIED after the spill fix: **REGRESSION, DROPPED FOR GOOD**
+The entry below says copy-prop is a banked −4.4% win merely *blocked* by the spill bug. The
+spill bug is now fixed (`11b8bad`) and the pass was re-implemented and re-measured. **It is not
+a win. Do not re-attempt it as a standalone pre-allocation pass.**
+
+Measured on today's driver, perf_suite best-of-9, twice each (baseline = the shipped fixed
+compiler, no copy-prop):
+
+| run | fib baseline | fib copy-prop |
+|-----|--------------|---------------|
+| 1   | 656.4 ms (1.23x floor) | 700.8 ms (1.32x floor) |
+| 2   | 659.4 ms (1.24x floor) | 701.8 ms (1.32x floor) |
+
+**+6.5% SLOWER**, reproducible, far outside the ≥5%/best-of-9 significance rule. xorshift /
+arrwalk / callloop flat. Correctness was fine (554/554, including `t_fspill` and the new
+`t_fspilldst`) — this is purely a performance verdict.
+
+**Two independent reasons it is dead, not merely untuned:**
+1. **The SOUND form loses.** The version measured above rejects any copy whose combined range
+   [first_ref(vS)..last_ref(vD)] leaves ONE basic block, so linear order is guaranteed to equal
+   execution order. That form makes fib slower — same failure mode as opt B (lea): deleting a
+   copy lengthens a live range and the current allocator answers with worse assignments.
+2. **The form that produced −4.4% is UNSOUND.** It only excluded loops and otherwise propagated
+   across blocks using linear first/last-reference order. `compute_liveness`'s own RFC 0016 P2'
+   comment states that the physical instruction order is **NOT** a CFG topological order once a
+   lowering emits blocks out of control-flow order — which is exactly the premise cross-block
+   linear-order propagation needs. Its −4.4% was measured, but on a premise the codebase
+   documents as false; excluding back-edges does not rescue it, because forward-reordered blocks
+   break it too. **A measured win on an unsound pass is not a win.**
+
+⭐ **Lesson (the third time this shape has appeared here, after opt B and the allocator
+reorder): a copy removed before register allocation is not free.** The allocator, not the
+instruction count, decides whether it pays. The principled version of this work is **George–Appel
+iterated coalescing INSIDE the allocator**, which coalesces on the interference graph under a
+conservative (Briggs/George) test that preserves colourability, instead of shortening the
+instruction stream and hoping. That is the next item and it subsumes this one.
+⭐ **Second lesson: re-measure a banked perf number before building on it.** "−4.4%, just
+unblock it" survived two sessions as a fact. On today's baseline (post block-layout, which took
+fib 817→654 ms) the same idea is a loss — the copies that remain after block layout are not the
+copies that pass was collapsing.
+
 ## ⛔ 2026-07-29d — machine-IR copy propagation: BUILT, MEASURED, **REVERTED** (uncovered an allocator bug)
 Worth **fib 671.9 → 642.1 ms (−4.4%)**, 1.80x clang, 1.18x of the ASM floor, with
 arrwalk/xorshift/callloop unchanged (best-of-9) — but it FAILS `t_fspill` (552/553), so it is not
