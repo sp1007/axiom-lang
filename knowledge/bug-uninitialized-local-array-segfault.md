@@ -36,15 +36,28 @@ Quét `bin/*.ax`: **mọi** khai báo mảng local trong suite đều CÓ initia
 (`t_arrassign.ax: mut a: [i64; 3] = [1, 1, 1]`); khai báo **không** initializer chỉ xuất hiện ở
 **global scope**. ⇒ Vùng hoàn toàn chưa được test, không phải regression.
 
-## Phải quyết: đúng đắn hay từ chối — nhưng **KHÔNG được im lặng rồi crash**
-Hai lối ra hợp lệ, cần chọn một:
-1. **Hỗ trợ thật**: cấp phát slot stack cho mảng local chưa khởi tạo (giá trị rác, giống C).
-2. **REJECT có chẩn đoán**: yêu cầu initializer cho mảng local.
+## ⭐⭐⭐ KHÔNG PHẢI câu hỏi thiết kế — **ngôn ngữ ĐÃ TRẢ LỜI cho scalar; AGGREGATE mới là chỗ lệch**
+Bản ghi ĐẦU của mục này đóng khung đây là lựa chọn 50/50 "hỗ trợ hay từ chối, cần user quyết".
+**Sai.** Probe tiếp cho thấy local KHÔNG khởi tạo **ĐÃ ĐƯỢC HỖ TRỢ SẴN** với scalar:
 
-Lối hiện tại (nhận im lặng → binary crash) là lựa chọn **DUY NHẤT không chấp nhận được** — đúng
-họ **accept-then-miscompile** mà dự án đã sửa nhiều lần ([[bug-option-as-call-arg-not-rejected]],
-[[bug-option-as-let-binding-not-rejected]]). Bài học lặp lại ở các mục đó: **detector phải CHÍNH
-XÁC** (theo kind/hình dạng), không heuristic.
+| local KHÔNG initializer | kết quả |
+|---|---|
+| `mut x: i64` (scalar) | ✅ chạy đúng (7) |
+| `mut s: str` | ✅ chạy đúng (2) |
+| `mut p: P` (**struct**) | ❌ **SEGFAULT** |
+| `mut arr: [i64; 2]` (**array**) | ❌ **SEGFAULT** |
+
+⇒ Đây là **lỗi NHẤT QUÁN**, không phải câu hỏi ngữ nghĩa: scalar và str đã chạy, nên hướng sửa
+**ĐÃ ĐƯỢC QUYẾT** — làm **aggregate hành xử GIỐNG scalar** (cấp slot stack), **KHÔNG** phải reject.
+Reject bây giờ sẽ **phá tính nhất quán** mà scalar đang thiết lập.
+
+⚠️ **VÀ NÓ LÀ CẢ MỘT HỌ, không riêng mảng**: struct hỏng y hệt. Sửa riêng mảng sẽ là **partial
+fix** — đúng cái sai lặp đi lặp lại trong dự án ([[bug-f32-compare-float-literal]]: "thêm rule ở
+1 nhánh mà quên nhánh sibling"). **Phải phủ MỌI kiểu aggregate** (array, struct, và kiểm luôn
+tuple/sum nếu có).
+
+Hành vi hiện tại (nhận im lặng → binary crash) vẫn thuộc họ **accept-then-miscompile**
+([[bug-option-as-call-arg-not-rejected]], [[bug-option-as-let-binding-not-rejected]]).
 
 ## Gợi ý điều tra (chưa làm)
 Nghi vấn: `NODE_VAR_DECL` cho kiểu ARRAY không có initializer → không cấp phát `local_bytes`
