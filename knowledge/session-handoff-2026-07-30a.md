@@ -110,7 +110,31 @@ floor NASM cùng hình dạng. Đo ghép cặp, 2 vòng không chồng lấp, **
 519→548, xorshift 216→222, arrwalk 338→362). Vì vậy **chỉ tin TỶ LỆ, đừng tin ms tuyệt đối**
 giữa các phiên. callloop giảm 79,2→77,4 ms tuyệt đối TRONG KHI máy chậm đi ⇒ win là thật.
 
-## VIỆC TIẾP THEO — đóng nốt callloop (đã có disassembly, chưa bắt đầu code)
+## 🎯 VIỆC KẾ TIẾP ĐÃ CHỌN — **fib là shape DUY NHẤT còn chặn mốc (1,18x / gate 1,15x)**, và khoảng cách chỉ **~2,6%**
+Đã so từng lệnh giữa fib của AXIOM và NASM floor (`bin/bench/fib_ax.exe` vs `fib_hand.exe`):
+
+| | AXIOM | floor |
+|---|---|---|
+| **nhánh base** (≈NỬA trong ~331 triệu lời gọi) | **15 lệnh** — prologue ĐẦY ĐỦ rồi mới test | **4 lệnh**: `cmp; jl; mov rax,rcx; ret` |
+| prologue | 5 (`push rbp; mov rsp,rbp; push rbx; push rsi; sub $0x20`) | 3, và **chỉ trên nhánh đệ quy** |
+| nạp tham số | `mov %rcx,%rax; mov %rax,%rbx` + `mov %rax,%rcx` mỗi call | `mov rbx,rcx` |
+
+⇒ Floor **test base case TRƯỚC prologue** = **shrink-wrapping**. AXIOM trả trọn 5 lệnh prologue
++ 5 lệnh epilogue cho **mọi** lời gọi base — tức khoảng **một nửa** số lời gọi.
+
+⚠️ **CẢ HAI ứng viên này ĐÃ TỪNG BỊ ĐỊNH GIÁ VÀ LOẠI** (2026-07-29, bằng `perf_asm_variants.ps1`):
+shrink-wrapping **+0,5 ms**, bỏ rbp frame **−17 ms** — đều bị coi là "vô giá trị/nhiễu".
+**CẦN ĐỊNH GIÁ LẠI, vì hai lý do CỤ THỂ chứ không phải vì hoài nghi chung:**
+1. Lần định giá đó chạy **TRƯỚC khi có căn lề hàm** ⇒ mỗi biến thể NASM rơi vào một vị trí
+   ngẫu nhiên trong dải ±5% (chính là hiệu ứng đã chứng minh ở mục căn lề bên trên). Một tín
+   hiệu 3% **không thể phân biệt được với nhiễu** dưới điều kiện đó.
+2. Tiền lệ **immediate-folding**: cũng bị NASM chấm "nhiễu" (−0,5/−13 ms) ngày 07-24e, rồi hoá
+   ra đáng **14%** trên callloop khi đo đúng shape. Đây là lần thứ HAI một "số 0 tự tin".
+   Và **−17 ms trên 541 ms = 3,1%** — **ĐỦ ĐỂ ĐÓNG GATE 2,6%** nếu nó là thật.
+**Cách làm đúng**: dựng biến thể NASM (có/không shrink-wrap; có/không rbp) và đo **GHÉP CẶP XEN
+KẼ, nhiều cặp, so HIỆU** — đúng phương pháp đã dùng để cứu mục căn lề. **ĐỪNG** tin một lần chạy.
+
+## (đã xong) callloop — disassembly cũ, giữ để tham chiếu
 Thân vòng lặp hiện tại (10 lệnh, `-O3`, driver `E72FB62E`):
 ```
 mov  $0x7,%rdx          <- hằng BẤT BIẾN trong vòng, nạp lại mỗi vòng
