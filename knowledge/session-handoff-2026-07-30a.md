@@ -7,7 +7,50 @@ metadata:
 
 # HANDOFF 2026-07-30a — **ĐỌC ĐẦU TIÊN**
 
+> ⚠️⚠️ **CÁCH ĐỌC FILE NÀY**: phần thân được viết **THEO THỨ TỰ THỜI GIAN**, nên nhiều kết luận
+> ở GIỮA file **ĐÃ BỊ THAY THẾ** bởi kết luận sau đó (đặc biệt: "mốc chưa đạt / fib 1,18x ❌"
+> và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
+> là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
+
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `4be6a9c`
+- HEAD **`4be6a9c`** đã push; driver `bin/axc_native.exe` = **`0E24570B`** (B==C).
+  Gate: **564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4, lib_collision 6/6, so_export ✓.
+- **CẢ 4 SHAPE ĐỀU TRONG MỐC M6-codegen (≤15%)**, đo tiền định sau khi đã căn lề hàm:
+
+  | shape | vs floor | ghi chú |
+  |---|---|---|
+  | fib | **1,05x** | so floor **NGHIÊM NHẤT** (V1); so V3 = 1,03x; so V0 = 0,98x |
+  | xorshift | **1,00x** | |
+  | arrwalk | **1,08x** | |
+  | callloop | **1,08–1,12x** | |
+
+- ⚠️ **VẪN CHƯA "chốt" mốc**, vì floor của xorshift/arrwalk/callloop mới chỉ bác bỏ được MỘT
+  giả thuyết (căn lề thân vòng lặp), chưa làm nghiên cứu biến thể đầy đủ như fib.
+- **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
+  `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
+  VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
+- **Việc kế tiếp đề xuất** (chưa bắt đầu): (a) biến thể cấu trúc cho 3 floor còn lại để chốt mốc;
+  (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI cao hơn allocator, KHÔNG đụng
+  code self-host-critical; (c) `axiom-bug-probe` nếu muốn nạp lại backlog.
+- ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
+  "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
+
+### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
+1. **Fix về TÍNH TIỀN ĐỊNH phải đo trên HIỆU GIỮA HAI BẢN BUILD, không đo một bản build.**
+   Đo sai kiểu này suýt chôn vĩnh viễn thay đổi căn lề (xem mục căn lề).
+2. **Peephole phải được chứng minh là CÓ NỔ, không chỉ AN TOÀN** — bản đầu của 1d khớp 0/4 hằng
+   mà vẫn qua sạch mọi gate.
+3. **Gate xanh có thể chứng minh SỐ KHÔNG** (3 ca trong phiên: 1d rỗng, thứ tự 1e/1c, và
+   RFC 0035 cursor trước đó).
+4. **Định giá codegen trên MỘT shape liên tục cho ra "số 0 tự tin"** — immediate-folding bị chấm
+   nhiễu trên fib rồi đáng 14% trên callloop.
+5. **Disassembly là bằng chứng về BINARY ĐÃ XONG, không phải về mảng mà peephole pre-alloc khớp.**
+
+---
+
 ## ⚠️ CẬP NHẬT CUỐI PHIÊN (`60a975a`) — đã ship **peephole 1e**, và mốc VẪN CHƯA ĐẠT, nhưng shape trượt ĐÃ ĐỔI
+> ⛔ **KẾT LUẬN TRONG MỤC NÀY ĐÃ BỊ THAY THẾ** — fib sau đó được sửa và nay ĐẠT. Giữ lại vì
+> phần **quy trách nhiệm alignment** vẫn đúng và hữu ích.
 `IMUL vD,imm(2)` → `ADD vD,vD`; `IMUL vD,imm(2^k)` → `SHL vD,imm(k)`. Driver mới **`A2AD800D`**
 (seed==A==B==C), 564/564. Đo ghép cặp 2 vòng:
 
@@ -56,7 +99,9 @@ Bản thân thay đổi không đổi một dòng; **phép ĐO của tôi mới 
   rebase theo `info.offset` nên tự tính cả padding. Đã xác nhận: mọi function entry kết thúc
   bằng `0`, 524 NOP đệm, `B==C 522BEA6B`, **564/564**, ELF/ctgc/exe_size/lib_collision/so_export
   đều xanh. ⇒ **Thay đổi ĐÚNG, không phải bug.**
-### 📊 BASELINE TIỀN ĐỊNH CHÍNH THỨC (đo bằng ĐÚNG driver đã commit `522BEA6B`, 2 vòng)
+### 📊 BASELINE TIỀN ĐỊNH (driver `522BEA6B`) — ⛔ **ĐÃ LỖI THỜI, xem khối TÓM TẮT đầu file**
+> Bảng dưới đây là baseline TẠI THỜI ĐIỂM ĐÓ (fib 1,18x ❌). Sau đó `1faefc9` + `1a61166` đưa
+> fib xuống **1,05x so floor nghiêm nhất** ⇒ **cả 4 shape đều ĐẠT**. Giữ lại để đối chiếu lịch sử.
 | shape | vòng 1 | vòng 2 | ≤15%? |
 |---|---|---|---|
 | fib | 1,18x | 1,18x | ❌ |
