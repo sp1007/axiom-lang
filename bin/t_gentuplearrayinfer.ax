@@ -1,0 +1,19 @@
+// Oracle (exit 42): generic type-arg inference through TUPLE and ARRAY param positions.
+// Was i32-default (silent truncation): infer_generic_type_args lacked NODE_TUPLE_TYPE /
+// NODE_ARRAY_TYPE branches, so a T in `(T,i64)` or `[T;N]` never bound. Pins large-i64
+// non-truncation through both. See knowledge/bug-generic-struct-inline-method.md.
+fn firstel[T](x: (T, i64)) -> T:
+    return x.0
+fn head[T](a: [T; 3]) -> T:
+    return a[0]
+fn main() -> i64:
+    let t: (i64, i64) = (5000000123, 7)
+    let v: i64 = firstel(t)
+    let arr: [i64; 3] = [5000000123, 2, 3]
+    let w: i64 = head(arr)
+    mut acc: i64 = 0
+    if v == 5000000123:
+        acc = acc + 21
+    if w == 5000000123:
+        acc = acc + 21
+    return acc

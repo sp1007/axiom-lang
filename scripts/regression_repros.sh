@@ -250,6 +250,7 @@ rows=(
   "t_optasgok|exit|42"
   "t_genptrselfmono|exit|42"
   "t_genptrself2param|exit|42"
+  "t_gentuplearrayinfer|exit|42"
   "t_unwrapok|exit|42"
   "t_staticcall|exit|41"
   "t_globalinit|exit|210"

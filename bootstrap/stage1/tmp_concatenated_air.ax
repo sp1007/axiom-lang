@@ -7504,6 +7504,38 @@ pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u3
                 f_pi = f_pi + 1 as i64
             if f_has_ret and f_cn != 0 as u32:
                 self.infer_generic_type_args(f_cn, fi.ret, gen_params, inferred, src_tree)
+    elif kind == NODE_ARRAY_TYPE:
+        // `[T; N]` param: infer T from the argument array's ELEMENT type. first_child is
+        // the element type node (next_sibling is the size literal). Mirrors the slice
+        // branch; without it a T inside `[T;N]` never binds and mono defaults it to i32
+        // (silent truncation/miscompile). [[bug-generic-struct-inline-method]]
+        let a_el_node = src_tree.nodes.data[tn_idx].first_child
+        if a_el_node != 0 as u32:
+            mut a_norm := arg_type
+            mut a_entry = self.types.entries.data[a_norm as i64]
+            while a_entry.kind == TYPE_KIND_POINTER or a_entry.kind == TYPE_KIND_REF:
+                a_norm = a_entry.extra
+                a_entry = self.types.entries.data[a_norm as i64]
+            if a_entry.kind == TYPE_KIND_ARRAY:
+                self.infer_generic_type_args(a_el_node, a_entry.extra, gen_params, inferred, src_tree)
+    elif kind == NODE_TUPLE_TYPE:
+        // `(T0, T1, ..)` param: a tuple ARG is a canonical `__tupN` STRUCT (fields
+        // _f0.._fN, see register_tuple_type). Match each param element type node against
+        // the corresponding field type so a T in ANY tuple slot binds (else i32-default).
+        // [[bug-generic-struct-inline-method]]
+        mut tp_norm := arg_type
+        mut tp_entry = self.types.entries.data[tp_norm as i64]
+        while tp_entry.kind == TYPE_KIND_POINTER or tp_entry.kind == TYPE_KIND_REF:
+            tp_norm = tp_entry.extra
+            tp_entry = self.types.entries.data[tp_norm as i64]
+        if tp_entry.kind == TYPE_KIND_STRUCT and (tp_entry.extra as i64) < self.types.structs.len:
+            let tp_si = self.types.structs.data[tp_entry.extra as i64]
+            mut tp_el := src_tree.nodes.data[tn_idx].first_child
+            mut tp_fi := 0 as i64
+            while tp_el != 0 as u32 and tp_fi < tp_si.fields.len:
+                self.infer_generic_type_args(tp_el, tp_si.fields.data[tp_fi].type_id, gen_params, inferred, src_tree)
+                tp_el = src_tree.nodes.data[tp_el].next_sibling
+                tp_fi = tp_fi + 1 as i64
 
 pub fn resolve_method_overload(self: ptr[TypeChecker], sym_idx: u32, rec_type: u32) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:

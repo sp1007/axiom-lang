@@ -36,6 +36,19 @@ and (2) the i64 case "passing" hid that mono was wrong for it too. A unique-name
 trace printing the MANGLED instance name (`Hold__i32`) exposed the real cause in one build. When a bug
 resists a documented layer, re-probe with a unique name and read the mono'd SYMBOL NAME, not the codegen.
 
+## ✅ EXTENDED 2026-07-24g — TUPLE & ARRAY param positions had the SAME gap — driver `09E41CC5`, 545/545, A==B
+Right after the ptr-self fix, probed sibling inference positions: `infer_generic_type_args` had branches
+for ptr/slice/generic/func but **none for NODE_TUPLE_TYPE or NODE_ARRAY_TYPE**. So a `T` appearing only
+inside a `(T, i64)` tuple param or a `[T; N]` array param was never inferred → i32 default → same silent
+truncation (`firstel((5000000123, 7))` and `head([5000000123,..])` returned the truncated low 32 bits).
+FIX: added both branches — ARRAY mirrors the slice branch (recurse the element node against the arg
+array's `entry.extra`); TUPLE matches each param element type node against the canonical `__tupN` STRUCT's
+field types (`structs.data[extra].fields[i].type_id`). A==B `09E41CC5`, regression 545/545, oracle
+`t_gentuplearrayinfer` (tuple + array, large-i64 non-truncation, O0==O1=42). NOT-a-bug boundary: a BARE
+int literal `wrap(5000000123)` still defaults to i32 (separate int-literal-width behavior, not inference);
+use a typed local to get i64. Mutator methods (`fn set(self: ptr[Hold[T]], v: T)`) were already fine (T
+comes from the direct `v: T` param).
+
 ## (superseded) ✅ FIXED 2026-07-24e (8-byte-T cases) — driver `ccfd1af7`, 534/534, B==C
 The fix turned out to be **parser-only** (the dispatch/mono "just works" once the method is
 structurally identical to the free-fn form): `parse_struct_decl` now calls `inherit_struct_generics`
