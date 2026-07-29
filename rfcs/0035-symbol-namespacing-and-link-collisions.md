@@ -170,24 +170,41 @@ Sequencing for P2, each step independently gated:
   `name_id` and `file_path`, and `LazyResolver.modules` tracks every imported module;
   `lazy_resolver_register_import` defines a `SYM_MODULE` symbol per import. `file_path` is the
   canonical path §4 asks for.
-- **ANSWERED — no plumbing change is needed.** `lazy_resolver_preload_module`
-  (`resolver.ax:1166`) already brackets module loading: it saves the symbol table's scope stack,
-  swaps in a fresh one, calls `ax_ax_driver_load_module(mod, self.symtable, self.typetable)`,
-  then restores. The symbol table is SHARED across that call — every symbol the loaded module
-  defines lands in the same `SymbolTable` — and `mod` is in hand at exactly that point. So step 1
-  is:
-  1. a `module_id: u32` field on `Symbol`;
-  2. a `current_module` cursor on `SymbolTable`, set and restored around that one call site,
-     mirroring the save/restore discipline already there;
-  3. `SymbolTable.define` stamps the cursor onto each new symbol.
+- **ANSWERED, AND IT KILLED THE FIRST DESIGN — there is no module nesting to hang a cursor on.**
+  The plan above (a `module_id` field on `Symbol` plus a `current_module` cursor on
+  `SymbolTable`, set and restored around `ax_ax_driver_load_module` in
+  `lazy_resolver_preload_module`) was **built, gated, and reverted**. It reached `A==B B0AEA1C0`
+  and 557/557 — and that green result was **meaningless**, because the field was structurally
+  always `0`.
 
-  Symbols defined outside any preload (the root compilation unit) get the sentinel `0`, meaning
-  "root module", which is correct and needs no special case. This is a field plus one bracketed
-  assignment, not a threading change.
+  A temporary probe printing every `define()` where `current_module != 0` reported **zero hits**
+  compiling a normal program, and **zero on the `--auto-lib` path too**. `ax_ax_driver_load_module`
+  simply does not fire in these flows. Had the probe not been run, an always-zero field would have
+  shipped behind a genuine-looking `A==B`, and step 2 would have been built on top of it.
+  (This is the standing lesson — assert the premise, do not infer it from a null result — and it
+  is the second time in the same session that a green gate was proving nothing.)
 
-  Note for step 2: that `extern "C"` boundary is the same one RFC 0031 had to special-case for
-  its DFE root set (a call by name leaves no AIR edge), so it is a known-sharp edge — the module
-  cursor must be set on the RESOLVER side of the call, not inside the driver.
+  **Corrected model of the compilation unit.** AXIOM's native path has no module nesting at
+  compile time: each `axc build X.ax` is ONE flat unit (bundled stdlib + X's source), and a
+  library is a SEPARATE compilation (RFC 0011 `--auto-lib` shells out per library). There is no
+  point in resolution at which "the module being entered" is a meaningful, nested notion — which
+  is also the real reason the flag-2048 mitigation had to reach for `sym_idx`.
+
+  **So the module id must come from the compilation UNIT, not from a cursor during resolution.**
+  When the compiler builds `libpa.ax`, the identity `libpa` is known from the outset — it is the
+  unit being compiled. Deriving the qualifier from that gives exactly the symmetry §2 lacks:
+  - compiling `libpa.ax`, `helper` emits `ax_libpa_helper`;
+  - compiling `libpb.ax`, `helper` emits `ax_libpb_helper`;
+  - the app, which resolves the call as `libpa.helper`, computes `ax_libpa_helper` from the
+    module name in the call — the SAME string, with no shared table and no index.
+
+  This is simpler than the reverted design (no `Symbol` field, no cursor, no positional-construction
+  audit) and it is the only form that can work across separate compilations. Step 1 is therefore
+  **not** a symbol-table change; it is "establish the compilation unit's canonical module name and
+  make it reachable from `x86_resolve_sym_name`", after which steps 2–3 proceed as written.
+
+  Note for step 2: symbols that are NOT owned by the unit (bundled stdlib, runtime/ABI names)
+  must keep their present names — the qualifier applies to the unit's OWN definitions only.
 
 ## 8. Migration
 

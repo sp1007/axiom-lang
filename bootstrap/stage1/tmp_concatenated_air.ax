@@ -4199,7 +4199,9 @@ pub fn push(mut self: ptr[SymbolVec], sym: Symbol) -> u32:
         // corrupting the heap on the very next push. This repo has already paid for that
         // pattern once, in the allocator, where the segment slab size was spelled 196608
         // in three places and the real cap in a fourth. Same fix: derive it.
-        // (RFC 0035 P2 adds a module id to Symbol, which is what surfaced this.)
+        // (Surfaced while prototyping an extra Symbol field for RFC 0035 P2. That
+        // particular field was reverted â€” see the RFC â€” but the footgun is real for any
+        // future field, so the derivation stays.)
         let sym_size = @compiler_intrinsic("size_of")[Symbol]() as i64
         let new_data = @alloc(new_cap * sym_size) as ptr[Symbol]
         if self.data != null as ptr[Symbol]:
