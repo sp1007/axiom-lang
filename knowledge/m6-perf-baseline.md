@@ -58,9 +58,21 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
   ⇒ Nới cửa sổ cho fold PHYS-source (bỏ qua MỘT lệnh không chạm `vT`) là ứng viên **ĐÃ ĐƯỢC
   XÁC NHẬN TRÊN IR THẬT**, khác hẳn giả thuyết shape-A đã bị bác ở trên.
 
-  ⚠️ **Cả hai vẫn PHẢI định giá trước khi cài** — 4 lệnh này nằm ở **entry**, chạy MỘT lần mỗi
-  lời gọi, không phải trong thân vòng lặp; còn self-move thì post-regalloc đã bị xoá nên tác
-  động (nếu có) là **gián tiếp qua counts[]**, không phải bớt lệnh.
+  ### 📉 (2) TRẦN GIÁ TRỊ ĐÃ TÍNH — **thấp trên MỌI shape hiện có**, chưa đáng cài
+  Chuỗi copy tham số nằm ở **ENTRY**, chạy **một lần mỗi LỜI GỌI**. Trên `t_tailrecloop`:
+  `sumto` được gọi **2 000** lần, mỗi lần chạy **10 000** vòng nội bộ ⇒ entry chiếm
+  **2 000 / 20 000 000 = 0,01%** số lần thực thi. ⇒ **Giá trị ≈ 0 trên shape này**, bất kể fold
+  đúng đến đâu.
+  Muốn nó ĐÁNG tiền cần shape có **lời gọi NÓNG, NHIỀU THAM SỐ, KHÔNG bị inline**. Không shape
+  nào trong 5 shape hiện có thoả:
+  - `callloop` — callee **ĐÃ bị inline** (disassembly không có `call` trong thân vòng) ⇒ không có
+    entry code mỗi lần gọi;
+  - `fib` — 331M lời gọi nhưng **1 tham số**, và entry sau fold hôm nay đã còn **1 `mov`**;
+  - `xorshift`/`arrwalk` — không có lời gọi trong vòng nóng;
+  - `t_tailrecloop` — như trên, 0,01%.
+  ⇒ **Kết luận: (2) là ứng viên ĐÚNG VỀ CƠ CHẾ nhưng ƯU TIÊN THẤP.** Đừng cài trước khi có shape
+  đo được nó (nhiều tham số × gọi nóng × không inline) — và **shape đó phải dựng TRƯỚC**, đúng
+  bài học của RFC 0036 §6.
 - ⇒ Thiết kế bên dưới (kể cả câu hỏi "guard có hiệu chuẩn được không") **giữ lại chỉ để làm
   chứng cứ về chỗ suy luận sai**. **ĐỪNG CÀI.**
 
