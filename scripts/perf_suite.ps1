@@ -38,7 +38,11 @@ $bench = Join-Path $root "bin\bench"
 New-Item -ItemType Directory -Force $bench | Out-Null
 
 $axc  = Join-Path $root "bin\axc_native.exe"
-$runs = 5
+# best-of-9, NOT best-of-5. Calibrated 2026-07-29c: at best-of-5 the memory-bound arrwalk shape
+# swung 398-428 ms run to run, which read as a consistent 2-4% regression from a change that
+# best-of-9 showed to be flat (413.8 / 411.8 / 412.7 across three builds). That phantom nearly
+# caused a real 4.4% win to be thrown away. Do not lower this.
+$runs = 9
 
 # ---------------------------------------------------------------- sources
 $srcs = @{}

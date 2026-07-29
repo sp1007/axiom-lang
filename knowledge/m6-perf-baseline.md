@@ -280,7 +280,55 @@ Gate: B==C `958F3BF5`, regression 553/553, ctgc 16/16, exe-size 4/4, ELF 12/12.
 ⭐ Blocks orphaned by threading are left in place (a few dead bytes); dead-block removal is a
 separate, later cleanup — it changes nothing observable.
 
-### Remaining measured backlog for fib (now 1.24x of floor)
+## ⛔ 2026-07-29d — machine-IR copy propagation: BUILT, MEASURED, **REVERTED** (uncovered an allocator bug)
+Worth **fib 671.9 → 642.1 ms (−4.4%)**, 1.80x clang, 1.18x of the ASM floor, with
+arrwalk/xorshift/callloop unchanged (best-of-9) — but it FAILS `t_fspill` (552/553), so it is not
+committed. **Do not re-attempt it as a standalone pass**; it belongs with the allocator work
+below, which must be fixed first. Design, kept because it is correct and re-usable:
+`propagate_reg_copies` (x86_selector.ax, ran FIRST in `select_all`):
+`MOV vD <- vS` is deleted and vD renamed to vS when vD has no reference BEFORE the copy, vS has
+none AFTER it, the copy is not inside a loop, and both are the same register class. Collected in
+one pass against the original reference table and applied via a rename map, so it is O(insts),
+not O(candidates × insts) — a per-candidate rescan would be O(n²) on every function of a
+993-function self-build. Chains compose and cannot cycle (each link moves strictly backwards in
+definition order). fib's `mov %rcx,%rax; mov %rax,%rbx` became `mov %rcx,%rbx`.
+Gate: B==C `B7A207A5` held, regression **552/553 — `t_fspill` FAILED** (got 0, want 78).
+
+### 🔴 OPEN LEAD — allocator gives two simultaneously-live XMM vregs the SAME register
+`t_fspill` holds 12 f64 values live at once against 8 allocatable XMMs (xmm8–xmm15), so 3–4 spill.
+With copy propagation enabled the emitted code ends:
+```
+movq  %rax,%xmm15      ; xmm15 = 12.0   (the operand `l`)
+movsd %xmm15,%xmm15    ; SELF-MOVE: the allocator coalesced two vregs onto xmm15
+... addsd %xmm8..%xmm14,%xmm15 ...
+addsd %xmm15,%xmm15    ; accumulator += l, but BOTH are xmm15  → wrong sum, exit 0
+```
+The accumulator and a still-live operand share xmm15. Copy propagation did not create this — it
+only merged the 12 short accumulator ranges into one long one, changing the XMM interference
+shape until the existing allocator made a wrong assignment. Suspects, in order: the
+`move_partner` COLOURING BIAS (x86_regalloc.ax ~945–965 — it is supposed to reject a colour that
+is `forbidden[]`, and the self-move right before the bad `addsd` is its fingerprint), then the
+interference construction for intervals that merely touch at an endpoint.
+**Repro recipe**: re-apply the copy-prop pass (design above), build, `axc build bin/t_fspill.ax
+-O1` → 0 instead of 78; `objdump` and look for `addsd %xmm15,%xmm15`. Only 1 of 553 oracles fails,
+so the exposure is narrow and specific to XMM pressure.
+⚠️ This is very likely a LATENT bug reachable without copy propagation by any float-heavy program
+with >8 simultaneously live f64 values — worth fixing on its own merits, exactly like the
+[[bug-variable-shift-in-loop]]-class RCX hole this session's liveness change exposed.
+
+⭐⭐⭐ **MEASUREMENT LESSON (cost: one wrong narrowing + 3 rebuilds).** At **best-of-5** the suite
+showed this pass gaining 2–5% on fib while LOSING 2–4% on arrwalk, plus a "0.26% bigger binary".
+Both signals were false:
+- the arrwalk regression was **noise** — that shape swings 398–428 ms run to run; best-of-9 gave
+  413.8 / 411.8 / 412.7 across the three builds, i.e. flat;
+- the binary growth was **the new pass's own machine code** (the narrowed variant added 15 more
+  source lines and grew MORE, 6656 vs 6144 bytes) — not a codegen regression at all.
+Acting on them, the pass was narrowed to parameter snapshots only, which **halved the win**
+(−2.8% instead of −4.4%). `perf_suite.ps1` is now best-of-9. **Rule: do not conclude anything
+from a <5% delta at best-of-5, and always check whether a binary-size change is just the new
+code you added.**
+
+### Remaining measured backlog for fib (now 1.18x of floor)
 Everything left is **register coalescing**: the param copy chain (`mov rax,rcx; mov rax→rbx`),
 the arg temp→`rcx` copies, and the final `mov rax,rsi`. Worth ~90–100 ms combined. The named
 algorithm is **George & Appel iterated coalescing with precolored nodes**; today there is only a
