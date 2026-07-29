@@ -103,7 +103,27 @@ nhánh generic (`ci_first_generic`), rồi **tie-break chọn nó thay vì hàm 
 Đây sẽ là **HOLE#7** cùng họ: *giá trị INTERFACE* lọt qua gate generic theo cách struct cụ thể
 không lọt (đã đo: `fn get(p: Sq)` → 36 ĐÚNG).
 
-**Cách sửa có khả năng đúng nhất**: trong tie-break, một ứng viên khớp **CHÍNH XÁC/cấu trúc**
+### 🔎 ĐỌC KỸ `resolve_free_call_overload` (`:1294`) — giả thuyết SẮC HƠN (⚠️ mới ĐỌC CODE, **CHƯA probe**)
+Cấu trúc thực tế:
+```
+pass 1: đếm ứng viên có ĐÚNG arity VÀ qua free_call_gate  -> n_gated, first_gated (HEAD-FIRST)
+if n_gated >= 1 and (arg0 unknown or n_gated == 1): return first_gated   // <-- KHÔNG hề tie-break
+if n_gated >= 2: chấm điểm toàn bộ param list (HOLE#5)                   // exact > coercion
+```
+⭐ **stdlib được nối vào TRƯỚC nên overload stdlib chính là HEAD của chuỗi** (comment `:1300–1303`
+nói rõ). ⇒ Nếu **hàm USER TRƯỢT gate** còn bản stdlib generic **QUA gate**, thì `n_gated == 1`
+⇒ **return thẳng bản stdlib, KHÔNG bao giờ tới tie-break HOLE#5.**
+
+⇒ **Giả thuyết sắc nhất: không phải "tie-break chọn sai", mà là "ứng viên của USER không được
+NHẬN"** — nhiều khả năng `is_method_compatible(param=Shape, arg0=Shape)` **thất bại với kiểu
+INTERFACE**, nên `free_call_gate` loại chính hàm người dùng.
+🔬 **Probe để xác nhận (đừng suy luận tiếp)**: in trong `resolve_free_call_overload` mỗi ứng viên
++ `sym_decl_param_count` + kết quả `free_call_gate` + `n_gated`, khi biên dịch
+`bin/t_ifacefnbuiltinname.ax`. Nếu thấy `n_gated == 1` và ứng viên đó là stdlib ⇒ giả thuyết ĐÚNG,
+và chỗ sửa là **`is_method_compatible` / gate với arg kiểu interface**, KHÔNG phải khối HOLE#5.
+(Đúng thành ngữ probe đã dùng cho peephole 1d phiên này: dump thứ pass THỰC SỰ nhìn thấy.)
+
+**Cách sửa có khả năng đúng nhất (NẾU giả thuyết trên sai và thật sự là tie-break)**: một ứng viên khớp **CHÍNH XÁC/cấu trúc**
 (hàm user khai báo trực tiếp) phải **THẮNG** ứng viên chỉ khớp nhờ **param đầu generic trần** —
 đúng tinh thần HOLE#5 nhưng hiện chưa phủ arg kiểu interface.
 ⚠️ Oracle bắt buộc **HAI CHIỀU**: (1) `fn get(sh: Shape)` phải được gọi; (2) **guard chống
