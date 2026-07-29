@@ -99,10 +99,18 @@ shape sẽ liên tục cho ra số 0 tự tin cho những thứ đáng vài ph�
 ⇒ `lea (%rdx,%rdx,2)` hay `mov (%rbx,%rax,8),%rsi` **hiện KHÔNG diễn đạt được**.
 
 **Đây là nút thắt CHUNG của 3 mục backlog còn lại**, nên làm nó TRƯỚC sẽ mở khoá cả ba:
-1. `imul $2/$3` → LEA scale (callloop) — ⭐ **LEA KHÔNG ghi cờ nào cả**, nên đây là thay thế
-   *verbatim*, **không cần phân tích flags** (khác hẳn `IMUL → SHL`, vốn đổi cờ và sẽ phải chứng
-   minh không JCC/SETCC nào đọc cờ ở giữa). LEA scale phủ k ∈ {2,3,4,5,8,9}: `x*3` =
+1. `imul $2/$3` → LEA scale (callloop). LEA scale phủ k ∈ {2,3,4,5,8,9}: `x*3` =
    `lea (%r,%r,2)`. Latency 1 thay vì 3, mà `imul` đang nằm TRONG chuỗi tích luỹ.
+   ⚠️ **ĐÍNH CHÍNH ghi chú trước đó trong chính file này**: tôi đã viết rằng `IMUL → SHL/ADD`
+   "phải chứng minh không JCC/SETCC nào đọc cờ ở giữa". **Rào cản đó KHÔNG tồn tại.** `IMUL`
+   vốn đã phá cờ (ISA để SF/ZF/AF/PF **undefined**), nên **không có consumer ĐÚNG ĐẮN nào có
+   thể đọc cờ xuyên qua nó** ⇒ thay `IMUL` bằng `ADD`/`SHL` không thể phá code đúng, xét về cờ.
+   Đã kiểm chứng thêm: compiler **không** phát nhánh đọc overflow sau phép toán — wrap theo bề
+   rộng làm bằng mask/sign-extend (`emit_wrap_to_width` → `emit_load_extend`, `x86_selector.ax:887`),
+   không đọc OF; `CC_O` có khai báo nhưng không có site nào phát `JO` sau IMUL.
+   ⇒ **`imul $2` → `ADD vD,vD` là một thay đổi ~5 dòng, an toàn, KHÔNG cần chờ SIB.** Vẫn nên
+   ưu tiên LEA cho bức tranh chung (nó phủ cả `$3`, và không ghi cờ nên không ràng buộc thứ tự),
+   nhưng nếu muốn một win nhỏ, độc lập, đo được trước khi làm SIB thì đây là mục rẻ nhất.
 2. Địa chỉ có scale cho index mảng (arrwalk) — mục ĐẮT NHẤT của arrwalk vì `imul` nằm trong
    chuỗi pointer-chasing.
 3. `base + idx*k` tổng quát.
