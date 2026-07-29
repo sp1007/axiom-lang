@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 0950d01 (code cuối ở aab9ec1), driver A==B+B==C BF00A447, 573/573 (+lượt -O0), CÒN 1 bug OPEN (hàm user trùng tên stdlib + param interface ⇒ overload chọn nhầm bản stdlib). Đã SỬA 2 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD 7509184 (code cuối ở bcf7746), driver A==B+B==C 42F49C73, 575/575 (+lượt -O0 575/575), KHÔNG còn bug OPEN. Đã SỬA 3 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
@@ -12,12 +12,12 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `0950d01`
-- HEAD **`0950d01`** đã push; driver `bin/axc_native.exe` = **`BF00A447`** (`A==B` VÀ `B==C`).
-  Gate: **573/573** (code cuối cùng ở `aab9ec1`; các commit sau chỉ là test + memory),
-  **lượt `-O0` toàn suite xanh**, ELF 12/12, ctgc 16/16, exe_size 4/4,
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `7509184`
+- HEAD **`7509184`** đã push; driver `bin/axc_native.exe` = **`42F49C73`** (`A==B` VÀ `B==C`).
+  Gate: **575/575** (code cuối cùng ở `bcf7746`; commit sau chỉ là memory),
+  **lượt `-O0` toàn suite 575/575**, **KHÔNG còn bug OPEN**, ELF 12/12, ctgc 16/16, exe_size 4/4,
   lib_collision 6/6, so_export ✓.
-- 🐞 **CÒN 1 BUG OPEN** (probe-found cuối phiên, **CHƯA sửa**):
+- 🐞→✅ **ĐÃ SỬA (HOLE#7, `bcf7746`)** — **KHÔNG còn bug OPEN nào**:
   [[bug-user-fn-builtin-name-iface-param]] — hàm user trùng tên hàm stdlib bundled
   (`get`/`len`/`find`/`push`) **VÀ** có tham số kiểu **INTERFACE** ⇒ **overload resolution chọn
   bản STDLIB**, hàm user KHÔNG hề được gọi. `fn get(sh: Shape)` → **0** (đúng 36);
@@ -25,9 +25,14 @@ metadata:
   ⭐ Arity giải thích trọn bảng: `set` an toàn vì bản stdlib cần **3** tham số.
   ⭐ Chỉ INTERFACE param mới thua — `fn get(p: Sq)`/`(s: str)`/`(x: i64)` đều ĐÚNG ⇒ giá trị
   interface khớp **lỏng** với param generic (`T`/`Vec[T]`/`MutexGuard[T]`) theo cách struct cụ thể
-  không khớp. **Mục tiêu sửa: luật chọn overload**, KHÔNG phải "backend intercept" (tôi đã đoán
-  sai hướng đó trước, đã đính chính). Repro `bin/t_ifacefnbuiltinname.ax` (**chưa** đăng ký vào
-  suite vì đang FAIL — đăng ký khi sửa xong).
+  không khớp — cơ chế THẬT (đã probe): `arg0_type` suy từ **biểu thức đối số** nên là struct
+  CỤ THỂ, còn param là interface ⇒ `is_method_compatible` không biết struct implement interface ⇒
+  **`n_gated==0`, không ứng viên nào được nhận** ⇒ rơi xuống `return sym_idx` = HEAD **sai arity**.
+  ⭐ **FIX** (`typecheck.ax:1241`): thêm MỘT nhánh accept — `param[0]` là `TYPE_KIND_INTERFACE` và
+  `arg0` là struct implement nó (`interface_missing_method==0`). Chỉ NỚI tập accept ⇒ không thể
+  làm hẹp ứng viên đang đúng. Cả 5 tên nay trả **36** (kể cả `push` trước đó BUILD FAIL).
+  Oracle `t_ifacefnbuiltinname`(36) **đã đăng ký** ở `-O1` và khối `-O0`.
+  ⚖️ Lưới `n_gated==0` **cố ý KHÔNG làm** — sau fix không còn input nào chạm ⇒ guard không thể nổ.
 - 🐞→✅ **SỬA THÊM một CRASH im lặng** (probe-found cuối phiên):
   [[bug-uninitialized-local-array-segfault]] — aggregate LOCAL khai báo **không initializer**
   (`mut arr: [i64;2]`, `mut p: P`) bị bind vào **OP_ICONST 0 = con trỏ NULL** ⇒ store phần tử
@@ -61,7 +66,7 @@ metadata:
 - **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
   VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
-- **Việc kế tiếp đề xuất** (backlog có **1 bug OPEN**: [[bug-user-fn-builtin-name-iface-param]] — nên làm TRƯỚC): (a) biến thể cấu trúc
+- **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**): (a) biến thể cấu trúc
   cho 3 floor còn lại để chốt mốc; (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
   cao hơn allocator, KHÔNG đụng code self-host-critical; (c) `axiom-bug-probe` — **rất đáng làm**:
   phiên này probe ra **2 silent bug trong ~1 giờ** (1 sai kết quả, 1 crash), cả hai đều ở vùng
