@@ -56,9 +56,17 @@ Bản thân thay đổi không đổi một dòng; **phép ĐO của tôi mới 
   rebase theo `info.offset` nên tự tính cả padding. Đã xác nhận: mọi function entry kết thúc
   bằng `0`, 524 NOP đệm, `B==C 522BEA6B`, **564/564**, ELF/ctgc/exe_size/lib_collision/so_export
   đều xanh. ⇒ **Thay đổi ĐÚNG, không phải bug.**
-- Số liệu perf_suite sau khi căn lề (2 vòng): fib **1,18/1,19**, xorshift 0,99/1,00,
-  arrwalk 1,09/1,09, callloop 1,12/1,10. **Đây là các con số TIỀN ĐỊNH — dùng chúng làm
-  baseline mới**, đừng so với các số unaligned cũ.
+### 📊 BASELINE TIỀN ĐỊNH CHÍNH THỨC (đo bằng ĐÚNG driver đã commit `522BEA6B`, 2 vòng)
+| shape | vòng 1 | vòng 2 | ≤15%? |
+|---|---|---|---|
+| fib | 1,18x | 1,18x | ❌ |
+| xorshift | 1,00x | 1,00x | ✅ |
+| arrwalk | 1,10x | 1,08x | ✅ |
+| callloop | 1,08x | 1,09x | ✅ |
+
+⇒ **M6-codegen CHƯA ĐẠT, chỉ còn `fib` chặn.** **DÙNG BẢNG NÀY LÀM BASELINE**, đừng so với
+số unaligned cũ. ⭐ Chú ý fib nay khớp **1,18/1,18** — chặt hơn MỌI cặp đo trước đó trong phiên
+(vốn trải 1,05…1,20): đó chính là căn lề trả cổ tức bằng **khả năng tái lập**.
 ⚠️ Suy luận "căn lề entry không lấy lại 1,13x ⇒ thứ nhạy cảm không phải vị trí đầu hàm" **cũng
 SAI** và đã bị bác bỏ bởi thí nghiệm hiệu-hai-bản-build ở trên: vị trí đầu hàm **ĐÚNG LÀ** thứ
 nhạy cảm; 1,13x đơn giản là không có thật để mà "lấy lại".
