@@ -3149,6 +3149,22 @@ pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
 pub fn tc_is_numeric(t: u32) -> bool:
     return t == TYPE_I8 or t == TYPE_I16 or t == TYPE_I32 or t == TYPE_I64 or t == TYPE_U8 or t == TYPE_U16 or t == TYPE_U32 or t == TYPE_U64 or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_ISIZE or t == TYPE_USIZE
 
+// A float-literal binop operand, possibly wrapped in a unary minus (`-2.5`). Both count as
+// "float literals" for width coercion: re-inferring a unary-neg node with an expected type
+// propagates it to the inner FLOAT_LIT (NODE_UNARY_EXPR infers its operand with `expected`),
+// so the negated literal adopts the other operand's f32/f64 width too. Without matching the
+// negated form, `c == -2.5` / `y * -2.0` (c/y: f32) stayed f32-vs-f64 mixed-precision.
+// [[bug-f32-compare-float-literal]]
+pub fn node_is_float_litish(self: ptr[TypeChecker], n: u32) -> bool:
+    let k = self.tree.nodes.data[n].kind
+    if k == NODE_FLOAT_LIT:
+        return true
+    if k == NODE_UNARY_EXPR:
+        let ch = self.tree.nodes.data[n].first_child
+        if ch != 0 as u32 and self.tree.nodes.data[ch].kind == NODE_FLOAT_LIT:
+            return true
+    return false
+
 // True iff `t` is an Option or Result value. Option[T]/Result[T,E] desugar to a
 // SUM (kind 6) whose mangled name base is "Option"/"Result" (e.g.
 // `_AX_std_Option__i64`), so that is the PRIMARY case; also accept the dedicated
@@ -4056,8 +4072,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 // compare -> silently WRONG (`4.0f32 == 4.0` returned false). Coerce the
                 // float-literal operand to the other operand's concrete float width so both
                 // sides are the same precision. Same-width / pure-f64 code is unchanged.
-                let lhs_flit = self.tree.nodes.data[lhs].kind == NODE_FLOAT_LIT
-                let rhs_flit = self.tree.nodes.data[rhs].kind == NODE_FLOAT_LIT
+                let lhs_flit = self.node_is_float_litish(lhs)
+                let rhs_flit = self.node_is_float_litish(rhs)
                 if rhs_flit and not lhs_flit and (t1 == TYPE_F32 or t1 == TYPE_F64) and t1 != t2:
                     self.infer_node(rhs, t1)
                 elif lhs_flit and not rhs_flit and (t2 == TYPE_F32 or t2 == TYPE_F64) and t1 != t2:
@@ -4133,8 +4149,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 // 0). Coerce a float-literal operand to the OTHER operand's concrete float
                 // width, or (both literals) to an f32 EXPECTED context, mirroring the
                 // integer-literal rule above. Same-width and pure-f64 code is unchanged.
-                let lhs_flit = self.tree.nodes.data[lhs].kind == NODE_FLOAT_LIT
-                let rhs_flit = self.tree.nodes.data[rhs].kind == NODE_FLOAT_LIT
+                let lhs_flit = self.node_is_float_litish(lhs)
+                let rhs_flit = self.node_is_float_litish(rhs)
                 if rhs_flit and not lhs_flit and (t1 == TYPE_F32 or t1 == TYPE_F64) and t1 != t2:
                     t2 = self.infer_node(rhs, t1)
                 elif lhs_flit and not rhs_flit and (t2 == TYPE_F32 or t2 == TYPE_F64) and t1 != t2:

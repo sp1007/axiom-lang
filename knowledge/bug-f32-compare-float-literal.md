@@ -33,8 +33,21 @@ Gate: fast fixpoint **A==B `998F7199`** (frontend, self-host inert — the compi
 float literal), regression **546/546** (+`t_f32cmplit`: let-bound f32, f32 param, both operand orders,
 and a `>` comparison, O0==O1=42). Oracle `bin/t_f32cmplit.ax`.
 
+## ✅ EXTENDED (same session) — NEGATED float literals — driver `C29FF51D`, 546/546, A==B
+Immediately probing the just-shipped fix (per the lesson below) found the same gap for a NEGATED
+literal: `c == -2.5` (comparison) AND `y * -2.0` (arithmetic) still failed, because `-2.5` parses as
+`NODE_UNARY_EXPR(neg, FLOAT_LIT)`, not a bare `NODE_FLOAT_LIT`, so the literal-gate missed it — in BOTH
+branches. Fix: a helper `node_is_float_litish` that also matches a unary-neg wrapping a FLOAT_LIT
+(re-inferring a unary-neg node with an expected type propagates it to the inner literal, since
+NODE_UNARY_EXPR infers its operand with `expected`). Used in both binop branches. A==B `C29FF51D`,
+regression 546/546, oracle `t_f32cmplit` extended with negated-literal cases (`0.0 - 2.5 == -2.5`,
+`3.0 * -2.0 == -6.0`). (Negated INT literals in comparisons may have an analogous latent gap but were
+NOT confirmed broken and int mixed-width behavior differs — left unprobed.)
+
 ## Lesson
 A coercion rule added to ONE binop branch (arithmetic) but not its sibling (comparison) is a classic
 partial fix — the same mixed-precision hazard exists at every operand site. When adding an
-operand-coercion rule, apply it to ALL binop branches (arithmetic, comparison, and check compound-assign
-/ match-arm value paths too). Sibling of the int-literal width coercion that DOES exist in both branches.
+operand-coercion rule, apply it to ALL binop branches AND to every literal SHAPE (bare literal +
+unary-negated literal). This bug took TWO passes: first the missing comparison branch, then the missing
+negated-literal shape — each found by immediately probing the fix's neighborhood. Sibling of the
+int-literal width coercion that exists in both branches.

@@ -1,21 +1,27 @@
-// Oracle (exit 42): comparing an f32 value against a float LITERAL. Was miscompiled — the
-// literal defaulted to f64, so `c == 4.0` with c:f32 did a mixed-precision compare and
-// returned false. The comparison branch of NODE_BINARY_EXPR lacked the float-literal width
-// coercion the arithmetic branch already had. Covers let-bound f32, f32 param, and both
-// operand orders + a lt comparison.
+// Oracle (exit 42): comparing an f32 value against a float LITERAL, including NEGATED literals.
+// Was miscompiled — the literal defaulted to f64, so `c == 4.0` / `c == -2.5` with c:f32 did a
+// mixed-precision compare (wrong result). The comparison branch of NODE_BINARY_EXPR lacked the
+// float-literal width coercion the arithmetic branch had, and BOTH branches missed a unary-negated
+// literal (`-2.5` is NODE_UNARY_EXPR(neg, FLOAT_LIT)). See knowledge/bug-f32-compare-float-literal.md.
 fn viaparam(c: f32) -> bool:
     return c == 4.0
 fn main() -> i64:
     let a: f32 = 1.5
     let b: f32 = 2.5
     let c: f32 = a + b            // 4.0
+    let n: f32 = 0.0 - 2.5        // -2.5
+    let m: f32 = 3.0 * -2.0       // -6.0 (arith branch, negated literal)
     mut acc: i64 = 0
     if c == 4.0:                  // f32 == float-literal
-        acc = acc + 10
+        acc = acc + 6
     if 4.0 == c:                  // literal on the left
-        acc = acc + 10
-    if c > 3.0:                   // lt/gt with literal
-        acc = acc + 10
+        acc = acc + 6
+    if c > 3.0:                   // gt with literal
+        acc = acc + 6
+    if n == -2.5:                 // f32 == NEGATED literal
+        acc = acc + 6
+    if m == -6.0:                 // arith negated literal, then compare negated literal
+        acc = acc + 6
     if viaparam(4.0):             // f32 param == literal
         acc = acc + 12
-    return acc                    // 10+10+10+12 = 42
+    return acc                    // 6*5 + 12 = 42
