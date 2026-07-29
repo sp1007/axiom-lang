@@ -121,6 +121,12 @@ metadata:
   + message passing, generic × interface (vtable trên type generic), bignum/float biên,
   `--staticlib`/`--shared` đường multi-lib, và **tổ hợp 3 feature** thay vì 2.
 
+- 🔧 **HARNESS (2026-07-30)**: phiên này chạy **BA** monitor heartbeat cùng lúc (`betmnqwcz`,
+  `ba4hfsc7e`, `bnsu3yw53`, cùng một command) ⇒ tick về mỗi ~40 giây thay vì 5 phút. Đã `TaskStop`
+  hai cái, giữ một. ⚠️ **Phase 0 của skill nói "nếu CHƯA có monitor thì arm ĐÚNG MỘT" — không phủ
+  trường hợp đã có BA.** Sửa lại thành: **đếm** monitor đang chạy; nếu 0 thì arm 1; nếu >1 thì
+  `TaskStop` phần thừa. Tick gấp ba vừa tốn việc vừa làm loãng tín hiệu của chính vòng lặp.
+
 ### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
 0. **Gate không chạy ở cấu hình nào thì mù ở cấu hình đó.** Suite build `-O1`+ ⇒ cả một lớp
    defect chỉ-ở-`-O0` vô hình, dù **đã có test bắt được nó từ lâu** (`t_tostr`). Không phải
