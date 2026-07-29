@@ -56,6 +56,15 @@ metadata:
   **chưa có test** chứ không phải regression.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
+- 🧹 **VÙNG ĐÃ QUÉT SẠCH cuối phiên — ĐỪNG probe lại** (2 batch, 0 phát hiện):
+  (a) **literal lớn trong ngữ cảnh GENERIC**: `ident[T](-3000000000)`, `Box[i64](v: ...)`,
+  `Vec[i64].push(...)`, array literal `[-3000000000, 5]` — đúng ở cả -O0/-O1.
+  (b) **aggregate không-initializer, các biến thể**: tuple, array-of-struct, struct lồng,
+  `Option` — đều đúng sau fix. (`Option` đúng **do cách dùng** — `o = Some(..)` thay cả binding,
+  không ghi xuyên qua null — chứ KHÔNG phải do fix; nếu sau này sum có mutation payload tại chỗ
+  thì phải xử lý như aggregate.)
+  ⇒ Probe tiếp nên nhắm vùng KHÁC: closure/capture, interface dispatch, for-loop trên collection,
+  chuỗi/UTF-8 biên, generic × interface.
 
 ### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
 0. **Gate không chạy ở cấu hình nào thì mù ở cấu hình đó.** Suite build `-O1`+ ⇒ cả một lớp
