@@ -7,6 +7,47 @@ metadata:
   type: project
 ---
 
+## 🎯⭐⭐ 2026-07-30 — VIỆC KẾ TIẾP ĐÃ ĐỊNH GIÁ: coalesce shape A **VƯỢT MỘT LỆNH XEN GIỮA** = **−15,27%** (CHƯA CÀI)
+
+Trên shape tail-recursive mới `bin/t_tailrecloop.ax`, NASM ghép cặp 3 vòng, **hai biến thể đều
+trả exit 128 (đã kiểm)**: thân vòng AXIOM hôm nay **20,9 ms** vs bản đã coalesce **17,7 ms**.
+
+**Vì sao 1c không nổ**: shape A đòi `MOV vT,vD ; OP vT,C ; MOV vD,vT` **LIỀN KỀ**, mà AXIOM phát
+một lệnh XEN GIỮA (cùng phát hiện như peephole 1d, vốn cần cửa sổ rộng hơn 1 lệnh):
+```
+mov %rcx,%rbx      <- MOV vT,vD
+add %rax,%rbx      <- OP  vT,C
+mov %rdx,%rax      <- X: XEN GIỮA (không chạm vT, không chạm vD)
+mov %rbx,%rcx      <- MOV vD,vT
+```
+
+**Thiết kế**: `MOV vT,vD ; OP vT,C ; X ; MOV vD,vT` → `OP vD,C ; X`, với
+- `counts[vT] == 3` như cũ ⇒ chứng minh **X không chạm vT**;
+- X ∈ {`MACH_MOV`, `MACH_LEA`} (không side-effect, toán hạng tường minh); **LOẠI call/jump/label**
+  — adjacency là thứ duy nhất chứng minh không nhánh nào nhảy vào giữa;
+- ⚠️ **guard đề xuất: X không ĐỌC/GHI `vD`** — fold đẩy việc ghi `vD` lên SỚM HƠN X.
+
+### ⚠️ PHẢI GIẢI TRƯỚC KHI CÀI: guard đó có **HIỆU CHUẨN ĐƯỢC** không?
+Để guard nổ, X phải **ĐỌC `vD`** giữa `OP` và `MOV vD,vT`. Nhưng ở dạng CHƯA fold, đọc `vD` tại
+đó là đọc giá trị **CŨ** ⇒ **code hôm nay đã sai rồi**. ⇒ Có thể X-đọc-`vD` **BẤT KHẢ theo cấu
+trúc**, và khi đó guard **không thể làm cho nổ** ⇒ vướng đúng luật *"guard chưa từng thấy nổ thì
+không phải guard"* (đúng lý do đã từ chối lưới `n_gated==0` trong
+[[bug-user-fn-builtin-name-iface-param]]).
+
+⇒ **Giải bằng ĐO, không bằng suy luận** (tôi đã suy luận vòng vo ở đúng chỗ này — đó là tín hiệu):
+instrument `coalesce_dest_copy`, in mọi cửa sổ 4-lệnh gặp được kèm cờ "X có chạm `vD`", chạy
+self-build + toàn suite.
+- **0 ca** ⇒ guard là code chết: cài fold **KHÔNG kèm guard**, ghi rõ tiền đề ĐÃ ĐO (tiền đề hết
+  đúng nếu instruction scheduling đổi).
+- **Có ca** ⇒ guard cần thiết VÀ đã có input để hiệu chuẩn.
+
+**Hai lối đều ổn; lối KHÔNG ổn là cài guard mà không biết mình ở lối nào.**
+
+⚠️ **Vì sao KHÔNG cài trong phiên 07-30**: trong ~20 phút trước đó tôi (a) viết RFC 0036 đề xuất
+thứ **đã ship**, (b) dựng biến thể NASM **phá `rbx` callee-saved**, suýt đọc "−12,8%" từ cặp
+KHÔNG hợp lệ (chỉ lộ vì exit code 16 vs 128). Hai lỗi liên tiếp + thay đổi này **đẩy một lệnh GHI
+lên sớm** ⇒ hoãn có chủ ý, không phải quên.
+
 ## ⚡⭐⭐⭐ 2026-07-29g `6141531` — COALESCING SHIPPED: xorshift **313,7 → 218,8 ms (−30,2%)**, ĐÚNG BẰNG asm floor (217,4 ⇒ **1,006x**)
 
 Việc mà handoff 07-29f đã định giá trước (trần 89,8 ms) — **đo được 94,9 ms**, tức là ước lượng
