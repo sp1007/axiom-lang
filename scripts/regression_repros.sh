@@ -627,6 +627,11 @@ rows=(
   "t_compliance|exit|60"
   # M4 compliance part 2 — stdlib collections/strings/iteration/formatting + control-flow
   "t_compliance2|exit|28"
+  # M4 compliance part 3 — the surface parts 1/2 never touched: interfaces + vtable
+  # dispatch, module globals, defer, enums, multi-field variants, Self-chaining, the
+  # wider Vec HOF set, Option matching, f32, and generic inference through ptr-self.
+  # 60 + 28 + 12 = 100, the M4 gate, all on the real shipped grammar.
+  "t_compliance3|exit|12"
   # RFC 0026 — inlining of small pure-arithmetic helpers (sum of squares 0..8 = 140)
   "t_inline|exit|140"
   # RFC 0026 — inliner edge cases (0-arg / param-passthrough / nested calls / mixed)
@@ -749,6 +754,7 @@ done
 opt_rows=(
   "t_compliance|60"
   "t_compliance2|28"
+  "t_compliance3|12"
   "t_inline2|8"
   "t_inline5|112"
   "t_foldu32wrap|205"
