@@ -294,7 +294,47 @@ not O(candidates × insts) — a per-candidate rescan would be O(n²) on every f
 definition order). fib's `mov %rcx,%rax; mov %rax,%rbx` became `mov %rcx,%rbx`.
 Gate: B==C `B7A207A5` held, regression **552/553 — `t_fspill` FAILED** (got 0, want 78).
 
-### 🔴 OPEN LEAD — allocator gives two simultaneously-live XMM vregs the SAME register
+### ✅ RESOLVED 2026-07-29e (`11b8bad`, B==C `4243E495`, 554/554) — it was NOT the allocator
+**The lead below was wrong in both halves. Read this first; the original text is kept only
+because the way it misdirected is the lesson.**
+
+Root cause: `get_dst_behavior` (x86_regalloc.ax) enumerated only the INTEGER writers, so
+`MACH_FADD/FSUB/FMUL/FDIV` fell through to `DST_UNUSED`; `insert_spill_code` then pushed
+them **UNCHANGED**, leaving a spilled dst as a raw vreg. `emitter_resolve_reg` turns that
+into `REG_NONE = 255`, and the float encoders mask it to 4 bits → **255 & 0xF = 15 = %xmm15**.
+So the operation wrote xmm15 while the spill slot kept the value from BEFORE it: each
+spilled float op silently lost exactly one update. Fix = classify the float ALU ops
+DST_READ_WRITE (+ ITOF/FTOI/MOVDQ/MOVQD/CVTSS2SD/CVTSD2SS as DST_WRITE_ONLY — same hole),
+and pick the dst spill scratch **by the dst's register class**: float → XMM2 + movsd,
+because R10/R11's hw indices alias XMM10/XMM11, which ARE allocatable.
+
+⭐⭐⭐ **Why the banked framing sent me the wrong way — four corrections:**
+1. **"Allocator gives two live vregs the same register"** — it never does. The repeated
+   `%xmm15` was not double-assignment, it was the *unallocated* sentinel being encoded.
+   Seeing one register appear twice is NOT evidence of aliasing; check whether it is the
+   value `REG_NONE` masks to before blaming the colouring.
+2. **"Suspect the `move_partner` bias (~945–965), it should reject `forbidden[]` colours"** —
+   it already does, explicitly, plus an `in_avail` class check. The named suspect was
+   verified innocent by *reading the 15 lines*, which should have happened before banking it.
+3. **"Blocked by / caused by copy propagation"** — copy-prop only lengthened float live
+   ranges until an operation's own DST began to spill. **Copy propagation is unblocked.**
+4. **"Only exposed with copy-prop, 1 of 553 oracles"** — false. Reproduced on the plain
+   tree at **-O0/-O1/-O2/-O3** and on compilers from Jul 18/19/22, i.e. long-standing and
+   reachable at the level the compiler self-hosts at.
+
+⭐⭐ **Why it stayed latent, and the test-design lesson:** the existing `t_fspill` spills only
+the **operands** of a float op; nothing spilled an op's **own destination**. B==C is blind to
+it because the compiler is not float-heavy. Pressure alone is not the trigger — you need
+pressure **plus a long-lived arithmetic result**. New oracle `t_fspilldst` (42; returns 11
+pre-fix at every -O level) builds 12 long-lived results per op family so fadd/fsub/fmul/fdiv
+are each pinned.
+⭐ **Method note:** the productive move was abandoning the banked theory and asking "does the
+plain tree miscompile ANY float-heavy shape?" — 9 probes, of which the 9th (12 independent
+loop-carried accumulators) failed. `int` vs `float` at identical shape (ints always correct,
+floats break at exactly n≥8 = the allocatable XMM count) localised it to the float spill path
+in one run, before any source reading.
+
+### 📜 (historical, WRONG) OPEN LEAD — allocator gives two simultaneously-live XMM vregs the SAME register
 `t_fspill` holds 12 f64 values live at once against 8 allocatable XMMs (xmm8–xmm15), so 3–4 spill.
 With copy propagation enabled the emitted code ends:
 ```
