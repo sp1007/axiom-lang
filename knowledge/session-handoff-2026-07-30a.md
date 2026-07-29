@@ -29,24 +29,39 @@ alignment khác. **Cùng hiện tượng đã bank 2026-07-29f cho xorshift** (+
 lệnh hơn, chuỗi phụ thuộc không đổi). ⛔ **ĐỪNG "sửa" bằng cách nhét lại lệnh chết.**
 ⇒ Hệ quả: **con số 1,13x của fib trước đây một phần là MAY MẮN.**
 
-## ⛔⛔ ĐÃ THỬ VÀ ĐÃ REVERT: **căn lề 16-byte cho FUNCTION ENTRY — KHÔNG phục hồi fib**
-Đây chính là "việc kế tiếp" mà tôi tự đề xuất ở trên. **Đã cài, đã gate XANH, đã đo, và ĐÃ
-REVERT** — ghi lại để phiên sau **ĐỪNG THỬ LẠI**.
+## ✅⭐⭐⭐ CĂN LỀ 16-BYTE CHO FUNCTION ENTRY — **ĐÃ RE-LAND** (`7ac52f5`, `B==C 522BEA6B`)
+### ⚠️ ĐÍNH CHÍNH: mục này TRƯỚC ĐÓ ghi "đo ra 0, đã revert, ĐỪNG THỬ LẠI" — **KẾT LUẬN ĐÓ SAI**
+Bản thân thay đổi không đổi một dòng; **phép ĐO của tôi mới là thứ sai.**
+- **Tôi đã đo**: aligned-có-1e vs **UN**aligned-có-1e ⇒ mọi shape phẳng ⇒ "lợi ích 0" ⇒ revert.
+- **Vì sao SAI**: mục đích của thay đổi **không phải làm một bản build nhanh hơn**, mà làm
+  **HAI bản build SO SÁNH ĐƯỢC với nhau**. Tác dụng của nó nằm ở **HIỆU giữa hai bản build**,
+  nên phép đo một-bản-build **về cấu trúc không thể thấy nó**. Đánh giá một fix về TÍNH TIỀN ĐỊNH
+  bằng câu hỏi "có con số nào đẹp hơn không" là **sai phạm trù**.
+- **Thí nghiệm ĐÚNG** (fib, best-of-9, 4 cặp xen kẽ mỗi bên):
+  | | 1e làm fib chậm đi bao nhiêu |
+  |---|---|
+  | **KHÔNG** căn lề | **+5,1%** (+3,4…+7,3; **cùng dấu cả 4 cặp**) |
+  | **CÓ** căn lề | **−0,2%** (−0,84…+0,51; **vắt qua 0**) |
+  ⇒ Độ nhạy vị trí là THẬT, và căn lề **xoá hẳn kênh đó**.
+- **Chi phí trung thực** (không phải win miễn phí): fib nay đọc **~605 ms TIỀN ĐỊNH**, so với
+  580 ở vị trí unaligned MAY và 609 ở vị trí unaligned RỦI ⇒ nó rơi vào GIỮA dải thay vì bốc
+  thăm trong dải đó; tốn ≤15 NOP/hàm (~8 KB).
+- ⭐⭐ **HỆ QUẢ CHO MỐC**: con số **1,13x của fib từng ĐẠT gate 15% chính là lần bốc thăm trúng**.
+  Số TIỀN ĐỊNH là **~1,18x và TRƯỢT**. Kết quả gate xấu đi vì **phép đo trở nên trung thực** —
+  đó là hướng ĐÚNG: một con số chỉ đúng 1 trong 3 lần chạy không phải là điểm đậu.
+- ⭐⭐⭐ **BÀI HỌC ĐỂ ĐỜI**: khi thay đổi nhằm mục tiêu *tính tiền định / khả năng so sánh*,
+  **phải đo trên HIỆU giữa hai bản build**, không đo trên một bản build. (Chi tiết cài đặt cũ:)
 - Cài đặt: pad `0x90` tới bội số 16 trong `all_code` **TRƯỚC** khi chốt `current_offset`
   (`x86_coff.ax` ~L830). An toàn theo cấu trúc: mọi symbol value + reloc per-function đều
   rebase theo `info.offset` nên tự tính cả padding. Đã xác nhận: mọi function entry kết thúc
   bằng `0`, 524 NOP đệm, `B==C 522BEA6B`, **564/564**, ELF/ctgc/exe_size/lib_collision/so_export
   đều xanh. ⇒ **Thay đổi ĐÚNG, không phải bug.**
-- Đo 2 vòng khớp chặt: fib **1,18 / 1,19** (trước: 1,19/1,20 — **KHÔNG phục hồi về 1,13**),
-  xorshift 0,99/1,00, arrwalk 1,09/1,09, callloop 1,12/1,10 (trước 1,07/1,10 — hơi xấu đi).
-  ⇒ **Lợi ích đo được = 0.**
-- Revert theo §10 + tiền lệ của chính dự án (precolored-bias bị revert vì "lợi ích không đo được
-  thì không đánh đổi độ phức tạp ở thành phần self-host-critical").
-⭐ **Giá trị chẩn đoán của kết quả ÂM này**: căn lề *entry* của fib **không** lấy lại được 1,13x
-⇒ thứ nhạy cảm **KHÔNG phải vị trí đầu hàm**. Nghi can còn lại: căn lề **branch target / loop
-header BÊN TRONG** hàm (đắt hơn nhiều — phải chèn padding giữa hàm ⇒ dịch mọi label offset và
-fixup), hoặc hiệu ứng uop-cache/I-cache mà entry alignment không chạm tới. **Đừng lặp lại thí
-nghiệm entry-alignment.**
+- Số liệu perf_suite sau khi căn lề (2 vòng): fib **1,18/1,19**, xorshift 0,99/1,00,
+  arrwalk 1,09/1,09, callloop 1,12/1,10. **Đây là các con số TIỀN ĐỊNH — dùng chúng làm
+  baseline mới**, đừng so với các số unaligned cũ.
+⚠️ Suy luận "căn lề entry không lấy lại 1,13x ⇒ thứ nhạy cảm không phải vị trí đầu hàm" **cũng
+SAI** và đã bị bác bỏ bởi thí nghiệm hiệu-hai-bản-build ở trên: vị trí đầu hàm **ĐÚNG LÀ** thứ
+nhạy cảm; 1,13x đơn giản là không có thật để mà "lấy lại".
 
 ⭐⭐ **Thứ tự 1e SAU 1c là load-bearing, và GATE KHÔNG THỂ THẤY ĐIỀU ĐÓ.** 1c khớp theo
 `counts[vT]==3`; viết `ADD vT,vT` thêm mention thứ TƯ ⇒ vô hiệu hoá 1c. Trên `x = x * 2` trong
