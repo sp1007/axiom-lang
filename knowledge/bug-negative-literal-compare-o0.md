@@ -32,8 +32,21 @@ fn main() -> i64:
 | `c < -2000000000` (âm nhưng **VỪA** i32) | ✅ đúng |
 | `let c: i64 = -5737418117` rồi đọc `c` (**chỉ BINDING**) | ✅ đúng |
 
-⇒ Trigger hẹp: **literal ÂM, |v| ngoài dải i32, đứng TRỰC TIẾP trong biểu thức so sánh, ở -O0.**
-Binding thì đúng; chỉ literal ở vị trí toán hạng so sánh mới hỏng.
+### ⚠️ MỞ RỘNG PHẠM VI — **KHÔNG chỉ so sánh: THAM SỐ LỜI GỌI cũng hỏng**
+Phát biểu ban đầu của tôi ("chỉ trong biểu thức so sánh") **QUÁ HẸP**. Chạy toàn bộ suite ở
+`-O0` (`AXEXTRA=-O0`) ⇒ **563/564 pass, đúng 1 FAIL: `t_tostr`** — và nó fail vì **tham số lời gọi**:
+| ca | -O0 | đúng | số học khớp CHÍNH XÁC với cơ chế |
+|---|---|---|---|
+| `t_tostr` (có `to_str(-9223372036854775808)`) | **69** | 88 | i64::MIN có 32 bit thấp = 0 ⇒ wrap i32 → `0` → `"0"` dài **1** thay vì 20 ⇒ mất đúng **19** |
+| `to_str(-3000000000).len` | **10** | 11 | wrap i32 → `1294967296` → `"1294967296"` dài **10** thay vì `"-3000000000"` dài 11 |
+
+⇒ Phát biểu ĐÚNG: **literal ÂM, |v| ngoài dải i32, ở vị trí biểu thức KHÔNG có hint kiểu i64
+truyền xuống** (toán hạng so sánh, tham số lời gọi), ở `-O0`. Binding `let c: i64 = ...` thì
+ĐÚNG vì kiểu đích ép được.
+
+⭐⭐ **ĐÃ CÓ SẴN TEST BẮT ĐƯỢC BUG NÀY TỪ LÂU (`t_tostr`) — chỉ là suite chưa bao giờ chạy `-O0`.**
+Và vì **chỉ 1/564 fail ở -O0**, thêm một lượt `-O0` vào gate là **RẺ** (sửa 1 bug là xanh),
+chứ không phải việc lớn như tôi tưởng lúc đầu.
 
 ## Root cause — ĐỌC TỪ DISASSEMBLY, không phải giả thuyết
 `-O0` phát cho toán hạng phải của phép so sánh:
@@ -61,5 +74,4 @@ sibling = partial fix; áp cho MỌI nhánh"* — lần này là **cùng lỗi, 
 
 ⚠️ **Đây là SILENT MISCOMPILE** (§7 correctness > tất cả), nhưng chỉ ở `-O0`, và mọi gate hiện
 tại chạy ở `-O1` trở lên nên 564/564 **không hề thấy**. ⇒ Khi sửa, **oracle phải chạy CẢ -O0**.
-⭐ Bài học hạ tầng: **suite regression phần lớn không chạy -O0 ⇒ cả một lớp bug chỉ-ở-O0 không
-có coverage.** Đáng cân nhắc thêm vài dòng `-O0` vào `regression_repros.sh`.
+⭐ Bài học hạ tầng — **ĐÃ ĐO, và nhẹ hơn tôi tưởng**: chạy `AXEXTRA=-O0` cho ra **563/564**, nên lớp bug chỉ-ở-O0 **HẸP, không rộng** (tôi đã phát biểu quá mạnh lúc đầu). ⇒ **Khuyến nghị cụ thể: sau khi sửa bug này, thêm một lượt `-O0` vào `regression_repros.sh`** — chi phí gần như bằng 0 và nó ĐÃ SẴN bắt được ca này qua `t_tostr`.
