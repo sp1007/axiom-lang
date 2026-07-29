@@ -34454,6 +34454,40 @@ pub fn align_byte_vec(vec: ptr[ByteVec], alignment: i64):
     while vec.len % alignment != 0:
         push_byte(vec, 0 as u8)
 
+// LINK-TIME COLLISION DIAGNOSTIC (Â§8 â€” diagnostics are a product feature).
+//
+// Every symbol lookup in this linker is a LINEAR FIRST-MATCH scan over func_names
+// (see the reloc resolution loops). So when two objects both DEFINE the same emitted
+// name, the first one parsed wins and the second definition is silently discarded â€”
+// calls meant for it are bound to the other body. That is the mechanism behind the
+// whole cross-library name-collision family: a user `fn worker` colliding with a
+// bundled `struct worker`'s emitted symbol mis-links with no message at all.
+//
+// Detection is exact (two DEFINED text symbols with byte-identical emitted names),
+// not heuristic. Report-only for now: promoting it to a hard error is safe only once
+// we know no legitimate duplicate definitions exist on the normal build paths, which
+// this report is what establishes. Capped so a systemic break cannot flood the build.
+//
+// Cost is O(n^2) string compares, which is immaterial next to the reloc resolution
+// this runs beside â€” that is O(relocs x names), an order of magnitude more work.
+pub fn report_duplicate_definitions(func_names: ptr[LinkerStrVec]) -> i64:
+    mut dups := 0 as i64
+    mut a := 0 as i64
+    while a < func_names.len:
+        let na = func_names.data[a]
+        if na != "":
+            mut b := a + 1 as i64
+            while b < func_names.len:
+                if func_names.data[b] == na:
+                    dups = dups + 1 as i64
+                    if dups <= 10 as i64:
+                        ax_puts_local("warning[E0501]: symbol defined more than once at link time; the first definition wins and the rest are silently dropped:")
+                        ax_puts_local(na)
+                    break
+                b = b + 1 as i64
+        a = a + 1 as i64
+    return dups
+
 pub fn is_valid_symbol_name(name: str) -> bool:
     let len = std.string.len(name)
     if len == 0:
@@ -35836,6 +35870,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
                 push_linker_str(&func_names, sym.name)
             sym_i = sym_i + 1
         i = i + 1
+
+    // Â§8: two objects defining the same emitted name is a silent mis-link here, because
+    // every lookup below takes the FIRST match. Surface it. See
+    // report_duplicate_definitions. Covers the TEXT symbols, which is where the known
+    // collision holes live (fn-vs-fn across modules, fn-vs-struct); .data/.bss globals
+    // join func_names later, once their region is laid out.
+    //
+    // Gated on a MULTI-object link, on correctness grounds rather than measured cost: a
+    // duplicate needs two definitions, and a single compilation cannot emit one name
+    // twice (the frontend rejects same-name clashes before codegen), so with one object
+    // the scan can only ever come up empty. Running it there is pure waste even if the
+    // waste is small. (Timed honestly: gated vs ungated self-builds both land at
+    // 8.3-8.5s with overlapping spread, i.e. the O(n^2) scan over ~2.4k symbols is NOT
+    // measurable next to the reloc resolution beside it, which is O(relocs x names).
+    // An earlier 7.3 -> 8.1s reading that looked like this scan was box noise.)
+    mut dup_defs := 0 as i64
+    if objects.len > 1 as i64:
+        dup_defs = report_duplicate_definitions(&func_names)
 
     mut kernel32_imports := new_linker_str_vec()
     mut ax_runtime_imports := new_linker_str_vec()
