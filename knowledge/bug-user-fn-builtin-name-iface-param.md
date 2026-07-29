@@ -65,6 +65,28 @@ cơ chế gây ra ca này. Các lỗ trước đã xử: fn-vs-fn (mangling flag
 typecheck). Lỗ NÀY: **user fn vs BUILTIN method**, và nó không reject cũng không mangle — nó
 **im lặng gọi builtin**.
 
+## ⭐⭐ CƠ CHẾ — **KHÔNG phải "backend intercept", mà là OVERLOAD RESOLUTION thua stdlib bundled**
+Các tên này **CÓ THẬT** dưới dạng **hàm tự do** trong stdlib được bundle:
+| tên | khai báo | số param |
+|---|---|---|
+| `get` | `std/collections.ax:42` `get[T](self: Vec[T], index: i64)`; `:375` HashMap; `std/sync.ax:71` `get[T](self: MutexGuard[T]) -> T` | có bản **1 param** |
+| `len` | `std/string.ax:11` `len(s: str) -> i64`; `collections.ax:290/498` HashMap/HashSet | **1 param** |
+| `find` | `std/collections.ax:131` `find[T](self: Vec[T], pred)` | 2 |
+| `push` | `std/collections.ax:21` `push[T](mut self: Vec[T], item: T)` | 2 |
+| `set` | `std/mem.ax:26` `set(dst: ptr[u8], value: u8, n: i64)` | **3** |
+
+⇒ **Giải thích KHỚP toàn bộ bảng kết quả**:
+- `set` an toàn vì bản stdlib cần **3 tham số** ⇒ lời gọi 1 tham số không thể khớp ⇒ hàm user thắng.
+- `len` trả **8** vì khớp `len(s: str)` — đọc "độ dài" từ word thứ hai của giá trị interface.
+- `get` trả **0** vì khớp một bản `get` 1-tham-số (vd `get[T](self: MutexGuard[T])`).
+
+⚠️ **NHƯNG chỉ INTERFACE param mới thua** — đã đo: `fn get(p: Sq)` (struct thường) → **36 ĐÚNG**,
+`fn get(s: str)` → **36 ĐÚNG**, `fn get(x: i64)` → **42 ĐÚNG**. Các overload stdlib tồn tại y hệt
+trong cả ba ca đó mà hàm user vẫn thắng. ⇒ **Giá trị kiểu INTERFACE khớp lỏng với tham số generic
+(`T` / `Vec[T]` / `MutexGuard[T]`) theo cách struct cụ thể KHÔNG khớp** — đó mới là điểm gãy.
+⇒ Chỗ cần sửa: **luật chọn overload** khi ứng viên là hàm stdlib GENERIC và đối số là giá trị
+interface — hàm user khai báo TRỰC TIẾP phải thắng (hoặc báo lỗi rõ ràng).
+
 ## Gợi ý điều tra (đã thu hẹp MỘT bước, chưa tìm ra site)
 ⚠️ **ĐÃ LOẠI TRỪ**: `typecheck.ax:4342` (comment có nhắc "backend-intercepted") **KHÔNG phải**
 chỗ này — nó là kiểm ARITY của **method call** `recv.m(...)`. Bug này là **lời gọi HÀM TỰ DO**
