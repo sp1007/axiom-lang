@@ -91,8 +91,15 @@ metadata:
   `Option` — đều đúng sau fix. (`Option` đúng **do cách dùng** — `o = Some(..)` thay cả binding,
   không ghi xuyên qua null — chứ KHÔNG phải do fix; nếu sau này sum có mutation payload tại chỗ
   thì phải xử lý như aggregate.)
-  ⇒ Probe tiếp nên nhắm vùng KHÁC: closure/capture, interface dispatch, for-loop trên collection,
-  chuỗi/UTF-8 biên, generic × interface.
+  (c) **closure**: capture **global const** (`const N: i64 = -3000000000` trong closure) → **42
+  ĐÚNG** cả -O0/-O1. Capture **LOCAL** → **chẩn đoán ĐÚNG ĐẮN** và abort trước codegen:
+  *"closure captures 'n' from an enclosing scope; only zero-capture closures are currently
+  supported (RFC 0008 P2 not yet implemented)"* ⇒ **KHÔNG phải bug** — là feature chưa cài, có
+  lỗi rõ ràng. (Tôi từng tưởng BUILDFAIL này là defect; nó là compiler ĐÚNG.)
+  (d) **for-loop trên `Vec`** → 12 đúng; **for trên `str` UTF-8** (`"héllo"`) → 5 đúng, -O0==-O1.
+  (e) **interface dispatch** trực tiếp (`let sh: Shape = sq; sh.area()`) → 36 đúng.
+  ⇒ Probe tiếp nên nhắm vùng KHÁC hẳn: `spawn`/thread, `defer` × control-flow lồng, HashMap
+  iteration, generic × interface, Result/`?`-style error path, bignum/float biên.
 
 ### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
 0. **Gate không chạy ở cấu hình nào thì mù ở cấu hình đó.** Suite build `-O1`+ ⇒ cả một lớp
