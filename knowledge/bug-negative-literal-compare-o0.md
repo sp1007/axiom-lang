@@ -1,11 +1,11 @@
 ---
 name: bug-negative-literal-compare-o0
-description: "OPEN BUG (probe-found 2026-07-30) — so sánh với LITERAL ÂM có |v| > 2^31 cho kết quả SAI ở -O0 (đúng ở -O1/-O2/-O3). Root: unary minus rồi wrap-to-width về i32 (neg; shl 32; sar 32). Silent miscompile."
+description: "OPEN BUG (probe-found 2026-07-30) — LITERAL ÂM có |v| > 2^31 bị TRUNCATE về i32 ở -O0, ở MỌI vị trí không có hint kiểu i64 (toán hạng so sánh VÀ tham số lời gọi); đúng ở -O1+. Root: unary minus rồi wrap-to-width về i32 (neg; shl 32; sar 32). Silent miscompile; t_tostr đã bắt được từ lâu nhưng suite không chạy -O0."
 metadata:
   type: project
 ---
 
-# 🐞 OPEN — so sánh với literal ÂM ngoài dải i32 SAI ở `-O0`
+# 🐞 OPEN — literal ÂM ngoài dải i32 bị truncate ở `-O0` (so sánh VÀ tham số lời gọi)
 
 **Tình trạng: OPEN, chưa sửa.** Tìm được bằng probe 2026-07-30 (driver `0E24570B`), khi kiểm
 tra chéo các thay đổi codegen của phiên. **KHÔNG do các thay đổi phiên này gây ra** — chúng chỉ
