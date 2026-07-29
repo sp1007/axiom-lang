@@ -78,8 +78,7 @@ metadata:
 - **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
   VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
-- **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**; mục (a) cũ — biến thể cấu trúc cho 3 floor — **ĐÃ LÀM XONG**, xem mục FLOOR ở trên): (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
-  cao hơn allocator, KHÔNG đụng code self-host-critical; (c) `axiom-bug-probe` — **rất đáng làm**:
+- **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**; mục (a) cũ — biến thể cấu trúc cho 3 floor — **ĐÃ LÀM XONG**, xem mục FLOOR ở trên): (b) **M6-opt** — **ĐÃ CÓ RFC 0036** (`rfcs/0036-m6-opt-self-tail-recursion.md`, PROPOSED): phạm vi HẸP = **chỉ self-tail-recursion → loop**; **CỐ Ý TỪ CHỐI** accumulator transform (đòi reassociate recurrence, KHÔNG hợp lệ trên float, và chỉ có `fib` được lợi ⇒ bẫy "tối ưu cho benchmark"). ⚠️ RFC nói rõ: **bản thân nó có thể KHÔNG cải thiện shape nào hiện có** vì `fib` không phải tail-recursive ⇒ **việc ĐẦU TIÊN là thêm một shape benchmark TAIL-RECURSIVE + NASM floor rồi ĐỊNH GIÁ, TRƯỚC khi viết pass**; nếu định giá <~5% thì ĐÓNG RFC không cài; (c) `axiom-bug-probe` — **rất đáng làm**:
   phiên này probe ra **3 silent bug** (1 sai kết quả, 1 crash, 1 hàm không hề được gọi) — **cả ba** đều ở vùng **chưa có test** chứ không phải regression, và **cả ba đã được sửa trong phiên**.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
