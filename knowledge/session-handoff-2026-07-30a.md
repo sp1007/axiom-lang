@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD d0ea79f, driver A==B+B==C 99225522, 567/567 (+lượt -O0 564/564). Đã SỬA silent miscompile -O0 (literal nguyên không vừa i32 vẫn bị type i32). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD aab9ec1, driver A==B+B==C BF00A447, 571/571 (+lượt -O0 567/567), KHÔNG còn bug OPEN. Đã SỬA 2 silent bug: literal nguyên không vừa i32 vẫn bị type i32 (-O0 sai kết quả), và aggregate local không initializer bind vào NULL (segfault mọi opt level). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
@@ -12,10 +12,18 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `d0ea79f`
-- HEAD **`d0ea79f`** đã push; driver `bin/axc_native.exe` = **`99225522`** (`A==B` VÀ `B==C`).
-  Gate: **567/567**, **lượt `-O0` toàn suite 564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4,
-  lib_collision 6/6, so_export ✓.
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `aab9ec1`
+- HEAD **`aab9ec1`** đã push; driver `bin/axc_native.exe` = **`BF00A447`** (`A==B` VÀ `B==C`).
+  Gate: **571/571**, **lượt `-O0` toàn suite 567/567**, ELF 12/12, ctgc 16/16, exe_size 4/4,
+  lib_collision 6/6, so_export ✓. **KHÔNG còn bug OPEN nào.**
+- 🐞→✅ **SỬA THÊM một CRASH im lặng** (probe-found cuối phiên):
+  [[bug-uninitialized-local-array-segfault]] — aggregate LOCAL khai báo **không initializer**
+  (`mut arr: [i64;2]`, `mut p: P`) bị bind vào **OP_ICONST 0 = con trỏ NULL** ⇒ store phần tử
+  đầu tiên **SEGFAULT ở MỌI opt level, không một chẩn đoán nào**. Fix 1 site
+  (`air_builder.lower_var_decl`): aggregate phát **`OP_ALLOC`** thay vì `OP_ICONST`; scalar giữ
+  nguyên đường cũ. **Phủ struct + array + tuple cùng lúc** (sửa riêng array = partial fix).
+  ⭐ Tôi từng đóng khung nó là "câu hỏi thiết kế cần user quyết" — **SAI**: local không-init
+  **đã chạy đúng với scalar/str** nên hướng sửa đã được ngôn ngữ quyết sẵn.
 - 🐞→✅ **ĐÃ SỬA một SILENT MISCOMPILE** tìm được cuối phiên bằng probe:
   [[bug-negative-literal-compare-o0]] — literal nguyên không vừa i32 vẫn bị **TYPE là i32**
   ⇒ `emit_wrap_to_width` cắt mọi bit trên 32 ⇒ `if c == -3000000000` **rẽ SAI nhánh** và
@@ -41,9 +49,11 @@ metadata:
 - **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
   VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
-- **Việc kế tiếp đề xuất** (chưa bắt đầu): (a) biến thể cấu trúc cho 3 floor còn lại để chốt mốc;
-  (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI cao hơn allocator, KHÔNG đụng
-  code self-host-critical; (c) `axiom-bug-probe` nếu muốn nạp lại backlog.
+- **Việc kế tiếp đề xuất** (chưa bắt đầu, **backlog KHÔNG còn bug OPEN**): (a) biến thể cấu trúc
+  cho 3 floor còn lại để chốt mốc; (b) **M6-opt** (accumulator/tail-rec) là milestone RIÊNG, ROI
+  cao hơn allocator, KHÔNG đụng code self-host-critical; (c) `axiom-bug-probe` — **rất đáng làm**:
+  phiên này probe ra **2 silent bug trong ~1 giờ** (1 sai kết quả, 1 crash), cả hai đều ở vùng
+  **chưa có test** chứ không phải regression.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
 
