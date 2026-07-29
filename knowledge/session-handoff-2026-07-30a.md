@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 1172648 pushed, driver seed==A==B==C E72FB62E, 564/564. M6-codegen ĐO ĐẦY ĐỦ lần đầu: 3/4 shape ĐẠT, callloop 1.22x MISS. Peephole 1d (fold hằng vào toán hạng ALU) đã ship."
+description: "HANDOFF 2026-07-30a — HEAD 1faefc9 pushed, driver B==C B289E6C4, 564/564. Ship: peephole 1d + 1e, căn lề hàm 16-byte, LEA fold sang thanh ghi vật lý. M6-codegen CHƯA tuyên bố đạt: floor của fib bị đặc tả sai VÀ 13,6% khe hở không phải codegen."
 metadata:
   type: project
 ---
@@ -81,17 +81,31 @@ vòng lặp: sau-1c → `add %rax,%rax`; trước-1c → `mov %rax,%rdx ; add %r
 ⭐ Flags KHÔNG cần phân tích (giả định ban đầu của tôi là SAI): `IMUL` để SF/ZF/AF/PF
 **undefined** theo ISA ⇒ không consumer đúng đắn nào đọc cờ xuyên qua nó.
 
-## Trạng thái
-- HEAD `1172648`, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
+## Trạng thái (CUỐI PHIÊN — con số CHÍNH XÁC ở đây, các mục bên trên là lịch sử theo thứ tự thời gian)
+- HEAD **`1faefc9`**, đã **push lên `origin/main`**, cây sạch (chỉ `.claude/settings.json`
   untracked — **của user, đừng đụng**).
-- Daily driver `bin/axc_native.exe` = **`E72FB62E`**, tự tái tạo: **seed == A == B == C**.
-- Gate đầy đủ XANH: regression **564/564** (+3 dòng `t_aluimmfold`), ELF 12/12, ctgc 16/16,
-  exe_size 4/4, lib_collision 6/6, so_export ✓.
+- Daily driver `bin/axc_native.exe` = **`B289E6C4`** (B==C; A!=B là bình thường vì codegen đổi).
+- Gate đầy đủ XANH: regression **564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4,
+  lib_collision 6/6, so_export ✓.
+- ⚠️ **Baseline TIỀN ĐỊNH mới nhất** (so floor V0 hiện tại): fib **1,14/1,15**, xorshift
+  **1,00/1,01**, arrwalk **1,09/1,10**, callloop **1,08/1,09**. ⛔ **CHƯA tuyên bố mốc ĐẠT** —
+  xem mục floor bị đặc tả sai + 13,6% không phải codegen.
 
-## Đã ship phiên này (2 commit)
+## Đã ship phiên này (6 commit code + memory)
 1. `ae8516a` — **NASM floor cho arrwalk + callloop** (chỉ `scripts/perf_suite.ps1`).
 2. `1172648` — **peephole 1d `fold_alu_immediate`** + 4 encoder mới (`and_ri` /4, `or_ri` /1,
    `xor_ri` /6, `imul_ri` 0x69) + oracle `t_aluimmfold`(42).
+3. `60a975a` — **peephole 1e `strength_reduce_imul`** (`IMUL imm(2^k)` → ADD/SHL).
+4. `7ac52f5` — **căn lề 16-byte cho function entry** (re-land sau khi revert nhầm).
+5. `1faefc9` — **LEA copy-fold nhắm được thanh ghi VẬT LÝ** (bỏ 2 copy/call).
+6. `cbdb873` + `7d5218c` — định giá lại bằng NASM (`scripts/price_fib_variants.ps1`,
+   `scripts/price_fib_wseries.ps1`).
+
+## ❓ HAI CÂU HỎI ĐANG CHỜ USER (đã nêu, chưa có trả lời — **đừng tự quyết**)
+1. **Floor của fib nên là bản nào?** V0 (hiện tại, tâng bốc ta) / V3 (đúng hình dạng AXIOM) /
+   **V1 (nhanh nhất cùng thuật toán — tôi ĐỀ XUẤT)**. Đây là đổi cách đo một mốc do USER đặt (D1).
+2. **Có nên đo mốc bằng PERF COUNTER thay vì tỷ lệ wall-clock?** Với số hạng môi trường 13,6%,
+   gate 15% gần như **không thể bác bỏ được** bằng wall-clock.
 
 ## ⭐ KẾT QUẢ LỚN NHẤT: mốc M6-codegen nay ĐO ĐƯỢC ĐẦY ĐỦ — và **CHƯA ĐẠT**
 Trước phiên này chỉ fib/xorshift có floor nên **không thể kết luận**. Nay cả 4 shape đều có
@@ -109,6 +123,19 @@ floor NASM cùng hình dạng. Đo ghép cặp, 2 vòng không chồng lấp, **
 ⚠️ Máy chạy chậm hơn ~5% ở vòng đo thứ hai — **mọi cột floor cố định đều tăng** (fib floor
 519→548, xorshift 216→222, arrwalk 338→362). Vì vậy **chỉ tin TỶ LỆ, đừng tin ms tuyệt đối**
 giữa các phiên. callloop giảm 79,2→77,4 ms tuyệt đối TRONG KHI máy chậm đi ⇒ win là thật.
+
+## ✅ CẬP NHẬT `1faefc9` — LEA copy-fold nay nhắm được THANH GHI VẬT LÝ
+Mở rộng shape B của `coalesce_dest_copy` cho `b1.dst.kind == OPND_PHYS`: `LEA vT,[..] ; MOV rcx,vT`
+→ `LEA rcx,[..]`. Trước đây chỉ nhận VREG nên **mọi call site** đều giữ lại copy nạp tham số.
+fib bỏ được **2 copy mỗi lời gọi đệ quy**. Driver **`B289E6C4`** (B==C), 564/564, phụ trợ xanh hết.
+- Đo 2 vòng: fib tuyệt đối **611,6/607,9 → 602,5/598,4 ms (−1,5%)**; tỷ lệ 1,18 → 1,14/1,15.
+- ⚠️ **ĐỌC TỶ LỆ CẨN THẬN**: floor của fib tự nó đọc 518,5/515,5 trước và 530,3/521,5 sau ⇒
+  **~2 trong 4 điểm cải thiện là do floor trôi**. Con số trung thực của thay đổi này là **−1,5%**.
+- ⛔ **KHÔNG tuyên bố M6-codegen ĐẠT**: cả 4 shape nay ≤15% so floor **HIỆN TẠI (V0)**, nhưng V0
+  đã được chứng minh là đặc tả SAI theo hướng có lợi cho ta — so V3 fib ~1,22x, so V1 ~1,24x,
+  **đều TRƯỢT**; cộng thêm 13,6% khe hở không phải codegen. Tuyên bố đạt trên V0 = chọn thước
+  đo yếu nhất trong ba.
+- Còn lại trong fib: chuỗi `mov rcx→rax→rbx` lúc vào và `mov rsi→rax` lúc ra.
 
 ## 🎯 VIỆC KẾ TIẾP ĐÃ CHỌN — **fib là shape DUY NHẤT còn chặn mốc (1,18x / gate 1,15x)**, và khoảng cách chỉ **~2,6%**
 Đã so từng lệnh giữa fib của AXIOM và NASM floor (`bin/bench/fib_ax.exe` vs `fib_hand.exe`):
