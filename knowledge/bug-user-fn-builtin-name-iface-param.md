@@ -127,8 +127,24 @@ head **SAI ARITY** thì bảo đảm miscompile. Ít nhất phải **báo lỗi*
 "accept-then-miscompile" mà dự án đã đóng nhiều lần. Sửa (2) sẽ biến MỌI lỗ tương lai của gate từ
 **sai âm thầm** thành **lỗi biên dịch** — giá trị lâu dài hơn cả (1).
 
-⇒ **Thứ tự đề xuất**: sửa **(2) trước** (rẻ, biến im lặng thành ồn ào, có thể lộ thêm ca khác),
-rồi **(1)** (cho interface qua gate khi param là chính interface đó).
+### 📏 ĐÃ HIỆU CHUẨN (2) — đường `n_gated == 0` **CHỈ** bị chạm bởi chính defect này
+Instrument in ra mỗi lần `n_gated == 0`, rồi chạy:
+- **self-build đầy đủ** nguồn compiler 2 MB ⇒ **0 hit**
+- **143 chương trình test** nặng về overload (`t_iface*`, `t_vec*`, `t_gen*`, `t_hash*`,
+  `t_lambda*`, `t_str*`, `t_opt*`) ⇒ **đúng 1 hit, và là `t_ifacefnbuiltinname.ax`**
+
+⇒ **Biến `n_gated == 0` thành CHẨN ĐOÁN là AN TOÀN** — không code hợp lệ nào đang đi qua đó.
+Đây là hiệu chuẩn theo đúng luật dự án ("guard chưa từng thấy nổ thì không phải guard"), chỉ
+ngược chiều: **đã chứng minh guard mới sẽ KHÔNG nổ nhầm.**
+
+⚠️ **NHƯNG (2) MỘT MÌNH LÀ CHƯA ĐỦ, và sẽ gây hại nếu ship lẻ**: `fn get(sh: Shape)` là code
+**HỢP LỆ**; nếu chỉ thêm chẩn đoán thì nó chuyển từ *sai âm thầm* sang *báo lỗi oan trên code
+đúng*. ⇒ **Phải ship (1) CÙNG LÚC** (gate chấp nhận param interface) để chương trình biên dịch
+được; (2) chỉ là **lưới an toàn** cho các lỗ gate về sau.
+
+⇒ **Thứ tự đề xuất**: cài **(1)** cho gate nhận interface (ứng viên user sẽ được nhận ⇒
+`n_gated==1` ⇒ chạy đúng 36), rồi thêm **(2)** làm lưới; **gate cả hai cùng một commit** và
+đăng ký `t_ifacefnbuiltinname` (36) vào suite cả `-O1` lẫn `-O0`.
 ⚠️ Oracle hai chiều vẫn bắt buộc — xem cảnh báo guard bên dưới.
 
 ### 🔎 (đã bị PROBE thay thế) đọc code — giả thuyết cũ, GIỮ LẠI để thấy chỗ suy luận sai
