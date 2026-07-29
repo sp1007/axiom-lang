@@ -607,6 +607,17 @@ All decisions must optimize for:
 { "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/autopilot-session-start.sh\"" } ] } ] } }
 ```
 
+**Context hygiene — checkpoint at ~30%, don't run to full (user, 2026-07-29):** the old rule
+("auto-compact when near full") let a session accumulate a huge context before anything was
+written down, so a compaction or crash risked losing hard-won findings. New rule: **when the
+context reaches roughly 30%, CHECKPOINT** — finish or park the current step, commit whatever is
+GREEN, write/refresh a `knowledge/session-handoff-*.md` with the exact resume point, and say
+plainly that it is a good moment to `/clear`. Split of concerns, identical to the bash-permission
+and SessionStart-hook caveats above: the *discipline* is Claude's and lives here; the *trigger*
+is the user's, because **there is no auto-clear-at-N% setting and Claude cannot invoke `/clear`
+itself** (it is a built-in CLI command, not a tool). Do not fake it by hibernating — the monitor
+loop keeps running; just make sure the next session can resume from the handoff alone.
+
 **Change log:**
 | Date | Change | Target | Reason |
 |------|--------|--------|--------|
@@ -614,4 +625,4 @@ All decisions must optimize for:
 | 2026-07-11 | Added "Execution autonomy (bash/shell)" directive: auto-run build/test/git shell commands without asking; documented that prompt-suppression must be enforced by user via settings.json (auto-mode classifier blocks self-granting) | CLAUDE.md §24, .claude/skills/axiom-autopilot/SKILL.md | User (/harness): "bổ sung thêm yêu cầu tự động thực hiện các bash command, không cần hỏi" |
 | 2026-07-13 | Added "Continuous supervision (NO hibernation)" directive: self-perpetuating loop via `ScheduleWakeup(prompt="tiếp tục")` with a ~5-min (300s) heartbeat; never `stop:true` unless user says; each wake auto-determines the next task. Stops the prior behavior of ending with `ScheduleWakeup(stop)` and waiting for the user to type "tiếp tục". | CLAUDE.md §24 | User: "chạy giám sát định kỳ mỗi 5 phút, nếu phiên kết thúc tự động xác định nhiệm vụ tiếp theo, tự thực hiện tiếp tục, không được ngủ đông" |
 | 2026-07-13 | Switched heartbeat mechanism from `ScheduleWakeup` (did not fire on idle) to a **persistent `Monitor`** emitting a 300s tick line; each tick notification drives the next iteration. | CLAUDE.md §24 | User: "vòng lặp không chạy, thay bằng monitor" |
-| 2026-07-14 | Formalized the session-start rule: arming the 5-min `Monitor` is now the explicit FIRST step of autopilot Phase 0, backed by a `SessionStart` hook script (`.claude/hooks/autopilot-session-start.sh`) that re-surfaces the reminder every session. Hook must be user-installed into `.claude/settings.local.json` (auto-mode classifier blocks Claude from self-installing SessionStart hooks / editing `permissions`). | CLAUDE.md §24, .claude/skills/axiom-autopilot/SKILL.md (Phase 0 step 0), .claude/hooks/autopilot-session-start.sh | User (/harness): "mỗi khi tạo mới session chạy monitor 5 phút giám sát; idle thì tự tìm task giá trị cao nhất; không được ngủ đông" |
+| 2026-07-14 | Formalized the session-start rule: arming the 5-min `Monitor` is now the explicit FIRST step of autopilot Phase 0, backed by a `SessionStart` hook script (`.claude/hooks/autopilot-session-start.sh`) that re-surfaces the reminder every session. Hook must be user-installed into `.claude/settings.local.json` (auto-mode classifier blocks Claude from self-installing SessionStart hooks / editing `permissions`). | CLAUDE.md §24, .claude/skills/axiom-autopilot/SKILL.md (Phase 0 step 0), .claude/hooks/autopilot-session-start.sh | User (/harness): "mỗi khi tạo mới session chạy monitor 5 phút giám sát; idle thì tự tìm task giá trị cao nhất; không được ngủ đông" || 2026-07-29 | Added "Context hygiene — checkpoint at ~30%": commit + write `knowledge/session-handoff-*.md` + tell the user to `/clear` once context passes ~30%, instead of running to full and relying on compaction. Noted that no auto-clear setting exists and Claude cannot call `/clear`, so the trigger stays with the user. | CLAUDE.md §24 | User: "tự động clear session nếu session đầy 30%" |
