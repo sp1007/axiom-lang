@@ -87,7 +87,30 @@ trong cả ba ca đó mà hàm user vẫn thắng. ⇒ **Giá trị kiểu INTER
 ⇒ Chỗ cần sửa: **luật chọn overload** khi ứng viên là hàm stdlib GENERIC và đối số là giá trị
 interface — hàm user khai báo TRỰC TIẾP phải thắng (hoặc báo lỗi rõ ràng).
 
-## Gợi ý điều tra (đã thu hẹp MỘT bước, chưa tìm ra site)
+## 📍 ĐÃ TÌM RA SITE — `typecheck.ax:1241` `free_call_gate` (+ tie-break HOLE#5 quanh L1154–1240)
+**Cơ chế đã có sẵn để chữa ĐÚNG họ này** — đọc comment tại `typecheck.ax:1154–1168` và
+`:1234–1240`: chúng mô tả nguyên văn "user free fn bị **shadow** bởi bundled stdlib overload
+⇒ **SILENTLY MISCOMPILED**", và đã vá 2 lỗ trước (`HOLE#5` tie-break 2 pass, `HOLE#6` float
+widening), có tham chiếu [[bug-freefn-stdlib-collision-noarg]].
+
+`free_call_gate(ci, arg0_type)` nhận một ứng viên khi **bất kỳ** điều nào đúng:
+`arg0_type` unknown / **param đầu là GENERIC trần** (`typecheck.ax:1253`) / widening int↔int /
+`is_method_compatible` khớp.
+
+⇒ **Giả thuyết cần probe (ĐỪNG suy luận — hãy in ra tập ứng viên)**: với `fn get(sh: Shape)`,
+ứng viên stdlib **1 tham số** `get[T](self: MutexGuard[T])` (`std/sync.ax:71`) được **NHẬN** qua
+nhánh generic (`ci_first_generic`), rồi **tie-break chọn nó thay vì hàm user khớp CHÍNH XÁC**.
+Đây sẽ là **HOLE#7** cùng họ: *giá trị INTERFACE* lọt qua gate generic theo cách struct cụ thể
+không lọt (đã đo: `fn get(p: Sq)` → 36 ĐÚNG).
+
+**Cách sửa có khả năng đúng nhất**: trong tie-break, một ứng viên khớp **CHÍNH XÁC/cấu trúc**
+(hàm user khai báo trực tiếp) phải **THẮNG** ứng viên chỉ khớp nhờ **param đầu generic trần** —
+đúng tinh thần HOLE#5 nhưng hiện chưa phủ arg kiểu interface.
+⚠️ Oracle bắt buộc **HAI CHIỀU**: (1) `fn get(sh: Shape)` phải được gọi; (2) **guard chống
+over-fix**: `v.get(0)` trên `Vec` thật, `s.len` trên `str`, `zip[A,B,C]`, và ca HOLE#6 float
+widening **phải giữ nguyên** hành vi. Chạy cả `-O0`.
+
+## Gợi ý điều tra cũ (đã thu hẹp MỘT bước)
 ⚠️ **ĐÃ LOẠI TRỪ**: `typecheck.ax:4342` (comment có nhắc "backend-intercepted") **KHÔNG phải**
 chỗ này — nó là kiểm ARITY của **method call** `recv.m(...)`. Bug này là **lời gọi HÀM TỰ DO**
 `get(Sq(s:6))` bị chặn, nên phải tìm ở đường lowering **CALL_EXPR hàm tự do** (nhiều khả năng
