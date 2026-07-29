@@ -150,6 +150,35 @@ floor là **V1** (bản viết tay nhanh nhất cùng thuật toán — hợp v�
 codegen") hay **V3** (cùng hình dạng)? Cả hai đều làm mốc khó hơn con số đang báo cáo.
 ⇒ **Và không ứng viên nào trong hai cái trên đóng được gate**: chỗ tốn kém của fib nằm ở nơi khác.
 
+### 🔬⭐⭐⭐ W-SERIES: **13,6% khe hở của fib TỒN TẠI VỚI CÙNG HỆT TỪNG LỆNH** — không quy được cho codegen
+Chép **NGUYÊN VĂN từng lệnh** của `ax_fib` (driver `522BEA6B`, -O3) sang NASM (`V4`), so với
+`V3` (cùng frame shape nhưng thân gọn) và với chính binary AXIOM:
+
+| | best ms |
+|---|---|
+| V3 (frame shape, thân gọn) | 495,9 |
+| **V4 — chép nguyên văn `ax_fib`** | **538,3** |
+| **AXIOM (binary thật)** | **611,3** |
+
+**1. Bốn copy reg-reg thừa đáng 42,4 ms = +8,6%** (V4−V3). ⇒ **ĐÍNH CHÍNH một phần** ghi chú cũ
+"copy vô hình ở vòng LATENCY-BOUND (fib)": chúng **KHÔNG** miễn phí. (Không mâu thuẫn với thí
+nghiệm 07-29e — lần đó bỏ copy bằng **bias allocator**, tức đổi luôn cách gán thanh ghi; đây là
+so hai chuỗi lệnh cố định.) Đây là phần **CÓ THỂ HÀNH ĐỘNG**: `mov rcx→rax→rbx` lúc vào,
+`mov rax→rcx` trước mỗi call, `mov rsi→rax` lúc ra.
+
+**2. ⛔ CÒN 73 ms = 13,6% KHÔNG GIẢI THÍCH ĐƯỢC, với chuỗi lệnh GIỐNG HỆT.** V4 và `ax_fib` có
+cùng từng lệnh, cùng `align 16`, cùng frame 64 byte — mà chênh 13,6%.
+- **Đã loại trừ startup**: chương trình AXIOM rỗng chạy **10,9 ms**, không phải 73 ms.
+- Nghi can còn lại (chưa kiểm chứng được bằng đo hộp đen): bố cục cache/ITLB của binary lớn hơn,
+  aliasing của branch predictor, khác biệt do self-link. **Bước tiếp theo cần PERF COUNTER phần
+  cứng**, không phải đọc thêm disassembly.
+
+⭐⭐ **HỆ QUẢ QUAN TRỌNG NHẤT**: một phần lớn "khe hở codegen" của fib **KHÔNG nằm ở lệnh mà
+compiler chọn**. ⇒ **Đuổi theo tối ưu mức-lệnh cho fib có thể là đuổi theo cái không tồn tại.**
+Kết hợp với mục floor bị đặc tả sai ở trên: **con số fib (1,18x hay 1,23x hay 1,26x) đang trộn
+ít nhất BA thứ** — chất lượng codegen thật, định nghĩa floor, và một hiệu ứng môi trường 13,6%.
+**Đừng lên kế hoạch lớn cho fib trước khi tách được ba thứ này.**
+
 ### (bối cảnh cũ, giữ lại) hai ứng viên này từng bị định giá và loại
 ⚠️ **CẢ HAI ứng viên này ĐÃ TỪNG BỊ ĐỊNH GIÁ VÀ LOẠI** (2026-07-29, bằng `perf_asm_variants.ps1`):
 shrink-wrapping **+0,5 ms**, bỏ rbp frame **−17 ms** — đều bị coi là "vô giá trị/nhiễu".
