@@ -28150,9 +28150,29 @@ pub fn fuse_cmp_immediate(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
         if r + 1 < len:
             let m = &insts[r]
             let c = &insts[r + 1 as i64]
-            if m.op == MACH_MOV_IMM and m.dst.kind == OPND_VREG and m.src1.kind == OPND_IMM and m.src1.label == 0 as u32 and c.op == MACH_CMP and c.src1.kind == OPND_VREG and c.src1.vreg == m.dst.vreg:
+            // The zero producer is MACH_XOR_ZERO, not MACH_MOV_IMM. select_inst materialises the
+            // constant 0 with `xor r,r` (shorter, breaks the dependency), so `n == 0` lowered to
+            // `XOR_ZERO v ; CMP n,v` and this fold â€” which only looked for MOV_IMM â€” never fired
+            // on it. Comparing against zero is everywhere, and in a loop the xor is re-executed
+            // every iteration for a value that never changes.
+            //
+            // PRICED BEFORE IMPLEMENTING, on a tail-recursive shape where the compare sits in the
+            // hot loop: NASM with `test rcx,rcx` ran 16.2 ms, the same loop with
+            // `xor r8d,r8d ; cmp rcx,r8` ran 17.6 ms -- 8.83% for rematerialising a constant zero.
+            // (Folding to `CMP dst,imm(0)` rather than `TEST dst,dst`: TEST would be one byte
+            // shorter but fuse_compare_branch downstream matches on MACH_CMP, and this fold is
+            // ordered before it.)
+            mut zero_producer := false
+            if m.op == MACH_XOR_ZERO and m.dst.kind == OPND_VREG:
+                zero_producer = true
+            mut plain_imm := false
+            if m.op == MACH_MOV_IMM and m.dst.kind == OPND_VREG and m.src1.kind == OPND_IMM and m.src1.vreg == 0 as u32 and m.src1.label == 0 as u32:
+                plain_imm = true
+            if (plain_imm or zero_producer) and c.op == MACH_CMP and c.src1.kind == OPND_VREG and c.src1.vreg == m.dst.vreg:
                 let v = m.dst.vreg
-                let imm = m.src1.imm
+                mut imm := 0 as i64
+                if plain_imm:
+                    imm = m.src1.imm
                 if (v as i64) < n and counts[v as i64] == 2 as i32 and imm >= (0 - 2147483648) as i64 and imm <= 2147483647 as i64:
                     // Emit the CMP with the constant folded into its immediate operand;
                     // drop the MOV_IMM (dead â€” v had exactly this one use).
