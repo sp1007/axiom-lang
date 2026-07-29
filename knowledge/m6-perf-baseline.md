@@ -129,6 +129,91 @@ or iterated-coalescing allocation, rematerialization of `base±c`, live-range sp
 multi-session rewrite of self-host-critical code, NOT peepholes. **Recommend renegotiating M6 to a
 reachable near-term milestone (≤2x clang) OR an explicit decision to fund the overhaul.**
 
+## ⭐⭐⭐⭐ 2026-07-29 — THE GAP IS NOW DECOMPOSED (user idea: compare against hand-written ASM)
+The "structural, needs an allocator rewrite" conclusion below was drawn from ONE benchmark
+against ONE reference, and it was **over-general**. Two measurements settle it.
+
+**(1) A four-shape suite (`scripts/perf_suite.ps1`)** — fib is an OUTLIER, not the norm:
+
+| shape | what it isolates | AXIOM -O3 vs clang -O2 |
+|---|---|---|
+| fib | recursion / non-leaf call | **2.46x** |
+| xorshift | serial ALU, no calls, no memory | 1.37x |
+| arrwalk | dependent-index array walk | 1.15x |
+| callloop | hot NON-recursive call (noinline both sides) | **1.01x** |
+
+Call overhead per se is NOT the tax (callloop is at parity). Everything except fib is 1.0–1.4x.
+
+**(2) A hand-written NASM floor** (`fib_hand.asm`, embedded in perf_suite.ps1). clang does NOT
+compile fib as written — it applies an **accumulator transform that turns the second recursive
+call into a loop**, so it executes ~HALF the calls AXIOM does (its `fib` has ONE `call` and a
+back-edge; verify with objdump before disbelieving). Comparing to clang therefore conflates two
+different gaps. The NASM reference uses the SAME naive double recursion AXIOM emits:
+
+| build | Fib(40) | vs clang |
+|---|---|---|
+| clang -O2 (accumulator loop) | 347–355 ms | 1.00x |
+| **hand NASM (naive double recursion)** | **541–564 ms** | **~1.55x** |
+| AXIOM -O3 (before this session) | 853 ms | 2.46x |
+| AXIOM -O3 (after the regalloc fix) | 817 ms | **2.30x** |
+
+⇒ **codegen gap ≈ 1.5x** (817/541; reachable by backend work)
+⇒ **missing-optimization gap ≈ 1.5x** (541/355; reachable ONLY by an opt pass)
+(Absolute ms drift ±5% run to run — quote the two RATIOS, and re-measure both columns in the
+same run. The product is stable at ~2.3x.)
+
+⭐ xorshift is the cleanest secondary datum: **asm floor 222 ms ≈ clang 220 ms**. There, clang has
+NO transform we lack, so its whole 1.35x is codegen — our tight-loop code is ~1.33x off the
+hand-written floor. That is the honest size of the "instruction selection + allocator" debt on
+loop code, and it is much smaller than the 2.3x fib headline suggested.
+
+### The M6 decision this forces
+**The ≤5% gate is unreachable by allocator/selector work — PROVEN, not estimated.** A perfect
+backend lands at 564 ms = **1.63x clang**. Reaching 1.05x additionally requires the accumulator/
+tail-recursion transform, i.e. an optimizer RFC, and then near-perfect codegen on top. Recommend
+splitting M6 into two independently measurable gates:
+- **M6-codegen**: AXIOM within ~15% of the hand-ASM floor per shape (today: fib 1.46x; the other
+  three shapes need their own asm floors to be scored — xorshift's is already in the suite).
+- **M6-opt**: the accumulator/tail-recursion pass, scored vs clang. Bigger ROI than the allocator
+  (1.63x vs 1.46x) and does not touch the allocator's self-host-critical code.
+
+⭐ **Method lesson**: when a reference compiler beats you by a lot, FIRST check it is running the
+same algorithm. A hand-written asm floor separates "our codegen is bad" from "they applied a
+transform we don't have" — three prior sessions burned peepholes without knowing which they faced.
+
+## ✅ SHIPPED 2026-07-29 — precise PARAMETER liveness (B==C `1D9E3AE2`, 553/553)
+The first backend win that is not a peephole. `compute_liveness` pinned every parameter snapshot
+(`MOV pv <- PHYS(arg reg)`) live to the LAST instruction of its function — a conservatism that
+**predated the CFG-aware dataflow** (RFC 0016 P2') sitting 50 lines below it, which already extends
+anything live across a back-edge (incl. an RFC 0026 tail-recursion re-entry, whose snapshot sits
+before `.L_b_0`). Consequences of the pin: every param interfered with every later value, spanned
+every call, was therefore forced into a **callee-saved** register, and its copy chain could never be
+coalesced by the `move_partner` bias. fib pushed/popped `%rbx` and `%r12` on ~331M calls for values
+dead two instructions in. Fix = end the interval at the def and let the dataflow grow it (step 7
+only ever GROWS intervals, so this cannot under-approximate). fib: 5 callee-saved → 3, **853→817 ms,
+2.46x→2.30x**. Non-fib shapes unchanged, as expected.
+
+### ⚠️ It exposed a LATENT RCX-clobber bug — the pin was load-bearing by accident
+Removing the pin turned `t_fft` into a SIGSEGV and `t_foldu32wrap` into a wrong answer. Root cause
+was NOT the liveness change: **x86 shifts by a variable count use the `_cl` form**, so the selector
+emits `MOV rcx <- count` before the shift, destroying whatever else lived in RCX — and the allocator
+denied RCX only to the shift's own DESTINATION vreg, never to values merely **live across** it. With
+params pinned, params always spanned a call and so were always callee-saved and never in RCX; the
+moment liveness got precise, a pointer param landed in RCX across `n >> 1` and the function wrote
+through a wrecked pointer. Fix = mirror the existing IDIV/RAX-RDX span rule: every interval strictly
+containing a variable-count shift gets `forbid_rcx` (immediate-count shifts excluded — they never
+touch RCX, and including them would cost a register in every shift-heavy function).
+Oracles: `t_shiftrcxclobber` (42; SIGSEGV on the pre-fix build — calibrated, not assumed) and
+`t_paramlive` (42; the four shapes the pin was insuring: param read after a call / across a
+back-edge / through tail-recursion / only in a branch target).
+
+⭐⭐ **Lessons.** (1) A conservatism that "has always been there" may be **hiding** a real bug rather
+than preventing one — removing it is how you find out, so do it behind the full gate. (2) **B==C is
+not correctness**: the first (buggy) build was a clean B==C fixpoint and still miscompiled t_fft;
+the 553-oracle regression is what caught it. (3) Reassuringly, B converged to the SAME hash
+`1D9E3AE2` when seeded from both the trusted baseline and the buggy intermediate — seed-independence
+is a cheap extra signal that a fixpoint is real.
+
 ## Revised direction (the honest one)
 The 3 remaining "instruction-shaving" peepholes (lea, copy-coalescing, branch fallthrough) all risk
 the same regalloc backfire, AND opt A proved even a clean 1-insn win is noise on a 2.58x gap. The gap

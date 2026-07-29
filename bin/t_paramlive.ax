@@ -1,0 +1,63 @@
+// Oracle (exit 42): precise PARAMETER liveness.
+//
+// compute_liveness used to pin every parameter snapshot (`MOV pv <- PHYS(arg reg)`) live
+// to the LAST instruction of its function. That predated the CFG-aware dataflow (RFC 0016
+// P2') and cost real registers: a param interfered with every later value and spanned every
+// call, so it was always forced into a callee-saved register and its copy chain could never
+// be coalesced (fib paid a push/pop of %rbx on ~331M calls for a value dead 2 insns in).
+// The pin was removed so the dataflow decides; this oracle exercises the four shapes that
+// pin was silently covering, where a too-SHORT param interval would be a silent miscompile:
+//   spans     -- param read AFTER one or more calls (must survive a call clobber)
+//   loopcall  -- param read inside a loop body that also calls (live across a back-edge)
+//   countdown -- tail-self-recursion (RFC 0026 rewrites args and jumps back OVER the
+//                param snapshot, so the param is loop-carried through the back-edge)
+//   branchy   -- param read only in a block reached by a branch, never in the entry block
+// Verified identical at O0/O1/O2/O3.
+
+fn add3(a: i64, b: i64, c: i64) -> i64:
+    return a + b + c
+
+// `n` must still hold its incoming value after two calls have clobbered the arg regs.
+fn spans(n: i64) -> i64:
+    let x = add3(n, 1 as i64, 1 as i64)
+    let y = add3(n, 2 as i64, 2 as i64)
+    return n + x + y
+
+// `n` is live across a call INSIDE a loop, i.e. across the back-edge as well.
+fn loopcall(n: i64) -> i64:
+    mut i := 0 as i64
+    mut s := 0 as i64
+    while i < 5 as i64:
+        s = s + add3(n, i, 1 as i64)
+        i = i + 1 as i64
+    return s + n
+
+// Tail-self-recursion: both params are rewritten each iteration and carried backwards.
+fn countdown(n: i64, acc: i64) -> i64:
+    if n == 0 as i64:
+        return acc
+    return countdown(n - 1 as i64, acc + n)
+
+// `n` is never read in the entry block -- only in the branch targets.
+fn branchy(n: i64, k: i64) -> i64:
+    if k > 0 as i64:
+        return n * 2 as i64
+    return n * 3 as i64
+
+fn main() -> i64:
+    let a = spans(10 as i64)            // 10 + 12 + 14 = 36
+    if a != 36 as i64:
+        return 11 as i64
+    let b = loopcall(3 as i64)          // (4+5+6+7+8) + 3 = 33
+    if b != 33 as i64:
+        return 12 as i64
+    let c = countdown(10 as i64, 0 as i64)   // 55
+    if c != 55 as i64:
+        return 13 as i64
+    let d = branchy(7 as i64, 1 as i64)      // 14
+    if d != 14 as i64:
+        return 14 as i64
+    let e = branchy(7 as i64, 0 as i64)      // 21
+    if e != 21 as i64:
+        return 15 as i64
+    return 42 as i64

@@ -694,6 +694,14 @@ rows=(
   # behaviour so activating them surfaces any UAF/double-free at once.
   "t_ctgcloopexit|exit|42"
   "t_ctgcvecexit|exit|42"
+  # M6 regalloc: parameter live ranges are now decided by the CFG dataflow instead of
+  # being pinned to the end of the function. t_paramlive covers the four shapes that pin
+  # was silently insuring (param read after a call / across a back-edge / through RFC 0026
+  # tail-recursion / only in a branch target). t_shiftrcxclobber pins the latent RCX rule
+  # that made the pin load-bearing: a value live ACROSS a variable-count shift must not be
+  # allocated RCX, which the `_cl` form overwrites (SIGSEGV before the fix).
+  "t_paramlive|exit|42"
+  "t_shiftrcxclobber|exit|42"
 )
 
 for row in "${rows[@]}"; do

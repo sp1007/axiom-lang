@@ -115,15 +115,19 @@ pub fn compute_liveness(insts: ptr[MachInst], insts_len: i64) -> LiveIntervalVec
                 let iv = @alloc(12) as ptr[LiveInterval]
                 iv.vreg = v
                 iv.start = i as i32
-                mut is_param := false
-                if inst.op == MACH_MOV and inst.src1.kind == OPND_PHYS:
-                    let phys = inst.src1.phys
-                    if phys == REG_RCX or phys == REG_RDX or phys == REG_R8 or phys == REG_R9 or phys == REG_RDI or phys == REG_RSI:
-                        is_param = true
-                if is_param:
-                    iv.end = (insts_len - 1) as i32
-                else:
-                    iv.end = i as i32
+                // M6 perf: a param snapshot (`MOV pv <- PHYS(arg reg)`) used to be pinned
+                // live to the LAST instruction of the function. That predates the CFG-aware
+                // dataflow below (RFC 0016 P2'), which already extends any vreg live across a
+                // back-edge — including a param re-entered by RFC 0026 tail-self-recursion,
+                // whose snapshot sits before .L_b_0 — to the linear hull of every block where
+                // it is live. With the pin, EVERY param interfered with EVERY later value and
+                // spanned every call, so it was forced into a callee-saved register and its
+                // copy chain (`snap<-rcx; local<-snap`) could never be coalesced by the
+                // move_partner bias: fib paid a push/pop of %rbx on all ~331M calls to hold a
+                // value that is dead two instructions in. Ending the interval at the def and
+                // letting the dataflow grow it is strictly more precise, never shorter than
+                // real liveness (step 7 only grows intervals).
+                iv.end = i as i32
                 interval_map[v] = iv
 
         if inst.src1.kind == OPND_VREG and inst.src1.vreg != 0 as u32:
@@ -691,6 +695,54 @@ pub fn graph_coloring_alloc(intervals: LiveIntervalVec, avail_regs: ptr[u8], ava
                     break
             iv2 = iv2 + 1
     @free(idiv_pos as ptr[u8])
+
+    // A VARIABLE-COUNT shift clobbers RCX. x86 can only shift by an immediate or by
+    // CL, so `MACH_SHL/SAR/SHR` whose count operand is NOT an immediate is emitted as
+    // the `_cl` form (x86_emitter.ax:326-342) preceded by `MOV PHYS(rcx) <- count`.
+    // That mov destroys whatever else was living in RCX. The `forbid_rcx` scan above
+    // only protects the shift's own DESTINATION vreg, which is not the value at risk:
+    // any vreg whose live range merely SPANS the shift can be sitting in RCX and is
+    // silently corrupted. Mirror the IDIV/RAX-RDX span rule above and deny RCX to every
+    // interval that strictly contains a variable shift. (Immediate-count shifts —
+    // `sar $1,%rax`, incl. the div/mod-by-pow2 strength reduction — never touch RCX and
+    // must NOT be included, or every shift-heavy function loses a register for nothing.)
+    // LATENT until parameter liveness became precise: params used to be pinned live to
+    // the end of their function, so they always spanned a call and were forced into
+    // callee-saved registers, never RCX. With precise intervals a pointer param landed
+    // in RCX across `n >> 1` and the callee wrote through a corrupted pointer (t_fft
+    // SIGSEGV) — the bug was always here, the pin was accidentally hiding it.
+    let vshift_pos = @alloc(insts_len * 4 + 4) as ptr[i32]
+    mut vshift_count := 0 as i64
+    mut vs_scan := 0 as i64
+    while vs_scan < insts_len:
+        let vop = insts[vs_scan].op
+        if vop == MACH_SHL or vop == MACH_SAR or vop == MACH_SHR:
+            if insts[vs_scan].src1.kind != OPND_IMM:
+                vshift_pos[vshift_count] = vs_scan as i32
+                vshift_count = vshift_count + 1
+        vs_scan = vs_scan + 1
+
+    if vshift_count > 0 as i64:
+        mut iv3 := 0 as i64
+        while iv3 < intervals.len:
+            let vreg3 = intervals.data[iv3].vreg
+            let istart3 = intervals.data[iv3].start
+            let iend3 = intervals.data[iv3].end
+            mut lo3 := 0 as i64
+            mut hi3 := vshift_count - 1 as i64
+            while lo3 <= hi3:
+                let mid3 = (lo3 + hi3) / 2 as i64
+                let sp = vshift_pos[mid3]
+                if sp <= istart3:
+                    lo3 = mid3 + 1 as i64
+                elif sp >= iend3:
+                    hi3 = mid3 - 1 as i64
+                else:
+                    if vreg3 < graph_size as u32:
+                        forbid_rcx[vreg3] = true
+                    break
+            iv3 = iv3 + 1
+    @free(vshift_pos as ptr[u8])
 
     // For very large functions, the O(n^2) interference graph overflows memory.
     // Fall back to spill-all: every vreg gets a stack slot.

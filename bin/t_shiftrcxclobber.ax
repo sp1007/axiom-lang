@@ -1,0 +1,75 @@
+// Oracle (exit 42): a value live ACROSS a variable-count shift must survive it.
+//
+// x86 can shift only by an immediate or by CL, so `x >> k` with a non-constant k is
+// emitted as the `_cl` form preceded by `MOV rcx <- k` — which destroys whatever else
+// was living in RCX. The allocator denied RCX to the shift's own destination but not to
+// values merely LIVE ACROSS the shift, so any such value assigned RCX was silently
+// corrupted. Here the pointer params `re`/`im` are live across `n >> 1` and are then
+// written through: with the bug, `re` was a wrecked pointer and this SIGSEGV'd (139).
+//
+// This is the bit-reversal permutation from bin/t_fft.ax, reduced to the shape that
+// actually triggers it (pointer params + variable shift + a nested loop). Kept as its
+// own oracle because t_fft's failure mode (a crash inside an FFT) says nothing about
+// the register rule being pinned here. Verified identical at O0/O1/O2/O3.
+
+fn bit_reverse(re: ptr[f64], im: ptr[f64], n: i64):
+    mut j := 0 as i64
+    mut i := 1 as i64
+    while i < n:
+        mut bit := n >> 1 as i64          // variable-count shift: count is `1` but the
+        while bit > 0 as i64 and (j & bit) != 0 as i64:
+            j = j - bit
+            bit = bit >> 1 as i64         // ... and this one shifts by a loop value
+        j = j + bit
+        if i < j:
+            let tr = re[i]
+            re[i] = re[j]
+            re[j] = tr
+            let ti = im[i]
+            im[i] = im[j]
+            im[j] = ti
+        i = i + 1
+
+// same hazard with an explicitly variable shift count in a plain scalar function
+fn shifty(base: ptr[i64], k: i64, n: i64) -> i64:
+    mut acc := 0 as i64
+    mut i := 0 as i64
+    while i < n:
+        let m = (1 as i64) << k          // count comes from a param -> CL form
+        acc = acc + (base[i] & m)        // `base` must survive the shift
+        i = i + 1
+    return acc
+
+pub fn main() -> i64:
+    let n = 8 as i64
+    let re = @alloc(n * 8 as i64) as ptr[f64]
+    let im = @alloc(n * 8 as i64) as ptr[f64]
+    mut i := 0 as i64
+    while i < n:
+        re[i] = (i as f64)
+        im[i] = (i as f64) * 10.0
+        i = i + 1
+    bit_reverse(re, im, n)
+    // bit-reversal of 0..7 (3 bits): [0,4,2,6,1,5,3,7]
+    if (re[1 as i64] as i64) != 4 as i64:
+        return 11 as i64
+    if (re[3 as i64] as i64) != 6 as i64:
+        return 12 as i64
+    if (re[4 as i64] as i64) != 1 as i64:
+        return 13 as i64
+    if (re[6 as i64] as i64) != 3 as i64:
+        return 14 as i64
+    if (im[1 as i64] as i64) != 40 as i64:
+        return 15 as i64
+    if (re[0 as i64] as i64) != 0 as i64 or (re[7 as i64] as i64) != 7 as i64:
+        return 16 as i64
+
+    let b = @alloc(4 * 8 as i64) as ptr[i64]
+    b[0 as i64] = 7 as i64
+    b[1 as i64] = 4 as i64
+    b[2 as i64] = 5 as i64
+    b[3 as i64] = 12 as i64
+    // k=2 -> mask 4; 7&4=4, 4&4=4, 5&4=4, 12&4=4 -> 16
+    if shifty(b, 2 as i64, 4 as i64) != 16 as i64:
+        return 17 as i64
+    return 42 as i64
