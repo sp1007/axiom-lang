@@ -28146,6 +28146,136 @@ pub fn drop_dead_mov_imm(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
+// The two-operand ALU ops: `OP d, s` means `d = d OP s`, so the destination is an implicit
+// SOURCE as well. That is what forces select_binop to prefix every one of them with a
+// `MOV dest, src1` copy, and it is the precondition coalesce_dest_copy relies on.
+// Deliberately integer-only: the float family (FADD/FSUB/...) copies through MOVDQ, not
+// MACH_MOV, so it can never match the pattern below anyway, and admitting it would mean
+// reasoning about cross-class copies for no measured gain.
+fn mach_is_destructive_alu(op: u16) -> bool:
+    return op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR
+
+// PEEPHOLE 1c (M6): coalesce the copy PAIR that the destructive two-operand form wraps
+// around every compound assignment `d = d OP e`.
+//
+// select_binop must emit `MOV vT, vD; OP vT, C` because x86 has no three-operand ALU form,
+// and the AIR-level store back into the variable then adds `MOV vD, vT`. So one step of
+// xorshift (`x = x ^ (x << 13)`) leaves FIVE instructions where hand-written assembly needs
+// three:
+//     mov %rax,%rdx ; shl $0xd,%rdx ; mov %rax,%rbx ; xor %rdx,%rbx ; mov %rbx,%rax
+// against the NASM floor
+//     mov rdx,rax  ; shl rdx,13    ;                 xor rax,rdx
+// The two surplus instructions are the copy INTO the scratch destination and the copy back
+// out of it. Both vanish if the op simply writes vD directly.
+//
+// âš ï¸ WHY THIS IS NOT THE COPY-PROPAGATION THAT WAS MEASURED AND REVERTED. That pass
+// propagated FORWARD (rewrite uses of a copy's destination to its source), which EXTENDS the
+// source's live range and made the allocator spill â€” measured -6.5% on fib. This one folds
+// the temp BACKWARD into a variable that is already live across the whole region, and
+// deletes the temp outright: the number of simultaneously-live vregs at every program point
+// is unchanged or one lower, so it cannot introduce a spill. Same reason the interference
+// graph never needed to change.
+//
+// âš ï¸ AND WHY THE ALLOCATOR'S EXISTING move_partner BIAS CANNOT DO IT. That bias only drops
+// an interference edge when the two live ranges are boundary-disjoint (x86_regalloc.ax:817).
+// Here vD is the LOOP-CARRIED variable: the interval model merges all of its definitions into
+// one range spanning the entire loop, so vT sits strictly INSIDE it and the two genuinely
+// "interfere" under that model even though vD's old value is dead at the copy. No amount of
+// biased colouring reaches this; the copies have to go before allocation, not during it.
+//
+// Two shapes, both purely local and both requiring the three/two instructions to be ADJACENT
+// (a MACH_LABEL is a real slot in this array, so adjacency already proves no branch can land
+// in the middle):
+//
+//   A. `MOV vT,vD ; OP vT,C ; MOV vD,vT`  ->  `OP vD,C`
+//   B. `LEA vT,[..] ; MOV vD,vT`          ->  `LEA vD,[..]`
+//      (the loop-counter shape: `lea 0x1(%rcx),%rdx; mov %rdx,%rcx` -> `lea 0x1(%rcx),%rcx`.
+//      LEA is the only non-destructive op admitted here: it writes its destination without
+//      reading it, and reads its sources before that write, so vD may safely appear on both
+//      sides.)
+//
+// SAFETY, in one criterion: `counts[vT]` is the number of operand slots the WHOLE function
+// mentions vT in. Requiring it to equal exactly the slots the pattern itself accounts for (3
+// for A, 2 for B) proves vT is used nowhere else â€” no CFG reasoning, no liveness, and no
+// dependence on block ordering, which is the assumption the reverted copy-prop got wrong.
+// vD's own live range only ever grows backward across the deleted copy, into the hole vT
+// just vacated. Flags are preserved exactly: MOV does not write them and the surviving OP is
+// the same OP in the same position relative to any consumer.
+pub fn coalesce_dest_copy(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 2 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        mut folded := false
+
+        // Shape A: MOV vT,vD ; OP vT,C ; MOV vD,vT  ->  OP vD,C
+        if r + 2 < len:
+            let a0 = &insts[r]
+            let a1 = &insts[r + 1 as i64]
+            let a2 = &insts[r + 2 as i64]
+            if a0.op == MACH_MOV and a0.dst.kind == OPND_VREG and a0.src1.kind == OPND_VREG and a0.src2.kind == OPND_NONE:
+                if a2.op == MACH_MOV and a2.dst.kind == OPND_VREG and a2.src1.kind == OPND_VREG and a2.src2.kind == OPND_NONE:
+                    let vt = a0.dst.vreg
+                    let vd = a0.src1.vreg
+                    if vt != vd and a2.dst.vreg == vd and a2.src1.vreg == vt:
+                        if mach_is_destructive_alu(a1.op) and a1.dst.kind == OPND_VREG and a1.dst.vreg == vt and a1.src2.kind == OPND_NONE:
+                            if (vt as i64) < n and counts[vt as i64] == 3 as i32:
+                                let f_op = a1.op
+                                let f_cc = a1.cc
+                                let f_pad = a1.padding
+                                let f_src1 = a1.src1
+                                let f_src2 = a1.src2
+                                let f_dst = a2.dst
+                                insts[w] = MachInst(op: f_op, cc: f_cc, padding: f_pad, dst: f_dst, src1: f_src1, src2: f_src2)
+                                w = w + 1 as i64
+                                r = r + 3 as i64
+                                folded = true
+
+        // Shape B: LEA vT,[..] ; MOV vD,vT  ->  LEA vD,[..]
+        if not folded and r + 1 < len:
+            let b0 = &insts[r]
+            let b1 = &insts[r + 1 as i64]
+            if b0.op == MACH_LEA and b0.dst.kind == OPND_VREG:
+                if b1.op == MACH_MOV and b1.dst.kind == OPND_VREG and b1.src1.kind == OPND_VREG and b1.src2.kind == OPND_NONE:
+                    let vt = b0.dst.vreg
+                    if b1.src1.vreg == vt and b1.dst.vreg != vt:
+                        if (vt as i64) < n and counts[vt as i64] == 2 as i32:
+                            let g_op = b0.op
+                            let g_cc = b0.cc
+                            let g_pad = b0.padding
+                            let g_src1 = b0.src1
+                            let g_src2 = b0.src2
+                            let g_dst = b1.dst
+                            insts[w] = MachInst(op: g_op, cc: g_cc, padding: g_pad, dst: g_dst, src1: g_src1, src2: g_src2)
+                            w = w + 1 as i64
+                            r = r + 2 as i64
+                            folded = true
+
+        if not folded:
+            insts[w] = insts[r]
+            w = w + 1 as i64
+            r = r + 1 as i64
+    @free(counts as ptr[u8])
+    return w
+
 pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     if len < 5 as i64:
         return len
@@ -28389,6 +28519,11 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // select_inst leaves behind. Placed after the CMP fusion so it also sweeps up any
     // MOV_IMM that fusion orphaned, and before the rest so they see fewer instructions.
     result.len = drop_dead_mov_imm(result.data, result.len, sel.max_vreg)
+    // Peephole 1c (M6): fold the destructive two-operand form's copy pair into the op itself.
+    // After 1b, so the counts it reasons about are not inflated by constants already known
+    // dead, and before allocation, because the allocator's interval model provably cannot
+    // coalesce a temp that sits inside a loop-carried variable's range. See coalesce_dest_copy.
+    result.len = coalesce_dest_copy(result.data, result.len, sel.max_vreg)
     // Peephole 2: fuse throwaway compare-then-branch boolean sequences into a direct
     // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
     // before liveness/allocation). See fuse_compare_branch for the safety contract.

@@ -1,0 +1,122 @@
+// M6 codegen oracle: coalesce_dest_copy (x86_selector) — folding the copy PAIR that the
+// destructive two-operand form wraps around `d = d OP e`.
+//
+// Every case below is written so that a WRONG fold changes the ANSWER, not merely the
+// instruction count. The two failure modes the pass could plausibly have are (a) folding when
+// the scratch temp is still live, which leaves a later read of a vreg nothing ever defines,
+// and (b) getting the operand ORDER wrong on a non-commutative op, which silently negates.
+// Both are covered.
+
+// The shape the pass exists for: a loop-carried variable compound-assigned through a
+// destructive op. This is one step of xorshift, whose emitted body went from five
+// instructions to the three a hand-written version needs.
+fn xorstep(seed: u64) -> u64:
+    mut x = seed
+    mut i = 0
+    while i < 3:
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
+        i = i + 1
+    return x
+
+// NON-COMMUTATIVE, and the whole point of this row: `x = x - y` folds to `SUB vX, vY`.
+// If the fold ever took the op's operands in the other order the result is negated, so the
+// answer separates a correct fold from a plausible-looking wrong one.
+fn subchain(a: i64, b: i64) -> i64:
+    mut x = a
+    x = x - b
+    x = x - b
+    return x
+
+// Same for shifts, where "which operand is the destination" is not symmetric at all.
+fn shiftchain(a: i64) -> i64:
+    mut x = a
+    x = x << 3
+    x = x >> 1
+    return x
+
+// GUARD CASE — the temp must NOT be folded away, because it is read again afterwards.
+// `let t = x + b` emits `MOV vT,vX; ADD vT,vB` and `x = t` emits `MOV vX,vT`: exactly the
+// three-instruction shape, distinguished ONLY by vT's extra use below. Fold it anyway and
+// `t` reads a vreg that was never written.
+fn reused_temp(a: i64, b: i64) -> i64:
+    mut x = a
+    let t = x + b
+    x = t
+    return t * 3 + x
+
+// GUARD CASE — the value of `x` BEFORE the compound assignment is still needed. Captured
+// into its own binding first, so a fold that mistakes which register holds the old value
+// shows up in the sum rather than being invisible.
+fn old_value_kept(a: i64) -> i64:
+    mut x = a
+    let old = x
+    x = x + 5
+    return old * 100 + x
+
+// Shape B: the loop counter. `i = i + 1` is emitted as `LEA vT,[vI+1]; MOV vI,vT` since the
+// LEA fold landed, and folds to `LEA vI,[vI+1]` — the destination appearing on both sides is
+// safe only because LEA reads its sources before writing its destination.
+fn countto(n: i64) -> i64:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc = acc + i
+        i = i + 1
+    return acc
+
+// The op's source is the destination itself: `x = x - x` must still be zero after folding to
+// `SUB vX,vX`, and `x = x + x` must double.
+fn selfop(a: i64) -> i64:
+    mut x = a
+    x = x + x
+    mut y = a
+    y = y - y
+    return x + y
+
+// Float ALU is deliberately OUTSIDE the fold's whitelist (it copies through MOVDQ, not
+// MACH_MOV). This row pins that leaving it out kept it correct.
+fn floatchain(a: f64) -> f64:
+    mut x = a
+    x = x * 2.0
+    x = x - 1.5
+    return x
+
+// Compound assignment into a STRUCT FIELD, which lowers through a load/store pair rather than
+// a bare vreg, so the three instructions are not adjacent and nothing should fold.
+struct Box:
+    v: i64
+
+fn fieldchain(a: i64) -> i64:
+    mut b = Box(v: a)
+    b.v = b.v * 3
+    b.v = b.v - 4
+    return b.v
+
+pub fn main() -> i32:
+    mut bad = 0
+
+    // 88172645463325252 run through three full xorshift rounds.
+    if xorstep(88172645463325252 as u64) != 3453997556048239312 as u64:
+        bad = bad + 1
+    if subchain(100, 30) != 40:
+        bad = bad + 2
+    if shiftchain(5) != 20:
+        bad = bad + 4
+    if reused_temp(10, 4) != 56:
+        bad = bad + 8
+    if old_value_kept(7) != 712:
+        bad = bad + 16
+    if countto(10) != 45:
+        bad = bad + 32
+    if selfop(6) != 12:
+        bad = bad + 64
+    if floatchain(4.0) != 6.5:
+        bad = bad + 128
+    if fieldchain(10) != 26:
+        bad = bad + 256
+
+    if bad != 0:
+        return bad as i32
+    return 42 as i32
