@@ -118,4 +118,30 @@ fn main() -> i64:
     if tot != 22352:
         return 12
 
+    // Peephole 1e: multiply by a power of two becomes ADD (k==1) or SHL (k>1). Values above
+    // 2^32 catch a shift that lost the REX.W and ran 32-bit; the negative operand catches a
+    // rewrite to a LOGICAL shift, since `x * 2^k == x << k` must hold for negatives too.
+    mut q1: i64 = 5000000123
+    q1 = q1 * 2
+    if q1 != 10000000246:
+        return 13
+    mut q2: i64 = 5000000123
+    q2 = q2 * 8
+    if q2 != 40000000984:
+        return 14
+    mut q3: i64 = -1234567
+    q3 = q3 * 4
+    if q3 != -4938268:
+        return 15
+    // 6 is not a power of two: must stay an IMUL.
+    mut q4: i64 = 5000000123
+    q4 = q4 * 6
+    if q4 != 30000000738:
+        return 16
+    // *1 is excluded from the rewrite on purpose; must still be an identity.
+    mut q5: i64 = 5000000123
+    q5 = q5 * 1
+    if q5 != 5000000123:
+        return 17
+
     return 42

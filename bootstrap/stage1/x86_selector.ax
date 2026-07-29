@@ -2906,6 +2906,59 @@ pub fn coalesce_dest_copy(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
+// PEEPHOLE 1e (M6): strength-reduce a multiply by a power-of-two immediate.
+//     IMUL vD, imm(2)    ->  ADD vD, vD
+//     IMUL vD, imm(2^k)  ->  SHL vD, imm(k)
+// Only reachable because peephole 1d created the immediate form in the first place. IMUL is
+// 3-cycle latency and issues on a single port; ADD is 1 cycle at four per cycle, SHL 1 cycle.
+//
+// ORDER IS LOAD-BEARING, and this was MEASURED rather than reasoned. It runs AFTER
+// coalesce_dest_copy (1c), not before and not inside 1d. 1c matches
+// `MOV vT,vD ; OP vT,C ; MOV vD,vT` on the criterion counts[vT]==3, counting every operand slot
+// in the function that names vT; rewriting to `ADD vT,vT` adds a FOURTH mention and so disables
+// the coalescing for exactly the shape this fires on. Built both ways, `x = x * 2` in a loop:
+//     1e after 1c   ->  add %rax,%rax
+//     1e before 1c  ->  mov %rax,%rdx ; add %rdx,%rdx ; mov %rdx,%rax
+//
+// ⚠️ AND THE SELF-HOST GATE CANNOT SEE IT. Compiling the compiler's own 2 MB source with both
+// orderings produces BYTE-IDENTICAL output (413C6A12...), because nothing in it happens to
+// write `x = x * 2^k` as a compound assignment. So A==B/B==C would be green with the ordering
+// wrong. Another instance of the standing rule that a green fixpoint can prove zero -- the
+// ordering is justified by the two disassemblies above, not by the gate.
+//
+// FLAGS: no analysis needed, and this is worth stating because the opposite was assumed at
+// first. IMUL leaves SF/ZF/AF/PF ARCHITECTURALLY UNDEFINED, so no correct consumer can read
+// flags across one; whatever ADD or SHL writes there cannot be observed by correct code. (CF/OF
+// are defined for IMUL, but this compiler emits no branch on them: narrow-width wrapping goes
+// through emit_wrap_to_width -> emit_load_extend, a mask/sign-extend, and no site emits a JO.)
+// `x * 2^k == x << k` and `x * 2 == x + x` hold exactly in two's complement, including wrap.
+fn imul_pow2_shift(imm: i64) -> i64:
+    // Returns k for imm == 2^k with k in 1..62, else -1. Excludes 1 (no-op, and deleting an
+    // instruction is a different transform) and every non-power-of-two.
+    if imm < 2 as i64:
+        return 0 - 1 as i64
+    mut k := 1 as i64
+    mut v := 2 as i64
+    while k < 63 as i64:
+        if v == imm:
+            return k
+        v = v * 2 as i64
+        k = k + 1 as i64
+    return 0 - 1 as i64
+
+pub fn strength_reduce_imul(insts: ptr[MachInst], len: i64) -> i64:
+    mut i := 0 as i64
+    while i < len:
+        let m = &insts[i]
+        if m.op == MACH_IMUL and m.dst.kind == OPND_VREG and m.src1.kind == OPND_IMM:
+            let k = imul_pow2_shift(m.src1.imm)
+            if k == 1 as i64:
+                insts[i] = MachInst(op: MACH_ADD, cc: m.cc, padding: m.padding, dst: m.dst, src1: m.dst, src2: m.src2)
+            elif k > 1 as i64:
+                insts[i] = MachInst(op: MACH_SHL, cc: m.cc, padding: m.padding, dst: m.dst, src1: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: k), src2: m.src2)
+        i = i + 1
+    return len
+
 pub fn fuse_compare_branch(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     if len < 5 as i64:
         return len
@@ -3159,6 +3212,10 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // dead, and before allocation, because the allocator's interval model provably cannot
     // coalesce a temp that sits inside a loop-carried variable's range. See coalesce_dest_copy.
     result.len = coalesce_dest_copy(result.data, result.len, sel.max_vreg)
+    // Peephole 1e (M6): multiply by a power of two -> add/shift. AFTER 1c on purpose: it adds
+    // a mention of the destination vreg, which would break 1c's counts[vT]==3 test if it ran
+    // first. See strength_reduce_imul.
+    result.len = strength_reduce_imul(result.data, result.len)
     // Peephole 2: fuse throwaway compare-then-branch boolean sequences into a direct
     // conditional jump on the CMP flags (pre-regalloc, so the dead bool vreg is gone
     // before liveness/allocation). See fuse_compare_branch for the safety contract.
