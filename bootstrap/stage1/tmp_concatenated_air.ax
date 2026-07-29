@@ -7692,6 +7692,7 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
     mut ci_first_generic := false
     mut ci_arg0_widen := false
     mut ci_arg0_float := false
+    mut ci_arg0_iface := false
     let ci_sym = self.symtable.symbols.data[ci]
     if ci_sym.type_id != 0 as u32 and (ci_sym.type_id as i64) < self.types.entries.len:
         let ce = self.types.entries.data[ci_sym.type_id]
@@ -7717,7 +7718,26 @@ pub fn free_call_gate(self: ptr[TypeChecker], ci: u32, arg0_type: u32) -> bool:
                 // (air_builder coerce_float_arg). [[bug-freefn-stdlib-collision-noarg]]
                 if (fp0 == TYPE_F32 or fp0 == TYPE_F64) and (arg0_type == TYPE_F32 or arg0_type == TYPE_F64):
                     ci_arg0_float = true
-    if ci_first_generic or ci_arg0_widen or ci_arg0_float:
+                // HOLE#7: a user free fn whose first param is an INTERFACE, called with a
+                // struct that IMPLEMENTS it. arg0_type is inferred from the ARGUMENT
+                // expression, so `get(Sq(s: 6))` yields the concrete struct Sq while the
+                // parameter is the interface Shape; is_method_compatible does not know Sq
+                // implements Shape, so the user's own function was gated OUT. With no
+                // candidate gated in at all (measured: n_gated == 0), resolve_free_call_overload
+                // fell through to `return sym_idx` -- the chain HEAD, which for a name
+                // colliding with a bundled stdlib symbol IS the stdlib overload, and there
+                // with the WRONG arity. `fn get(sh: Shape)` returned 0 and `fn len(sh: Shape)`
+                // returned 8 (the interface value's size, read by len(s: str)), with no
+                // diagnostic. Same accept-then-miscompile class as HOLE#4/#5/#6.
+                // Coercion is real and already implemented -- air_builder's
+                // coerce_struct_to_interface boxes the struct at the call site, exactly as it
+                // does for `let sh: Shape = sq`, which always worked.
+                if (fp0 as i64) < self.types.entries.len and self.types.entries.data[fp0].kind == TYPE_KIND_INTERFACE:
+                    if arg0_type != TYPE_UNKNOWN and (arg0_type as i64) < self.types.entries.len:
+                        if self.types.entries.data[arg0_type].kind == TYPE_KIND_STRUCT:
+                            if self.interface_missing_method(arg0_type, fp0) == 0 as u32:
+                                ci_arg0_iface = true
+    if ci_first_generic or ci_arg0_widen or ci_arg0_float or ci_arg0_iface:
         return true
     return self.is_method_compatible(ci, arg0_type)
 
