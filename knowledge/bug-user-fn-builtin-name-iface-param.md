@@ -65,7 +65,11 @@ cơ chế gây ra ca này. Các lỗ trước đã xử: fn-vs-fn (mangling flag
 typecheck). Lỗ NÀY: **user fn vs BUILTIN method**, và nó không reject cũng không mangle — nó
 **im lặng gọi builtin**.
 
-## Gợi ý điều tra (chưa làm)
+## Gợi ý điều tra (đã thu hẹp MỘT bước, chưa tìm ra site)
+⚠️ **ĐÃ LOẠI TRỪ**: `typecheck.ax:4342` (comment có nhắc "backend-intercepted") **KHÔNG phải**
+chỗ này — nó là kiểm ARITY của **method call** `recv.m(...)`. Bug này là **lời gọi HÀM TỰ DO**
+`get(Sq(s:6))` bị chặn, nên phải tìm ở đường lowering **CALL_EXPR hàm tự do** (nhiều khả năng
+trong `air_builder`), nơi một call theo TÊN bị biến thành builtin op.
 Tìm chỗ intercept builtin method (`get/len/push/find`) — nhiều khả năng nhận diện theo **TÊN**
 trên receiver có kiểu "container-ish", và giá trị **interface** lọt vào diện đó. Cần: khi call
 site resolve ra một **hàm user do người dùng khai báo**, hàm đó phải **THẮNG** builtin intercept
