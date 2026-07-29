@@ -702,6 +702,12 @@ rows=(
   # allocated RCX, which the `_cl` form overwrites (SIGSEGV before the fix).
   "t_paramlive|exit|42"
   "t_shiftrcxclobber|exit|42"
+  # Spilled FLOAT ALU destination. get_dst_behavior did not classify MACH_FADD/FSUB/
+  # FMUL/FDIV, so insert_spill_code left a spilled dst as a raw vreg -> REG_NONE (255)
+  # -> masked to %xmm15 by the encoders, and the spill slot kept the PRE-operation
+  # value. Needs >8 live f64 with the OPERATION'S OWN dst among the spilled values;
+  # returns 11 instead of 42 on the pre-fix compiler at every -O level.
+  "t_fspilldst|exit|42"
 )
 
 for row in "${rows[@]}"; do

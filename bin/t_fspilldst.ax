@@ -1,0 +1,107 @@
+// Oracle: a SPILLED float ALU destination must round-trip through its stack slot.
+//
+// Regression for the get_dst_behavior classification hole. MACH_FADD/FSUB/FMUL/FDIV
+// were absent from get_dst_behavior, so they fell through to DST_UNUSED and
+// insert_spill_code pushed them UNCHANGED — a spilled dst stayed a raw vreg, which
+// emitter_resolve_reg turns into REG_NONE (255). The float encoders mask that to 4
+// bits, so `s = a + a` on a spilled f64 wrote %xmm15 and left the spill slot holding
+// the value from BEFORE the operation. Every later read of that variable then saw the
+// stale value, losing exactly one update per spilled float operation.
+//
+// Reaching it needs more simultaneously-live f64 than the 8 allocatable XMMs, AND the
+// operation's own destination (not just its operands) to be the value that spills —
+// hence 12 results that all stay live to the end. Sibling ops are pinned too: the same
+// classification hole covered fsub/fmul/fdiv, and a fix applied to only one branch of
+// that family would leave the others silently miscompiling.
+//
+// idf() is opaque to the optimizer so the values cannot be constant-folded away.
+// Correct result 42; the pre-fix compiler returns 142 at -O1 on the fadd part alone.
+
+fn idf(x: f64) -> f64:
+    return x
+
+pub fn main() -> i32:
+    let a1 = idf(1.0)
+    let a2 = idf(2.0)
+    let a3 = idf(3.0)
+    let a4 = idf(4.0)
+    let a5 = idf(5.0)
+    let a6 = idf(6.0)
+    let a7 = idf(7.0)
+    let a8 = idf(8.0)
+    let a9 = idf(9.0)
+    let a10 = idf(10.0)
+    let a11 = idf(11.0)
+    let a12 = idf(12.0)
+
+    // fadd: 12 long-lived destinations -> at least 4 must spill.
+    let s1 = a1 + a1
+    let s2 = a2 + a2
+    let s3 = a3 + a3
+    let s4 = a4 + a4
+    let s5 = a5 + a5
+    let s6 = a6 + a6
+    let s7 = a7 + a7
+    let s8 = a8 + a8
+    let s9 = a9 + a9
+    let s10 = a10 + a10
+    let s11 = a11 + a11
+    let s12 = a12 + a12
+    let sum_s = s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
+
+    // fsub
+    let u1 = s1 - a1
+    let u2 = s2 - a2
+    let u3 = s3 - a3
+    let u4 = s4 - a4
+    let u5 = s5 - a5
+    let u6 = s6 - a6
+    let u7 = s7 - a7
+    let u8 = s8 - a8
+    let u9 = s9 - a9
+    let u10 = s10 - a10
+    let u11 = s11 - a11
+    let u12 = s12 - a12
+    let sum_u = u1 + u2 + u3 + u4 + u5 + u6 + u7 + u8 + u9 + u10 + u11 + u12
+
+    // fmul
+    let m1 = a1 * 1.0
+    let m2 = a2 * 1.0
+    let m3 = a3 * 1.0
+    let m4 = a4 * 1.0
+    let m5 = a5 * 1.0
+    let m6 = a6 * 1.0
+    let m7 = a7 * 1.0
+    let m8 = a8 * 1.0
+    let m9 = a9 * 1.0
+    let m10 = a10 * 1.0
+    let m11 = a11 * 1.0
+    let m12 = a12 * 1.0
+    let sum_m = m1 + m2 + m3 + m4 + m5 + m6 + m7 + m8 + m9 + m10 + m11 + m12
+
+    // fdiv
+    let q1 = a1 / 1.0
+    let q2 = a2 / 1.0
+    let q3 = a3 / 1.0
+    let q4 = a4 / 1.0
+    let q5 = a5 / 1.0
+    let q6 = a6 / 1.0
+    let q7 = a7 / 1.0
+    let q8 = a8 / 1.0
+    let q9 = a9 / 1.0
+    let q10 = a10 / 1.0
+    let q11 = a11 / 1.0
+    let q12 = a12 / 1.0
+    let sum_q = q1 + q2 + q3 + q4 + q5 + q6 + q7 + q8 + q9 + q10 + q11 + q12
+
+    // Each value is an exact integer in f64, so equality is well-defined here.
+    mut ok := 0
+    if sum_s == 156.0:
+        ok = ok + 10
+    if sum_u == 78.0:
+        ok = ok + 10
+    if sum_m == 78.0:
+        ok = ok + 11
+    if sum_q == 78.0:
+        ok = ok + 11
+    return ok

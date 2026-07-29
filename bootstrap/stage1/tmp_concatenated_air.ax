@@ -29321,12 +29321,28 @@ pub const DST_WRITE_ONLY: u8 = 1
 pub const DST_READ_WRITE: u8 = 2
 pub const DST_READ_ONLY: u8 = 3
 
+// EVERY opcode that writes its dst must be classified here. An unclassified
+// writer falls through to DST_UNUSED, and insert_spill_code then pushes it
+// UNCHANGED â€” leaving a spilled dst as a raw vreg that emitter_resolve_reg
+// resolves to REG_NONE (255). The encoders mask that to 4 bits, so the write
+// silently lands in %xmm15 / %r15 instead of the spill slot. That is exactly
+// how the float ALU ops below were miscompiling: `a = a + c` on a spilled f64
+// wrote xmm15 and left the slot holding the PRE-add value, so the accumulator
+// lost one update per spilled operation (invisible until >8 f64 are live at
+// once, i.e. more than the 8 allocatable XMMs).
 pub fn get_dst_behavior(op: u16) -> u8:
     if op == MACH_MOV or op == MACH_MOV_IMM or op == MACH_XOR_ZERO or op == MACH_SETCC or op == MACH_MOVZX_B or op == MACH_POP or op == MACH_LOAD or op == MACH_LEA:
         return DST_WRITE_ONLY
+    // Float/convert writers. ITOF/FTOI/MOVDQ/MOVQD/CVTSS2SD/CVTSD2SS overwrite
+    // dst outright; the four float ALU ops are accumulate-in-place (dst = dst OP
+    // src1), so they READ dst as well and must round-trip through the slot.
+    if op == MACH_ITOF or op == MACH_FTOI or op == MACH_MOVDQ or op == MACH_MOVQD or op == MACH_CVTSS2SD or op == MACH_CVTSD2SS:
+        return DST_WRITE_ONLY
     if op == MACH_ADD or op == MACH_SUB or op == MACH_IMUL or op == MACH_NEG or op == MACH_NOT or op == MACH_AND or op == MACH_OR or op == MACH_XOR or op == MACH_SHL or op == MACH_SAR or op == MACH_SHR:
         return DST_READ_WRITE
-    if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE:
+    if op == MACH_FADD or op == MACH_FSUB or op == MACH_FMUL or op == MACH_FDIV:
+        return DST_READ_WRITE
+    if op == MACH_CMP or op == MACH_TEST or op == MACH_STORE or op == MACH_FCMP:
         return DST_READ_ONLY
     return DST_UNUSED
 
@@ -29458,25 +29474,38 @@ pub fn insert_spill_code(insts: ptr[MachInst], insts_len: i64, allocs: ptr[RegAl
                 add_mult = 2 as i64
             let offset = -((frame.callee_saved_len + add_mult + dst_alloc.spill_idx as i64) * 8)
 
+            // A spilled FLOAT dst must round-trip through an XMM scratch: the float
+            // encoders take an XMM dst, and R10/R11's hardware indices alias
+            // XMM10/XMM11 (both allocatable), so reusing the GPR scratch would encode
+            // the write into a live float register. XMM2 is reserved for the dst â€”
+            // XMM0/XMM1 are already the src1/src2 reload scratches above, and all of
+            // XMM0-7 sit outside the allocatable XMM8-15 set. A 16-byte dst keeps the
+            // GPR path: that branch LEAs the slot ADDRESS, which is always a GPR.
+            mut dst_scratch := REG_R11
+            mut dst_pad := 0 as u8
+            if not is_16_dst and is_float_vreg_cached(fn_ptr, dst_alloc.vreg, table, symbols, sp_def_idx, sp_def_size):
+                dst_scratch = REG_XMM2
+                dst_pad = 8 as u8
+
             if behavior == DST_READ_ONLY:
                 if is_16_dst:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                 else:
-                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
-                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: dst_pad, dst: MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
                 result.push(inst)
             elif behavior == DST_READ_WRITE:
                 if is_16_dst:
                     result.push(MachInst(op: MACH_LEA, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
                 else:
-                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
-                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                    result.push(MachInst(op: MACH_LOAD, cc: 0 as u8, padding: dst_pad, dst: MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
                 result.push(inst)
-                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: dst_pad, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
             elif behavior == DST_WRITE_ONLY:
-                inst.dst = MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
+                inst.dst = MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64)
                 result.push(inst)
-                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: 0 as u8, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: REG_R11, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
+                result.push(MachInst(op: MACH_STORE, cc: 0 as u8, padding: dst_pad, dst: MachOperand(kind: OPND_PHYS, phys: REG_RBP, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src1: MachOperand(kind: OPND_PHYS, phys: dst_scratch, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: 0 as i64), src2: MachOperand(kind: OPND_IMM, phys: 0 as u8, padding: 0 as u16, vreg: 0 as u32, label: 0 as u32, imm: offset as i64)))
             else:
                 result.push(inst)
         else:
