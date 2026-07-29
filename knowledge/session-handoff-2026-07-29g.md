@@ -25,15 +25,55 @@ Chi tiết đầy đủ + bài học ở [[m6-perf-baseline]] mục 2026-07-29g.
   interval gộp-def phủ cả vòng lặp, temp nằm hẳn bên trong ⇒ interfere THẬT ⇒ bias trong
   allocator **về nguyên tắc** không với tới. Không phải hạn chế first-move-wins.
 
-## VIỆC TIẾP THEO (đã chọn, chưa bắt đầu)
-**Đo lại toàn bộ `scripts/perf_suite.ps1` để định vị mốc M6-codegen.**
+## ĐÃ ĐO XONG SAU KHI SHIP — trạng thái mốc M6-codegen
 Mốc (quyết định D1 của user): **≤15% so với ASM floor** viết tay cùng hình dạng.
-- xorshift nay **1,006x** ⇒ ĐẠT.
-- fib trước phiên này là 1,24x floor; coalescing chỉ mua −2,6% ⇒ **có thể vẫn ~1,2x**, cần đo.
-- arrwalk/callloop chưa rõ sau thay đổi này.
-⇒ Chạy suite, xác định shape nào CÒN ngoài 15%, rồi định giá khiếm khuyết của riêng shape đó
-bằng biến thể NASM (`scripts/perf_asm_variants.ps1`) **TRƯỚC KHI viết code** — quy trình này đã
-loại được 3/6 ứng viên vô giá trị và vừa dự báo đúng lần này.
+
+| shape | axiom | asm floor | vs asm | vs clang |
+|---|---|---|---|---|
+| fib | 586,0 | 528,4 | **1,11x** ✅ | 1,70x |
+| xorshift | 217,6 | 218,2 | **1,00x** ✅ | 1,01x |
+| arrwalk | 390,5 | *chưa có floor* | ? | 1,13x |
+| callloop | 81,9 | *chưa có floor* | ? | 0,83x |
+
+fib đã xác nhận GHÉP CẶP 2 vòng, **đảo thứ tự xen kẽ**: 1,127x rồi 1,114x ⇒ nằm TRONG mốc,
+không phải nhiễu. ⇒ **Cả hai shape CÓ floor đều ĐẠT mốc M6-codegen.** Không thể tuyên bố mốc
+ĐẠT toàn phần vì arrwalk/callloop chưa có NASM floor để so.
+
+## VIỆC TIẾP THEO (đã chọn, đã có bằng chứng disassembly, chưa bắt đầu code)
+**Fold hằng số vào TOÁN HẠNG IMMEDIATE của ALU, thay vì nạp `mov $C, reg` mỗi vòng lặp.**
+Đây là "thuế codegen #2" đã đặt tên từ 2026-07-24e, và nay có bằng chứng đo được ở CẢ HAI shape
+còn lại. Đọc thẳng từ disassembly (`-O3`, driver `2077495B`):
+
+**callloop** — thân vòng lặp 13 lệnh, trong đó **4 lệnh chỉ để nạp hằng**:
+```
+mov $0x7,%rax ; mov %rsi,%rcx ; mov %rdi,%rdx ; mov $0x2,%rbx ; imul %rbx,%rdx ; add %rdx,%rcx
+mov $0x3,%rdx ; imul %rdx,%rax ; add %rax,%rcx ; mov $0xfffff,%rax ; and %rax,%rcx
+mov %rcx,%rsi ; lea 0x1(%rdi),%rdi
+```
+`and $0xfffff` vừa imm32; `imul $2` nên là `add`/`lea`; và `7*3` là biểu thức HOÀN TOÀN hằng
+mà vẫn tính lại mỗi vòng.
+
+**arrwalk** — thân vòng lặp 9 lệnh, và **chuỗi phụ thuộc mới là thứ đáng tiền** (`idx = tbl[idx]`
+là pointer-chasing tuần tự ⇒ latency-bound):
+```
+lea 0xf42(%rip),%rbx   <- địa chỉ bảng, BẤT BIẾN trong vòng lặp mà vẫn nạp lại mỗi vòng
+mov %rax,%rsi ; mov $0x8,%rdi ; imul %rdi,%rsi ; add %rsi,%rbx   <- đáng ra là (%rbx,%rax,8)
+mov (%rbx),%rsi ; mov %rsi,%rax ; add %rax,%rcx ; lea 0x1(%rdx),%rdx
+```
+`imul` nằm TRONG chuỗi phụ thuộc (idx → imul → add → load) ⇒ ~3 chu kỳ latency/vòng, đây là
+mục đắt nhất của arrwalk chứ không phải số lệnh.
+
+**Thứ tự đề xuất, mỗi bước đo riêng (ĐỪNG batch — quy delta cho từng thay đổi):**
+1. `MOV_IMM vC,k ; ALU vD,vC` → `ALU vD,imm(k)` khi k vừa imm32 và `counts[vC]==2`. Dùng ĐÚNG
+   thành ngữ reference-count của `drop_dead_mov_imm`/`fuse_cmp_immediate`/`coalesce_dest_copy`
+   (đã chứng minh an toàn 3 lần). Blast radius rộng nhất, rủi ro thấp nhất.
+2. `IMUL vD, imm(2^k)` → `SHL vD,k` (và `imm(2)` → `ADD vD,vD`).
+3. Địa chỉ có scale: `mov (%base,%idx,8),%dst` cho array index — lớn nhất, làm sau cùng.
+4. Mở rộng shape B của `coalesce_dest_copy` sang `MACH_LOAD` (nó cũng ghi dst mà không đọc dst,
+   đúng lập luận như LEA) ⇒ xoá `mov %rsi,%rax` của arrwalk, cũng nằm trong chuỗi phụ thuộc.
+
+⚠️ **Cần NASM floor cho arrwalk + callloop** trước khi tuyên bố mốc M6-codegen ĐẠT; thêm vào
+`$srcs[...].asm` trong `scripts/perf_suite.ps1` (fib/xorshift đã có mẫu ngay tại đó).
 ⚠️ **Một lần chạy `perf_suite`/`perf_fib` KHÔNG đáng tin** (phương sai 8–10%/lần chạy trên máy
 này). Mọi con số phải đo GHÉP CẶP xen kẽ, các vòng KHÔNG chồng lấp, và lặp lại ít nhất 2 vòng.
 
