@@ -12,9 +12,9 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `e6e41c6`
-- HEAD **`e6e41c6`** đã push; driver `bin/axc_native.exe` = **`42F49C73`** (`A==B` VÀ `B==C`).
-  Gate: **575/575** (code cuối cùng ở `bcf7746`; commit sau chỉ là memory),
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `5967dc8`
+- HEAD **`5967dc8`** đã push; driver `bin/axc_native.exe` = **`6C9165C8`** (`B==C`; A!=B bình thường vì codegen đổi).
+  Gate: **575/575**,
   **lượt `-O0` toàn suite 575/575**, **KHÔNG còn bug OPEN**, ELF 12/12, ctgc 16/16, exe_size 4/4,
   lib_collision 6/6, so_export ✓.
 - 🐞→✅ **ĐÃ SỬA (HOLE#7, `bcf7746`)** — **KHÔNG còn bug OPEN nào**:
@@ -75,9 +75,21 @@ metadata:
   ⚠️ **Giới hạn trung thực**: mỗi shape chỉ thử MỘT biến thể cấu trúc (unroll / dạng loop control),
   không vét cạn. Nhưng cộng với thí nghiệm căn lề (đã bác) và lập luận cấu trúc (cả ba thân vòng
   đã là chuỗi phụ thuộc tối thiểu), **kết luận mốc KHÔNG đổi**.
-- **Đã ship 4 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
+- **Đã ship 5 thay đổi codegen**: peephole **1d** `fold_alu_immediate`, **1e**
   `strength_reduce_imul`, **căn lề 16-byte cho function entry**, **LEA/MOV fold sang thanh ghi
-  VẬT LÝ**. fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
+  VẬT LÝ**, và **fold so-sánh-với-0** (`XOR_ZERO v ; CMP n,v` → `CMP n,imm(0)`).
+  fib cải thiện ~17% toàn phiên; callloop 1,28→1,08x; arrwalk 1,14→1,08x.
+- 🆕 **SHAPE BENCHMARK MỚI: `bin/t_tailrecloop.ax`** (tail-recursive, 20M call) + floor NASM trong
+  `scripts/price_tailrec.ps1`. **Suite trước đây KHÔNG có shape tail-recursive nào** ⇒ cả một lớp
+  khe hở không đo được. Nó lộ ra NGAY:
+  - ⭐ **AXIOM ĐÃ tự chuyển self-tail-recursion thành LOOP** (`sumto` phát ra KHÔNG có `call`) ⇒
+    **RFC 0036 bị RÚT** vì đề xuất thứ đã có (xem `rfcs/0036-*.md`; `t_selfrec`/`t_selfrec2` đã
+    đặt tên đúng việc này — **phải đối soát với thứ ĐÃ SHIP trước khi viết RFC**).
+  - ⭐ **Fold so-sánh-với-0** (−5,85% đo ghép cặp 4 cặp; NASM dự báo 8,83% ⇒ **dự báo lạc quan
+    ~1/3**). 4 shape cũ PHẲNG vì không shape nào có so-sánh-với-0 nóng.
+  - 📍 **KHE HỞ CÒN LẠI ĐÃ ĐO: AXIOM 21,4 ms vs loop floor 16,2 ms = 1,32x** trên shape này.
+    Nguyên nhân đọc từ disassembly: **shuffle tham số** (`mov %rdx,%rax ; mov %rbx,%rcx` mỗi vòng)
+    + prologue mà bản viết tay không cần. ⇒ **Mục tiêu codegen kế tiếp, đã có shape để đo.**
 - **Việc kế tiếp đề xuất** (backlog **KHÔNG còn bug OPEN**; mục (a) cũ — biến thể cấu trúc cho 3 floor — **ĐÃ LÀM XONG**, xem mục FLOOR ở trên): (b) ⛔ **M6-opt: RFC 0036 ĐÃ BỊ RÚT** — transform tôi đề xuất (**self-tail-recursion → loop**) **ĐÃ ĐƯỢC CÀI SẴN**: `sumto` phát ra KHÔNG có `call` nào, chỉ `jmp` về entry (`t_selfrec`/`t_selfrec2` trong suite đã đặt tên đúng việc này — tôi lẽ ra phải đọc TRƯỚC khi viết RFC). ⭐ **Kết quả ĐO được vẫn có giá trị**: trên shape tail-recursive MỚI (20M call, ghép cặp 3 vòng) — AXIOM **22,6 ms** vs **loop floor 16,2 ms** = **1,40x**; khe hở KHÔNG phải thiếu opt pass mà là **shuffle tham số** (`mov rdx,rax; mov rbx,rcx`) + prologue ⇒ thuộc **M6-codegen**, cùng họ các copy fold đã ship phiên này, và là khe hở MỚI trên shape suite chưa từng có. ⇒ Việc kế tiếp cho M6-opt: (i) đóng khe shuffle tham số cho hàm tail-recursive (codegen, rẻ, nay ĐO ĐƯỢC), hoặc (ii) xét lại accumulator transform cho đệ quy KHÔNG-tail như `fib` (các phản đối ở §2 RFC 0036 vẫn đứng); **CỐ Ý TỪ CHỐI** accumulator transform (đòi reassociate recurrence, KHÔNG hợp lệ trên float, và chỉ có `fib` được lợi ⇒ bẫy "tối ưu cho benchmark"). ⚠️ RFC nói rõ: **bản thân nó có thể KHÔNG cải thiện shape nào hiện có** vì `fib` không phải tail-recursive ⇒ **việc ĐẦU TIÊN là thêm một shape benchmark TAIL-RECURSIVE + NASM floor rồi ĐỊNH GIÁ, TRƯỚC khi viết pass**; nếu định giá <~5% thì ĐÓNG RFC không cài; (c) `axiom-bug-probe` — **rất đáng làm**:
   phiên này probe ra **3 silent bug** (1 sai kết quả, 1 crash, 1 hàm không hề được gọi) — **cả ba** đều ở vùng **chưa có test** chứ không phải regression, và **cả ba đã được sửa trong phiên**.
 - ❓ **Chờ USER**: có nên đo mốc bằng **perf counter** thay vì tỷ lệ wall-clock? Kết quả
