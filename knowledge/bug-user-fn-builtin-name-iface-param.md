@@ -103,6 +103,31 @@ nhánh generic (`ci_first_generic`), rồi **tie-break chọn nó thay vì hàm 
 Đây sẽ là **HOLE#7** cùng họ: *giá trị INTERFACE* lọt qua gate generic theo cách struct cụ thể
 không lọt (đã đo: `fn get(p: Sq)` → 36 ĐÚNG).
 
+## ✅ ĐÃ SỬA — `bcf7746` (HOLE#7), `A==B` + `B==C 42F49C73`, **575/575** (+lượt `-O0` 575/575)
+Thêm **MỘT nhánh accept** vào `free_call_gate` (`typecheck.ax:1241`): `param[0]` là
+`TYPE_KIND_INTERFACE` **và** `arg0` là struct implement nó
+(`interface_missing_method(arg0, fp0) == 0`). Coercion đã có sẵn — `air_builder`
+`coerce_struct_to_interface` box struct tại call site, y như đường `let sh: Shape = sq` vốn luôn
+đúng. **Chỉ NỚI tập accept**, không sửa điều kiện nào đang có ⇒ không thể làm hẹp ứng viên của
+các ca đang chạy.
+Cả 5 tên nay trả **36** (`get/len/find/push/set`), kể cả `push` trước đó BUILD FAIL.
+Guard đã kiểm RIÊNG trước khi chạy full: `t_freefncollision`(15), `_arity`(105),
+`t_freefncontains`(42), `t_freefnfind`(42), `t_modcollide`(101), `t_ovcollide`(37),
+`t_veczip`(62), `t_lambdazip`(42), `t_f32argcoerce`(42), `t_vecindex`(7).
+Oracle `t_ifacefnbuiltinname`(36) đã đăng ký ở `-O1` **và** khối `-O0`.
+
+### ⚖️ DEFECT (2) — lưới an toàn `n_gated == 0`: **CỐ Ý KHÔNG LÀM**, và đây là lý do
+Ý tưởng: khi không ứng viên nào qua gate, **báo lỗi** thay vì rơi xuống `return sym_idx` (head
+sai arity). Đã hiệu chuẩn là **an toàn** (0 hit trên self-build 2 MB + 143 chương trình; hit duy
+nhất là repro này).
+⛔ **NHƯNG sau khi sửa (1), đường đó KHÔNG CÒN INPUT NÀO CHẠM TỚI** — chính repro đã hết chạm.
+⇒ Nó sẽ là một **guard KHÔNG THỂ LÀM CHO NỔ**, vi phạm đúng luật của dự án: *"guard chưa từng
+thấy nổ thì không phải guard"*. Thêm vào bây giờ = code chết + rủi ro vỡ một ca chưa biết, mà
+**không** có bằng chứng nào chứng minh nó hoạt động đúng.
+⇒ **Điều kiện để làm (2)**: khi nào tìm được input THẬT chạm `n_gated == 0` (vd một lỗ gate mới,
+hoặc tên overload mà **mọi** bản đều lệch arity), thì mới thêm — lúc đó nó hiệu chuẩn được.
+Ghi lại ở đây để lần sau không ai coi đây là "TODO bỏ quên".
+
 ## ✅✅ ĐÃ PROBE — CHẨN ĐOÁN DỨT ĐIỂM (dump tập ứng viên thật, không còn suy luận)
 Instrument `resolve_free_call_overload` in mọi ứng viên khi biên dịch `t_ifacefnbuiltinname.ax`:
 ```
