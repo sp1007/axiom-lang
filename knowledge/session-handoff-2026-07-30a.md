@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30a
-description: "HANDOFF 2026-07-30a — HEAD 1a61166, driver B==C 0E24570B, 564/564. CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
+description: "HANDOFF 2026-07-30a — HEAD d0ea79f, driver A==B+B==C 99225522, 567/567 (+lượt -O0 564/564). Đã SỬA silent miscompile -O0 (literal nguyên không vừa i32 vẫn bị type i32). CẢ 4 SHAPE nay trong mốc M6-codegen (fib 1,05x so floor NGHIÊM NHẤT sau khi fold copy tham số, −13,9%). Ship: peephole 1d+1e, căn lề hàm 16-byte, LEA/MOV fold sang thanh ghi vật lý. CHƯA chốt mốc: floor của xorshift/arrwalk/callloop chưa soi bằng biến thể."
 metadata:
   type: project
 ---
@@ -12,9 +12,21 @@ metadata:
 > và "căn lề đo ra 0, đã revert" — **CẢ HAI ĐỀU ĐÃ LỖI THỜI**). **Khối TÓM TẮT ngay dưới đây
 > là trạng thái ĐÚNG.** Chỉ đọc phần thân để lấy *bằng chứng và bài học*, đừng lấy kết luận.
 
-## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `4be6a9c`
-- HEAD **`4be6a9c`** đã push; driver `bin/axc_native.exe` = **`0E24570B`** (B==C).
-  Gate: **564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4, lib_collision 6/6, so_export ✓.
+## ✅ TÓM TẮT CHỐT — trạng thái ĐÚNG tính đến `d0ea79f`
+- HEAD **`d0ea79f`** đã push; driver `bin/axc_native.exe` = **`99225522`** (`A==B` VÀ `B==C`).
+  Gate: **567/567**, **lượt `-O0` toàn suite 564/564**, ELF 12/12, ctgc 16/16, exe_size 4/4,
+  lib_collision 6/6, so_export ✓.
+- 🐞→✅ **ĐÃ SỬA một SILENT MISCOMPILE** tìm được cuối phiên bằng probe:
+  [[bug-negative-literal-compare-o0]] — literal nguyên không vừa i32 vẫn bị **TYPE là i32**
+  ⇒ `emit_wrap_to_width` cắt mọi bit trên 32 ⇒ `if c == -3000000000` **rẽ SAI nhánh** và
+  `to_str(i64::MIN)` in ra `"0"`. **Chỉ ở `-O0`** (const-fold SSA ở -O1+ che mất).
+  Fix theo **ĐỘ LỚN** ở `typecheck.ax` ~L5595 (literal vừa i32 giữ NGUYÊN kiểu ⇒ không xáo trộn
+  overload / `t_u64cmp`; chỉ đổi những literal mà kiểu VỐN ĐÃ SAI).
+- ⭐⭐ **HẠ TẦNG MỚI: khối `-O0`-only trong `regression_repros.sh`** (`t_negbiglitcmp`+`t_tostr`).
+  **`t_tostr` đã bắt được bug này từ NGÀY NÓ ĐƯỢC VIẾT** — chỉ là suite build ở `-O1` trở lên nên
+  **chưa bao giờ chạy `-O0`**. Muốn quét rộng: `AXEXTRA=-O0 scripts/regression_repros.sh`
+  (xanh tính đến hôm nay). ⇒ **Bài học: một lớp defect có thể vô hình chỉ vì gate không bao giờ
+  chạy ở cấu hình đó — không phải vì thiếu test.**
 - **CẢ 4 SHAPE ĐỀU TRONG MỐC M6-codegen (≤15%)**, đo tiền định sau khi đã căn lề hàm:
 
   | shape | vs floor | ghi chú |
@@ -36,6 +48,9 @@ metadata:
   "xoá 1 lệnh = −14%" cho thấy wall-clock ở mức này đang đo front-end nhiều ngang codegen.
 
 ### ⭐⭐⭐ BÀI HỌC PHƯƠNG PHÁP CỦA PHIÊN (giá trị lâu dài hơn cả bản vá)
+0. **Gate không chạy ở cấu hình nào thì mù ở cấu hình đó.** Suite build `-O1`+ ⇒ cả một lớp
+   defect chỉ-ở-`-O0` vô hình, dù **đã có test bắt được nó từ lâu** (`t_tostr`). Không phải
+   thiếu test — là thiếu **cấu hình chạy**.
 1. **Fix về TÍNH TIỀN ĐỊNH phải đo trên HIỆU GIỮA HAI BẢN BUILD, không đo một bản build.**
    Đo sai kiểu này suýt chôn vĩnh viễn thay đổi căn lề (xem mục căn lề).
 2. **Peephole phải được chứng minh là CÓ NỔ, không chỉ AN TOÀN** — bản đầu của 1d khớp 0/4 hằng
