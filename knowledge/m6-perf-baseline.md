@@ -30,7 +30,20 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
 - ✅ **ĐÃ DUMP XONG (2026-07-30)** — stream TRƯỚC regalloc của `sumto` (17 lệnh, in `result.data`
   ở cuối `select_function`). **Hai phát hiện, đều KHÔNG thể suy ra từ disassembly:**
 
-  **(1) CÓ SELF-MOVE trong IR**: lệnh 5 và 6 là `MOV v1,v1` và `MOV v2,v2`.
+  ### ⛔ (1) ĐÃ THỬ VÀ ĐÃ REVERT — xoá self-move **ĐỔI codegen nhưng KHÔNG cải thiện**
+  Đã cài thử: bỏ `MOV vX,vX` **TRƯỚC** các peephole 1x, rồi so output.
+  - **Output ĐỔI THẬT** — cả trên `t_tailrecloop` lẫn **self-build 2 MB** (`AFF2E1F5…` vs
+    `6C9165C8…`) ⇒ self-move **CÓ** ảnh hưởng codegen (giả thuyết counts[] bị phồng **đúng phần
+    cơ chế**).
+  - **NHƯNG đo ra KHÔNG có lợi**: 4 cặp xen kẽ trên `t_tailrecloop` cho
+    **+1,62% / +1,17% / +6,43% / −2,50%** ⇒ **dấu KHÔNG nhất quán**, 3/4 cặp **CHẬM HƠN**.
+    Theo đúng tiêu chí đã dùng cả phiên (cùng dấu mọi cặp = thật; vắt qua 0 = nhiễu) ⇒ **nhiễu,
+    nghiêng về xấu**. ⇒ **REVERT** theo §10.
+  - ⚠️ **Bẫy báo cáo**: "best-of-all" ra −2,50% vì nó lấy min của MỖI bên độc lập ⇒ một lần chạy
+    may làm đẹp số. **Phải đọc DẤU TỪNG CẶP**, không đọc best-of-all.
+  - ⇒ **ĐỪNG thử lại** trừ khi có shape khác chứng minh được lợi ích. Cơ chế đúng, giá trị = 0.
+
+  **(1-gốc) CÓ SELF-MOVE trong IR**: lệnh 5 và 6 là `MOV v1,v1` và `MOV v2,v2`.
   Emitter có peephole bỏ self-move GPR sau regalloc (`if dst != src`) nên **binary không thấy**,
   nhưng chúng **NẰM TRONG IR** khi các peephole chạy. ⚠️ **Hệ quả nghi vấn (chưa kiểm)**:
   `MOV v1,v1` nhắc `v1` **HAI lần** ⇒ **làm phồng `counts[v1]`** ⇒ có thể **phá test
