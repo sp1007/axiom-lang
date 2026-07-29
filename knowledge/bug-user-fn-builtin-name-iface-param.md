@@ -103,7 +103,35 @@ nhánh generic (`ci_first_generic`), rồi **tie-break chọn nó thay vì hàm 
 Đây sẽ là **HOLE#7** cùng họ: *giá trị INTERFACE* lọt qua gate generic theo cách struct cụ thể
 không lọt (đã đo: `fn get(p: Sq)` → 36 ĐÚNG).
 
-### 🔎 ĐỌC KỸ `resolve_free_call_overload` (`:1294`) — giả thuyết SẮC HƠN (⚠️ mới ĐỌC CODE, **CHƯA probe**)
+## ✅✅ ĐÃ PROBE — CHẨN ĐOÁN DỨT ĐIỂM (dump tập ứng viên thật, không còn suy luận)
+Instrument `resolve_free_call_overload` in mọi ứng viên khi biên dịch `t_ifacefnbuiltinname.ax`:
+```
+head=321 ci=321 pc=2 argc=1 arg0=53 gate=0
+head=321 ci=347 pc=2 argc=1 arg0=53 gate=0
+head=321 ci=360 pc=1 argc=1 arg0=53 gate=0     <-- ĐÚNG ARITY, nhưng GATE TỪ CHỐI
+RESULT head=321 n_gated=0 first_gated=0
+```
+### ⛔ **`n_gated == 0`** — KHÔNG PHẢI "user thua stdlib". **KHÔNG ứng viên nào được nhận.**
+Điều này **BÁC BỎ** giả thuyết trước đó của tôi (`n_gated==1`, stdlib được nhận, tie-break chọn
+sai). Sự thật gồm **HAI khiếm khuyết CHỒNG NHAU**:
+
+**(1) `free_call_gate` TỪ CHỐI chính hàm USER dù ĐÚNG ARITY.** `ci=360`, `pc=1 == argc=1`, mà
+`gate=0` với `arg0=53` (kiểu interface). ⇒ `is_method_compatible` (hoặc nhánh tương đương trong
+gate) **không xử lý được tham số kiểu INTERFACE**. Đây là lỗ gốc.
+
+**(2) `n_gated == 0` ⇒ RƠI XUỐNG `return sym_idx` = HEAD, IM LẶNG.** Cả hai nhánh
+(`n_gated>=1`, `n_gated>=2`) đều trượt, hàm kết thúc bằng `return sym_idx`. Head là `ci=321` với
+**pc=2** trong khi lời gọi có **1** đối số ⇒ callee đọc đối số thứ hai là RÁC ⇒ trả 0.
+⭐ **Đây là defect ĐỘC LẬP và đáng sửa riêng**: khi **không** ứng viên nào khớp arity, trả về một
+head **SAI ARITY** thì bảo đảm miscompile. Ít nhất phải **báo lỗi**, đúng tinh thần
+"accept-then-miscompile" mà dự án đã đóng nhiều lần. Sửa (2) sẽ biến MỌI lỗ tương lai của gate từ
+**sai âm thầm** thành **lỗi biên dịch** — giá trị lâu dài hơn cả (1).
+
+⇒ **Thứ tự đề xuất**: sửa **(2) trước** (rẻ, biến im lặng thành ồn ào, có thể lộ thêm ca khác),
+rồi **(1)** (cho interface qua gate khi param là chính interface đó).
+⚠️ Oracle hai chiều vẫn bắt buộc — xem cảnh báo guard bên dưới.
+
+### 🔎 (đã bị PROBE thay thế) đọc code — giả thuyết cũ, GIỮ LẠI để thấy chỗ suy luận sai
 Cấu trúc thực tế:
 ```
 pass 1: đếm ứng viên có ĐÚNG arity VÀ qua free_call_gate  -> n_gated, first_gated (HEAD-FIRST)
