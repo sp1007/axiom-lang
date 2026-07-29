@@ -102,7 +102,10 @@ metadata:
   (h) `defer` trong **vòng lặp** → **chẩn đoán ĐÚNG ĐẮN, có nêu LÝ DO**: *"`defer` inside a loop or
   conditional is not supported (static registration would run it when the branch is not taken, or
   only once in a loop); move it to the function body top level"* ⇒ KHÔNG phải bug.
-  ⇒ **Tổng kết probe phiên này: 4 batch. Batch 1–2 ra 3 bug THẬT (đã sửa hết); batch 3–4 SẠCH.**
+  (i) **TỔ HỢP 3 FEATURE** (batch 5) — đều ĐÚNG 42 ở -O0/-O1: generic fn × for-loop × `Vec[Struct]`;
+  `defer` × `Result` × `match` (defer ở top-level hàm, có early-return trong nhánh Err);
+  `HashMap[i64, Struct]` × giá trị struct × `Option` match.
+  ⇒ **Tổng kết probe phiên này: 5 batch. Batch 1–2 ra 3 bug THẬT (đã sửa hết); batch 3–5 SẠCH.**
   ⇒ Bề mặt dễ tiếp cận nay đã sạch; probe tiếp nên nhắm vùng **thật sự chưa chạm**: `spawn`/thread
   + message passing, generic × interface (vtable trên type generic), bignum/float biên,
   `--staticlib`/`--shared` đường multi-lib, và **tổ hợp 3 feature** thay vì 2.
