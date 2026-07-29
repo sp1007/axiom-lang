@@ -165,6 +165,22 @@ ngược chiều: **đã chứng minh guard mới sẽ KHÔNG nổ nhầm.**
 
 ⚠️ Giữ đúng tinh thần bảo thủ của gate: **chỉ NỚI thêm** một điều kiện chấp nhận, không sửa/bỏ
 điều kiện nào đang có ⇒ không thể làm hẹp tập ứng viên của các ca đang chạy đúng.
+
+### 🛡️ TẬP GUARD — **ĐÃ CÓ SẴN trong suite, không cần viết mới** (tất cả đang XANH)
+Đây chính là "phần việc thật" của bản vá: chứng minh không phá thứ gì. Đã đối chiếu và định danh:
+
+| guard | test |
+|---|---|
+| **Chính họ collision** (HOLE#5/#6 từng được gác bằng chúng) | `t_freefncollision`, `t_freefncollision_arity`, `t_freefncontains`, `t_freefnfind`, `t_modcollide`, `t_ovcollide` |
+| `zip[A,B,C]` param đầu **generic trần** | `t_veczip`, `t_veczipmix`, `t_lambdazip`, `t_vechofedge` |
+| **float widening** (HOLE#6) | `t_f32argcoerce`, `t_f32binop`, `t_f32aggregate` |
+| `Vec.get/.len` builtin **phải vẫn là builtin** | `t_vecindex`, `t_vecenum*`, `t_hash*` |
+| `str.len` | `t_strconcat`, `t_strenc`, `t_strfieldcat` |
+
+⇒ **Quy trình vá**: chạy `regression_repros.sh` (573/573 hiện tại) + **lượt `-O0`**; nhóm
+`t_freefn*`/`t_ovcollide`/`t_modcollide` là **tín hiệu nhạy nhất** — nếu bản vá nới gate quá tay,
+chúng sẽ đỏ trước tiên. Không cần viết oracle guard mới; **chỉ cần thêm**
+`t_ifacefnbuiltinname`(36) vào `rows` và vào khối `-O0`.
 ⚠️ Oracle hai chiều vẫn bắt buộc — xem cảnh báo guard bên dưới.
 
 ### 🔎 (đã bị PROBE thay thế) đọc code — giả thuyết cũ, GIỮ LẠI để thấy chỗ suy luận sai
