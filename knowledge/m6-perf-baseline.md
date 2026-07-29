@@ -7,7 +7,33 @@ metadata:
   type: project
 ---
 
-## 🎯⭐⭐ 2026-07-30 — VIỆC KẾ TIẾP ĐÃ ĐỊNH GIÁ: coalesce shape A **VƯỢT MỘT LỆNH XEN GIỮA** = **−15,27%** (CHƯA CÀI)
+## ⛔⭐⭐⭐ ĐÍNH CHÍNH 2026-07-30 (probe) — **CƠ CHẾ Ở MỤC DƯỚI LÀ SAI**; con số −15,27% VẪN ĐÚNG
+
+Đã instrument `coalesce_dest_copy` để đếm cửa sổ 4 lệnh `MOV vT,vD ; OP vT,C ; X ; MOV vD,vT`
+(thêm print, không đổi hành vi), rồi chạy:
+- **self-build 2 MB** ⇒ **0 cửa sổ**
+- **`t_tailrecloop.ax`** — nơi tôi ĐÃ TẬN MẮT thấy pattern đó trong disassembly ⇒ **0 cửa sổ**
+- **40 test** ⇒ **0 cửa sổ**
+
+⇒ **Cửa sổ đó KHÔNG TỒN TẠI trong instruction stream mà peephole nhìn thấy.** Vậy giả thuyết
+"shape A trượt vì MỘT lệnh xen giữa" — cơ sở của toàn bộ thiết kế bên dưới — **BỊ BÁC BỎ**.
+
+⭐⭐⭐ **Tôi đã đọc DISASSEMBLY (sau regalloc, sau các peephole khác) và suy ra cấu trúc của
+instruction stream TRƯỚC regalloc.** Đó chính là **bài học số 5 mà tôi tự viết trong phiên
+này** — *"disassembly là bằng chứng về BINARY ĐÃ XONG, không phải về mảng mà peephole
+pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cùng một ngày.
+
+### Trạng thái CHÍNH XÁC của mục này
+- ✅ **VẪN ĐÚNG**: khe hở **−15,27%** giữa hình dạng vòng lặp AXIOM phát ra và bản coalesce
+  (đo NASM, hai biến thể đều exit 128). Và **1,32x so loop floor** trên shape tail-recursive.
+- ⛔ **BỊ BÁC BỎ**: nguyên nhân là `coalesce_dest_copy` shape A trượt do lệnh xen giữa.
+- ❓ **CHƯA BIẾT**: cái gì thực sự sinh ra các `mov` thừa đó. **Bước tiếp theo BẮT BUỘC**: dump
+  instruction stream **TRƯỚC regalloc** cho `sumto` (in `result.data` cuối `select_function`),
+  đối chiếu với disassembly cuối, rồi mới kết luận. **ĐỪNG thiết kế fix nào trước bước đó.**
+- ⇒ Thiết kế bên dưới (kể cả câu hỏi "guard có hiệu chuẩn được không") **giữ lại chỉ để làm
+  chứng cứ về chỗ suy luận sai**. **ĐỪNG CÀI.**
+
+## ~~🎯 VIỆC KẾ TIẾP ĐÃ ĐỊNH GIÁ~~ (CƠ CHẾ SAI — xem đính chính ngay trên): coalesce shape A **VƯỢT MỘT LỆNH XEN GIỮA** = **−15,27%** (CHƯA CÀI)
 
 Trên shape tail-recursive mới `bin/t_tailrecloop.ax`, NASM ghép cặp 3 vòng, **hai biến thể đều
 trả exit 128 (đã kiểm)**: thân vòng AXIOM hôm nay **20,9 ms** vs bản đã coalesce **17,7 ms**.
