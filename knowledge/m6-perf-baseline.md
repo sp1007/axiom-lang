@@ -409,7 +409,45 @@ Acting on them, the pass was narrowed to parameter snapshots only, which **halve
 from a <5% delta at best-of-5, and always check whether a binary-size change is just the new
 code you added.**
 
-### Remaining measured backlog for fib (now 1.18x of floor)
+### ⛔⛔⛔ 2026-07-29e — "the rest is REGISTER COALESCING, worth ~90–100 ms" is **REFUTED BY MEASUREMENT**
+The section below (kept for history) is the single largest remaining M6 item. It is wrong, and
+the refutation is direct rather than inferential: **the copies were removed, and nothing got
+faster.**
+
+Implemented a **precolored coalescing bias** — `move_partner` only ever related vreg↔vreg, so it
+structurally could not touch the copies that bracket every function (a param ARRIVING in `rcx`,
+a value LEAVING in `rax`). New `pref_phys[]` records the physical register a vreg is copied
+to/from, and the selection loop takes that colour when it is already legal (never an
+interference-graph edit ⇒ provably cannot cause a spill — the property copy-prop lacked).
+
+**The premise was ASSERTED, not assumed** (the DFE-counter lesson). Disassembling fib confirms
+the pass does exactly what it was designed to do:
+
+| site | baseline | with bias |
+|------|----------|-----------|
+| entry | `mov %rcx,%rax` + `mov %rdx,%rcx` | both GONE |
+| recursion | `mov %rcx,%rax` + `mov %rax,%rbx` | `mov %rcx,%rbx` (one) |
+
+And fib still did not improve — **1.5–2% SLOWER**, in both bias orderings tried
+(precolored-second: 684.0 vs 670.7; precolored-first: 685.0 vs 674.7; best-of-9, baseline
+re-measured in the same session each time). 554/554 correct in both. Reverted: no measurable
+benefit does not justify complexity in the most self-host-critical component (§10).
+
+⭐⭐⭐ **WHY the ~90–100 ms estimate was wrong, and why no allocator work will recover it:**
+`mov r,r` between GPRs is **eliminated in the register-rename stage** on every modern x86 core —
+it is resolved by renaming and never occupies an execution slot. Deleting a zero-cost
+instruction cannot buy time. The NASM variant pricing that produced "~90–100 ms" attributed the
+delta to the absence of those copies, but that hand-written variant differs in more than the
+copies, and instruction COUNT was again mistaken for cost — the third time in this file
+(after opt B/lea and copy propagation).
+
+⇒ **A full George–Appel iterated-coalescing rewrite should NOT be started on this evidence.** It
+is a large, high-risk change to the allocator whose payoff has now been measured at zero on the
+one shape it was priced against. **Re-price M6-codegen's remaining 1.23x against something other
+than copy removal before committing to allocator work** — e.g. attribute by perf counters or by
+hand-editing the emitted binary, not by counting instructions in a hand-written variant.
+
+### 📜 (historical, REFUTED above) Remaining measured backlog for fib (now 1.18x of floor)
 Everything left is **register coalescing**: the param copy chain (`mov rax,rcx; mov rax→rbx`),
 the arg temp→`rcx` copies, and the final `mov rax,rsi`. Worth ~90–100 ms combined. The named
 algorithm is **George & Appel iterated coalescing with precolored nodes**; today there is only a
