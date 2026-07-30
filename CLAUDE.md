@@ -659,6 +659,17 @@ task**. Two rules deliver that with zero keystrokes:
        a 592/593 run, and `t_localtuplenoinit@-O0` was then verified **deterministic — exit 12, 6/6,
        byte-identical binaries** (12 is also what the suite expects), so the failure was the harness,
        not the compiler.
+    3b. **Two concurrency hazards measured 2026-07-31, both SILENT — they do not announce themselves:**
+       - ⛔ **Never edit `scripts/regression_repros.sh` while a run is in progress.** bash reads a
+         script incrementally, so inserting rows shifts the offsets under the running shell: a suite
+         died with `line 839: syntax error near unexpected token ')'` **after 526 green rows**. Edit
+         first, then start the run.
+       - ⛔⛔ **Never build a compiler exe concurrently with the suite.** Two variant builds reported
+         `exit=0` and logged the full `2248397 bytes code … Finished self-linking` while leaving a
+         **truncated 25–30 KB exe** that exits 84/12 with no output. Rebuilt with no concurrent load:
+         2,282,496 bytes, correct. ⭐ **A truncated compiler reads exactly like a catastrophic
+         regression** — every test fails at once — so the first thing to check when "everything broke"
+         is `ls -l` on the compiler you just built, not the change you just made.
     4. ⛔ **Never file an unreproducible test failure as a "flake".** §3 makes determinism absolute,
        so a one-off failure is a **bug report until it is attributed to a named cause**. "It passed on
        rerun" is a claim about the rerun, not an explanation — the same shape as "its caller copes with
