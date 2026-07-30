@@ -34,6 +34,23 @@ Cost: one wrong hypothesis committed to memory, one retraction, and a bad assert
 that then failed and looked like a regression in a correct fix. The oracle's own guard rows caught
 it, which is the only reason it did not ship as "the fix broke integers".
 
+## ⚠️ THIS WAS ALREADY KNOWN — and that is the real lesson
+`scripts/regression_repros.sh` has carried this note on the `t_farg` row for a long time:
+
+    # t_farg returns 300, but bash $? is 8-bit: 300 & 0xFF = 44. 65a17b8 set 300
+    # (verified under PowerShell, full 32-bit exit) which can never pass HERE.
+    "t_farg|exit|44"
+
+The exact arithmetic, the exact trap, written down — and I walked straight into it anyway, because
+the note lives on the one row it protects and nothing checked the others. **A fact recorded in a
+comment protects only the line it sits on; a check protects every line.**
+
+So the durable output of this lesson is not this file. It is the **EXIT-CODE RANGE GUARD** now at the
+top of the row loop in `regression_repros.sh`, which aborts the whole suite if any `exit` row expects
+>= 256. Calibrated when added: injecting a `|exit|300` row makes it print
+`HARNESS-ERROR ... (value & 255 = 44)` and abort with exit 1. The suite was audited at the same time
+and no real row violated it (max expected value 244).
+
 ## The rule
 - **Any expected value must be < 256.** Prefer the project's existing convention: compute
   in-program, compare in-program, and `return 42` (or a small distinct code per failing check, as

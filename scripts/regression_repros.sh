@@ -729,6 +729,65 @@ rows=(
   "t_fspilldst|exit|42"
 )
 
+# EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
+# expected value is >= 256 can NEVER match what the OS reports: `return 300` exits with 44, and
+# `return 256` exits with 0 -- which many harnesses read as success. Any such row is a test that
+# either always fails or, worse, passes for the wrong reason.
+#
+# This is enforcement rather than caution. On 2026-07-30 an exit code of 44 was read as evidence
+# that the compiler narrowed an out-of-range u8 literal, when the value was really 300 and the OS
+# had masked it. Truncation, wrapping and masking all compute `v & 0xFF`, so an exit code cannot
+# distinguish them -- it cost a wrong hypothesis, a retraction, and a bad oracle assertion. See
+# knowledge/lesson-exit-code-8bit-masking.md.
+#
+# The suite was audited when this guard was added and NO row violated it (max expected value 244),
+# so this exists to keep it that way. Write tests that compare IN-PROGRAM and return a small
+# sentinel (42, or a distinct small code per failing check).
+range_bad=0
+for row in "${rows[@]}"; do
+  IFS='|' read -r gname gcmp gwant <<< "$row"
+  if [ "$gcmp" = "exit" ] && [ "$gwant" -ge 256 ] 2>/dev/null; then
+    echo "HARNESS-ERROR $gname expects exit $gwant, but exit codes are masked to 8 bits (value & 255 = $((gwant & 255))). Compare in-program and return a small sentinel."
+    range_bad=$((range_bad+1))
+  fi
+done
+if [ "$range_bad" -ne 0 ]; then
+  echo "=== regression: ABORTED, $range_bad unobservable exit expectation(s) ==="
+  exit 1
+fi
+
+# EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
+# expected value is >= 256 can NEVER match what the OS reports: `return 300` exits with 44, and
+# `return 256` exits with 0 -- which many harnesses read as success. Any such row is a test that
+# either always fails or, worse, passes for the wrong reason.
+#
+# ⭐ THIS FILE ALREADY KNEW. See the t_farg row above, which spells out "300 & 0xFF = 44" and notes
+# that a commit setting 300 could never pass here. That note is why this guard is ENFORCEMENT rather
+# than documentation: the knowledge existed, in a comment on one row, and on 2026-07-30 an exit code
+# of 44 was STILL read as evidence that the compiler had narrowed an out-of-range u8 literal -- when
+# the value was really 300 and the OS had masked it. Truncation, wrapping and masking all compute
+# `v & 0xFF`, so an exit code cannot distinguish them. Cost: a wrong hypothesis, a retraction, and a
+# bad oracle assertion that looked like a correct fix breaking integers.
+#
+# A fact recorded in one comment protects only the row it sits on. A check protects every row.
+# See knowledge/lesson-exit-code-8bit-masking.md.
+#
+# The suite was audited when this guard was added and NO row violated it (max expected value 244),
+# so this exists to keep it that way. Write tests that compare IN-PROGRAM and return a small
+# sentinel (42, or a distinct small code per failing check).
+range_bad=0
+for row in "${rows[@]}"; do
+  IFS='|' read -r gname gcmp gwant <<< "$row"
+  if [ "$gcmp" = "exit" ] && [ "$gwant" -ge 256 ] 2>/dev/null; then
+    echo "HARNESS-ERROR $gname expects exit $gwant, but exit codes are masked to 8 bits (value & 255 = $((gwant & 255))). Compare in-program and return a small sentinel."
+    range_bad=$((range_bad+1))
+  fi
+done
+if [ "$range_bad" -ne 0 ]; then
+  echo "=== regression: ABORTED, $range_bad unobservable exit expectation(s) ==="
+  exit 1
+fi
+
 for row in "${rows[@]}"; do
   IFS='|' read -r name cmp want <<< "$row"
   src="bin/${name}.ax"
