@@ -33,7 +33,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   vẫn là cách nói "cố ý cắt bit". Suy-theo-độ-lớn ở vị trí KHÔNG chú thích giữ nguyên (tiền lệ
   [[bug-negative-literal-compare-o0]]). Spec: **RFC 0006 §6.1**; chi tiết + phần CHƯA phủ
   (i64/u64, biểu thức hằng gấp, narrowing từ giá trị runtime):
-  [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md).
+  [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md). Commit `abfe985`.
 
 ## 🐞 BUG MỞ — probe4 tìm ra 2026-07-30, ĐÃ TỰ XÁC MINH LẠI (không chỉ theo báo cáo agent)
 Cả ba đều **accept-then-miscompile** (lớp BUG#53) và đều có ma trận đối chứng trong

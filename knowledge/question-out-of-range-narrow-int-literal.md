@@ -11,7 +11,7 @@ metadata:
 **Status: DECIDED by the user on 2026-07-30 — option (2) REJECT. Implemented the same day.**
 Filed originally as a QUESTION (the behaviour was measured, the correct answer was a spec
 decision nobody had taken). The alternatives below are kept for the historical record; do not
-re-open them without a new user decision.
+re-open them without a new user decision. **Commit: `abfe985`.**
 
 ## The decision
 
