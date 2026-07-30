@@ -1,11 +1,39 @@
 ---
 name: m6-perf-baseline
-NEXT_TARGET_2026_07_30: "coalesce_dest_copy shape A across ONE intervening instruction — PRICED at −15.27%, design below, NOT implemented"
+NEXT_TARGET_2026_07_30b: "peephole 1f (non-adjacent copy-chain collapse) is BUILT and PRICED at −14.2% on the tail-recursive shape, but RED — it miscompiles FLOAT PARAMETER prologues. Uncommitted in the working tree. NEXT: distinguish the two candidate mechanisms (is_float_vreg class vs float register pressure exposing a latent spill bug) BEFORE writing any guard. See session-handoff-2026-07-30b."
+SUPERSEDED_NEXT_TARGET: "(do not act on this) 'coalesce_dest_copy shape A across ONE intervening instruction — PRICED at −15.27%' — the −15.27% number stands but its MECHANISM was refuted by probe on 2026-07-30 (that 4-instruction window does not exist in the stream; 0 matches on self-build, t_tailrecloop, and 40 tests). The real cause was the double copy chain, addressed by 1f."
 description: "M6 perf milestone (Fib(40) <=5% of clang) — the FOCUS after RFC 0015 closed. Reproducible baseline: AXIOM -O3 = 2.59x clang -O2 (i64-fair). Profiled the gap to 4 systemic codegen taxes; prioritized optimization backlog. Harness scripts/perf_fib.ps1."
 metadata:
   node_type: memory
   type: project
 ---
+
+## 🟡⭐⭐⭐ 2026-07-30b — PEEPHOLE 1f (copy-chain collapse) ĐÃ XÂY, ĐÃ ĐỊNH GIÁ **−14,2%**, và **RED**
+
+Chi tiết đầy đủ + điểm resume ở [[session-handoff-2026-07-30b]]. Tóm tắt cho ai đọc file này:
+
+- **Thắng THẬT**: đo ghép cặp xen kẽ trên `t_tailrecloop` = **−14,0% / −14,3% / −14,2%** (pair 0 bỏ
+  vì cold-start). 22,1 → 19,0 ms so floor 16,2 ⇒ **1,36x → 1,17x**. Thấp hơn dự báo −24% vì LEA
+  **không được HẠ XUỐNG** dưới ADD — việc đó cần reorder, không phải peephole.
+- ⭐ **ĐÃ CHỨNG MINH PASS CÓ NỔ** (không chỉ "an toàn"): 84 fold, 2 fold trong `sumto` đúng các link
+  đã dự báo. Link `v10->v1` **VẮNG MẶT** vì `ADD v7,v1` đọc v1 CŨ ⇒ bẫy thứ tự được tôn trọng, kiểm
+  bằng QUAN SÁT chứ không bằng lập luận.
+- ⭐⭐ **fib +14,5% / callloop +3–8,6% là LAYOUT, đã CHỨNG MINH**: cả 4 shape bench báo **đúng 80
+  fold** (⇒ tất cả nằm trong code bundled, **0** trong hàm của bench), và objdump cho thấy dòng lệnh
+  của fib **GIỐNG HỆT** giữa 2 build (.text 6514→6478). fib/callloop không gọi stdlib trong vòng
+  nóng ⇒ code không đổi thì không thể chậm đi, chỉ ĐỊA CHỈ đổi. Lần thứ HAI của họ alignment
+  (sau peephole 1e). **ĐỪNG "sửa" bằng cách nhét lại lệnh chết.**
+- ⛔ **RED**: 3 test float sai (`t_interpolation` 127→79, `t_colorhsl` 127→120, `t_quatrot` 8→3),
+  giống nhau ở O0/O1/O2. Instrument khu trú: fold vào **vreg THAM SỐ** trong **prologue tham số**
+  (vd=1,2,3,4), không liền kề vì 4 tham số xen kẽ. Shape B của 1c đã fold đúng chuỗi đó ở dạng LIỀN
+  KỀ và không sao ⇒ lỗi thuộc về **cửa sổ nới rộng**.
+- ⚠️ **ĐỪNG vá bằng cách loại vreg tham số**: fold thắng của `sumto` (`vd=2`) CŨNG là tham số ⇒ mất
+  nửa lợi ích. Phân biệt phải ở **FLOAT-ness**. Hai cơ chế ứng viên (class qua `is_float_vreg` vs áp
+  lực thanh ghi float làm lộ lỗi spill tiềm ẩn — đúng họ đã xảy ra với copy-prop 2026-07-29d) **CHƯA
+  được phân biệt; làm việc đó TRƯỚC khi viết guard.**
+- ⭐ Oracle `t_copychain`(42, O0–O3) đã commit + **đã hiệu chuẩn**: phá guard ⇒ exit 1, mà
+  `t_tailrecloop` **vẫn trả 128** ⇒ bench **MÙ GIÁ TRỊ**, vốn không thể gate việc này.
+- Baseline sau commit: **578/578** trên driver `6C9165C8` (đã ĐO, không suy đoán).
 
 ## ⛔⭐⭐⭐ ĐÍNH CHÍNH 2026-07-30 (probe) — **CƠ CHẾ Ở MỤC DƯỚI LÀ SAI**; con số −15,27% VẪN ĐÚNG
 
