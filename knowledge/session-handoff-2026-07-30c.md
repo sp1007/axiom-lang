@@ -6,7 +6,7 @@ metadata:
   type: project
 ---
 
-# HANDOFF 2026-07-30c — 1f shipped; layout measured honestly; two miscompiles fixed
+# HANDOFF 2026-07-30c — 1f shipped; layout measured honestly; three miscompiles fixed
 
 ⚠️ **This file's original "NEXT TARGET: loop-header alignment" was REFUTED later in the same
 session** (§ below). Do not act on it. The real next steps are in "ACTUAL next target" and the
@@ -24,8 +24,10 @@ probing recommendation.
 - `bin/axc_pre1f.exe` is a reference compiler built from pre-1f source, kept for paired pricing.
 
 ## ✅ THREE silent miscompiles found and fixed this session (probing, not backlog)
-Both were method RETURN-TYPE resolution failures, both accept-then-miscompile, both invisible to the
-whole suite for the same structural reason. See [[bug-method-float-return-let-infer]].
+All three are accept-then-miscompile (BUG#53 class) and all three were invisible to the whole suite
+for the same structural reason: the suite exercised only the ONE type class that happened to work.
+(1) and (2) are method RETURN-TYPE resolution failures — see [[bug-method-float-return-let-infer]];
+(3) is argument coercion — see [[bug-generic-explicit-typearg-float-literal]].
 
 1. **Interface dynamic dispatch resolved NO return type** (`376af08`). `interface_method_ret_type`
    matched the decl by `name_id` while the resolver rewrites `NODE_INTERFACE_DECL.payload` to the
