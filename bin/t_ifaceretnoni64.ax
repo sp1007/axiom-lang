@@ -1,0 +1,79 @@
+// PIN (exit 42): interface DYNAMIC DISPATCH must resolve the DECLARED return type, for every
+// return type -- not just i64.
+//
+// Why this exists. `interface_method_ret_type` (typecheck.ax) is the sole resolver of a
+// dynamic-dispatch call's result type, and it matched the interface declaration by the type
+// entry's name_id while the resolver rewrites NODE_INTERFACE_DECL.payload to the SYMBOL INDEX.
+// The predicate never matched, so it returned 0 unconditionally and the call site fell through to
+// a downstream recovery that resolves to an INTEGER. Every non-i64 return through an interface was
+// silently wrong: f64 gave 80 where 42 was correct, str gave 115 where 6 was correct.
+//
+// It survived two sessions because it was believed harmless -- its one caller "copes" with a 0.
+// The caller does not cope. And it survived the whole interface oracle suite because EVERY existing
+// interface test returns i64, so none of them could observe the defect.
+//
+// This test therefore covers one method per return-type class, checks an exact VALUE for each, and
+// keeps an i64 method alongside them as a guard against a fix that breaks the case that worked.
+interface Shape:
+    fn area(self: Self) -> f64
+    fn label(self: Self) -> str
+    fn solid(self: Self) -> bool
+    fn sides(self: Self) -> i64
+
+struct Sq:
+    s: f64
+    fn area(self: Sq) -> f64:
+        return self.s * self.s
+    fn label(self: Sq) -> str:
+        return "square"
+    fn solid(self: Sq) -> bool:
+        return true
+    fn sides(self: Sq) -> i64:
+        return 4
+
+struct Tri:
+    b: f64
+    h: f64
+    fn area(self: Tri) -> f64:
+        return 0.5 * self.b * self.h
+    fn label(self: Tri) -> str:
+        return "tri"
+    fn solid(self: Tri) -> bool:
+        return false
+    fn sides(self: Tri) -> i64:
+        return 3
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+// Bind each dispatched result to a `let` deliberately: the defect lived in the type recorded for
+// the CALL RESULT, so a test that only used the value inline could resolve it by other means.
+fn score(sh: Shape, want_area: f64, want_len: i64, want_solid: bool, want_sides: i64) -> i64:
+    mut r: i64 = 0
+    let a = sh.area()
+    if near(a, want_area):
+        r = r + 1
+    let n = sh.label()
+    if n.len == want_len:
+        r = r + 2
+    let b = sh.solid()
+    if b == want_solid:
+        r = r + 4
+    let s = sh.sides()
+    if s == want_sides:
+        r = r + 8
+    return r
+
+fn main() -> i64:
+    // Two distinct impls behind the same interface, with ASYMMETRIC expected values, so a fix
+    // that resolved the type but dispatched to one impl for both cannot pass.
+    let sq = score(Sq(s: 3.0), 9.0, 6, true, 4)
+    if sq != 15:
+        return sq
+    let tr = score(Tri(b: 3.0, h: 4.0), 6.0, 3, false, 3)
+    if tr != 15:
+        return 16 + tr
+    return 42
