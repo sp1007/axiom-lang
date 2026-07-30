@@ -165,14 +165,21 @@ is the category error that already caused one unjust revert.
 
 ## ⭐⭐⭐ Current M6-codegen standing — READ WITH `scripts/perf_m6_gate.ps1`, not `perf_suite.ps1`
 New script averages **both sides** of the gate ratio over N controlled layouts and prints a 2-SE
-confidence band. First honest reading (10 layouts/side, best-of-9):
+confidence band. Full reading, all four shapes, 10 layouts/side, best-of-9:
 
-    callloop  1.107x +- 1.0%   PASS by 3.8%
     xorshift  0.995x +- 0.7%   PASS by 13.4%
+    arrwalk   1.087x +- 0.5%   PASS by  5.5%
+    callloop  1.107x +- 1.0%   PASS by  3.8%
     fib       1.145x +- 6.2%   INDETERMINATE, 0.4% from the gate
 
-**callloop PASSES.** It read 1.17x MISS on `perf_suite`'s single draw — that MISS was a layout draw,
-exactly like 1f's phantom callloop regression.
+**THREE OF FOUR SHAPES PASS**, with confidence bands an order of magnitude tighter than the
+differences being claimed. **callloop PASSES** — it read 1.17x MISS on `perf_suite`'s single draw,
+and that MISS was a layout draw, exactly like 1f's phantom callloop regression.
+
+⭐ **The spreads sort by what each shape is BOUND ON**, which is a useful diagnostic in itself:
+arrwalk and xorshift are latency/dependency-bound and nearly layout-insensitive (~2%), while fib is
+call/return-bound and swings 17%. Consistent with the sensitivity living in call-target and
+fetch-window placement — and it is exactly why fib is the one shape the gate cannot resolve.
 
 ## ⛔⛔⛔ fib is NOT DECIDABLE by the D1 gate as written — this needs a USER decision
 fib's layout spread is **17.2%** (AXIOM) and **13.7%** (floor), both **larger than the entire 15%
