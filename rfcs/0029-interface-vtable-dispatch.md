@@ -199,3 +199,112 @@ Concrete steps for the focused session:
 5. **Oracle + gate:** `t_ifacedispatch` = ≥2 distinct structs behind one interface param, each
    dispatching to its own method (proves per-concrete-type vtables, not one impl). A==B + full
    regression + -O2 acceptance + ELF/Linux smoke. Then rewrite std/log's `Box[LogSink]` as proof.
+
+---
+
+## 9. AMENDMENT (2026-07-31): dispatch must coerce ARGUMENTS to the declared parameter types
+
+**Status:** accepted, implemented. Extends §8's dispatch step; changes no representation.
+
+### 9.1 Motivation
+
+Shipped dispatch honoured the interface contract for the RETURN type only. Arguments were lowered
+raw: `air_builder.lower_call_expr`'s dispatch branch did `iargs[n] = self.lower_expr(ia)` with no
+coercion, so **every dispatch argument that needed a conversion instruction was passed
+unconverted**. Measured (`bin/probe4/`):
+
+| form | before |
+|---|---|
+| static `s.c32(1.5)` | correct |
+| dynamic `i.c32(v)`, `v: f32` (no conversion needed) | correct |
+| **dynamic `i.c32(1.5)`** (f64 literal → f32 param) | **0.0 delivered** |
+| **dynamic `i.c32(2.0+2.0)`** (folded f64 expr) | **0.0 delivered** |
+| **dynamic `i.c64(v)`**, `v: f32` → f64 param | **wrong** |
+| dynamic, f32 param in slot 1 / 2 / after i64 / after f64 | wrong in every position |
+
+"Exactly 0.0, not garbage" is the tell: the low 32 bits of the double `1.5` (`0x3FF8000000000000`)
+are zero, and the callee's `movss` reads exactly those. Accept-then-miscompile, BUG#53 class, and a
+violation of the contract this RFC already states.
+
+### 9.2 Where the existing mechanism lives (and why dispatch could not reach it)
+
+Call-argument float coercion is **not** a typecheck concern in this compiler. `typecheck.ax`'s
+expected-type threading is gated to `NODE_IDENT`/`NODE_INDEX_EXPR` callees, so a *method* call
+(`NODE_FIELD_EXPR` callee) already infers its arguments with `expected = TYPE_UNKNOWN` — yet static
+method calls are correct, because `air_builder.coerce_float_arg` emits `OP_CAST` after reading the
+parameter types off the **resolved callee symbol**.
+
+Dynamic dispatch has no callee symbol by construction: `coerce_float_arg` returns immediately at
+`fn_sym == 0`. The missing ingredient was never an accessor — it was the *signature* at the one site
+that already performs this job.
+
+### 9.3 Design
+
+1. `typecheck.interface_method_sig` — the single walk that already resolves an interface method's
+   arity and return type — additionally yields the DECLARED parameter types (optional out-param;
+   `self` included at index 0 so the list lines up with a FUNC type and with air_builder's argument
+   index, which counts the receiver). Same walk, same predicate: parameter types and parameter count
+   can never be produced by two different traversals.
+2. **Phase 2.5** of `run_type_checker` publishes those signatures on the interface's type entry as
+   `TYPE_KIND_FUNC` type ids, slot-aligned with the method-name list from step 1. It enumerates
+   interface SYMBOLS (not `NODE_INTERFACE_DECL` nodes) and delegates every extraction to
+   `interface_method_sig`. Runs after struct/alias registration (so a struct-typed parameter
+   resolves) and before inference (so every later dispatch site sees a populated table).
+3. `TypeTable.iface_method_sigs` is pushed **in lockstep** with `iface_methods` inside
+   `register_interface_methods`, addressed by the same `entry.extra` index, so the name list and the
+   signature list cannot desynchronize.
+4. `air_builder.coerce_float_arg` is split: `coerce_float_arg(fn_sym, ...)` resolves the symbol and
+   delegates to `coerce_float_arg_ft(fn_type, ...)`, which holds the rule. The dispatch branch calls
+   `coerce_float_arg_ft` with the interface method's published FUNC type. **One rule, two entry
+   points** — a static and a dynamic call cannot diverge on what a float argument means.
+
+No new AIR opcode (`OP_CAST` is exactly what the static path already emits), no change to the
+interface box layout, vtable slot layout, calling convention, ABI, linker, or syntax.
+
+### 9.4 Single source of truth
+
+`NODE_INTERFACE_DECL` remains the sole authority. The type-table entry is *derived*, by exactly one
+function, from exactly one walk. This is deliberate: four bugs in this compiler
+(`376af08`, `76de988`, `0bf34ee`, and this one) trace to two copies of one mechanism drifting apart,
+so the fix adds a consumer, never a second producer. Staleness bound: the FUNC types are resolved
+once at Phase 2.5 and nothing downstream mutates an interface declaration (monomorphization clones
+functions, not interfaces).
+
+### 9.5 Alternatives considered (and rejected)
+
+- **Thread expected types at the typecheck dispatch site only.** Rejected on evidence: it creates a
+  SECOND argument-coercion mechanism in a different phase for a problem the backend already solves
+  for static calls, and it still cannot fix `i.c64(v)` with `v: f32` — threading an expected type
+  does not rebuild an ident's value (the codebase states this at `typecheck.ax`'s Option/Result
+  width reject: *"Threading an expected type does not REBUILD an ident's value, so a coercion is
+  impossible here"*). Two of the broken rows would have survived.
+- **Walk `NODE_INTERFACE_DECL` from air_builder.** Rejected: a second walk of the mechanism this RFC
+  is trying to keep single, plus frontend type resolution (`infer_node`) in the backend.
+- **Use any implementor's method symbol at the dispatch site.** Rejected as unsound: two unrelated
+  structs may declare same-named methods with different float parameter types, and conformance
+  checking currently proves only arity and return type — this could emit a *wrong* conversion, which
+  is worse than none.
+
+### 9.6 Drawbacks
+
+- One more derived table on `TypeTable` (memory: one `U32Vec` per declared interface).
+- Coercion is currently f32↔f64 only, inherited verbatim from the static path. Int-literal→float and
+  int narrowing at method arguments are NOT coerced — dispatch now has exactly the same coverage as
+  a static call, no more (see §9.7).
+
+### 9.7 Known gaps left open on purpose (parity with static calls, not new debt)
+
+- `s.f64int(3)` — an int literal at an `f64` parameter — is broken for **static** method calls too
+  (`bin/probe4/f4.ax` returns 253 before and after this change). It is a distinct defect in
+  `coerce_float_arg`'s f32/f64-only predicate and is tracked separately.
+- Interface-typed parameters of an interface method are not boxed at the dispatch site (the
+  `coerce_interface_arg` analogue). Untested territory, deliberately not bundled here.
+- E3030 (out-of-range integer literal) does not fire at dispatch arguments, because no expected type
+  is threaded there — identical to static method calls, whose range check is gated to `NODE_IDENT`
+  free-function callees.
+
+### 9.8 Migration / compatibility
+
+No source-level change. Programs that were silently miscompiled now compute the declared conversion.
+Self-build is inert (the compiler's own source declares no interfaces), but `air_builder.ax` is
+touched, so the gate is **B==C** plus full regression at default and `-O0`.

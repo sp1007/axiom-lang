@@ -50,6 +50,7 @@ rows=(
   "t_localtuplenoinit|exit|12"
   "t_ifacefnbuiltinname|exit|36"
   "t_ifaceretnoni64|exit|42"
+  "t_ifacefloatarg|exit|42"
   "t_methfloatret|exit|42"
   "t_methretbreadth|exit|42"
   "t_genexplicitfloatarg|exit|42"
@@ -875,6 +876,7 @@ opt_rows=(
   "t_copychain|42"
   "t_floatparamchain|42"
   "t_ifaceretnoni64|42"
+  "t_ifacefloatarg|42"
   "t_methfloatret|42"
   "t_methretbreadth|42"
   "t_genexplicitfloatarg|42"
@@ -931,7 +933,7 @@ done
 # t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
 # -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
 # a single opt level is not evidence.
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

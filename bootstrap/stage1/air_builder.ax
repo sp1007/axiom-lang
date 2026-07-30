@@ -1777,12 +1777,22 @@ pub fn coerce_struct_to_interface(mut self: ptr[FuncLowering], target_type: u32,
 pub fn coerce_float_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
     if fn_sym == 0 as u32 or (fn_sym as i64) >= self.mb.symbols.symbols.len:
         return arg_reg
+    let sym = self.mb.symbols.symbols.data[fn_sym as i64]
+    if sym.kind != SYM_FUNC:
+        return arg_reg
+    return self.coerce_float_arg_ft(sym.type_id, param_idx, arg_node, arg_reg)
+
+// The FUNC-TYPE half of coerce_float_arg. A static call names a callee SYMBOL and reads the
+// signature off it; dynamic dispatch (RFC 0029) has no callee symbol and carries the declared
+// signature as a FUNC type on the interface's type entry instead. Both must apply the SAME
+// coercion — an f64 literal handed to an f32 parameter has to be narrowed no matter how the
+// call is dispatched — so the rule lives here once and both entry points call it.
+pub fn coerce_float_arg_ft(mut self: ptr[FuncLowering], fn_type: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
+    if fn_type == 0 as u32 or (fn_type as i64) >= self.mb.typetable.entries.len:
+        return arg_reg
     if self.mb.node_types == null as ptr[u32]:
         return arg_reg
-    let sym = self.mb.symbols.symbols.data[fn_sym as i64]
-    if sym.kind != SYM_FUNC or sym.type_id == 0 as u32 or (sym.type_id as i64) >= self.mb.typetable.entries.len:
-        return arg_reg
-    let e = self.mb.typetable.entries.data[sym.type_id as i64]
+    let e = self.mb.typetable.entries.data[fn_type as i64]
     if e.kind != TYPE_KIND_FUNC:
         return arg_reg
     let fi = self.mb.typetable.funcs.data[e.extra as i64]
@@ -1886,12 +1896,24 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: 4 as u32, dest: datar, src1: boxr, src2: 0 as u32))
                         let fptrr = self.fb.fresh_reg()
                         self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: 4 as u32, dest: fptrr, src1: boxr, src2: (slot + 1 as i64) as u32))
+                        // RFC 0029: the method's DECLARED signature (params include `self` at
+                        // index 0, so the running `icount` IS the param index). A static call
+                        // reads this off the resolved callee symbol; dispatch has no callee
+                        // symbol, so it comes from the interface's type entry (typecheck Phase
+                        // 2.5). Without coercing here, EVERY argument needing a conversion was
+                        // passed unconverted -- an f64 literal handed to an f32 parameter left
+                        // the callee reading the double's zero low half, so `i.m(1.5)` arrived
+                        // as exactly 0.0 (accept-then-miscompile, BUG#53 class). 0 = signature
+                        // unknown (cross-tree interface) -> coerce_float_arg_ft is a no-op.
+                        let isig = self.mb.typetable.interface_method_sig_type(if_rty, slot)
                         mut iargs := @alloc(64 * 8) as ptr[u32]
                         iargs[0] = datar
                         mut icount := 1 as u32
                         mut ia := callee_node.next_sibling
                         while ia != 0 as u32:
-                            iargs[icount as i64] = self.lower_expr(ia)
+                            mut iareg := self.lower_expr(ia)
+                            iareg = self.coerce_float_arg_ft(isig, icount, ia, iareg)
+                            iargs[icount as i64] = iareg
                             icount = icount + 1 as u32
                             ia = self.mb.tree.nodes.data[ia as i64].next_sibling
                         let iarg_start = self.fb.emit_extra(icount)

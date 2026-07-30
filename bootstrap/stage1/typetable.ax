@@ -250,6 +250,13 @@ pub struct TypeTable:
     // RFC 0029: per-interface ordered method-name list (vtable slot layout). A
     // TYPE_KIND_INTERFACE entry's `extra` field holds (iface_methods index + 1); 0 = none.
     pub iface_methods: U32VecVec
+    // RFC 0029: per-interface DECLARED method signatures, index-aligned with
+    // `iface_methods` (same outer index, same slot order). Element = a TYPE_KIND_FUNC
+    // type id whose params include `self` at index 0 (0 = signature not resolved).
+    // Dynamic dispatch has no concrete callee symbol, so this is the ONLY place the
+    // declared parameter types of `iface.m(args)` are available to the backend — which
+    // needs them to coerce arguments exactly as a static call does (coerce_float_arg).
+    pub iface_method_sigs: U32VecVec
 
 pub fn new_type_table() -> ptr[TypeTable]:
     // size_of (not a hardcoded byte count) so adding a field can't desync the alloc.
@@ -260,7 +267,8 @@ pub fn new_type_table() -> ptr[TypeTable]:
     tt.sumtypes = SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
     tt.generic_insts = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
     tt.iface_methods = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
-    
+    tt.iface_method_sigs = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+
     // 0: Unknown sentinel
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
     
@@ -548,7 +556,35 @@ pub fn register_interface_methods(self: ptr[TypeTable], iface_type_id: u32, meth
         return
     let idx = self.iface_methods.len as u32
     (&self.iface_methods).push(methods)
+    // Keep `iface_method_sigs` index-aligned with `iface_methods` (one entry per
+    // interface, pushed together) so a single `extra` index addresses both. The
+    // signature list starts EMPTY: parameter types are resolved later, once struct
+    // types exist (typecheck Phase 2.5 -> set_interface_method_sigs).
+    (&self.iface_method_sigs).push(U32Vec(data: null as ptr[u32], len: 0, cap: 0))
     self.entries.data[iface_type_id as i64].extra = idx + 1 as u32
+
+// RFC 0029: record the resolved DECLARED signatures of an interface's methods. `sigs`
+// is slot-aligned with `interface_method_list` (element = a TYPE_KIND_FUNC type id, or
+// 0 when the signature could not be resolved).
+pub fn set_interface_method_sigs(self: ptr[TypeTable], iface_type_id: u32, sigs: U32Vec):
+    if iface_type_id == 0 as u32 or (iface_type_id as i64) >= self.entries.len:
+        return
+    let ex = self.entries.data[iface_type_id as i64].extra
+    if ex == 0 as u32 or ((ex - 1 as u32) as i64) >= self.iface_method_sigs.len:
+        return
+    self.iface_method_sigs.data[(ex - 1 as u32) as i64] = sigs
+
+// RFC 0029: the declared FUNC type of the interface method occupying `slot` (0 when
+// unknown). Used by dynamic dispatch to obtain the parameter types a static call reads
+// off the resolved callee symbol.
+pub fn interface_method_sig_type(self: ptr[TypeTable], iface_type_id: u32, slot: i64) -> u32:
+    if iface_type_id != 0 as u32 and (iface_type_id as i64) < self.entries.len:
+        let ex = self.entries.data[iface_type_id as i64].extra
+        if ex != 0 as u32 and ((ex - 1 as u32) as i64) < self.iface_method_sigs.len:
+            let sigs = self.iface_method_sigs.data[(ex - 1 as u32) as i64]
+            if slot >= 0 as i64 and slot < sigs.len:
+                return sigs.data[slot]
+    return 0 as u32
 
 // RFC 0029: return the ordered method-name list for an interface type (or an empty list
 // if none was registered). Slot index = position in this list.

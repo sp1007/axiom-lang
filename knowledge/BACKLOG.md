@@ -12,9 +12,9 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 ---
 
 ## Trạng thái cây (cập nhật 2026-07-30)
-- **HEAD `e3222f0`** + fix int-literal→float + reject E3030, main. Driver `bin/axc_native.exe` = **A==B `78295509`**.
-- **BASELINE = 607/607** (597 + 10 hàng E3030: 9 reject `t_intrange*` + `t_intrangeok`). Dưới 607 là RED.
-  Driver sau khi ship E3030 = **A==B `78295509`**.
+- **HEAD** = fix coercion đối số cho dynamic dispatch (RFC 0029 §9), main. Driver `bin/axc_native.exe` = **A==B==C `5b0eb92c`**.
+- **BASELINE = 611/611** (607 + 4 hàng `t_ifacefloatarg`: main / O2 / O3 / O0). Dưới 611 là RED.
+  Đã đo cả **default lẫn `-O0`**, và cả ba mốc A/B/C trùng hash.
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
 - Handoff mới nhất: [session-handoff-2026-07-30c](session-handoff-2026-07-30c.md).
 
@@ -36,7 +36,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md). Commit `abfe985`.
 
 ## 🐞 BUG MỞ — probe4 tìm ra 2026-07-30, ĐÃ TỰ XÁC MINH LẠI (không chỉ theo báo cáo agent)
-Cả ba đều **accept-then-miscompile** (lớp BUG#53) và đều có ma trận đối chứng trong
+**#2 đã ĐÓNG 2026-07-31; còn #1 (đang sửa) và #3.** Cả ba đều **accept-then-miscompile** (lớp BUG#53) và đều có ma trận đối chứng trong
 `bin/probe4/`. Repro chạy bằng `sh bin/probe4/run.sh <file.ax>`.
 ⚠️ Driver cần subcommand `build`: `bin/axc_native.exe build f.ax -o out.exe -O0`. **Thiếu `build`
 thì nó exit 0 mà KHÔNG sinh file** — đừng đọc đó là build thành công (tôi đã mắc đúng bẫy này).
@@ -49,17 +49,24 @@ thì nó exit 0 mà KHÔNG sinh file** — đừng đọc đó là build thành 
    phải chạy CẢ HAI. ⚠️ `knowledge/bugs.md:1015-1019` khẳng định *"`let x: f64 = 3` → OK"* — **câu đó
    SAI và chưa từng được kiểm**. **ĐANG SỬA** (sub-agent, kèm invariant §9: `OP_ICONST` không được
    mang type_id float).
-2. **Dynamic dispatch bỏ HẾT coercion cho ĐỐI SỐ** — `i.c32(1.5)` callee nhận đúng **0.0**. Xác minh:
-   `probe4/f1.ax` exit **61** (đúng phải 42). Root: `typecheck.ax:4336` chỉ phân giải **kiểu KẾT QUẢ**
-   từ contract; `interface_method_sig` (`:1742`) chỉ expose `out_nparams`+`out_ret`, **không có
-   accessor cho kiểu THAM SỐ** ⇒ args suy với `expected = TYPE_UNKNOWN`. **Cùng họ hệt hai bug đã sửa
-   hôm nay** (`376af08` kiểu trả về, `0bf34ee` type arg tường minh) — lần này là THAM SỐ. Frontend ⇒
-   **A==B**. Dấu hiệu "đúng 0.0 chứ không phải rác": low 32 bit của double 1,5 là 0, `movss` đọc đúng
-   chỗ đó. Int narrowing "đúng" chỉ do **tình cờ** (sub-register GPR trùng nhau, không cần lệnh nào).
+2. ✅ **ĐÃ SỬA 2026-07-31** — dynamic dispatch bỏ hết coercion cho đối số (`i.c32(1.5)` → 0.0):
+   [bug-iface-dispatch-arg-coercion](bug-iface-dispatch-arg-coercion.md), RFC 0029 §9, oracle
+   `bin/t_ifacefloatarg.ax` (hiệu chuẩn **30** trước → **42** sau). ⚠ Chẩn đoán “sửa ở typecheck, gate
+   A==B” **SAI PHA**: coercion đối số của method call nằm ở `air_builder.coerce_float_arg` (đọc kiểu
+   tham số từ **SYMBOL callee**), dispatch không có symbol ⇒ phải publish signature của interface cho
+   backend. Gate thực tế **A==B==C**. ⚠ `probe4/f1.ax` nay ra **110** chứ không phải 42 — vì chạm một
+   defect **KHÁC, có từ trước**: f32 **RETURN** qua dispatch đọc thanh ghi cũ khi lời gọi dispatch trước
+   đó cũng trả f32 và có đối số (`bin/probe5/r6e.ax` = **101** trên CẢ compiler cũ lẫn mới).
 3. **`let a: i64 = 3.0` được NHẬN, cho ra bit pattern IEEE thô** — `probe4/g13.ax` exit **3** (i64 giữ
    `0x4008000000000000`). **Spec ĐÃ chốt hướng này**: `knowledge/bugs.md:1015` — *"float → int: CẤM
    ngầm, phải `as`"* ⇒ **REJECT + chẩn đoán**, KHÔNG cần user quyết (khác ca `u8 = 300` ở §CẦN USER
    QUYẾT, ca đó chưa có phán quyết). Frontend ⇒ A==B.
+4. ⚠ **MỚI, lộ ra 2026-07-31 (có từ trước, KHÔNG phải regression)** — **f32 RETURN qua dynamic
+   dispatch đọc thanh ghi CŨ** khi lời gọi dispatch **ngay trước** cũng trả **f32** *và có đối số*:
+   lời gọi thứ hai trả về giá trị của lời gọi thứ nhất. Repro `bin/probe5/r6e.ax` = **101** (đúng phải 42)
+   trên **CẢ** `axc_native` cũ lẫn compiler mới ⇒ đã quy trách nhiệm rõ, không đổ cho fix #2. Thu hẹp sẵn:
+   hai lời gọi f32 **không đối số** liên tiếp thì ĐÚNG (`r6f.ax` = 42); riêng **vị trí slot** không phải nguyên
+   nhân (`r6c.ax` = 42, slot 5). Đây là lý do `probe4/f1.ax` dừng ở **110** thay vì 42.
 
 ## ✅ Bề mặt đã QUÉT SẠCH (probe4, bankable làm oracle — đừng quét lại)
 Option/Result payload × type class (`a1`–`a4`), generics × type class kể cả type arg tường minh

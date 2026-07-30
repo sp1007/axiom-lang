@@ -5514,6 +5514,13 @@ pub struct TypeTable:
     // RFC 0029: per-interface ordered method-name list (vtable slot layout). A
     // TYPE_KIND_INTERFACE entry's `extra` field holds (iface_methods index + 1); 0 = none.
     pub iface_methods: U32VecVec
+    // RFC 0029: per-interface DECLARED method signatures, index-aligned with
+    // `iface_methods` (same outer index, same slot order). Element = a TYPE_KIND_FUNC
+    // type id whose params include `self` at index 0 (0 = signature not resolved).
+    // Dynamic dispatch has no concrete callee symbol, so this is the ONLY place the
+    // declared parameter types of `iface.m(args)` are available to the backend â€” which
+    // needs them to coerce arguments exactly as a static call does (coerce_float_arg).
+    pub iface_method_sigs: U32VecVec
 
 pub fn new_type_table() -> ptr[TypeTable]:
     // size_of (not a hardcoded byte count) so adding a field can't desync the alloc.
@@ -5524,7 +5531,8 @@ pub fn new_type_table() -> ptr[TypeTable]:
     tt.sumtypes = SumInfoVec(data: null as ptr[SumInfo], len: 0, cap: 0)
     tt.generic_insts = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
     tt.iface_methods = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
-    
+    tt.iface_method_sigs = U32VecVec(data: null as ptr[U32Vec], len: 0, cap: 0)
+
     // 0: Unknown sentinel
     (&tt.entries).push(TypeEntry(kind: TYPE_KIND_PRIMITIVE, padding: 0 as u8, flags: 0 as u16, name_id: 0 as u32, size: 0 as u32, align: 0 as u32, extra: 0 as u32))
     
@@ -5812,7 +5820,35 @@ pub fn register_interface_methods(self: ptr[TypeTable], iface_type_id: u32, meth
         return
     let idx = self.iface_methods.len as u32
     (&self.iface_methods).push(methods)
+    // Keep `iface_method_sigs` index-aligned with `iface_methods` (one entry per
+    // interface, pushed together) so a single `extra` index addresses both. The
+    // signature list starts EMPTY: parameter types are resolved later, once struct
+    // types exist (typecheck Phase 2.5 -> set_interface_method_sigs).
+    (&self.iface_method_sigs).push(U32Vec(data: null as ptr[u32], len: 0, cap: 0))
     self.entries.data[iface_type_id as i64].extra = idx + 1 as u32
+
+// RFC 0029: record the resolved DECLARED signatures of an interface's methods. `sigs`
+// is slot-aligned with `interface_method_list` (element = a TYPE_KIND_FUNC type id, or
+// 0 when the signature could not be resolved).
+pub fn set_interface_method_sigs(self: ptr[TypeTable], iface_type_id: u32, sigs: U32Vec):
+    if iface_type_id == 0 as u32 or (iface_type_id as i64) >= self.entries.len:
+        return
+    let ex = self.entries.data[iface_type_id as i64].extra
+    if ex == 0 as u32 or ((ex - 1 as u32) as i64) >= self.iface_method_sigs.len:
+        return
+    self.iface_method_sigs.data[(ex - 1 as u32) as i64] = sigs
+
+// RFC 0029: the declared FUNC type of the interface method occupying `slot` (0 when
+// unknown). Used by dynamic dispatch to obtain the parameter types a static call reads
+// off the resolved callee symbol.
+pub fn interface_method_sig_type(self: ptr[TypeTable], iface_type_id: u32, slot: i64) -> u32:
+    if iface_type_id != 0 as u32 and (iface_type_id as i64) < self.entries.len:
+        let ex = self.entries.data[iface_type_id as i64].extra
+        if ex != 0 as u32 and ((ex - 1 as u32) as i64) < self.iface_method_sigs.len:
+            let sigs = self.iface_method_sigs.data[(ex - 1 as u32) as i64]
+            if slot >= 0 as i64 and slot < sigs.len:
+                return sigs.data[slot]
+    return 0 as u32
 
 // RFC 0029: return the ordered method-name list for an interface type (or an empty list
 // if none was registered). Slot index = position in this list.
@@ -8138,7 +8174,7 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
 pub fn interface_method_ret_type(mut self: ptr[TypeChecker], iface_type: u32, method_name_id: u32) -> u32:
     mut nparams := 0 as i64
     mut ret := 0 as u32
-    if self.interface_method_sig(iface_type, method_name_id, &nparams, &ret):
+    if self.interface_method_sig(iface_type, method_name_id, &nparams, &ret, null as ptr[U32Vec]):
         return ret
     return 0 as u32
 
@@ -8190,9 +8226,18 @@ pub fn interface_missing_method(self: ptr[TypeChecker], struct_type: u32, iface_
 // interface decl or the method sig is NOT in self.tree (a cross-tree / imported interface) so
 // callers conservatively SKIP the signature check rather than risk a false reject on a decl
 // they cannot see. `out_nparams` excludes the `self` receiver.
-pub fn interface_method_sig(mut self: ptr[TypeChecker], iface_type: u32, method_name_id: u32, out_nparams: ptr[i64], out_ret: ptr[u32]) -> bool:
+//
+// `out_params` (optional â€” pass null to skip) receives the DECLARED parameter types in
+// declaration order, INCLUDING the `self` receiver at index 0, so the list lines up with a
+// FUNC type's params and with air_builder's argument index (which counts the receiver).
+// It is filled from the SAME walk that counts the params: the parameter types and the
+// param count must never be produced by two different traversals (that drift is what made
+// interface_method_ret_type return 0 forever â€” see the note above it).
+pub fn interface_method_sig(mut self: ptr[TypeChecker], iface_type: u32, method_name_id: u32, out_nparams: ptr[i64], out_ret: ptr[u32], out_params: ptr[U32Vec]) -> bool:
     out_nparams[0] = -1 as i64
     out_ret[0] = 0 as u32
+    if out_params != null as ptr[U32Vec]:
+        out_params[0] = U32Vec(data: null as ptr[u32], len: 0, cap: 0)
     if (iface_type as i64) >= self.types.entries.len:
         return false
     mut di := 0 as i64
@@ -8216,11 +8261,20 @@ pub fn interface_method_sig(mut self: ptr[TypeChecker], iface_type: u32, method_
                 if cn.kind == NODE_METHOD_SIG and cn.payload == method_name_id:
                     mut nparams := 0 as i64
                     mut ret := 0 as u32
+                    mut ptypes := new_u32_vec()
                     mut mc := cn.first_child
                     while mc != 0 as u32:
                         let mcn = self.tree.nodes.data[mc as i64]
                         if mcn.kind == NODE_PARAM_DECL:
                             nparams = nparams + 1 as i64
+                            if out_params != null as ptr[U32Vec]:
+                                // A param decl's first child is its type annotation; an
+                                // unresolvable one (e.g. `self: Self`) infers to 0, which
+                                // consumers read as "unknown, do not coerce".
+                                mut pty := 0 as u32
+                                if mcn.first_child != 0 as u32:
+                                    pty = self.infer_node(mcn.first_child, TYPE_UNKNOWN)
+                                (&ptypes).push(pty)
                         elif is_type_annotation_node(mcn.kind):
                             ret = self.infer_node(mc, TYPE_UNKNOWN)
                         mc = mcn.next_sibling
@@ -8228,6 +8282,10 @@ pub fn interface_method_sig(mut self: ptr[TypeChecker], iface_type: u32, method_
                         nparams = nparams - 1 as i64   // drop the `self` receiver
                     out_nparams[0] = nparams
                     out_ret[0] = ret
+                    if out_params != null as ptr[U32Vec]:
+                        out_params[0] = ptypes
+                    elif ptypes.data != null as ptr[u32]:
+                        @free(ptypes.data as ptr[u8])
                     return true
                 ch = cn.next_sibling
         di = di + 1 as i64
@@ -8281,7 +8339,7 @@ pub fn interface_signature_mismatch(mut self: ptr[TypeChecker], struct_type: u32
         let m = methods.data[k]
         mut inp := -1 as i64
         mut iret := 0 as u32
-        let have_iface = self.interface_method_sig(iface_type, m, &inp, &iret)
+        let have_iface = self.interface_method_sig(iface_type, m, &inp, &iret, null as ptr[U32Vec])
         mut snp := -1 as i64
         mut sret := 0 as u32
         let have_struct = self.struct_method_sig(struct_type, m, &snp, &sret)
@@ -9342,6 +9400,45 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
         if node2.kind == NODE_FUNC_DECL:
             self.pre_infer_func_signature(i as u32)
         i = i + 1
+
+    // Phase 2.5 (RFC 0029): resolve each interface method's DECLARED signature and publish
+    // it on the interface's type entry, slot-aligned with the method-name list registered in
+    // Phase 0.0.
+    //
+    // WHY this has to exist: a STATIC call `s.m(1.5)` is coerced by air_builder's
+    // coerce_float_arg, which reads the param types off the RESOLVED callee symbol. Dynamic
+    // dispatch `i.m(1.5)` has no callee symbol by construction, so that coercion silently did
+    // nothing and EVERY argument needing a conversion was passed unconverted â€” an f64 literal
+    // landed in an f32 slot and the callee read its zero low half as 0.0 (accept-then-
+    // miscompile, BUG#53 class). The interface contract is the only signature available at a
+    // dispatch site, so it is recorded here and the backend coerces against it.
+    //
+    // Runs AFTER Phase 1/2 so a struct-typed parameter resolves, and BEFORE Phase 3 so every
+    // dispatch site lowered later sees a populated table. Enumerates interface SYMBOLS (not
+    // NODE_INTERFACE_DECL nodes) and delegates the signature extraction to
+    // interface_method_sig â€” one walk, one predicate.
+    i = 0 as i64
+    while i < self.symtable.symbols.len:
+        let isym = self.symtable.symbols.data[i]
+        if isym.kind == SYM_INTERFACE and isym.type_id != 0 as u32 and (isym.type_id as i64) < self.types.entries.len:
+            if self.types.entries.data[isym.type_id as i64].kind == TYPE_KIND_INTERFACE:
+                let imethods = self.types.interface_method_list(isym.type_id)
+                if imethods.len > 0 as i64:
+                    mut isigs := new_u32_vec()
+                    mut mk := 0 as i64
+                    while mk < imethods.len:
+                        mut inp2 := -1 as i64
+                        mut iret2 := 0 as u32
+                        mut iparams := U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+                        mut sig_ty := 0 as u32
+                        if self.interface_method_sig(isym.type_id, imethods.data[mk], &inp2, &iret2, &iparams):
+                            // The FUNC type owns `iparams` (register_function stores it as-is),
+                            // matching how every other signature is registered.
+                            sig_ty = self.types.register_function(iparams, iret2)
+                        (&isigs).push(sig_ty)
+                        mk = mk + 1 as i64
+                    self.types.set_interface_method_sigs(isym.type_id, isigs)
+        i = i + 1 as i64
 
     // Phase 3: Traversal type inference
     self.infer_node(0 as u32, TYPE_UNKNOWN)
@@ -16685,12 +16782,22 @@ pub fn coerce_struct_to_interface(mut self: ptr[FuncLowering], target_type: u32,
 pub fn coerce_float_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
     if fn_sym == 0 as u32 or (fn_sym as i64) >= self.mb.symbols.symbols.len:
         return arg_reg
+    let sym = self.mb.symbols.symbols.data[fn_sym as i64]
+    if sym.kind != SYM_FUNC:
+        return arg_reg
+    return self.coerce_float_arg_ft(sym.type_id, param_idx, arg_node, arg_reg)
+
+// The FUNC-TYPE half of coerce_float_arg. A static call names a callee SYMBOL and reads the
+// signature off it; dynamic dispatch (RFC 0029) has no callee symbol and carries the declared
+// signature as a FUNC type on the interface's type entry instead. Both must apply the SAME
+// coercion â€” an f64 literal handed to an f32 parameter has to be narrowed no matter how the
+// call is dispatched â€” so the rule lives here once and both entry points call it.
+pub fn coerce_float_arg_ft(mut self: ptr[FuncLowering], fn_type: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
+    if fn_type == 0 as u32 or (fn_type as i64) >= self.mb.typetable.entries.len:
+        return arg_reg
     if self.mb.node_types == null as ptr[u32]:
         return arg_reg
-    let sym = self.mb.symbols.symbols.data[fn_sym as i64]
-    if sym.kind != SYM_FUNC or sym.type_id == 0 as u32 or (sym.type_id as i64) >= self.mb.typetable.entries.len:
-        return arg_reg
-    let e = self.mb.typetable.entries.data[sym.type_id as i64]
+    let e = self.mb.typetable.entries.data[fn_type as i64]
     if e.kind != TYPE_KIND_FUNC:
         return arg_reg
     let fi = self.mb.typetable.funcs.data[e.extra as i64]
@@ -16794,12 +16901,24 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                         self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: 4 as u32, dest: datar, src1: boxr, src2: 0 as u32))
                         let fptrr = self.fb.fresh_reg()
                         self.fb.emit(AirInst(opcode: OP_GET_FIELD, type_id: 4 as u32, dest: fptrr, src1: boxr, src2: (slot + 1 as i64) as u32))
+                        // RFC 0029: the method's DECLARED signature (params include `self` at
+                        // index 0, so the running `icount` IS the param index). A static call
+                        // reads this off the resolved callee symbol; dispatch has no callee
+                        // symbol, so it comes from the interface's type entry (typecheck Phase
+                        // 2.5). Without coercing here, EVERY argument needing a conversion was
+                        // passed unconverted -- an f64 literal handed to an f32 parameter left
+                        // the callee reading the double's zero low half, so `i.m(1.5)` arrived
+                        // as exactly 0.0 (accept-then-miscompile, BUG#53 class). 0 = signature
+                        // unknown (cross-tree interface) -> coerce_float_arg_ft is a no-op.
+                        let isig = self.mb.typetable.interface_method_sig_type(if_rty, slot)
                         mut iargs := @alloc(64 * 8) as ptr[u32]
                         iargs[0] = datar
                         mut icount := 1 as u32
                         mut ia := callee_node.next_sibling
                         while ia != 0 as u32:
-                            iargs[icount as i64] = self.lower_expr(ia)
+                            mut iareg := self.lower_expr(ia)
+                            iareg = self.coerce_float_arg_ft(isig, icount, ia, iareg)
+                            iargs[icount as i64] = iareg
                             icount = icount + 1 as u32
                             ia = self.mb.tree.nodes.data[ia as i64].next_sibling
                         let iarg_start = self.fb.emit_extra(icount)
