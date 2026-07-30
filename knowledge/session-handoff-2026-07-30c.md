@@ -9,12 +9,21 @@ metadata:
 # HANDOFF 2026-07-30c — 1f shipped GREEN; next target is LOOP alignment
 
 ## State of the tree
-- **HEAD = `d454c49`**, pushed to `main`. Clean except two things that are NOT mine and should be
+- **HEAD = `376af08`**, pushed to `main`. Clean except two things that are NOT mine and should be
   left alone: `CLAUDE.md` (user's context-hygiene edit) and untracked `.claude/settings.json`.
-- **Daily driver `bin/axc_native.exe` = B == C `B71DF82A`**, built from HEAD source.
-- **BASELINE = 581 / 581, 0 failed.** Was 578; `t_floatparamchain` adds 3 rows (main list at -O1
-  plus the O2 and O3 sweep). Below 581 is RED.
-- `bin/axc_pre1f.exe` is a reference compiler built from `HEAD~1` source, kept for paired pricing.
+- **Daily driver `bin/axc_native.exe` = `A == B 4F359C9B`** (the interface-return fix; frontend-only
+  so A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
+- **BASELINE = 584 / 584, 0 failed.** Was 578; `t_floatparamchain` (+3) and `t_ifaceretnoni64` (+3)
+  each add a main-list row plus the O2/O3 sweep. Below 584 is RED.
+- `bin/axc_pre1f.exe` is a reference compiler built from pre-1f source, kept for paired pricing.
+
+## 🔴 OPEN BUG carried forward — start here if picking up cold
+`let a = <in-struct method>()` returning **f32/f64** infers the wrong type and yields 0. Proven to
+be INFERENCE, not codegen (`let a: f64 = …` is correct). The same method via **UFCS or as a free
+function is fine**, and i64/str returns from in-struct methods are fine — it is a three-way
+combination. The whole float suite misses it because `t_interpolation`/`t_colorhsl`/`t_quatrot` are
+free functions. Full control matrix + repros: [[bug-method-float-return-let-infer]],
+`bin/probe/zf_*.ax`. Frontend-only ⇒ A==B gate.
 
 ## What shipped
 **Peephole 1f `collapse_copy_chain`** — the non-adjacent copy-chain collapse that was left RED and
