@@ -569,6 +569,31 @@ pub fn lower_expr(mut self: ptr[FuncLowering], idx: u32) -> u32:
         return self.lower_if_expr(idx, node)
     return 0 as u32
 
+// RFC 0006: materialize a float constant from its numeric VALUE into `reg`.
+// SINGLE emit site, shared by lower_float_lit (a float literal) and lower_int_lit
+// (an integer literal that typecheck ADOPTED into a float type per RFC 0005, e.g.
+// `let a: f64 = 3`). Sharing is the point: these were two independent copies of one
+// mechanism, and the int-literal copy was never extended — it emitted OP_ICONST
+// with a float type_id, so the value was materialized as `mov imm` into a
+// GPR-classed vreg while the float ops read the aliasing XMM, and `let a: f64 = 3`
+// evaluated to exactly 0.0 (or a stale float). [[bug-int-literal-float-type-iconst]]
+//
+// Carries the IEEE-754 bit pattern split across src1(low32)/src2(high32). For f32
+// narrow to single precision FIRST so the 32-bit pattern lands in src1 (src2 = 0).
+fn emit_float_const(mut self: ptr[FuncLowering], reg: u32, type_id: u32, value: f64):
+    mut fv := value
+    mut bits := (&fv as ptr[u64])[0]
+    if type_id == 9 as u32:
+        mut f32v := fv as f32
+        bits = ((&f32v as ptr[u32])[0]) as u64
+    self.fb.emit(AirInst(
+        opcode: OP_FCONST,
+        type_id: type_id,
+        dest: reg,
+        src1: (bits & (0xFFFFFFFF as u64)) as u32,
+        src2: (bits >> (32 as u64)) as u32,
+    ))
+
 pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let reg = self.fb.fresh_reg()
     let text = self.mb.get_token_text(node.token_idx)
@@ -578,6 +603,14 @@ pub fn lower_int_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u3
     mut type_id := 3 as u32 // default i32
     if self.mb.node_types != null as ptr[u32] and self.mb.node_types[idx as i64] != 0 as u32:
         type_id = self.mb.node_types[idx as i64] as u32
+
+    // RFC 0005 lets typecheck adopt this INTEGER literal into a float type
+    // (`let a: f64 = 3`, `c + 3`, `3 / 2.0`, `3 as f64`, a float field/element/arg/
+    // return). After that adoption nothing downstream believes a conversion is owed,
+    // so the constant must be materialized here as a FLOAT — see emit_float_const.
+    if type_id == 9 as u32 or type_id == 10 as u32:
+        self.emit_float_const(reg, type_id, val as f64)
+        return reg
 
     self.fb.emit(AirInst(
         opcode: OP_ICONST,
@@ -599,22 +632,10 @@ pub fn lower_float_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         type_id = self.mb.node_types[idx as i64] as u32
 
     // RFC 0006: carry the IEEE-754 bit pattern of the constant (NOT the
-    // int-truncated value) split across src1(low32)/src2(high32). For f32 narrow
-    // to single precision first so the 32-bit pattern lands in src1 (src2=0).
-    // (`fv as f32` here is a dead path during self-host — the compiler source has
-    // no f32 literals — so it cannot affect the fixpoint; it only runs when
-    // compiling user code with f32 literals.)
-    mut bits := (&fv as ptr[u64])[0]
-    if type_id == 9 as u32:
-        mut f32v := fv as f32
-        bits = ((&f32v as ptr[u32])[0]) as u64
-    self.fb.emit(AirInst(
-        opcode: OP_FCONST,
-        type_id: type_id,
-        dest: reg,
-        src1: (bits & (0xFFFFFFFF as u64)) as u32,
-        src2: (bits >> (32 as u64)) as u32,
-    ))
+    // int-truncated value). The f32-narrowing path inside emit_float_const is dead
+    // during self-host — the compiler source has no f32 literals — so it cannot
+    // affect the fixpoint; it only runs when compiling user code with f32 literals.
+    self.emit_float_const(reg, type_id, fv)
     return reg
 
 pub fn lower_bool_lit(mut self: ptr[FuncLowering], node: AstNode) -> u32:
@@ -5465,6 +5486,46 @@ pub fn ensure_return(mut self: ptr[FuncLowering]):
         ))
         self.terminated = true
 
+// §9 AIR VERIFICATION — a constant's OPCODE must agree with its TYPE CLASS.
+// OP_ICONST materializes an integer immediate (`mov imm` into a GPR-classed vreg);
+// OP_FCONST materializes an IEEE-754 pattern into an XMM-classed one. So an
+// OP_ICONST carrying type_id 9/10 is not a cosmetic mislabel, it is a MISCOMPILE:
+// the bits are written where the float ops never read them (and the hw index
+// aliases, R10 ≡ XMM10), which is why `let a: f64 = 3` evaluated to exactly 0.0 —
+// accepted by typecheck, wrong at runtime, invisible to every gate.
+// This invariant was true-but-unchecked for the whole life of the bug, and a fact
+// that lives only in a comment protects only its own line; a check protects every
+// emit site, including ones written later. Fatal on purpose: the alternative is a
+// plausible-looking binary that computes the wrong number.
+// Calibrated by reverting lower_int_lit's float clause — the build then names
+// `main / #N OP_ICONST type_id=10` at the exact defect.
+fn verify_air_const_types(f: ptr[AirFunc], fn_name: str) -> i64:
+    mut bad := 0 as i64
+    mut i := 0 as i64
+    while i < f.insts.len:
+        let inst = &f.insts.data[i]
+        let t = inst.type_id as u32
+        let is_float_ty = t == 9 as u32 or t == 10 as u32
+        if inst.opcode == OP_ICONST and is_float_ty:
+            bad = bad + 1 as i64
+            if bad <= 10 as i64:
+                ax_puts_local("internal error: OP_ICONST carries a float type_id (integer bits would land where float ops never read them) in:")
+                ax_puts_local(fn_name)
+                ax_printf_local("  inst #%d OP_ICONST dest=%d type_id=%d\n", i, inst.dest as i64, t as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        // Symmetric direction, same cost. A float pattern parked in a GPR-classed
+        // vreg is the same defect mirrored; type_id 0 is NOT flagged (unset/void is
+        // used legitimately elsewhere in AIR) — only a definite integer type is.
+        if inst.opcode == OP_FCONST and t != 0 as u32 and not is_float_ty:
+            bad = bad + 1 as i64
+            if bad <= 10 as i64:
+                ax_puts_local("internal error: OP_FCONST carries a non-float type_id in:")
+                ax_puts_local(fn_name)
+                ax_printf_local("  inst #%d OP_FCONST dest=%d type_id=%d\n", i, inst.dest as i64, t as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        i = i + 1
+    if bad > 0 as i64:
+        ax_panic("air: constant opcode disagrees with its type class (see report above)")
+    return bad
+
 pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFunc:
     if node.flags & FLAG_IS_EXTERN != 0 as u16:
         return AirFunc(sym_id: 0 as u32, name: 0 as u32, params: new_u32_vec(), ret_type: 0 as u32, blocks: new_basic_block_vec(), insts: new_air_inst_vec(), extras: new_u32_vec(), is_async: false, is_extern: true, block_instrs: new_u32_vec(), block_succs: new_u32_vec(), block_preds: new_u32_vec())
@@ -5548,6 +5609,8 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
     fl.params.data = null as ptr[u32]
 
     free_func_lowering(fl)
+    // §9: verify the AIR this function just produced before it leaves the builder.
+    let const_bad = verify_air_const_types(&fn_built, fname)
     return fn_built
 
 // RFC 0017 / BUG#82: fold a module-level global's constant initializer as a floating

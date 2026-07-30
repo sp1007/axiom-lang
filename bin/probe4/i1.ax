@@ -1,0 +1,14 @@
+// I1: STILL OPEN after the int-literal fix — an int literal into an f64 STRUCT FIELD.
+// AIR: `%2: t3 = iconst %3` then setfld into an f64 field, i.e. typecheck never hinted
+// the float type here (typecheck.ax:5208 hints TYPE_F32 only — see i2.ax, which PASSES).
+// Expected 42; measured 2 — not even 0.0: the field holds the raw integer 3 reinterpreted
+// as a double (a denormal), so `== 0.0` is false too. [[bug-int-literal-float-type-iconst]]
+struct H:
+    a: f64
+fn main() -> i64:
+    let h = H(a: 3)
+    if h.a > 2.99 and h.a < 3.01:
+        return 42
+    if h.a == 0.0:
+        return 1
+    return 2

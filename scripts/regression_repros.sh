@@ -53,6 +53,7 @@ rows=(
   "t_methfloatret|exit|42"
   "t_methretbreadth|exit|42"
   "t_genexplicitfloatarg|exit|42"
+  "t_intlitfloatctx|exit|42"
   "t_param5|out|A38"
   "t_strip|out|a.b len exit print"
   "t_alias|out|A=1 B=0 "
@@ -852,6 +853,7 @@ opt_rows=(
   "t_methfloatret|42"
   "t_methretbreadth|42"
   "t_genexplicitfloatarg|42"
+  "t_intlitfloatctx|42"
   "t_negmatch|70"
   "t_twoarraypayload|104"
   "t_arrayctorgeneric|80"
@@ -901,7 +903,10 @@ done
 # Kept to the O0-sensitive cases rather than sweeping all 564 at -O0: a full sweep doubles
 # runtime for one extra failure. `AXEXTRA=-O0 scripts/regression_repros.sh` runs the whole
 # suite that way when a wider check is wanted (it is green as of 2026-07-30).
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36"; do
+# t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
+# -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
+# a single opt level is not evidence.
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

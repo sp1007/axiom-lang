@@ -77,6 +77,21 @@ VD chốt:
 `lower_binary_expr` phải phát OP_FADD/FSUB/FMUL/FDIV khi kiểu kết quả là f32/f64 (thay vì
 luôn OP_IADD…). OP_F* selector đã có (x86_selector.ax:899). Float const = fconst (đã có).
 
+### 7.1 Bất biến AIR: opcode của HẰNG phải khớp LỚP KIỂU (thêm 2026-07-30)
+
+"Float const = fconst" ở trên là ĐIỀU KIỆN, không phải mô tả: **một hằng mang type_id f32/f64
+BẮT BUỘC là OP_FCONST**, vì OP_ICONST vật chất hoá bằng `mov imm` vào vreg lớp GPR còn lệnh
+float đọc XMM (hw index alias, `R10 ≡ XMM10`) ⇒ giá trị đọc lại là **0.0 hoặc giá trị cũ còn
+sót**. Đây chính là lỗ hổng đã khiến `let a: f64 = 3` cho 0.0: RFC 0005 adopt f64 cho literal
+nguyên (đúng), nhưng `lower_int_lit` vẫn phát OP_ICONST với type_id đó — nghĩa là bất biến này
+ĐÚNG-MÀ-KHÔNG-ĐƯỢC-KIỂM suốt thời gian tồn tại của bug.
+
+Nay được **cưỡng chế** (CLAUDE.md §9): `air_builder.verify_air_const_types` chạy trên mọi hàm
+khi rời AIR builder, panic nếu OP_ICONST mang type_id 9/10 (hoặc OP_FCONST mang một kiểu
+nguyên xác định; type_id 0 = unset không bị bắt). Mọi chỗ phát hằng float phải đi qua **một**
+điểm duy nhất `emit_float_const`. Chi tiết + calibration:
+[[bug-int-literal-float-type-iconst]].
+
 ## 8. Test plan
 
 `tests/arith/` (oracle Python, bit-exact): mode `int` / `float` / `mixed` (cast) /

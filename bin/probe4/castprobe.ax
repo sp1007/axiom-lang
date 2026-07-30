@@ -1,0 +1,20 @@
+// Does explicit i64-VARIABLE -> f64 cast work on the current compiler?
+// Needed because the fix computes `val as f64` inside the compiler itself.
+fn main() -> i64:
+    mut n := 0 as i64
+    n = 3
+    let d = n as f64
+    mut m := 0 as i64
+    if d > 2.99 and d < 3.01:
+        m = m + 1
+    // bit pattern of 3.0 is 0x4008000000000000
+    mut dv := d
+    let bits = (&dv as ptr[u64])[0]
+    if bits == 0x4008000000000000 as u64:
+        m = m + 2
+    let f = n as f32
+    mut fv := f
+    let fb = (&fv as ptr[u32])[0]
+    if fb == 0x40400000 as u32:
+        m = m + 4
+    return 100 + m

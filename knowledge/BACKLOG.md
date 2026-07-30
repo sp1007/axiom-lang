@@ -12,8 +12,8 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 ---
 
 ## Trạng thái cây (cập nhật 2026-07-30)
-- **HEAD `e3222f0`**, main. Driver `bin/axc_native.exe` = **A==B `105B623C`**.
-- **BASELINE = 593/593.** Dưới 593 là RED.
+- **HEAD `e3222f0`** + fix int-literal→float, main. Driver `bin/axc_native.exe` = **A==B==C `824807E2`**.
+- **BASELINE = 597/597** (593 + 4 hàng của `t_intlitfloatctx`: main, O2, O3, O0). Dưới 597 là RED.
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
 - Handoff mới nhất: [session-handoff-2026-07-30c](session-handoff-2026-07-30c.md).
 
@@ -59,6 +59,12 @@ qua biên 6 đối số + xen kẽ int/float (`c3`), cast/độ chính xác f32 
 element non-i64 (`e3`), interface breadth (`e4` — chỉ hàng f32 fail = bug #2).
 
 ## 🔜 TASK MỞ (tự làm được, theo thứ tự giá trị)
+0. **int → f64 tại các VỊ TRÍ mà typecheck không lan hint** (field f64, param f64, param method f64,
+   biểu thức `let c: f64 = 3 + 1`) → [bug-int-literal-float-type-iconst](bug-int-literal-float-type-iconst.md)
+   mục "STILL OPEN". Bản **f32** của cả bốn đều ĐÚNG vì `typecheck.ax:5208` chỉ hint `TYPE_F32` ⇒
+   lại là "hai bản sao trôi lệch". Sửa ở typecheck ⇒ **có thể đổi codegen của chính compiler**
+   (fixpoint không miễn nhiễm) ⇒ chạy full gate. Hàng 4/8/9/11 đã đặt chỗ sẵn trong
+   `bin/t_intlitfloatctx.ax`. Probe: `bin/probe4/{i1,i2,h4,g5,g6,g7,g13}.ax`.
 1. **Probing tiếp các bề mặt chưa quét** — đã trả lãi **3 miscompile trong phiên 07-30c, rồi 3 nữa
    trong phiên 07-30d**. Dùng skill `axiom-bug-probe`. Bề mặt sạch bank ở `bin/t_methretbreadth.ax`
    + danh sách probe4 ngay trên.
