@@ -1,0 +1,10 @@
+// RFC 0006 §6.1 (E3030): assignment to a struct FIELD. A field declaration always carries an
+// explicit type, so `s.v = 300` (v: u8) names the type as plainly as an annotated `let`. This
+// position silently WRAPPED to 44 before the reject (a byte store truncates) -- a different
+// failure mode from `let x: u8 = 300` (which kept 300), same silent-data-loss verdict.
+struct S:
+    v: u8
+fn main() -> i64:
+    mut s = S(v: 1)
+    s.v = 300
+    return s.v as i64

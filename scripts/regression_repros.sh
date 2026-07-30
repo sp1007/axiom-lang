@@ -728,6 +728,31 @@ rows=(
   # value. Needs >8 live f64 with the OPERATION'S OWN dst among the spilled values;
   # returns 11 instead of 42 on the pre-fix compiler at every -O level.
   "t_fspilldst|exit|42"
+  # RFC 0006 §6.1 (user decision D1, 2026-07-30): an integer literal that does not fit the
+  # type the programmer ANNOTATED is REJECTED (E3030) instead of being bound at full width.
+  # `let x: u8 = 300` used to compile and hold 300 -- a u8 that was not a u8, no diagnostic.
+  # One reject row per POSITION so a partial regression names the position that broke; each
+  # of these seven built (exit 44 / 255) on the pre-fix compiler. NOTE the trap: 44 is
+  # `300 & 255`, so through an exit code the OLD behaviour looked like correct narrowing --
+  # it was not ([[lesson-exit-code-8bit-masking]]).
+  "t_intrangelet|reject|"
+  "t_intrangeassign|reject|"
+  "t_intrangearg|reject|"
+  "t_intrangefield|reject|"
+  "t_intrangearr|reject|"
+  "t_intrangeret|reject|"
+  "t_intrangeneg|reject|"
+  # ...and the two positions whose MECHANISM is different, hence their own rows: the explicit
+  # type-argument call form `pick[u8](300,1)` (callee is a NODE_INDEX_EXPR that bypasses generic
+  # instantiation — it kept 300, see bin/probe2/w3.ax) and assignment to a struct FIELD (which
+  # silently WRAPPED to 44 instead, a byte store truncating). A METHOD argument
+  # (`s.setv(300)`) is still NOT covered — see the RFC's out-of-scope list.
+  "t_intrangegen|reject|"
+  "t_intrangefieldasg|reject|"
+  # ...and the positive partner: every in-range boundary (u8 0/255, i8 -128/127, i16/u16/
+  # i32/u32 edges), the 64-bit widths that are deliberately NOT range-checked, `300 as u8`,
+  # and the UNANNOTATED magnitude-inference precedent must all still compile and run.
+  "t_intrangeok|exit|42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

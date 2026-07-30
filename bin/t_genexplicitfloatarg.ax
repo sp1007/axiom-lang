@@ -57,11 +57,12 @@ fn main() -> i64:
     // INFERRED type args from f32 variables
     if (pick(p, q) * 100.0) as i64 != 250:
         return 7
-    // integer explicit type args. IN-RANGE values only, deliberately: what an OUT-OF-RANGE
-    // literal should do for a narrow type (`pick[u8](300, 1)`) is an open question, not
-    // established behaviour, so asserting it here would pin an unverified expectation. The
-    // measured fact is that it keeps 300 rather than narrowing to 44, in the generic AND the
-    // plain `let x: u8 = 300` case alike -- recorded separately, not judged here.
+    // integer explicit type args. IN-RANGE values only, deliberately: an OUT-OF-RANGE
+    // literal at a narrow type (`pick[u8](300, 1)`) was an open question when this oracle
+    // was written -- it kept 300 rather than narrowing to 44, in the generic AND the plain
+    // `let x: u8 = 300` case alike. DECIDED 2026-07-30 (user, D1): such a literal is now
+    // REJECTED, error[E3030] (RFC 0006 §6.1), covered by bin/t_intrange*.ax. This row stays
+    // in-range so it keeps testing what it was written to test (float/int type args).
     if pick[i32](250, 1) as i64 != 250:
         return 8
     if pick[u8](250, 1) as i64 != 250:

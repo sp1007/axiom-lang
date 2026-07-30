@@ -12,8 +12,9 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 ---
 
 ## Trạng thái cây (cập nhật 2026-07-30)
-- **HEAD `e3222f0`** + fix int-literal→float, main. Driver `bin/axc_native.exe` = **A==B==C `824807E2`**.
-- **BASELINE = 597/597** (593 + 4 hàng của `t_intlitfloatctx`: main, O2, O3, O0). Dưới 597 là RED.
+- **HEAD `e3222f0`** + fix int-literal→float + reject E3030, main. Driver `bin/axc_native.exe` = **A==B `78295509`**.
+- **BASELINE = 607/607** (597 + 10 hàng E3030: 9 reject `t_intrange*` + `t_intrangeok`). Dưới 607 là RED.
+  Driver sau khi ship E3030 = **A==B `78295509`**.
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
 - Handoff mới nhất: [session-handoff-2026-07-30c](session-handoff-2026-07-30c.md).
 
@@ -22,8 +23,17 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
    13,7% (floor) > toàn bộ biên gate 15%; mẫu số của tỉ số **tự nó bimodal** theo parity của dịch
    16 byte. Tăng n không cứu. ⇒ **phát biểu lại gate** (so phân phối, hoặc ghim MỘT layout tham
    chiếu cho cả hai phía) **hoặc loại fib khỏi gate**. Chi tiết: handoff 07-30c.
-2. **`let x: u8 = 300` giữ nguyên 300, không chẩn đoán** → [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md).
-   Ba đáp án đều bảo vệ được; **khuyến nghị: REJECT** (duy nhất không có kết cục âm thầm).
+   *(mục 2 — `let x: u8 = 300` — ĐÃ ĐƯỢC QUYẾT 2026-07-30, xem ngay dưới)*
+
+## ✅ ĐÃ QUYẾT (D1) — không hỏi lại
+- **`let x: u8 = 300` ⇒ REJECT `error[E3030]`** (user chốt 2026-07-30, option 2). Literal nguyên
+  ngoài dải của kiểu **được chú thích tường minh** là lỗi biên dịch tại 8 vị trí (let/assign vào
+  binding có chú thích/gán field struct/đối số/đối số dạng `f[u8](..)`/field init/phần tử mảng
+  có kiểu chú thích/`return`). **CHƯA phủ: đối số của PHƯƠNG THỨC** `s.setv(300)` (vẫn wrap 44). `300 as u8`
+  vẫn là cách nói "cố ý cắt bit". Suy-theo-độ-lớn ở vị trí KHÔNG chú thích giữ nguyên (tiền lệ
+  [[bug-negative-literal-compare-o0]]). Spec: **RFC 0006 §6.1**; chi tiết + phần CHƯA phủ
+  (i64/u64, biểu thức hằng gấp, narrowing từ giá trị runtime):
+  [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md).
 
 ## 🐞 BUG MỞ — probe4 tìm ra 2026-07-30, ĐÃ TỰ XÁC MINH LẠI (không chỉ theo báo cáo agent)
 Cả ba đều **accept-then-miscompile** (lớp BUG#53) và đều có ma trận đối chứng trong

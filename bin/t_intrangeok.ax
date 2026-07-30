@@ -1,0 +1,113 @@
+// RFC 0006 §6.1 — POSITIVE guard for the out-of-range-integer-literal reject (E3030).
+// Every row here is IN RANGE (or deliberately outside the rule's scope) and must keep
+// compiling and running exactly as before the reject was added. This is the calibration
+// partner of t_intrange{let,assign,arg,field,arr,ret}.ax, which must be REJECTED.
+//
+// Distinct small return code per row so a failure names itself; 42 = all rows pass.
+// Every expected value is compared IN-PROGRAM and stays < 256 at the exit
+// ([[lesson-exit-code-8bit-masking]]).
+
+struct Holder:
+    b: u8
+    s: i8
+    w: u16
+
+fn takes_u8(v: u8) -> i64:
+    return v as i64
+
+fn ret_u8_max() -> u8:
+    return 255
+
+fn ret_i8_min() -> i8:
+    return -128
+
+fn main() -> i64:
+    // --- unsigned upper/lower bounds -------------------------------------------------
+    let a: u8 = 255
+    if a as i64 != 255:
+        return 1
+    let b: u8 = 0
+    if b as i64 != 0:
+        return 2
+    let c: u16 = 65535
+    if c as i64 != 65535:
+        return 3
+    let d: u32 = 4294967295
+    if d as i64 != 4294967295:
+        return 4
+
+    // --- signed bounds, including the asymmetric minimum -----------------------------
+    let e: i8 = -128
+    if e as i64 != -128:
+        return 5
+    let f: i8 = 127
+    if f as i64 != 127:
+        return 6
+    let g: i16 = -32768
+    if g as i64 != -32768:
+        return 7
+    let h: i16 = 32767
+    if h as i64 != 32767:
+        return 8
+    let i: i32 = -2147483648
+    if i as i64 != -2147483648:
+        return 9
+    let j: i32 = 2147483647
+    if j as i64 != 2147483647:
+        return 10
+
+    // --- 64-bit widths are NOT range-checked: a u64 literal above i64-max parses to a
+    // negative i64 and must stay legal (same fact t_u64cmp pins).
+    let k: u64 = 18000000000000000000
+    if k as i64 >= 0 as i64:
+        return 11
+
+    // --- an explicit cast is still the way to say "truncate" -------------------------
+    let m: u8 = 300 as u8
+    if m as i64 != 44:
+        return 12
+    let n: i8 = 300 as i8
+    if n as i64 != 44:
+        return 13
+
+    // --- PRECEDENT GUARD: an UNANNOTATED literal too large for i32 still infers i64 by
+    // magnitude ([[bug-negative-literal-compare-o0]]). No annotation exists there, so the
+    // reject must not reach it.
+    let big = 3000000000
+    if big != 3000000000:
+        return 14
+    let negbig = -3000000000
+    if negbig != -3000000000:
+        return 15
+    mut inferred := 0
+    inferred = 5000000000
+    if inferred != 5000000000:
+        return 16
+
+    // --- in-range values at every other annotated position ---------------------------
+    if takes_u8(255) != 255:
+        return 17
+    let hold = Holder(b: 255, s: -128, w: 65535)
+    if hold.b as i64 != 255:
+        return 18
+    if hold.s as i64 != -128:
+        return 19
+    if hold.w as i64 != 65535:
+        return 20
+    let arr: [u8; 3] = [0, 128, 255]
+    if arr[0] as i64 != 0:
+        return 21
+    if arr[2] as i64 != 255:
+        return 22
+    if ret_u8_max() as i64 != 255:
+        return 23
+    if ret_i8_min() as i64 != -128:
+        return 24
+
+    // --- an annotated binding assigned an IN-RANGE literal is untouched --------------
+    mut p: u8 = 1
+    p = 255
+    if p as i64 != 255:
+        return 25
+
+    return 42

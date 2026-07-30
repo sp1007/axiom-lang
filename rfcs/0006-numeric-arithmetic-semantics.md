@@ -72,6 +72,69 @@ VD chốt:
 - Hệ quả test: ca tràn-hằng = EXPECT-ERROR (tests/arith/diag/e08-e10), KHÔNG phải value
   test. Runtime-wrap value test cần toán hạng non-const (opaque) — TODO harness.
 
+### 6.1 REQUIREMENT — literal nguyên ngoài dải của kiểu ĐƯỢC CHÚ THÍCH ⇒ LỖI (user chốt D1, 2026-07-30) ✅ IMPLEMENTED
+
+Đây là phần ĐẦU TIÊN của "constant-overflow checker" ở §6 được cưỡng chế, và là quyết
+định cuối cho §9 mục 4 **ở ca literal trần**.
+
+**Quy tắc (bắt buộc):** một **literal nguyên** viết tại vị trí mà lập trình viên đã
+**CHÚ THÍCH TƯỜNG MINH** một kiểu nguyên hẹp, mà giá trị KHÔNG biểu diễn được trong kiểu
+đó ⇒ **`error[E3030]`** + `diags_count++` (driver dừng trước codegen). KHÔNG mở rộng kiểu
+ngầm, KHÔNG wrap ngầm. Muốn cắt bit thì viết `300 as u8` (vẫn hợp lệ, không đổi).
+
+Lý do chọn REJECT (thay vì wrap hoặc widen): đây là lựa chọn DUY NHẤT không có kết cục
+IM LẶNG. Giá trị đã biết lúc biên dịch; người dùng TỰ VIẾT kiểu đó, nên widen là phản lại
+điều họ viết, còn wrap là mất dữ liệu không báo. Trước thay đổi này `let x: u8 = 300` giữ
+nguyên **300** trong một ô u8 — `u8` không chứa u8 — đúng dạng accept-then-miscompile mà
+quy ước BUG#53 của dự án coi là kết cục tệ nhất.
+
+**Vị trí áp dụng** (mọi vị trí có kiểu do người dùng viết):
+
+| Vị trí | Ví dụ bị từ chối | Hành vi CŨ (đã đo) |
+|---|---|---|
+| `let`/`const` có chú thích (kể cả global) | `let x: u8 = 300` | giữ **300** |
+| gán vào binding CÓ chú thích | `mut x: u8 = 1; x = 300` | giữ 300 |
+| gán vào **field struct** | `struct S: v: u8` … `s.v = 300` | **wrap 44** (store 1 byte) |
+| đối số của tham số hẹp | `fn f(v: u8)` … `f(300)` | giữ 300 |
+| đối số ở dạng **type-arg tường minh** | `fn pick[T](a:T,b:T)` … `pick[u8](300,1)` | giữ 300 |
+| khởi tạo field struct | `struct P: a: u8` … `P(a: 300)` | wrap 44 |
+| phần tử mảng có kiểu phần tử chú thích | `let a: [u8;3] = [1,2,300]` | wrap 44 |
+| `return` của hàm khai báo kiểu hẹp | `fn g() -> u8: return 300` | giữ 300 |
+
+**Dải hợp lệ** (bất đối xứng của min có dấu là bắt buộc đúng): i8 `-128..127`, i16
+`-32768..32767`, i32 `-2147483648..2147483647`, u8 `0..255`, u16 `0..65535`, u32
+`0..4294967295`. Mọi `u*` từ chối MỌI literal âm.
+
+**Ngoài phạm vi (có chủ ý, ghi rõ để không bị hiểu là thiếu sót):**
+1. **i64/isize**: `parse_comptime_int` wrap ở 64 bit nên literal vượt i64 không phân biệt
+   được với literal hợp lệ ⇒ không kiểm.
+2. **u64/usize**: chỉ từ chối literal ÂM cú pháp. Literal không dấu > i64-max (vd
+   `let big: u64 = 18000000000000000000`) parse ra i64 âm và PHẢI tiếp tục hợp lệ
+   (t_u64cmp ghim điều này).
+3. **Biểu thức hằng gấp** (`let b: u8 = 255 + 1` ở §6) — vẫn TODO; cần constant folding ở
+   typecheck, không thuộc thay đổi này.
+3b. ⚠️ **ĐỐI SỐ của lời gọi PHƯƠNG THỨC** (`s.setv(300)` với `setv(self, x: u8)`) — **CHƯA
+   phủ**, đã đo: vẫn nhận và **wrap âm thầm về 44**. Cơ chế khác (phân giải method đi qua
+   khối quét `mfi.params` ở `typecheck.ax` ~L4640, không dùng `fp_data`); đó là chỗ móc nếu
+   mở rộng. Cũng chưa phủ: **gán vào PHẦN TỬ mảng** (`a[0] = 300`) — cố ý, vì kiểu phần tử có
+   thể do suy diễn (`mut a = [1,2,3]` là `[i32;3]`), không phải kiểu người dùng viết.
+4. **Vị trí KHÔNG chú thích**: literal quá lớn cho i32 vẫn suy ra i64 **theo độ lớn**
+   ([[bug-negative-literal-compare-o0]]) — ca đó không có chú thích nào để tôn trọng.
+   Cũng vì vậy `let arr = [1, 5000000000]` (kiểu phần tử suy từ phần tử ĐẦU) vẫn giữ hành
+   vi cũ (phần tử 2 bị cắt) — một khiếm khuyết RIÊNG, không do quy tắc này.
+
+**Mã lỗi:** `E3030` (dải type errors E3000–E3999, docs/CONTRIBUTING.md). Chẩn đoán in
+giá trị, kiểu, dải hợp lệ, đoạn mã nguồn + caret, và chỉ ra cách sửa (`300 as u8`). KHÔNG
+in `file.ax:line:col`: `tree.src` của frontend là compilation unit đã NỐI (driver ghép
+std/*.ax trước file người dùng) nên số dòng tuyệt đối sẽ chỉ sai file — snippet + caret là
+phần chính xác được của format §8 hiện nay.
+
+**Cài đặt & test:** `typecheck.ax::check_int_lit_range` (+ 7 call site);
+`bin/t_intrange{let,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows,
+`bin/t_intrangeok.ax` = mọi biên hợp lệ + tiền lệ suy-theo-độ-lớn phải vẫn chạy (42).
+Gate: A==B `78295509`, regression **607/607** ở default và `-O0`. Audit breakage: 0 hit trên
+source của chính compiler (qua cả hai hop) và trên 833 file `.ax` khác trong repo.
+
 ## 7. Float codegen (BUG#33)
 
 `lower_binary_expr` phải phát OP_FADD/FSUB/FMUL/FDIV khi kiểu kết quả là f32/f64 (thay vì
@@ -103,4 +166,6 @@ nguyên xác định; type_id 0 = unset không bị bắt). Mọi chỗ phát h�
 1. Float codegen (OP_F* theo kiểu) + int→float/f64→f32 cvt thật — làm `float`+`mixed`+`imix` pass.
 2. Unsigned div/mod (DIV) + shift signed-aware — làm `int` pass hết.
 3. Conversion policy diagnostics (float→int, f64→f32 → lỗi) + float-literal-adopt (mở rộng RFC 0005).
-4. int→int narrowing policy (quyết định cuối).
+4. int→int narrowing policy (quyết định cuối). — **ca literal trần đã chốt & implement:
+   §6.1 (REJECT, E3030, 2026-07-30)**; còn lại: biểu thức hằng gấp, và narrowing từ một
+   GIÁ TRỊ runtime (`let x: u8 = some_i64`) vẫn chưa quyết.
