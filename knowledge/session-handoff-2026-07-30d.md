@@ -85,6 +85,29 @@ Verified by me row by row, not accepted on report. `let a: f64 = 3` now yields 3
 generic explicit type args, `lower_int_lit` vs `lower_float_lit`, and the `TYPE_F32`-only hint). "One
 walk, one predicate" is now written into the brief for every fix in this family.
 
+## ✅ USER DECISION TAKEN 2026-07-30 (D1) — out-of-range narrow int literal ⇒ **REJECT**
+Recorded here by the orchestrator **on purpose, independently of the agent implementing it**: a user
+decision is a durable fact and must not depend on a sub-agent surviving to write it down (the previous
+agent died mid-task to a quota limit, which would have taken the decision with it).
+
+The user answered "làm theo khuyến nghị" to the standing recommendation, i.e. option **(2) REJECT with
+a diagnostic** for `let x: u8 = 300` (today: silently accepted, binding holds 300, no diagnostic).
+Rationale, preserved: it is the only option with **no silent outcome** — the value is known at compile
+time, the user wrote the annotation themselves, so widening betrays what they wrote and wrapping loses
+data; `300 as u8` stays the way to say "I intend to truncate". Consistent with the project's BUG#53
+convention that accept-then-miscompile is the worst outcome.
+    ⚠️ **The precedent that must NOT break**: [[bug-negative-literal-compare-o0]] deliberately made a
+literal too large for i32 infer **i64 by MAGNITUDE**. That position has **no annotation to respect**;
+this one does. So the rejection must fire **only where an explicit narrow type was written**, and
+magnitude inference at unannotated positions must be left exactly as it is — with a control row
+proving it, not an assumption.
+    Implementation in flight; if no commit exists, re-dispatch. Decision file to convert from question
+to decided: `knowledge/question-out-of-range-narrow-int-literal.md`.
+    Still NOT decided, and I have deliberately given no recommendation on it: **the fib M6 gate**
+(restate it over distributions / pin one reference layout on both sides, or exclude fib). Its ratio's
+denominator is bimodal with spread larger than the whole gate margin, so it is a specification choice,
+not a measurement to redo.
+
 ## ⛔ NEXT TASK — probe4 bug #2, NOT STARTED (quota, not a technical block)
 Dispatched at 08:43 and it died immediately on **"session limit · resets 7:40pm Asia/Saigon"**, having
 produced only "I'll start by orienting myself". **Tree verified clean — nothing half-done, nothing to
