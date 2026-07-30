@@ -101,8 +101,35 @@ literal too large for i32 infer **i64 by MAGNITUDE**. That position has **no ann
 this one does. So the rejection must fire **only where an explicit narrow type was written**, and
 magnitude inference at unannotated positions must be left exactly as it is — with a control row
 proving it, not an assumption.
-    Implementation in flight; if no commit exists, re-dispatch. Decision file to convert from question
-to decided: `knowledge/question-out-of-range-narrow-int-literal.md`.
+    ✅ **SHIPPED `abfe985` as `error[E3030]`** (+ `063119f` backlink). Gate **A==B `78295509`**,
+regression **607/607 at default and -O0** — I re-ran the suite myself and got the same 607/0, rather
+than accepting the reported number. Rendered diagnostic, verified by running it:
+
+    error[E3030]: integer literal `300` is out of range for type `u8` (valid range 0 to 255)
+       |
+       |     let x: u8 = 300
+       |                 ^^^ value does not fit in `u8`
+       |
+       = note: the type `u8` is written explicitly at this `let` binding, so the literal is not widened to fit
+       = help: write `300 as u8` if truncating to `u8` is intended
+
+The `note` is what makes the diagnostic match the *reason* REJECT was chosen — it names the user's own
+annotation as the thing being respected, instead of just reporting a range violation.
+    ⭐ **The old behaviour had TWO distinct silent failure modes, not one**: `let`/param/`return` kept
+the full **300** (an out-of-range value living inside a narrow type), while struct field / array
+element / field-initializer quietly **wrapped to 44**. Both are now rejected. 8 positions covered.
+    ⚠️ **Still uncovered, and I verified each rather than trusting the report**: **method arguments**
+(`s.setv(300)` still compiles and wraps to 44 — method params resolve through the `mfi.params` symbol
+scan, not the `fp_data` path; that scan is the hook) — this is the main gap; plus `a[0] = 300`
+(deliberate: element types can be inferred, not user-written) and folded constants like `255 + 1`
+(needs constant folding). Precedent verified intact: `t_negbiglitcmp` 42, i.e. an **unannotated**
+large literal still infers i64 by magnitude.
+    ⚠️ Breakage audit came back clean — 0 E3030 hits in the compiler's own 2 MB source through **both**
+fixpoint hops, and across 833 other `.ax` files. Sharpest edge for a future user is
+`let mask: i32 = 0xFFFFFFFF`, now rejected (it genuinely does not fit i32; `as i32` or `u32` is the fix).
+    ⚠️ A false alarm of mine worth remembering: `t_u64cmp` exits **7** and I briefly read that as a
+regression. The suite *expects* 7. **Look up a test's expected value before calling it a failure** —
+assuming "42 means pass" invents regressions that do not exist.
     Still NOT decided, and I have deliberately given no recommendation on it: **the fib M6 gate**
 (restate it over distributions / pin one reference layout on both sides, or exclude fib). Its ratio's
 denominator is bimodal with spread larger than the whole gate margin, so it is a specification choice,
