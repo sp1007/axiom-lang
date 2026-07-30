@@ -1,0 +1,52 @@
+// Oracle for PEEPHOLE 1f (collapse_copy_chain), x86_selector.ax.
+//
+// This test checks VALUES, not just that the program runs. That is deliberate: the fold moves the
+// write of a destination EARLIER, so a version that hoists an update above a reader of the OLD
+// value still produces a plausible-looking number. `sumto` below is exactly that trap -- with the
+// ADD and the decrement transposed it returns 45 instead of 55, and both look like sums. An oracle
+// asserting only "exit 0" would pass on a miscompile, which is how t_spawnsmoke stayed green for
+// months while never dispatching to its handler.
+//
+// Shapes covered:
+//   sumto  two loop-carried params where `acc + n` reads the OLD n -- the ordering hazard, and the
+//          shape 1f was written for (its pre-regalloc stream carries the double chain
+//          v6->v10->v1 / v7->v11->v2).
+//   twin   three tail-recursive params, so the chain links are further apart than in sumto and the
+//          intervening instructions belong to a DIFFERENT parameter -- this is the case adjacency
+//          could never match.
+//   walk   the same double-update shape as a while loop rather than tail recursion, so the fold is
+//          exercised on a real back edge and not only on the self-call path.
+fn sumto(n: i64, acc: i64) -> i64:
+    if n == 0:
+        return acc
+    return sumto(n - 1, acc + n)
+
+fn twin(a: i64, b: i64, k: i64) -> i64:
+    if k == 0:
+        return a - b
+    return twin(a + k, b + 1, k - 1)
+
+fn walk(n: i64) -> i64:
+    mut x: i64 = 0
+    mut y: i64 = 1
+    mut i: i64 = 0
+    while i < n:
+        x = x + y
+        y = y + 2
+        i = i + 1
+    return x - y
+
+fn main() -> i64:
+    // 1+2+...+10. Transposing the update against the read gives 45.
+    let s = sumto(10, 0)
+    if s != 55:
+        return 1
+    // a = 5+4+3+2+1 = 15, b = 5 => 10.
+    let t = twin(0, 0, 5)
+    if t != 10:
+        return 2
+    // x = 1,4,9,16 and y = 3,5,7,9 => 16-9 = 7.
+    let w = walk(4)
+    if w != 7:
+        return 3
+    return 42
