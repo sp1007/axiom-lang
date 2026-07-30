@@ -58,6 +58,32 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
   ⇒ Nới cửa sổ cho fold PHYS-source (bỏ qua MỘT lệnh không chạm `vT`) là ứng viên **ĐÃ ĐƯỢC
   XÁC NHẬN TRÊN IR THẬT**, khác hẳn giả thuyết shape-A đã bị bác ở trên.
 
+  ### ✅✅⭐⭐ ĐÃ ĐỌC ĐƯỢC STREAM THẬT CỦA `sumto` (23 lệnh) — **CHUỖI COPY ĐÔI trong THÂN VÒNG**
+  Dump có **định danh trên dòng header** và **không cắt output** (filter `params==2 && len==23`,
+  đã xác minh là duy nhất). Thân vòng = lệnh **4…17**, tức **chạy 20M lần** (khác hẳn chuỗi entry):
+  ```
+   5: MOV v1,v1          <- self-move (đã thử xoá: không lợi, xem mục trên)
+   6: MOV v2,v2          <- self-move
+   7: CMP v1, imm(0)     <- ✅ fold so-sánh-0 hôm nay ĐÃ ăn (src1 kind=IMM)
+   8: JCC
+  10: LEA v6,[v1-1]      <- ✅ lea fold đã ăn
+  11: MOV v7,v2   12: ADD v7,v1     <- dạng destructive qua temp v7
+  13: MOV v10,v6  14: MOV v11,v7    <- copy sang CẶP TEMP THỨ HAI
+  15: MOV v1,v10  16: MOV v2,v11    <- rồi mới vào tham số
+  17: JMP
+  ```
+  ⭐ **PHÁT HIỆN: `v6→v10→v1` và `v7→v11→v2` — CHUỖI COPY ĐÔI, 4 `mov` ở nơi 2 là đủ**, và lần này
+  chúng **NẰM TRONG THÂN VÒNG** (giữa LABEL@4 và JMP@17) ⇒ **trần giá trị là THẬT**, không phải
+  0,01% như chuỗi entry.
+  - Shape B đã ship (`LEA vT,[..] ; MOV vD,vT` → `LEA vD,[..]`) **cần LIỀN KỀ**: ở đây LEA@10 và
+    `MOV v10,v6`@13 cách **3 lệnh**.
+  - Rồi `MOV v10,v6`@13 → `MOV v1,v10`@15 cách **2 lệnh** (bị @14 xen giữa vì HAI tham số **xen kẽ
+    nhau**).
+  ⇒ **Ứng viên ĐÚNG, ĐÃ XÁC MINH TRÊN STREAM THẬT**: nới cửa sổ cho fold copy-chain, bỏ qua các
+  lệnh **không chạm vreg trung gian**. Đây là phiên bản ĐÚNG của cái tôi đã đoán sai ba lần trước.
+  ⚠️ **VẪN PHẢI ĐỊNH GIÁ TRƯỚC KHI CÀI** (NASM: thân vòng 8 lệnh hiện tại vs 6 lệnh sau khi gộp
+  chuỗi) — mọi ước lượng "bớt N lệnh" trong phiên này đều lệch, có lần lệch 1/3.
+
   ### ✅ ĐÃ GIẢI QUYẾT — **tôi ĐỌC SAI dump: hàm 17-lệnh KHÔNG PHẢI `sumto`**
   Dump lại, in **một dòng mỗi hàm** (name_id + số tham số + số lệnh), **KHÔNG lọc theo kích cỡ**:
   ```
