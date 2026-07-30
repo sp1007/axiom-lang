@@ -166,7 +166,56 @@ on BOTH sides**, `r6f` = 42 on both. My first attempt used `axc_pre1f` and read 
 reference** (it predates all of today's fixes), which proves nothing either way; the right boundary is
 the commit, not the oldest binary lying around.
 
-## ⏳ IN FLIGHT — backlog #4: f32 RETURN through dispatch reads a stale register
+## ⛔⛔⛔ THE BIGGEST FIND OF THE SESSION — wrong-METHOD selection by substring match
+**My framing of backlog #4 was WRONG, and the investigator refuted it instead of confirming it.**
+I briefed "f32 return through dispatch reads a stale register", with XMM2/XMM0 as the standing lead.
+Measured answer: **every element of that description — f32, return, register, preceding call,
+arguments — was a coincidence of the repro's method NAMES.**
+
+**Real defect: method-name resolution matches a plain name against a `_`-bounded SUBSTRING of another
+method's name, so the WRONG FUNCTION is selected.** In `r6e.ax` the interface declares `p32_r32` and
+`r32`; `p32_r32` ends with `_r32`, so **both vtable slots get `S.p32_r32`'s address**. `i.r32()` then
+calls a 2-parameter function through a 1-argument call site, and it returns its `a` parameter — read
+from whatever the previous call left in XMM1. The "stale register" was the *consequence*, not the cause.
+
+⭐ **The disassembly settles it beyond argument: `mov $0x2a` does not exist anywhere in the image.**
+`S.r32` was never referenced, so it was never emitted. The wrong callee is chosen before codegen; the
+backend faithfully compiled what it was handed.
+
+**Severity — this outranks everything else in the queue.** I re-ran all 19 rows myself; every one
+reproduces:
+- **Type-agnostic**: i64, f32, f64, str, bytes all broken (it picks the wrong *function*).
+- **Not dispatch-specific**: static calls fail identically (`m19_static` → 7).
+- **Plausible real code**: `buf_len` then `len` (`n1_realistic`) → 7.
+- **Two consequences worse than a wrong number**: **type confusion** (`n2_typeconf` — the wrongly
+  selected method returns f64 in XMM0 while the site reads RAX; **-O0 gives 100, -O1 gives 42**, the
+  two levels disagree) and **arity confusion** (`n3_arity` → 16, reading a parameter register the call
+  site never wrote). A pointer-returning method in the shadowing position is a segfault waiting.
+- Trigger, exactly: two methods **on the same receiver** where the shorter name is a `_`-bounded
+  **suffix** (or `__`-bounded infix) of the longer, **and the longer is declared first**. Order matters
+  (`m16` = 42), prefixes are safe (`m17` = 42), no-underscore boundaries are safe (`m18` = 42), free
+  functions are safe (`n4`), and colliding names on *different* receivers are saved by the `param[0]`
+  filter (`n5`).
+
+ROOT CAUSE `air_builder.ax:1597 match_mangled_method_raw_bytes`, the `pre_ok` window at `:1626-1643`:
+accepting a **single** `_` before the match. Introduced `ec5667d` (2026-06-02) — which is why the
+repro failed identically on both sides of `5359a39`. First miscompiling consumer:
+`find_struct_method_sym` (`:1673`) → `build_interface_value` (`:1731`), plus the UFCS repair loop
+(`:2144`), `resolve_op_method` (`:1118`), drop-glue (`:1289`), `ownership.ax:138/162`, and the
+diagnostic mirror `typecheck.ax:923`.
+
+⚠️ **Do NOT just tighten `pre_ok`**: a single `_` prefix is required by `_AX_std_push__i64`
+(`mono.ax:390`), and stdlib appears to lean on the loose rule as poor-man's namespacing
+(`std/os.ax:108 pathbuf_to_str` is what answers `p.to_str()`). Fix in flight is a **rank**: exact plain
+name = 2 (wins immediately), loose hit = 1 (kept as fallback) — re-deciding only the shadowed set —
+**reusing `match_base_names` (`:1548`)** rather than writing a fifth copy of a rule.
+
+RFC 0029:191 already says name **equality**, so this is an unambiguous bug, not a design question.
+
+## ✅ Backlog #4 as originally framed — DISSOLVED, not fixed
+There is no separate "f32 return stale register" defect. Do not go looking for one.
+
+## ⏳ SUPERSEDED framing (kept so the wrong lead is not re-followed)
 Trigger is a combination: an f32-returning dispatch call **that takes arguments**, followed by another
 f32-returning dispatch call. Established: `r6e`=101 both sides (pre-existing), `r6f`=42 (two **no-arg**
 f32 dispatch calls are fine), `r6c`=42 (slot index alone is not the trigger). **Success oracle: f1 →
