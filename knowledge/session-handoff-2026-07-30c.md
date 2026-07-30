@@ -74,21 +74,56 @@ that reason. Real startup floor here is **10.3 ms**, so a 20 ms sample is ~half 
 Unchanged code cannot get slower — only its address changed. **Third instance of this exact
 signature** (peephole 1e, unguarded 1f, guarded 1f).
 
-⭐⭐ **The key new fact: 16-byte FUNCTION-ENTRY alignment already shipped (`7ac52f5`), and it does
-not help here.** So the sensitivity is not function entry — it is the hot LOOP's offset inside the
-function crossing a 32/64-byte boundary (uop-cache / DSB line). AXIOM emits **no loop-header
-alignment** at all; `-falign-loops` is standard in clang/gcc for precisely this.
+⭐⭐ 16-byte FUNCTION-ENTRY alignment already shipped (`7ac52f5`) and does not help here. `main`'s
+entry IS 16-aligned (`0x1400063d0`, preceded by pad NOPs) while the loop header is `0x1400063f9` —
+**mod 16 = 9, not aligned at all.** AXIOM emits no loop-header alignment; `-falign-loops` is
+standard in clang/gcc. So "align loop headers" was the obvious next move.
 
-This is the highest-value next task because it is not merely a few percent: **it is what makes the
-M6-codegen milestone unmeasurable.** Every peephole for three sessions has had its real effect
-masked or faked by ±7–14% of layout noise.
+## ⛔⛔⛆ AND IT IS REFUTED — do not build a loop-alignment pass
+I wrote the above into this handoff as the evidenced next target, then tested it before writing any
+compiler code. **It does not survive.**
 
-⚠️ **Price it the way function-entry alignment had to be priced** (the 07-30a lesson, learned by
-reverting a good change on a bad measurement): a determinism fix must be measured on the
-**DIFFERENCE BETWEEN TWO BUILDS**, never on one build. Concretely — take two compilers that differ
-only by an upstream code-size perturbation (`axc_pre1f` vs HEAD is exactly such a pair, +16 bytes),
-and check that loop alignment shrinks the callloop delta between them toward zero. Measuring
-"aligned vs unaligned on one build" is the mistake that already cost one revert.
+First, arithmetic that should have been done immediately: **a +16-byte shift preserves address
+mod 16.** With function entries 16-aligned, a loop header's mod-16 offset is *invariant* across
+these builds by construction. So a 16-byte loop-align pass provably cannot explain the callloop
+delta, let alone fix it.
+
+Then the measurement, identical code at controlled layout offsets (`bin/bench/align`):
+
+    loop body @ mod64=54  ->  134.8 ms   (133.8 / 134.9 / 135.1 / 135.4)
+    loop body @ mod64=38  ->  153.1 ms   (152.0 / 153.5 / 153.8)
+    loop body @ mod64= 6  ->  167.3 ms
+
+**The FASTEST layout is the LEAST aligned one, and the SLOWEST is the nearly-64-aligned one.** An
+alignment pass has to pick a boundary; the optimum is not at a boundary. Refuted.
+
+⚠️ **And do not quote that 24% as a constant.** Re-running with the loop moved into its own
+function gave only a **4% spread that does not separate cleanly by address** (one binary at mod64=5
+read 59.3 ms while three others at the SAME address read 57.0/57.4/57.5). The layout term is real
+and shape-dependent, not a fixed tax. Both experiments are recorded in the header of
+`scripts/perf_layout_dist.ps1`.
+
+## ⇒ ACTUAL next target: fix the PROTOCOL, not the compiler
+`scripts/perf_layout_dist.ps1` (new, this session) builds one shape at N controlled layout offsets
+and reports **median + layout spread**, so a delta smaller than the spread is never read as a
+result. Zero compiler risk. Usage:
+
+    scripts\perf_layout_dist.ps1 -Compiler bin\axc_native.exe -Shape callloop
+    scripts\perf_layout_dist.ps1 -Compiler bin\axc_pre1f.exe  -Shape callloop
+
+Next concrete steps, in order:
+1. Add NASM-floor shapes to the same distribution treatment so the M6 gate ratio itself becomes
+   median-over-layouts instead of one draw. **This is what unblocks the milestone** — the current
+   gate reads one binary per side and its input carries an unquantified layout term.
+2. Re-decide 1f's callloop cost under the new protocol. The +5.7…+8.9% was measured single-binary
+   per side, so it may be partly or wholly a layout draw. **1f stays shipped meanwhile**: its
+   correctness gate is independent and GREEN, and the tailrec win was measured the same way the
+   callloop cost was.
+3. Only then revisit whether any codegen work is owed on callloop at all.
+
+⚠️ The 07-30a lesson still applies to anything determinism-flavoured: measure on the **DIFFERENCE
+BETWEEN TWO BUILDS**, never on one build. Judging a determinism fix by whether one number improved
+is the category error that already caused one unjust revert.
 
 ## Current M6-codegen standing (ONE suite run — do not bank it)
 `scripts/perf_suite.ps1`: fib **1.12x** ✅, xorshift **0.99x** ✅, arrwalk **1.08x** ✅,
