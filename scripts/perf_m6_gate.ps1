@@ -27,9 +27,17 @@
 # measured was the LEAST aligned (mod64=54) and the SLOWEST was the nearly-64-aligned one (mod64=6),
 # and the ordering by alignment differs between shapes. There is no boundary to align toward. See
 # the header of scripts/perf_layout_dist.ps1.
+#
+# 2026-07-30: arrwalk is now in the DEFAULT $Shapes list (it was already implemented as a shape --
+# commit 3ef26f0 -- but left out of the default array, and a stale "still has no distribution
+# reading" TODO survived in knowledge/ docs after the fact landed; both are now corrected). Re-run
+# at 10 layouts/side, best-of-9, to confirm the recorded number still reproduces:
+#   arrwalk   1.092x +- 1.7% PASS by 5.1%  (vs. recorded 1.087x +- 0.5% PASS by 5.5% -- consistent)
+#   xorshift  0.995x +- 0.8% PASS by 13.4% (control, unchanged -- confirms nothing else regressed)
+# startup floor at time of that run: 10.8 ms.
 param(
     [string]$Compiler = "bin\axc_native.exe",
-    [string[]]$Shapes = @("callloop", "fib", "xorshift"),
+    [string[]]$Shapes = @("callloop", "arrwalk", "fib", "xorshift"),
     [int]$Variants = 6,
     [int]$BestOf = 9,
     [string]$Opt = "-O3",

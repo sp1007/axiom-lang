@@ -26,13 +26,18 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
    Ba đáp án đều bảo vệ được; **khuyến nghị: REJECT** (duy nhất không có kết cục âm thầm).
 
 ## 🔜 TASK MỞ (tự làm được, theo thứ tự giá trị)
-1. **arrwalk chưa có bản đọc phân phối** — cần global array nên phải mở rộng template `hot()` trong
-   `scripts/perf_m6_gate.ps1`. Rủi ro compiler = 0. Đây là phần còn nợ của giao thức đo M6.
-2. **Probing tiếp các bề mặt chưa quét** — đã trả lãi **3 miscompile im lặng trong MỘT phiên**
+1. **Probing tiếp các bề mặt chưa quét** — đã trả lãi **3 miscompile im lặng trong MỘT phiên**
    (07-30c). Dùng skill `axiom-bug-probe`. Bề mặt đã quét sạch được bank ở `bin/t_methretbreadth.ax`.
-3. **Nợ kỹ thuật đo:** mọi tuyên bố perf phải là **median trên nhiều layout + spread bên cạnh**
+2. **Nợ kỹ thuật đo:** mọi tuyên bố perf phải là **median trên nhiều layout + spread bên cạnh**
    (`scripts/perf_layout_dist.ps1`, `scripts/perf_m6_gate.ps1`). **KHÔNG dùng `perf_suite.ps1`** để
    phán quyết gate nữa.
+
+## ✅ ĐÃ XONG gần đây (giao thức đo M6)
+- **arrwalk có bản đọc phân phối** — đã xong ở commit `3ef26f0` (cùng ngày, template `hot()` trong
+  `perf_m6_gate.ps1` đã mở rộng cho global array), rồi được thêm vào `$Shapes` mặc định 2026-07-30
+  (phiên sau). Đọc lại xác nhận: **1.087–1.092x, PASS** (2 lần đo độc lập), xorshift control không
+  đổi (0.995x) ⇒ không hồi quy. Dòng "còn nợ" trong handoff 07-30c bị để sót — đã sửa. Bài học: khi
+  một TODO được giải quyết bởi commit SAU trong CÙNG phiên, sửa luôn file chứa TODO trong commit đó.
 
 ## ⚠️ LATENT — cố ý KHÔNG sửa
 - **XMM0–XMM3 không được bảo vệ ở allocator** → [bug-float-arg-reg-unprotected](bug-float-arg-reg-unprotected.md).

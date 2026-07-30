@@ -248,8 +248,15 @@ sampled shifts happen to draw. **fib's gate needs restating** (compare distribut
 reference layout on both sides) **or fib excluded from the gate.** That is a D1-class decision —
 recorded here, deliberately NOT taken unilaterally, since D1 was the user's call.
 
-Remaining to do: arrwalk still has no distribution reading (it needs a global array, so the
-`hot()`-wrapper template in `perf_m6_gate.ps1` needs extending for it).
+DONE (2026-07-30, later same day, commit 3ef26f0 + follow-up): arrwalk now has a distribution
+reading. It needed a global array, so the `hot()`-wrapper template in `perf_m6_gate.ps1` was
+extended (splice point is module scope, so a `mut tbl: [i64; N]` above `hot()` just works) and
+arrwalk was added to the script's default `$Shapes`. Reads **1.087-1.092x, PASS** (two independent
+runs, both clearing the 15% gate by >5% outside the confidence band); xorshift control unchanged
+at 0.995x, confirming the template edit did not perturb the other shapes. This paragraph was left
+stale for a while after the fix landed -- the earlier "still to do" sentence pre-dated 3ef26f0 by a
+few minutes and nothing came back to delete it. Lesson: when a TODO is resolved by a LATER commit
+in the same session, edit the TODO's home file in that same commit, don't rely on remembering to.
 
 ⚠️ Two construction errors made while building that harness, both instructive:
 - The verdict first compared the gate margin to the raw **min-max spread**, which made every shape
