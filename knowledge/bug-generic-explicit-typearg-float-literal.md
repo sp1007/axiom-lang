@@ -40,7 +40,7 @@ is expected and the callee reads garbage.
 
 | probe | shape | why it matters |
 |---|---|---|
-| `t2` | `pick(2.5, q)`, T INFERRED f32 from an f32 var | ⭐ **the inferred path DOES coerce the float literal** |
+| `t2` | `pick(2.5, q)` with an f32 var | ⚠️ NOT a coercion — T resolves to **f64** and the var is widened; see the measured section |
 | `r2` | `pick[f32](p, q)` with f32 VARIABLES | not literal-specific to the callee — it is the LITERAL that is uncoerced |
 | `r4` | `pick(p, q)` inferred from f32 vars | — |
 | `r5` | `pick[f64](2.5, 1.0)` | f64 needs no coercion (it is the literal's default) |
@@ -55,6 +55,48 @@ is expected and the callee reads garbage.
 literal argument. Everything adjacent — inferred type args, generic methods, generic struct ctors,
 variant ctors, Vec/Option builtins, and integer literals on the very same explicit path — is
 correct.
+
+## ⭐⭐⭐ MECHANISM, MEASURED (2026-07-30, instrumented build) — read this before the sections below
+A temporary `GENPROBE` print of `inferred[]` inside the `is_generic_call` instantiation block
+(`typecheck.ax:4479`) settles it, and overturns two things I had written from reasoning alone.
+
+Counting probe lines per program (the bundled stdlib produces ~129 identical entries in every
+build, so only the TAIL matters):
+
+| program | tail entry | reading |
+|---|---|---|
+| `s5` `Vec[f32].push(2.5)` — WORKS | `ninf=1 inferred[0]=9` | `9 = TYPE_F32` ⇒ the f32 clause at `:4644` **fires** |
+| `t2` `pick(2.5, q)` inferred — WORKS | `calleekind=42 ninf=1 inferred[0]=10` | `10 = TYPE_F64` ⇒ **T resolved to f64, nothing was coerced** |
+| `t3` `idf[f32](2.5)` — BROKEN | **no user-level entry at all**, 129 lines | ⇒ **never reaches this block** |
+| `r5` `idf[f64](2.5)` — WORKS | **no user-level entry at all**, 129 lines | ⇒ also never reaches it |
+
+⇒ **The explicit-type-arg form `f[T](...)` does not go through the generic instantiation path in
+typecheck at all.** Its callee is a `NODE_INDEX_EXPR`, handled by the `4c66c86` fix which, in that
+commit's own words, "when the indexed symbol is `SYM_FUNC`, override result_type with the fn's RETURN
+type". It resolves the RESULT type and **never gives the ARGUMENTS an expected type** — even though
+the type arguments are stated outright at the call site. Hence no coercion anywhere, and the f32
+instance receives an f64 bit pattern.
+
+`r5` (`idf[f64]`) is not evidence of a working coercion — it works because f64 is the literal's
+default, so nothing needs coercing. Same for `t2`.
+
+### ⚠️ Second retraction: "the INFERRED path coerces the float literal correctly" is WRONG
+I wrote that from `t2` passing. The probe shows `t2` resolves **T = f64**, so its f32 variable is
+WIDENED to f64 and the whole call is consistently f64 — the literal was never narrowed. The only
+path that genuinely coerces a float literal is the **receiver-driven** one (`s5`, where the receiver
+`Vec[f32]` fixes `inferred[0] = TYPE_F32` and the `:4644` clause fires). So `s5` is the reference
+implementation, not `t2`.
+
+### Revised fix direction
+For a `NODE_INDEX_EXPR` callee resolving to a generic `SYM_FUNC`, bind the EXPLICIT type args and
+thread the resulting parameter types down as the arguments' expected types — ideally by routing that
+form through the same instantiation machinery the inferred form uses, so the existing `:4644` f32
+clause covers it for free rather than growing a second copy. Two copies of one walk is what produced
+[[bug-method-float-return-let-infer]]'s interface defect.
+
+⚠️ This is a change to how explicit-type-arg generic calls are typed, in self-host-critical
+inference. Confirm by probe that the clause FIRES on `t3` (per the peephole-1d lesson: prove it acts,
+not merely that it is safe), then gate `A==B` + full regression.
 
 ## ⚠️ RETRACTION — `t1` does not prove int literals are coerced
 I first read `pick[u8](300, 1) -> 44` as proof that the explicit-type-arg path coerces INT literals
