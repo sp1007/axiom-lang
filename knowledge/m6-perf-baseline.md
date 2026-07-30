@@ -81,8 +81,23 @@ pre-alloc khớp"* — và tôi vi phạm lại y nguyên, cùng một pass, cù
     nhau**).
   ⇒ **Ứng viên ĐÚNG, ĐÃ XÁC MINH TRÊN STREAM THẬT**: nới cửa sổ cho fold copy-chain, bỏ qua các
   lệnh **không chạm vreg trung gian**. Đây là phiên bản ĐÚNG của cái tôi đã đoán sai ba lần trước.
-  ⚠️ **VẪN PHẢI ĐỊNH GIÁ TRƯỚC KHI CÀI** (NASM: thân vòng 8 lệnh hiện tại vs 6 lệnh sau khi gộp
-  chuỗi) — mọi ước lượng "bớt N lệnh" trong phiên này đều lệch, có lần lệch 1/3.
+  ### 💰 GIÁ TRỊ **ĐÃ ĐƯỢC ĐỊNH GIÁ SẴN** — chuỗi copy này CHÍNH LÀ toàn bộ khe hở 1,32x
+  Không cần dựng biến thể NASM mới: **loop floor đã đo (16,2 ms) CHÍNH LÀ dạng đã gộp chuỗi.**
+  - AXIOM phát ra (disassembly, sau khi emitter bỏ self-move): **8 lệnh**
+    `cmp / je / lea / mov / add / mov / mov / jmp`
+  - Dạng gộp chuỗi: `ADD v2,v1` (acc+=n, **PHẢI trước** khi n đổi) rồi `LEA v1,[v1-1]` ⇒
+    `cmp / je / add / lea / jmp` = **5 lệnh**
+  - Loop floor tôi đã viết: `test / jz / lea / dec / jmp` = **5 lệnh** — **CÙNG CẤU TRÚC**.
+  ⇒ **3 lệnh dư của AXIOM ĐÚNG BẰNG 3 `mov` của chuỗi copy** ⇒ **gộp chuỗi = đạt floor**.
+  ⇒ **Giá trị = TOÀN BỘ khe hở: 21,4 → 16,2 ms ≈ −24% (1,32x → 1,00x)** trên shape này.
+
+  ⭐⭐⭐ **ĐIỀU NÀY ĐÓNG trạng thái "chưa biết nguyên nhân"**: cả con số **−15,27%** (đo NASM) lẫn
+  **1,32x so loop floor** đều được giải thích TRỌN VẸN bởi **một** nguyên nhân — chuỗi copy đôi ở
+  thân vòng. Ba giả thuyết trước (shape-A window / chuỗi entry / self-move) đều KHÔNG phải.
+
+  ⚠️ Lưu ý khi cài: **thứ tự bắt buộc** — `acc += n` dùng giá trị **CŨ** của `n`, nên `ADD` phải
+  đứng **TRƯỚC** `LEA v1,[v1-1]`. Một fold gộp chuỗi mà đảo thứ tự này sẽ **sai âm thầm** (và
+  `sumto(10,0)` vẫn ra số hợp lý ⇒ oracle phải kiểm GIÁ TRỊ, không chỉ kiểm chạy được).
 
   ### ✅ ĐÃ GIẢI QUYẾT — **tôi ĐỌC SAI dump: hàm 17-lệnh KHÔNG PHẢI `sumto`**
   Dump lại, in **một dòng mỗi hàm** (name_id + số tham số + số lệnh), **KHÔNG lọc theo kích cỡ**:
