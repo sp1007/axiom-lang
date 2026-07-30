@@ -53,6 +53,12 @@ rows=(
   "t_ifacefloatarg|exit|42"
   "t_methfloatret|exit|42"
   "t_methretbreadth|exit|42"
+  # Method selection must be by NAME EQUALITY, not by a `_`-bounded substring of a
+  # LONGER method's name on the same receiver (`S.p32_r32` answered `r32`). Hit static
+  # calls AND interface vtable slots; t_methshadowsig pins the signature-confusion
+  # forms (f64 return read as i64, extra param). Pre-fix: 1 / 1@-O0,2@-O1.
+  "t_methshadow|exit|42"
+  "t_methshadowsig|exit|42"
   "t_genexplicitfloatarg|exit|42"
   "t_intlitfloatctx|exit|42"
   "t_param5|out|A38"
@@ -879,6 +885,8 @@ opt_rows=(
   "t_ifacefloatarg|42"
   "t_methfloatret|42"
   "t_methretbreadth|42"
+  "t_methshadow|42"
+  "t_methshadowsig|42"
   "t_genexplicitfloatarg|42"
   "t_intlitfloatctx|42"
   "t_negmatch|70"
@@ -933,7 +941,7 @@ done
 # t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
 # -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
 # a single opt level is not evidence.
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

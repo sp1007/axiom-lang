@@ -1,0 +1,40 @@
+// ORACLE candidate: every axis of the method-name-shadowing defect in one file.
+// Each row sets a bit; a fully correct compiler returns 42.
+struct A:
+    n: i64
+    fn x_get(self: A) -> i64:
+        return 7
+    fn get(self: A) -> i64:
+        return 1
+interface I:
+    fn p_val(self: Self) -> i64
+    fn val(self: Self) -> i64
+struct B:
+    n: i64
+    fn p_val(self: B) -> i64:
+        return 7
+    fn val(self: B) -> i64:
+        return 1
+interface J:
+    fn p_s(self: Self) -> str
+    fn s(self: Self) -> str
+struct C:
+    n: i64
+    fn p_s(self: C) -> str:
+        return "wrong"
+    fn s(self: C) -> str:
+        return "right"
+fn main() -> i64:
+    mut acc := 0
+    let a = A(n: 0)
+    if a.get() == 1:
+        acc = acc + 1
+    let i: I = B(n: 0)
+    if i.val() == 1:
+        acc = acc + 1
+    let j: J = C(n: 0)
+    if j.s() == "right":
+        acc = acc + 1
+    if acc == 3:
+        return 42
+    return acc

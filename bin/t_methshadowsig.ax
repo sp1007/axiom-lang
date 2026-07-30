@@ -1,0 +1,39 @@
+// REGRESSION ORACLE (companion to t_methshadow): the WORSE forms of the
+// method-name-substring shadowing defect — the wrongly selected method has a
+// DIFFERENT SIGNATURE than the one that was called, so the miscompile is type
+// confusion / arity confusion, not merely a wrong number.
+//
+//   row 1: `a_r` returns f64 (XMM0) while the call site `s.r()` is typed i64 (RAX)
+//   row 2: `a_q` takes an extra param, so `t.q()` calls it with a garbage argument
+//
+// ⚠️ Row 1 DIVERGES with the opt level: against the pre-fix compiler this file
+// returned 1 at -O0 (the f64/i64 register-class confusion is visible) but 2 at
+// -O1/-O2 (constant folding hides row 1; only the arity row still fires). The
+// standalone probe of row 1 alone (bin/probe6/n2_typeconf.ax) was outright GREEN at
+// -O1 and RED at -O0. So this file has a row in the main list AND in the -O0-only
+// list of scripts/regression_repros.sh — a single opt level is not evidence here.
+
+struct S:
+    n: i64
+    fn a_r(self: S) -> f64:
+        return 2.5
+    fn r(self: S) -> i64:
+        return 42
+
+struct T:
+    n: i64
+    fn a_q(self: T, x: i64) -> i64:
+        return x
+    fn q(self: T) -> i64:
+        return 42
+
+fn main() -> i64:
+    let s = S(n: 0)
+    let v = s.r()
+    if v != 42:
+        return 1
+    let t = T(n: 0)
+    let w = t.q()
+    if w != 42:
+        return 2
+    return 42

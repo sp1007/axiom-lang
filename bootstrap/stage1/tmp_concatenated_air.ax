@@ -7401,10 +7401,18 @@ pub fn diag_resolve_op_method(self: ptr[TypeChecker], method_name: str, rec_type
         while re.kind == TYPE_KIND_POINTER or re.kind == TYPE_KIND_REF:
             rhs_unwrapped = re.extra as u32
             re = self.types.entries.data[rhs_unwrapped as i64]
+    // Same RANK-based pick as air_builder's resolve_op_method (an exactly-named
+    // method outranks a loose substring hit): a diagnostic that disagrees with the
+    // resolver is its own bug.
+    mut best := 0 as u32
+    mut best_rank := 0 as i64
     mut i := 0 as i64
     while i < self.symtable.symbols.len:
         let sym = self.symtable.symbols.data[i]
-        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.intern, sym.name_id, method_id):
+        mut rank := 0 as i64
+        if sym.kind == SYM_FUNC:
+            rank = method_name_rank_raw_bytes(self.intern, sym.name_id, method_id)
+        if rank != 0 as i64:
             if (sym.type_id as i64) < self.types.entries.len:
                 let t_entry = self.types.entries.data[sym.type_id as i64]
                 if t_entry.kind == TYPE_KIND_FUNC:
@@ -7428,9 +7436,13 @@ pub fn diag_resolve_op_method(self: ptr[TypeChecker], method_name: str, rec_type
                                     if sp == rhs_unwrapped:
                                         rhs_ok = true
                             if rhs_ok:
-                                return i as u32
+                                if rank >= 3 as i64:
+                                    return i as u32
+                                if rank > best_rank:
+                                    best_rank = rank
+                                    best = i as u32
         i = i + 1 as i64
-    return 0 as u32
+    return best
 
 pub fn infer_generic_type_args(self: ptr[TypeChecker], tn_idx: u32, arg_type: u32, gen_params: U32Vec, inferred: U32Vec, src_tree: ptr[AstTree]):
     if tn_idx == 0 as u32 or arg_type == 0 as u32:
@@ -16117,10 +16129,15 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
     mut rhs_unwrapped := 0 as u32
     if rhs_type != 0 as u32:
         rhs_unwrapped = self.op_unwrap_type(rhs_type)
+    mut best := 0 as u32
+    mut best_rank := 0 as i64
     mut i := 0 as i64
     while i < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[i]
-        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+        mut rank := 0 as i64
+        if sym.kind == SYM_FUNC:
+            rank = method_name_rank_raw_bytes(self.mb.pool, sym.name_id, method_id)
+        if rank != 0 as i64:
             let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
             if t_entry.kind == TYPE_KIND_FUNC:
                 let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
@@ -16137,9 +16154,15 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
                                 if sp == rhs_unwrapped:
                                     rhs_ok = true
                         if rhs_ok:
-                            return i as u32
+                            // Exactly-named operator method wins over a loose
+                            // substring hit (`Vec.eq` over `Vec.deep_eq`).
+                            if rank >= 3 as i64:
+                                return i as u32
+                            if rank > best_rank:
+                                best_rank = rank
+                                best = i as u32
         i = i + 1 as i64
-    return 0 as u32
+    return best
 
 // RFC 0014 (drop-glue): find a `<Type>.drop(self)` method for `rec_type`, or 0.
 // Mirrors resolve_op_method (same mangled-name substring match so an INLINE method
@@ -16288,19 +16311,31 @@ fn emit_owned_field_frees(mut self: ptr[FuncLowering], reg: u32, type_id: u32):
 pub fn resolve_drop_method(self: ptr[FuncLowering], rec_type: u32) -> u32:
     let method_id = self.mb.pool.intern("drop")
     let unwrapped = self.op_unwrap_type(rec_type)
+    mut best := 0 as u32
+    mut best_rank := 0 as i64
     mut i := 0 as i64
     while i < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[i]
-        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+        mut rank := 0 as i64
+        if sym.kind == SYM_FUNC:
+            rank = method_name_rank_raw_bytes(self.mb.pool, sym.name_id, method_id)
+        if rank != 0 as i64:
             let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
             if t_entry.kind == TYPE_KIND_FUNC:
                 let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
                 if fi.params.len == 1 as i64:
                     let fp = self.op_unwrap_type(fi.params.data[0] as u32)
                     if fp == unwrapped:
-                        return i as u32
+                        // A real `drop(self)` outranks a `pre_drop(self)` that the
+                        // loose rule also accepts -- running the wrong one on a
+                        // block about to be freed is a UAF, not a wrong number.
+                        if rank >= 3 as i64:
+                            return i as u32
+                        if rank > best_rank:
+                            best_rank = rank
+                            best = i as u32
         i = i + 1 as i64
-    return 0 as u32
+    return best
 
 // RFC 0007: lower an overloaded operator `a <op> b` to the method call
 // `a.<method>(b)` (method symbol `msym` already resolved). Mirrors the
@@ -16599,12 +16634,95 @@ fn match_base_names(base1: str, base2: str) -> bool:
         
     return true
 
+// How well does the interned symbol name `sym_id` answer a call to the method
+// name `method_id`? Higher rank wins; every resolution loop below picks the
+// HIGHEST-ranked candidate that also passes its receiver/param filter, instead of
+// the first candidate in symbol order.
+//
+// The loose byte-window rule (rank 1, the original body of
+// match_mangled_method_raw_bytes) accepts the key as a `.`/`_`-bounded SUBSTRING.
+// It let a LONGER method answer a SHORTER one on the SAME receiver: `S.p32_r32`
+// answered `r32`, so `i.r32()` called p32_r32 whenever the longer name was
+// declared first. Silent, type-agnostic, and worse than a wrong number when the
+// two signatures differ (return type in the wrong register class, missing arg).
+// RFC 0029 Â§"vtable slot k" requires name EQUALITY, so this is unambiguously a bug.
+//
+// Ranking rather than tightening is the strictly smaller behaviour change: only the
+// cases where an exactly-named candidate ALSO exists get re-decided, so a program
+// that resolves today keeps resolving to the same symbol unless an exact match
+// exists. MEASURED, not assumed (2026-07-31): a compiler built with rank 1 removed
+// ENTIRELY still passes 619/619 regressions and rebuilds the whole compiler+stdlib
+// to a byte-identical binary -- nothing in this repo actually relies on the loose
+// rule, because the namespaced stdlib forms are always called by their full name
+// (`self.locals.local_map_get(..)`, `pathbuf_to_str(p)`). Rank 1 is kept only as a
+// compatibility fallback for user code outside the corpus; retiring it is an
+// RFC-level decision (RFC 0037 "Drawbacks"), not a bug fix.
+//   3 = the symbol's PLAIN name -- the segment after the last '.' (same
+//       after-last-dot rule as match_base_names), minus an `_AX_std_`
+//       monomorphization prefix -- IS the key
+//   2 = ... is the key followed by the `__` type-argument separator mono.ax
+//       mangle_name emits (`_AX_std_push__i64` answers `push`)
+//   1 = the legacy loose window hit
+//   0 = no match
+fn method_name_rank_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> i64:
+    if sym_id == method_id:
+        return 3 as i64
+    if sym_id == 0 as u32 or method_id == 0 as u32:
+        return 0 as i64
+
+    let r_sym_entry = pool.ids[sym_id as i64 - 1]
+    let r_method_entry = pool.ids[method_id as i64 - 1]
+
+    let r_sym_bytes = (pool.arena as i64 + r_sym_entry.start as i64) as ptr[u8]
+    let r_method_bytes = (pool.arena as i64 + r_method_entry.start as i64) as ptr[u8]
+
+    let r_sym_len = r_sym_entry.len as i64
+    let r_method_len = r_method_entry.len as i64
+
+    if r_sym_len < r_method_len:
+        return 0 as i64
+
+    // Plain name = the segment after the last '.' ("S.r32" -> "r32"), then minus
+    // the `_AX_std_` prefix mono.ax prepends to an instantiated template.
+    mut start := 0 as i64
+    mut d := r_sym_len - 1 as i64
+    while d >= 0 as i64:
+        if r_sym_bytes[d] == '.' as u8:
+            start = d + 1 as i64
+            break
+        d = d - 1 as i64
+    if r_sym_len - start >= 8 as i64:
+        if r_sym_bytes[start] == '_' as u8 and r_sym_bytes[start + 1] == 'A' as u8 and r_sym_bytes[start + 2] == 'X' as u8 and r_sym_bytes[start + 3] == '_' as u8 and r_sym_bytes[start + 4] == 's' as u8 and r_sym_bytes[start + 5] == 't' as u8 and r_sym_bytes[start + 6] == 'd' as u8 and r_sym_bytes[start + 7] == '_' as u8:
+            start = start + 8 as i64
+
+    let seg_len = r_sym_len - start
+    if seg_len >= r_method_len:
+        mut eq := true
+        mut k := 0 as i64
+        while k < r_method_len:
+            if r_sym_bytes[start + k] != r_method_bytes[k]:
+                eq = false
+                break
+            k = k + 1 as i64
+        if eq:
+            if seg_len == r_method_len:
+                return 3 as i64
+            if seg_len >= r_method_len + 2 as i64 and r_sym_bytes[start + r_method_len] == '_' as u8 and r_sym_bytes[start + r_method_len + 1] == '_' as u8:
+                return 2 as i64
+
+    if match_mangled_method_loose(pool, sym_id, method_id):
+        return 1 as i64
+    return 0 as i64
+
 fn match_mangled_method_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
+    return method_name_rank_raw_bytes(pool, sym_id, method_id) != 0 as i64
+
+fn match_mangled_method_loose(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
     if sym_id == method_id:
         return true
     if sym_id == 0 as u32 or method_id == 0 as u32:
         return false
-        
+
     let sym_entry = pool.ids[sym_id as i64 - 1]
     let method_entry = pool.ids[method_id as i64 - 1]
     
@@ -16676,11 +16794,14 @@ fn match_mangled_method_name(sym_name: str, method_name: str) -> bool:
 // named `method_id` (its param[0] == the receiver type). Mirrors the UFCS method-dispatch
 // match-by-(name,receiver) loop. Returns 0 if none.
 pub fn find_struct_method_sym(mut self: ptr[FuncLowering], struct_type: u32, method_id: u32) -> u32:
+    mut best := 0 as u32
+    mut best_rank := 0 as i64
     mut i := 0 as i64
     while i < self.mb.symbols.symbols.len:
         let sym = self.mb.symbols.symbols.data[i]
         if sym.kind == SYM_FUNC and sym.type_id != 0 as u32 and (sym.type_id as i64) < self.mb.typetable.entries.len:
-            if match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+            let rank = method_name_rank_raw_bytes(self.mb.pool, sym.name_id, method_id)
+            if rank != 0 as i64:
                 let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
                 if t_entry.kind == TYPE_KIND_FUNC:
                     let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
@@ -16691,9 +16812,15 @@ pub fn find_struct_method_sym(mut self: ptr[FuncLowering], struct_type: u32, met
                             fp = pe.extra
                             pe = self.mb.typetable.entries.data[fp as i64]
                         if fp == struct_type:
-                            return i as u32
+                            // Exact plain-name match wins outright; a looser hit is
+                            // only remembered in case nothing exact ever shows up.
+                            if rank >= 3 as i64:
+                                return i as u32
+                            if rank > best_rank:
+                                best_rank = rank
+                                best = i as u32
         i = i + 1
-    return 0 as u32
+    return best
 
 // RFC 0029: get/create the "box" struct type backing an interface value â€” a struct with
 // (N+1) i64 fields {data, m0..m(N-1)}: field 0 = the concrete receiver's address, fields
@@ -17142,11 +17269,17 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                             let m_name_tok = self.mb.get_token_text(callee_node.token_idx)
                             let method_id = self.mb.pool.intern(m_name_tok)
                             safe_free_str(m_name_tok)
+                            // Highest-ranked candidate wins, not the first in symbol
+                            // order: an exactly-named method outranks the loose
+                            // substring hit that made `s.r32()` call `S.p32_r32`.
+                            mut ufcs_best := 0 as u32
+                            mut ufcs_best_rank := 0 as i64
                             mut i := 0 as i64
                             while i < self.mb.symbols.symbols.len:
                                 let sym = self.mb.symbols.symbols.data[i]
                                 if sym.kind == SYM_FUNC:
-                                    if match_mangled_method_raw_bytes(self.mb.pool, sym.name_id, method_id):
+                                    let rank = method_name_rank_raw_bytes(self.mb.pool, sym.name_id, method_id)
+                                    if rank != 0 as i64:
                                         let t_entry = self.mb.typetable.entries.data[sym.type_id as i64]
                                         if t_entry.kind == TYPE_KIND_FUNC:
                                             let fi = self.mb.typetable.funcs.data[t_entry.extra as i64]
@@ -17172,11 +17305,18 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                                                 if first_param == 4 as u32 and (rec_type == 1 as u32 or rec_type == 2 as u32 or rec_type == 3 as u32 or rec_type == 5 as u32 or rec_type == 6 as u32 or rec_type == 7 as u32):
                                                     matches_type = true
                                                 if matches_type:
-                                                    method_sym_idx = i as u32
-                                                    resolved = true
-                                                    is_method_call = true
-                                                    break
+                                                    if rank >= 3 as i64:
+                                                        ufcs_best = i as u32
+                                                        ufcs_best_rank = rank
+                                                        break
+                                                    if rank > ufcs_best_rank:
+                                                        ufcs_best_rank = rank
+                                                        ufcs_best = i as u32
                                 i = i + 1 as i64
+                            if ufcs_best_rank != 0 as i64:
+                                method_sym_idx = ufcs_best
+                                resolved = true
+                                is_method_call = true
 
     // Variant constructors (Ok/Err/Some/None) use the pointer-layout sum
     // representation, matching the C backend macros ax_Result_ok/ax_Result_err:

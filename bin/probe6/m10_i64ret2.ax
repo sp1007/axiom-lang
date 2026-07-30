@@ -1,0 +1,20 @@
+// CONTROL: call #1 f32 arg + f32 ret; call #2 returns i64 (is the INT return stale too?)
+interface I:
+    fn p(self: Self, a: f32) -> f32
+    fn r(self: Self) -> i64
+struct S:
+    k: i64
+    fn p(self: S, a: f32) -> f32:
+        return a
+    fn r(self: S) -> i64:
+        return 2
+fn main() -> i64:
+    let i: I = S(k: 0)
+    let av: f32 = 1.5
+    let b3 = i.p(av)
+    if (b3 as i64) != 1:
+        return 60 + (b3 as i64)
+    let b = i.r()
+    if b != 2:
+        return 100 + b
+    return 42
