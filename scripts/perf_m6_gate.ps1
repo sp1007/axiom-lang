@@ -35,9 +35,42 @@
 #   arrwalk   1.092x +- 1.7% PASS by 5.1%  (vs. recorded 1.087x +- 0.5% PASS by 5.5% -- consistent)
 #   xorshift  0.995x +- 0.8% PASS by 13.4% (control, unchanged -- confirms nothing else regressed)
 # startup floor at time of that run: 10.8 ms.
+#
+# 2026-07-30 DECISION -- fib is MEASURED AND REPORTED, but DOES NOT GATE.
+# Taken by Claude under the user's standing instruction to stop deferring decisions ("làm gì thì cứ
+# tự động làm đi"), after the item sat parked as a D1 question. Recorded here rather than only in
+# knowledge/, because this file is what a future reader runs.
+#
+# The problem is structural, not a shortage of samples. fib's layout spread is 17.2% (AXIOM) and
+# 13.7% (floor) -- BOTH larger than the entire 15% gate margin -- and the floor's raw samples show
+# the mechanism with nothing varying but nop padding:
+#     520.7  459.5  515.1  461.1  522.5  460.8  522.3  462.2  522.5  459.9
+# Hand-written assembly alternating 13% with the PARITY of a 16-byte shift, i.e. 32-byte alignment
+# of the recursive call target. The DENOMINATOR of fib's gate ratio is itself bimodal.
+#
+# ⚠️ CORRECTION to what knowledge/ said before ("increasing n cannot rescue it"): that is not true as
+# stated. The standard error of a bimodal population still shrinks as sigma/sqrt(n), so the ratio IS
+# decidable in principle -- it just needs n ~ (2*sigma/margin)^2 ~= 7000 layouts PER SIDE to resolve a
+# 0.4% margin against a 17% spread. The honest objection is not "impossible" but "infeasible, and
+# measuring the wrong quantity": the mean over arbitrary layouts is not what anyone cares about,
+# because a real build lands on ONE layout that neither compiler chose. Overstating an argument makes
+# it quotable and wrong; the arithmetic is written out here so nobody spends a night discovering it.
+#
+# ⇒ fib moves to $NonGating: still built, still timed, still printed with its spread, but its verdict
+# does not count for or against the M6-codegen milestone.
+# ⇒ THE MILESTONE CLAIM IS THEREFORE WEAKER, and must be stated that way: "M6-codegen passes on the
+# three shapes the gate can decide (callloop, arrwalk, xorshift); fib is undecidable by construction
+# and is reported, not gated." That is NOT the same as "M6 passes on four shapes" and must never be
+# quietly upgraded to it.
+# ⇒ RE-ADMISSION CRITERION (so this is a parked shape, not a discarded one): fib returns to $Shapes
+# when its layout spread is brought BELOW the gate margin on both sides -- e.g. by pinning the
+# alignment of the recursive call target identically in the AXIOM build and the NASM floor. That is a
+# separate, bounded task; excluding fib silently or deleting it would have destroyed the information
+# needed to do it.
 param(
     [string]$Compiler = "bin\axc_native.exe",
-    [string[]]$Shapes = @("callloop", "arrwalk", "fib", "xorshift"),
+    [string[]]$Shapes = @("callloop", "arrwalk", "xorshift", "fib"),
+    [string[]]$NonGating = @("fib"),
     [int]$Variants = 6,
     [int]$BestOf = 9,
     [string]$Opt = "-O3",
@@ -347,7 +380,13 @@ fn main() -> i64:
     $margin = ($Gate - $ratio) / $Gate * 100.0
 
     Write-Host ("           ratio {0:F3}x +- {1:F1}% (2 SE, n={2}/{3})   gate {4}x" -f $ratio, $ciPct, $axs.Count, $asms.Count, $Gate)
-    if ([Math]::Abs($margin) -lt $ciPct) {
+
+    # NON-GATING shapes: measured and printed, but their verdict does NOT decide the milestone.
+    # See the "fib does not gate" note in the header for why, and for the re-admission criterion.
+    if ($NonGating -contains $shape) {
+        $verdict = if ($ratio -le $Gate) { "within" } else { "outside" }
+        Write-Host ("           REPORTED, NON-GATING: {0:F3}x is {1} the {2}x gate, but this shape's layout spread ({3:F1}%/{4:F1}%) exceeds the gate margin, so no verdict from it is meaningful. Not counted for or against M6." -f $ratio, $verdict, $Gate, $sAx, $sFl) -ForegroundColor DarkGray
+    } elseif ([Math]::Abs($margin) -lt $ciPct) {
         Write-Host ("           INDETERMINATE: {0:F1}% from the gate, inside the +-{1:F1}% confidence band. Add variants." -f [Math]::Abs($margin), $ciPct) -ForegroundColor Yellow
     } elseif ($ratio -le $Gate) {
         Write-Host ("           PASS by {0:F1}%, outside the +-{1:F1}% band" -f $margin, $ciPct) -ForegroundColor Green
