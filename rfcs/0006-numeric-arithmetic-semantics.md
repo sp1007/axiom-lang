@@ -232,6 +232,49 @@ nguyên xác định; type_id 0 = unset không bị bắt). Mọi chỗ phát h�
 điểm duy nhất `emit_float_const`. Chi tiết + calibration:
 [[bug-int-literal-float-type-iconst]].
 
+### 7.2 int → float NGẦM: chèn ở TẦNG LOWERING, một quy tắc cho MỌI value site (2026-07-31) ✅ IMPLEMENTED
+
+§4 nói int→float ngầm OK và "phải là lệnh convert thật". §4 còn đề xuất chèn ở **typecheck**.
+Thực tế cài **khác** — và đây là một sai lệch có chủ ý, ghi lại theo CLAUDE.md §20:
+
+- Typecheck chỉ có thể *adopt* kiểu cho **literal** (RFC 0005). Với một **BIẾN** nguyên
+  (`let a: f64 = n`) hay một **BIỂU THỨC** nguyên (`let c: f64 = 3 + 1`), storage đã được
+  dựng ở bề rộng của chính nó; một "expected type hint" không dựng lại nó. Nên hint không
+  bao giờ đủ.
+- Ngược lại, air_builder ĐÃ sở hữu chuyển đổi int↔float cho `as` (`lower_cast_expr`) và cho
+  toán hạng của phép toán float (`lower_binary_expr`). Đặt quy tắc ngầm ở cùng tầng giữ
+  đúng một chỗ phát OP_ITOF, thay vì hai cơ chế song song sẽ trôi lệch.
+
+Cài đặt: `air_builder.coerce_int_to_float(target_type, src_node, src_reg)` — anh em song sinh
+của `coerce_struct_to_interface`, tự-bảo-vệ (no-op trừ khi target là f32/f64 **và** kiểu node
+nguồn là kiểu nguyên XÁC ĐỊNH), và được gọi ở **MỌI** value site:
+let / assign / phần tử mảng (literal + gán) / field struct (khởi tạo + gán) / return /
+đối số lời gọi (free fn, method, dynamic dispatch) / khởi tạo global.
+
+Vì sao liệt kê đủ: lỗ hổng vừa vá chính là *một quy tắc tồn tại ở dạng hẹp hơn thứ nó phải
+phủ* — coercion cũ chỉ chạy cho **f32** ở **hai** trong số các site đó (comment tự khai:
+"Scoped to F32 only … the self-host fixpoint is unaffected"), nên f32 đúng còn f64 đọc ra rác:
+`H(a: 3)`, `takes_f64(9)`, `mm.m(3)`, `let c: f64 = 3 + 1`, và toàn bộ nhánh biến nguyên
+(`let a: f64 = n`, `b = n`, `argf(n)`). Đây là accept-then-miscompile, lớp BUG#53.
+
+Ghi chú dấu: OP_ITOF = cvtsi2sd (có dấu), nên u64/usize > 2^63 chuyển ra số âm. Đó **đã là**
+hành vi của `x as f64` (cùng một phép chọn opcode); làm nhánh ngầm khớp nhánh tường minh là
+bước tối thiểu đúng — chuyển đổi unsigned chính xác là **một** fix cho cả hai site, không phải
+lý do để một site tiếp tục miscompile im lặng.
+
+**Bất biến §9 kèm theo** (`air_builder.verify_air_no_int_into_float`): một giá trị lớp NGUYÊN
+không được tới một consumer lớp FLOAT mà thiếu OP_ITOF. Miền trừu tượng cực nhỏ và một chiều
+(INT/FLOAT/UNKNOWN; `type_id == 0` không bao giờ thành INT), consumer bị bắt = OP_COPY kiểu
+float và OP_FADD/FSUB/FMUL/FDIV. **Giới hạn đã biết, nói thẳng để không ai đọc sự im lặng
+thành bằng chứng**: site ĐỐI SỐ và site FIELD *không* được phủ, vì AIR không mang kiểu tham số
+trên OP_CALL, cũng không mang kiểu field trên OP_SET_FIELD (type_id ở đó là kiểu STRUCT); hai
+site này do oracle canh. Mở rộng AIR để mang các kiểu đó là thay đổi IR ⇒ cần RFC riêng.
+
+Calibrate (không phải giả định): stub `coerce_int_to_float` thành no-op thì check báo đúng
+`main / inst #5 … type_id=10 src1=5` cho `let a: f64 = n`, `#22` cho `b = n`, `#50` cho
+`let c: f64 = 3 + 1`, và **không** sinh file output. Với fix, check im lặng trên cả 1053 hàm
+của chính compiler. Oracle `bin/t_intlitfloatctx.ax`: **4 → 42** ở -O0/-O1/-O2.
+
 ## 8. Test plan
 
 `tests/arith/` (oracle Python, bit-exact): mode `int` / `float` / `mixed` (cast) /

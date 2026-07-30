@@ -56,29 +56,62 @@ copy that is exercised less keeps the old behaviour.**
 
 Self-host inert (the compiler is integer-only): **A == B == C**, all three the same hash.
 
-## ⚠️ STILL OPEN — a DIFFERENT root cause at the same-looking positions
+## ✅ SECOND ROOT CAUSE, FIXED 2026-07-31 — the coercion existed only for f32, at two sites
 
-Four positions still yield the wrong value, and they are **not** literal-materialization:
-typecheck never hints the float type there, so the literal's node type stays INTEGER and there is no
-float constant to materialize (measured: `%2: t3 = iconst %3` feeding an f64 `setfld`).
+Everything below was the *other half* of the same symptom with a different cause. Typecheck never
+hinted the float type at these positions, so the literal's node type stayed INTEGER and there was
+no float constant to materialize (measured: `%2: t3 = iconst %3` feeding an f64 `setfld`); and for
+an int **VARIABLE** a hint could never have helped anyway, because an ident's storage is already
+built at its own width. Measured before/after (bit set = row CORRECT):
 
-| position | probe | f32 twin |
-|---|---|---|
-| `H(a: 3)` into an **f64 struct field** | `bin/probe4/i1.ax` | `i2.ax` **passes** |
-| `argf(3)` into an **f64 fn param** | `bin/probe4/h4.ax` | `g6.ax` bit 2 passes |
-| `mm.m(3)` into an **f64 method param** | `bin/probe4/g6.ax` bit 1 | — |
-| `let c: f64 = 3 + 1` (int **expression**) | `bin/probe4/g5.ax` bit 64 | — |
+| position | probe | before | after |
+|---|---|---|---|
+| `H(a: 3)` into an **f64 struct field** | `bin/probe4/i1.ax` | 0 | **42** |
+| `argf(3)` / `takes_f64(9)` **f64 fn param** | `bin/probe4/h4.ax`, `bin/probe6/q1.ax` | 0 / 1 | **42** |
+| `mm.m(3)` **f64 method param** | `bin/probe4/g6.ax` | 250 | **255** |
+| `let c: f64 = 3 + 1` (int **expression**) | `bin/probe4/g5.ax` | 187 | **255** |
+| int **VARIABLE** at let / assign / arg | `bin/probe4/g7.ax` | 100 | **107** |
 
-Every **f32** twin passes, because `typecheck.ax:5208` (and its relatives) hint `TYPE_F32` only —
-comment: *"Scoped to F32 only, so int/i64 scalar fields keep their prior UNKNOWN inference and the
-self-host fixpoint is unaffected."* Same drifted-copy class again. Fixing it = propagate the hint /
-insert a coercion at those POSITIONS (a typecheck change with real fixpoint exposure), which is the
-open follow-up (b) at [[bugs]] BUG#33. Row numbers **4, 8, 9, 11 are reserved** for them in
-`bin/t_intlitfloatctx.ax` — do not renumber.
+Root cause, again the repo's signature shape: **a rule existing in a narrower form than the thing
+it must cover.** `air_builder.coerce_float_arg_ft` only converted float→float (it returned
+unchanged the moment the argument was not already a float), and `typecheck.ax`'s expected-type hint
+was `TYPE_F32` only — its own comment admitted the narrowing: *"Scoped to F32 only, so int/i64
+scalar fields keep their prior UNKNOWN inference and the self-host fixpoint is unaffected."* So
+every **f32** twin passed and every **f64** one read garbage.
 
-Also still open and deliberately untouched: int **VARIABLE** → float at let/assign/arg
-(`bin/probe4/g7.ax`, exit 100 = all three rows wrong), and the reverse direction
-`let a: i64 = 3.0` (`bin/probe4/g13.ax`, exit 3 = the raw IEEE bits are copied into an integer).
+**Fix — one rule, every value site** (`bootstrap/stage1/air_builder.ax`):
+`coerce_int_to_float(target_type, src_node, src_reg)`, deliberately built as the twin of
+`coerce_struct_to_interface` and called at exactly the same list of sites: let, assign, array
+element (literal + assign), struct field (init + assign), return, call argument (free / method /
+dynamic), global init. Self-guarding, so it is a no-op unless the target is f32/f64 AND the source
+node's type is a *definite* integer — in particular a literal typecheck already adopted (the fix
+above) arrives float-typed and is untouched. `coerce_field_to_interface` was renamed
+`coerce_field_value` because a helper named after one rule is precisely how the previous coercion
+drifted into f32-only. **Nothing in typecheck changed**, so the feared hint-widening fixpoint
+exposure never materialized.
+
+**§9 invariant added**: `verify_air_no_int_into_float` — an INT-classed value must not reach a
+float consumer (float-typed OP_COPY, OP_F{ADD,SUB,MUL,DIV}) without an OP_ITOF. Tiny one-sided
+abstract domain; `type_id == 0` never counts as INT (so a no-init `mut x: f64` is not a false
+alarm). Argument and struct-field sites are **not** covered — AIR carries neither the param type on
+OP_CALL nor the field type on OP_SET_FIELD — and the oracle guards those instead.
+
+⚠️ **Bug found while writing that verifier, worth more than the verifier**: AIR's `src1`/`src2` are
+OVERLOADED — an IMMEDIATE for OP_ICONST, the two 32-bit halves of the IEEE pattern for OP_FCONST, a
+BLOCK index for OP_JUMP/OP_BRANCH. Sizing a per-vreg map by `max(dest, src1, src2)` therefore made
+one `3.0` literal (src2 = 1074266112) request a gigabyte, and the compiler *appeared to hang* (no
+error, no output file, rc=124). It did not reproduce on the compiler's own source — which is
+integer-only — only on a program with float literals. **Bound anything per-vreg by `dest` only.**
+
+Gate: **A == B == C**, `DA5C96AC76D268B2626BC9538764051D7096540D432E59EDAE109377E5BCB72F`. A==B is
+the criterion *and* the proof of self-inertness: A is built by the old logic from the new source and
+B by the new logic from the same source, so their equality says the new coercion emits nothing extra
+for the compiler's own code.
+
+Still open, deliberately untouched (separate backlog rows): **f64 → f32 narrowing** is still
+silently accepted and wrong (`let s: f32 = d` → `bin/probe6/g_f64tof32.ax` still exits 1 — per §4 it
+should be a REJECT, not a conversion), and the reverse direction `let a: i64 = 3.0`
+(`bin/probe4/g13.ax`, exit 3 = raw IEEE bits copied into an integer).
 
 ## Oracle traps that bit this investigation (both are encoded in the oracle's header)
 

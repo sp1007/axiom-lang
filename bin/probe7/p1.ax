@@ -1,0 +1,48 @@
+// p1: re-confirm the four "still open" int-literal -> f64 positions + probe6 rows.
+struct H:
+    a: f64
+struct Mixed:
+    f: f64
+    n: i64
+fn argf(a: f64) -> i64:
+    if a > 2.99 and a < 3.01:
+        return 1
+    return 0
+fn takes_f64(x: f64) -> i64:
+    if x > 8.99 and x < 9.01:
+        return 1
+    return 0
+struct MM:
+    v: i64
+    fn m(self, a: f64) -> i64:
+        if a > 2.99 and a < 3.01:
+            return 1
+        return 0
+
+fn main() -> i64:
+    mut bits := 0 as i64
+    // 1: f64 struct field initializer taking an int literal
+    let h = H(a: 3)
+    if h.a < 2.99 or h.a > 3.01:
+        bits = bits + 1
+    // 2: f64 fn param
+    if argf(3) != 1:
+        bits = bits + 2
+    // 4: f64 method param
+    let mm = MM(v: 0)
+    if mm.m(3) != 1:
+        bits = bits + 4
+    // 8: folded int expression at an f64 target
+    let c: f64 = 3 + 1
+    if c < 3.99 or c > 4.01:
+        bits = bits + 8
+    // 16: takes_f64(9)
+    if takes_f64(9) != 1:
+        bits = bits + 16
+    // 32: Mixed(f: 5)
+    let mx = Mixed(f: 5, n: 7)
+    if mx.f < 4.99 or mx.f > 5.01:
+        bits = bits + 32
+    if mx.n != 7:
+        bits = bits + 64
+    return bits
