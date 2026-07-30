@@ -12,6 +12,9 @@ metadata:
 - **HEAD = `fa9798a`** (unchanged; nothing from this session is committed except the oracle below).
 - **Daily driver `bin/axc_native.exe` = `6C9165C8`** — a CLEAN HEAD fixpoint (R2==R3, rebuilt twice
   from HEAD source). Trust it.
+- **BASELINE = 578 / 578, 0 failed** — verified on this driver AFTER the commit, not assumed. Was
+  575; `t_copychain` adds 3 rows (main list at -O1, plus the O2 and O3 sweep). A drop below 578 is
+  RED.
   ⚠️ Mid-session the driver was briefly the 1f build (`1FFD5C2C`), which miscompiles float code. It
   was replaced. If any binary in `bin/` looks suspect, rebuild it — it may have been produced by
   that driver.
