@@ -1,12 +1,35 @@
 ---
 name: bug-method-float-return-let-infer
-description: "OPEN 2026-07-30 (probe-found, TWO distinct bugs) — (A) `let a = <in-struct method>()` returning f32/f64 infers the wrong type and yields 0; (B) interface dynamic dispatch resolves NO return type at all (interface_method_ret_type's decl predicate never matches), so any non-i64 return through an interface is wrong."
+description: "BOTH FIXED 2026-07-30 (probe-found, two distinct bugs) — (A) `let a = <in-struct method>()` returning f32/f64 infers the wrong type and yields 0, fixed in eb88586 (A==B 0148CBB3, 587/587); (B) interface dynamic dispatch resolved NO return type so any non-i64 return through an interface was wrong, fixed in 376af08 (A==B 4F359C9B, 584/584)."
 metadata:
   node_type: memory
   type: project
 ---
 
-# TWO OPEN silent miscompiles around method RETURN TYPE resolution
+# TWO silent miscompiles around method RETURN TYPE resolution — BOTH NOW FIXED
+
+## ✅ Status
+- **(B) interface dynamic dispatch** — FIXED `376af08`, `A==B 4F359C9B`, 584/584. Deleted the
+  duplicated AST walk and delegated to `interface_method_sig`, which already had the correct
+  predicate. Oracle `bin/t_ifaceretnoni64.ax` (calibrated: 13 pre-fix, 42 after).
+- **(A) float-returning in-struct method** — FIXED `eb88586`, `A==B 0148CBB3`, 587/587. Root: the
+  method-return recovery (`typecheck.ax` ~L4979) restored the result type only for STRUCTURED
+  returns, on the premise that "an untyped copy of a scalar already works via the register return".
+  **False for floats** — a float return arrives in **XMM0, not RAX**, so an untyped copy defaulting
+  to an integer reads the wrong register. Fix = add `TYPE_F32`/`TYPE_F64` to that condition.
+  **Floats were the THIRD class to fall out of that same premise, after struct and str/bytes.**
+  Oracle `bin/t_methfloatret.ax` (calibrated: 1 pre-fix, 42 after).
+
+⚠️ **Oracle-writing trap, caught by calibration.** The first `t_methfloatret` checked the f64 case
+via `near(a, 9.0)` and **PASSED on the broken compiler** — passing the binding to an f64-typed
+parameter **coerces it and masks the defect entirely**. Only a DIRECT comparison against float
+literals observes the binding's own type. Calibration exposed it: the broken compiler returned 2,
+sailing through the f64 case and failing at the f32 one.
+
+The investigation record below is retained because the control matrix is the diagnosis.
+
+---
+
 
 Found by probing 2026-07-30 while checking whether the `interface_method_ret_type` follow-up noted
 in [[bug-iface-conformance-signature-not-checked]] was really harmless. **It is not.** And the probe

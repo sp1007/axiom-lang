@@ -9,21 +9,39 @@ metadata:
 # HANDOFF 2026-07-30c — 1f shipped GREEN; next target is LOOP alignment
 
 ## State of the tree
-- **HEAD = `376af08`**, pushed to `main`. Clean except two things that are NOT mine and should be
+- **HEAD = `eb88586`**, pushed to `main`. Clean except two things that are NOT mine and should be
   left alone: `CLAUDE.md` (user's context-hygiene edit) and untracked `.claude/settings.json`.
-- **Daily driver `bin/axc_native.exe` = `A == B 4F359C9B`** (the interface-return fix; frontend-only
-  so A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
-- **BASELINE = 584 / 584, 0 failed.** Was 578; `t_floatparamchain` (+3) and `t_ifaceretnoni64` (+3)
-  each add a main-list row plus the O2/O3 sweep. Below 584 is RED.
+- **Daily driver `bin/axc_native.exe` = `A == B 0148CBB3`** (both typecheck fixes; frontend-only so
+  A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
+- **BASELINE = 587 / 587, 0 failed.** Was 578; `t_floatparamchain`, `t_ifaceretnoni64` and
+  `t_methfloatret` each add a main-list row plus the O2/O3 sweep (+3 each). Below 587 is RED.
 - `bin/axc_pre1f.exe` is a reference compiler built from pre-1f source, kept for paired pricing.
 
-## 🔴 OPEN BUG carried forward — start here if picking up cold
-`let a = <in-struct method>()` returning **f32/f64** infers the wrong type and yields 0. Proven to
-be INFERENCE, not codegen (`let a: f64 = …` is correct). The same method via **UFCS or as a free
-function is fine**, and i64/str returns from in-struct methods are fine — it is a three-way
-combination. The whole float suite misses it because `t_interpolation`/`t_colorhsl`/`t_quatrot` are
-free functions. Full control matrix + repros: [[bug-method-float-return-let-infer]],
-`bin/probe/zf_*.ax`. Frontend-only ⇒ A==B gate.
+## ✅ Two silent miscompiles found and fixed this session (probing, not backlog)
+Both were method RETURN-TYPE resolution failures, both accept-then-miscompile, both invisible to the
+whole suite for the same structural reason. See [[bug-method-float-return-let-infer]].
+
+1. **Interface dynamic dispatch resolved NO return type** (`376af08`). `interface_method_ret_type`
+   matched the decl by `name_id` while the resolver rewrites `NODE_INTERFACE_DECL.payload` to the
+   SYMBOL INDEX ⇒ returned 0 unconditionally ⇒ f64 gave 80, str gave 115; **i64 was correct, and
+   every one of the ~15 interface oracles returns i64.** Fixed by deleting the duplicated walk and
+   delegating to `interface_method_sig`, which had the correct predicate all along.
+   ⭐ **It had already been FOUND** — `f614c11` identified it and filed it as harmless because "its
+   caller already copes". **"Its caller copes with the degenerate value" is a claim about the caller,
+   not a proof.** Nobody probed what the caller then DID with the 0 (it recovers to an integer).
+2. **Float-returning in-struct methods** (`eb88586`). The method-return recovery covered only
+   STRUCTURED returns, on the premise that "an untyped copy of a scalar already works via the
+   register return" — **false for floats, which return in XMM0 not RAX.** Floats were the **third**
+   class to fall out of that premise, after struct and str/bytes. One-condition fix.
+
+⚠️ Both had a control matrix that made the diagnosis; neither was guessed. And note the oracle trap:
+the first `t_methfloatret` checked f64 via `near(a, 9.0)` and **passed on the broken compiler**,
+because passing the binding to an f64 parameter coerces it and masks the defect. Only a direct
+comparison observes the binding's own type.
+
+⇒ **Probing this area paid off twice in one pass. The surrounding surface is worth more probing**:
+other return-type classes through interfaces (Option/Result/struct/generic), and other
+`let`-inference sites for in-struct methods.
 
 ## What shipped
 **Peephole 1f `collapse_copy_chain`** — the non-adjacent copy-chain collapse that was left RED and
