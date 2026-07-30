@@ -11424,7 +11424,27 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         // the `let t = s.trim()` copy defaults to 8 bytes and drops half
                         // the {ptr,len} pair -> corrupt str/segfault (same failure the
                         // aggregate-return recovery guards against for structs).
-                        if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT or mret == TYPE_STRING or mret == TYPE_BYTES:
+                        //
+                        // f32/f64 (2026-07-30): the "scalars already work untyped" premise
+                        // above is FALSE for floats, and this is the third class to fall out
+                        // of it after struct and str/bytes. A float return arrives in XMM0,
+                        // not RAX, so an untyped copy that defaults to an integer type reads
+                        // the WRONG REGISTER and yields 0.
+                        //
+                        // MEASURED, probe-found: `let a = q.area()` on an IN-STRUCT method
+                        // returning f64 gave 0 where 42 was correct (f32 form gave 7).
+                        // bin/probe/zf_meth.ax and zf_f32.ax. The controls locate it exactly:
+                        // the same method as a FREE function or called via UFCS is fine
+                        // (zf_free, zf_ufcs) because those resolve result_type earlier and
+                        // never reach this recovery; `let a: f64 = q.area()` is fine
+                        // (zf_annot), proving the VALUE is produced correctly and only the
+                        // binding's inferred type was wrong; and i64/str returns from an
+                        // in-struct method are fine (zf_mi64, zf_mstr). So the trigger is the
+                        // three-way combination in-struct-method x `let` x float return.
+                        //
+                        // The entire float test suite misses this because t_interpolation,
+                        // t_colorhsl and t_quatrot are all FREE FUNCTIONS.
+                        if mk == TYPE_KIND_STRUCT or mk == TYPE_KIND_SUM or mk == TYPE_KIND_GENERIC_INST or mk == TYPE_KIND_OPTION or mk == TYPE_KIND_RESULT or mret == TYPE_STRING or mret == TYPE_BYTES or mret == TYPE_F32 or mret == TYPE_F64:
                             result_type = mret
 
             // BUG#61: a GENERIC function call whose instantiated callee symbol's FUNC

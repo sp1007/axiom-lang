@@ -1,0 +1,104 @@
+// PIN (exit 42): a FLOAT-returning IN-STRUCT method bound to a `let` must keep its float type.
+//
+// Why this exists. typecheck's method-return recovery only restored the call's result type for
+// STRUCTURED returns (struct/sum/option/result/generic-inst, later str/bytes), on the stated premise
+// that "an untyped copy of a scalar already works via the register return". That premise is FALSE
+// for floats: a float return arrives in XMM0, not RAX, so an untyped copy defaulting to an integer
+// type reads the wrong register. `let a = q.area()` on an in-struct f64 method gave 0 where 42 was
+// correct; the f32 form gave 7. Floats were the third class to fall out of that premise, after
+// struct and str/bytes.
+//
+// The controls below are the point of this test as much as the failing case is: the same method as a
+// FREE function, and called via UFCS, were always fine (they resolve the result type earlier and
+// never reach the recovery), and i64/str returns from an in-struct method were always fine. So the
+// trigger is the three-way combination -- in-struct declaration x `let` binding x float return --
+// and a fix that only restored floats on one of those paths would pass a narrower test.
+//
+// Note also that the entire existing float suite (t_interpolation, t_colorhsl, t_quatrot) consists
+// of FREE FUNCTIONS, which is exactly why none of them could observe this.
+struct Sq:
+    s: f64
+    fn area(self: Sq) -> f64:
+        return self.s * self.s
+    // i64 and str from the same struct: guards against a fix that disturbs the classes that worked.
+    fn sides(self: Sq) -> i64:
+        return 4
+    fn label(self: Sq) -> str:
+        return "square"
+
+struct SqF:
+    s: f32
+    fn area(self: SqF) -> f32:
+        return self.s * self.s
+
+struct Acc:
+    total: f64
+    // Chained float-returning methods: the recovered type must survive being the receiver of
+    // another method call, not merely a terminal binding.
+    fn plus(self: Acc, v: f64) -> Acc:
+        return Acc(total: self.total + v)
+    fn value(self: Acc) -> f64:
+        return self.total
+
+fn freearea(q: Sq) -> f64:
+    return q.s * q.s
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+fn main() -> i64:
+    let q = Sq(s: 3.0)
+
+    // THE DEFECT: in-struct f64 method, result bound to an inferred `let`.
+    //
+    // ⚠️ Compared INLINE against float literals, deliberately. A first version of this test wrote
+    // `if not near(a, 9.0)` and PASSED on the broken compiler -- passing the binding to an
+    // f64-typed parameter coerces it and masks the defect entirely. Only the direct comparison
+    // observes the binding's own type. (Calibration caught this: the broken compiler returned 2,
+    // failing at the f32 case below while sailing through this one.)
+    let a = q.area()
+    if a < 8.99 or a > 9.01:
+        return 1
+
+    // f32 form of the same defect.
+    let qf = SqF(s: 3.0)
+    let af = qf.area()
+    if af < 8.99 or af > 9.01:
+        return 2
+
+    // Explicit annotation always worked -- keep it pinned so a fix cannot regress it.
+    let b: f64 = q.area()
+    if not near(b, 9.0):
+        return 3
+
+    // Free function returning f64 -- always worked.
+    let c = freearea(q)
+    if not near(c, 9.0):
+        return 4
+
+    // Used inline rather than bound -- always worked.
+    if not near(q.area(), 9.0):
+        return 5
+
+    // i64 and str from an in-struct method -- always worked, must stay working.
+    let n = q.sides()
+    if n != 4:
+        return 6
+    let s = q.label()
+    if s.len != 6:
+        return 7
+
+    // A float bound from a method, then used in further arithmetic (not just a compare).
+    let d = q.area() * 2.0 + 1.0
+    if not near(d, 19.0):
+        return 8
+
+    // Chained: struct-returning method, then a float-returning method on the result.
+    let e = Acc(total: 1.0).plus(2.5).plus(3.5).value()
+    if not near(e, 7.0):
+        return 9
+
+    return 42
