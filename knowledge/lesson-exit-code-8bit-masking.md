@@ -64,5 +64,32 @@ and no real row violated it (max expected value 244).
 - Watch for the sneaky one: a test expecting 256 or 512 reads as **0**, which many harnesses treat
   as success.
 
+## ⚠️ SECOND WAY TO MISREAD AN EXIT CODE (2026-07-30) — `$(...)` in the same `echo` destroys `$?`
+The 8-bit mask is not the only way this channel lies. This reads **0 for every row, always**:
+
+```sh
+"$exe" >/dev/null 2>&1
+echo "  $(basename $f) exit=$?"      # WRONG -- $(basename) reset $?
+```
+
+Command substitution runs a subshell **during the expansion of that same word**, so by the time
+`$?` is expanded it holds `basename`'s status, which is always 0. Correct form — capture first,
+on its own line:
+
+```sh
+"$exe" >/dev/null 2>&1; rc=$?
+echo "  $(basename $f) exit=$rc"
+```
+
+⭐ Why it is worth writing down rather than shrugging off: it produced a **uniform, plausible,
+completely fake result table** — a verification pass in which eight programs, including ones known
+to be broken, all "exited 0". Uniform success across rows that are supposed to DIFFER is the
+signature of a broken harness, not of a good build. **If every row agrees, suspect the instrument
+before believing the result.** It cost one full bogus verification round; the honest re-run then
+matched the claimed values exactly (42 / 42 / 2 / 100 / 3).
+
 Related: [[lesson-bash-grep-not-powershell-selectstring]] — same category of failure, where the
-measuring instrument silently altered what was being measured.
+measuring instrument silently altered what was being measured. That makes **three** distinct
+instruments in this project that corrupted their own measurement (grep-vs-Select-String, the 8-bit
+mask, and now `$?`), so the general rule earns its place: **calibrate the harness on a case whose
+answer you already know before trusting any row of it.**
