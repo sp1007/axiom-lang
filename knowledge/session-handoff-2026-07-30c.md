@@ -115,11 +115,49 @@ Next concrete steps, in order:
 1. Add NASM-floor shapes to the same distribution treatment so the M6 gate ratio itself becomes
    median-over-layouts instead of one draw. **This is what unblocks the milestone** — the current
    gate reads one binary per side and its input carries an unquantified layout term.
-2. Re-decide 1f's callloop cost under the new protocol. The +5.7…+8.9% was measured single-binary
-   per side, so it may be partly or wholly a layout draw. **1f stays shipped meanwhile**: its
-   correctness gate is independent and GREEN, and the tailrec win was measured the same way the
-   callloop cost was.
-3. Only then revisit whether any codegen work is owed on callloop at all.
+2. ~~Re-decide 1f's callloop cost under the new protocol.~~ **DONE — see below.**
+3. Only then revisit whether any codegen work is owed on callloop at all. (Per below: **none is.**)
+
+## ⭐⭐⭐ RE-PRICED OVER LAYOUTS: 1f is a PURE WIN, and the callloop cost was a phantom
+Both 1f numbers re-measured with 8 controlled layout offsets per compiler, medians compared.
+
+**callloop, on the EXACT shape that produced the original +7%** (loop inline in `main`):
+
+    pre-1f  samples: 136.3 134.1 153.2 150.7 152.0 152.5 135.0 135.0   MEDIAN 143.5  spread 14.3%
+    HEAD    samples: 152.0 156.1 133.7 133.8 134.0 134.9 152.6 154.1   MEDIAN 143.5  spread 16.8%
+
+**Identical medians — the cost is EXACTLY ZERO.** And the mechanism is visible in the raw samples:
+there are two clusters (~134 and ~152) and the compilers assign them to *opposite* variants, which
+is what a ±16-byte shift does. The set of layouts and their costs is unchanged; only which layout
+each build draws changed. The earlier **+5.7…+8.9% with 4/4 pairs the same sign was 100% a layout
+draw.**
+
+**tailrec — SURVIVES:**
+
+    pre-1f  MEDIAN 21.4 ms  (21.0 .. 21.8, spread 4.0%)
+    HEAD    MEDIAN 18.4 ms  (17.7 .. 19.0, spread 7.4%)
+
+**−14.0%**, matching the single-binary −13.8%, and the two sample sets **do not overlap at all**
+(`max(HEAD)=19.0 < min(pre-1f)=21.0`). Clean separation ⇒ attributable to the change.
+
+⇒ **Peephole 1f: tailrec −14%, callloop 0. A pure win.** The M6 "callloop got worse" concern is
+withdrawn.
+
+## ⛔⭐⭐⭐ THE METHOD LESSON — pairing does NOT remove layout bias
+This is the most transferable thing in this handoff. `knowledge/m6-perf-baseline.md` has said for
+sessions: "variance is 8–10% per run, so measure PAIRED and ALTERNATING." That rule is **not wrong
+but misattributed, and it is not sufficient.**
+
+- Within one binary, best-of-9 is repeatable to **~1%**. The big term is not run-to-run noise.
+- The big term is **deterministic layout sensitivity**, resampled every time a binary is rebuilt.
+- Pairing/alternating removes **drift**. It cannot remove layout bias, because it compares **the
+  same two binaries** over and over. **Same-sign consistency across pairs is therefore NOT evidence
+  that an effect belongs to the compiler change** — 4/4 identical-sign pairs said "+7%" for an
+  effect whose true value is 0.
+
+Three past "results" were this same phantom: 1e "cost fib 5.1%", xorshift "+4.6% slower from a
+change that removed instructions", and 1f "cost callloop 7%". **Every future perf claim must be a
+median over layouts with the spread reported next to it.**
 
 ⚠️ The 07-30a lesson still applies to anything determinism-flavoured: measure on the **DIFFERENCE
 BETWEEN TWO BUILDS**, never on one build. Judging a determinism fix by whether one number improved
