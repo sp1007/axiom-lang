@@ -34,6 +34,8 @@ Pick the single highest-value task, in this order:
 
 State the chosen task in one line and proceed — do not ask which one.
 
+⛔ **BEFORE dispatching, cross-check the item against `git log -- <the file it would touch>`.** The cross-check rule in #4 was written for `docs/next-step-*.md` queues, but the same trap lives in **handoff "remaining to do" lines**: a TODO recorded mid-session is often closed by a LATER commit in that SAME session, and nobody goes back to strike it out. Cost this once already (2026-07-30): "arrwalk still has no distribution reading" was dispatched to a sub-agent and the reading had already shipped in `3ef26f0`. One `git log` on the target file is cheaper than any dispatch. ⇒ Corollary for writers: **when a later commit closes a TODO, edit the file holding that TODO in the same commit.**
+
 ## Phase 2 — Investigate
 For a bug/feature, spawn `axiom-investigator` (read-only) to reproduce, localize to `file:line`, check the spec/RFC (strange behavior is often intended design — do NOT "fix" design), and propose a minimal fix + oracle. Spawn **multiple investigators in parallel** only for independent candidates. For a task whose design is already clear from memory, skip to Phase 3.
 
