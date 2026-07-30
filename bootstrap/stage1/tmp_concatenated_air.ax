@@ -28524,6 +28524,201 @@ pub fn coalesce_dest_copy(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
     @free(counts as ptr[u8])
     return w
 
+// Instructions across which peephole 1f must NOT move a destination's write.
+//
+// Control flow first, and this one is mandatory rather than cautious: linear instruction order
+// is NOT the CFG's execution order (the note on compute_liveness, RFC 0016 P2'), so a span that
+// crosses a label or a jump cannot be reasoned about by position at all. That is precisely the
+// unsound premise behind the copy-propagation variant that measured -4.4% and was dropped for
+// good (2026-07-29e) -- a win measured on a pass with a false premise is not a win.
+//
+// Calls next: moving a vreg's def above a call makes it live ACROSS the call, which changes what
+// the allocator must do with it. Correct allocators handle that, but it is a pressure change this
+// peephole has no business making.
+//
+// The divide family is bailed on CONSERVATIVELY, not out of necessity: MACH_DIVCLOBBER's own
+// comment says the allocator already keeps vregs spanning it off RAX/RDX, so spanning is a
+// handled case. It is excluded because it costs approximately nothing to exclude (a divide within
+// eight instructions of a copy chain is rare) and because the ordering hazard below is enough
+// novel reasoning for one pass. Removing it is a legitimate follow-up IF a fire count shows it
+// suppresses real matches.
+fn chain_span_blocks(op: u16) -> bool:
+    if op == MACH_JMP or op == MACH_JCC or op == MACH_LABEL or op == MACH_RET:
+        return true
+    if op == MACH_CALL or op == MACH_CALL_INDIRECT or op == MACH_SYSCALL:
+        return true
+    if op == MACH_IDIV or op == MACH_DIV or op == MACH_CQO or op == MACH_DIVCLOBBER:
+        return true
+    return false
+
+// PEEPHOLE 1f (M6): collapse a copy CHAIN whose two links are NOT adjacent.
+//
+//     DEF vT, ...        (MOV or LEA -- both write dst without reading it)
+//     ... instructions touching neither vT nor vD ...
+//     MOV vD, vT         ->    DEF vD, ...      and the MOV is deleted
+//
+// This is coalesce_dest_copy's shape B with the ADJACENCY requirement lifted, and it exists
+// because the shape that actually costs time is not adjacent. Read off sumto's pre-regalloc
+// stream (2026-07-30) -- the real stream, with an identity printed on every function, after two
+// earlier readings attributed the wrong function's instructions to it -- the loop body carries a
+// DOUBLE chain:
+//
+//     LEA v6,[v1-1] ; MOV v7,v2 ; ADD v7,v1 ; MOV v10,v6 ; MOV v11,v7 ; MOV v1,v10 ; MOV v2,v11
+//
+// v6 -> v10 -> v1 and v7 -> v11 -> v2: four movs where two suffice, INSIDE a loop body that runs
+// 20M times, and every link sits two or three instructions from its partner because the two
+// parameters interleave. That gap is the entire reason shape B never fired here, and the gap was
+// invisible in the disassembly: after regalloc the pairs look adjacent because the later stages
+// do not preserve this ordering.
+//
+// WHY THIS IS NOT THE FORWARD COPY-PROPAGATION THAT MEASURED -6.5% AND WAS DROPPED:
+// the surviving instruction stays at the DEF's index -- it does not move down to the copy. So the
+// def's operands are read at exactly the same point as before and NO source live range grows.
+// The only range that changes is the DESTINATION's: its def moves up to CHAIN_WINDOW instructions
+// earlier. Bounded, and guarded below. Forward propagation extended ranges by an unbounded amount
+// and let the allocator spill.
+//
+// ORDERING HAZARD -- why a naive "just widen the window" is silently WRONG.
+// Folding moves the write of vD EARLIER. In sumto, `acc += n` reads the OLD n, so `MOV v1,v10`
+// (n := n-1) must NOT be hoisted above `ADD v7,v1` (acc += n). The interference scan rejects
+// exactly that: any surviving instruction between the def and the copy that MENTIONS vD blocks
+// the fold. On sumto this fires for the v6 and v11 links and correctly REFUSES the v10 -> v1
+// link, and that refusal is what keeps the answer right. A fold that inverted those two would
+// still produce a plausible-looking number, so t_copychain checks the VALUE, not just that the
+// program runs -- the trap t_spawnsmoke sat in for months.
+//
+// SAFETY IS ONE CRITERION, as with 1c: counts[vT] == 2 over the whole function means the def and
+// this copy are the ONLY two mentions of vT, so nothing else can observe it. No CFG reasoning is
+// needed for vT; the span scan handles vD; the control-flow bail keeps both inside one block.
+const CHAIN_WINDOW: i64 = 8
+pub fn collapse_copy_chain(insts: ptr[MachInst], len: i64, max_vreg: u32) -> i64:
+    if len < 3 as i64:
+        return len
+    let n = (max_vreg as i64) + 1 as i64
+    let counts = @alloc(n * 4) as ptr[i32]
+    let def_at = @alloc(n * 8) as ptr[i64]
+    mut z := 0 as i64
+    while z < n:
+        counts[z] = 0 as i32
+        def_at[z] = 0 - 1 as i64
+        z = z + 1
+    mut ci := 0 as i64
+    while ci < len:
+        let inst = &insts[ci]
+        if inst.dst.kind == OPND_VREG:
+            counts[inst.dst.vreg as i64] = counts[inst.dst.vreg as i64] + 1 as i32
+            def_at[inst.dst.vreg as i64] = ci
+        if inst.src1.kind == OPND_VREG:
+            counts[inst.src1.vreg as i64] = counts[inst.src1.vreg as i64] + 1 as i32
+        if inst.src2.kind == OPND_VREG:
+            counts[inst.src2.vreg as i64] = counts[inst.src2.vreg as i64] + 1 as i32
+        ci = ci + 1
+
+    let dead = @alloc(len) as ptr[u8]
+    mut d0 := 0 as i64
+    while d0 < len:
+        dead[d0] = 0 as u8
+        d0 = d0 + 1
+
+    mut j := 0 as i64
+    while j < len:
+        let m = &insts[j]
+        if m.op == MACH_MOV and m.dst.kind == OPND_VREG and m.src1.kind == OPND_VREG and m.src2.kind == OPND_NONE:
+            let vt = m.src1.vreg as i64
+            let vd = m.dst.vreg as i64
+            // vt == vd is a self-move; folding it is the identity and 1c does not own it either.
+            if vt != vd and vt < n and vd < n and counts[vt] == 2 as i32:
+                let i = def_at[vt]
+                // gap >= 2 keeps this pass DISJOINT from 1c's shape B (which owns the adjacent
+                // case, including its physical-destination form). Two passes that can match the
+                // same window make a measured delta unattributable.
+                if i >= 0 as i64 and i < j and dead[i] == 0 as u8 and j - i >= 2 as i64 and j - i <= CHAIN_WINDOW:
+                    let d = &insts[i]
+                    mut ok := d.op == MACH_MOV or d.op == MACH_LEA
+                    if ok:
+                        ok = d.dst.kind == OPND_VREG and (d.dst.vreg as i64) == vt
+                    // The def must not read a PHYSICAL register. A `MOV vT, PHYS(r)` is not a
+                    // value copy at all -- it is ABI ESTABLISHMENT, and its position is load-
+                    // bearing in a way this pass's vreg counts cannot see. `counts[vT] == 2`
+                    // proves nothing about a physical register: `r` is a second, invisible
+                    // source whose lifetime is governed by the calling convention.
+                    //
+                    // MEASURED, not feared (2026-07-30b). Without this check, 1f folded the
+                    // float parameter prologue of every function with 4+ f64 params and
+                    // miscompiled it: t_interpolation 127 -> 79, t_colorhsl 127 -> 120,
+                    // t_quatrot 8 -> 3, identically at O0/O1/O2. The disassembly of the folded
+                    // prologue says exactly why:
+                    //
+                    //     movsd %xmm0,%xmm2      ; v1 spilled, via the float spill scratch
+                    //     movsd %xmm1,%xmm2      ; v2 spilled, same scratch
+                    //     movsd %xmm2,%xmm9      ; v3 := p2 -- reads a CLOBBERED %xmm2
+                    //
+                    // The float spill scratch is XMM2 (chosen in 2026-07-29e when spilled float
+                    // ALU destinations were fixed), and on win64 XMM2 is also the THIRD float
+                    // argument register. emit_param_prologue avoids that collision structurally
+                    // by snapshotting all four incoming arg registers into fresh vregs BEFORE
+                    // reading any of them -- see the comment on emit_param_prologue, which says
+                    // so outright. Those snapshots are the protection, and folding them away is
+                    // deleting it.
+                    //
+                    // Excluding PHYS defs rather than float or parameter vregs is deliberate on
+                    // three counts. It names the actual mechanism (ABI vs value), so it is not
+                    // the unexplained guard that f3e3915 warns against. It costs none of the
+                    // measured win: sumto's two winning folds have defs `LEA v6,[v1-1]` and
+                    // `MOV v11,v7`, both vreg-to-vreg -- a param-vreg exclusion would have
+                    // deleted half the -14.2%, since sumto's winning destination IS a parameter.
+                    // And it closes the integer form of the same hazard, which is only saved
+                    // today by param_idx_of_vreg (x86_regalloc.ax:519) recognising RCX/RDX/R8/R9
+                    // -- protection 1f would equally have been deleting. NOTE that
+                    // param_idx_of_vreg does NOT list XMM0-XMM3, so the float side has no such
+                    // backstop; see knowledge/bug-float-arg-reg-unprotected.md.
+                    if ok:
+                        ok = d.src1.kind != OPND_PHYS and d.src2.kind != OPND_PHYS
+                    if ok:
+                        mut k := i + 1 as i64
+                        while k < j:
+                            // Skip instructions already deleted this pass: they are not in the
+                            // output, so they cannot observe anything. (They are only ever MOVs,
+                            // never control flow.)
+                            if dead[k] == 0 as u8:
+                                let s = &insts[k]
+                                if chain_span_blocks(s.op):
+                                    ok = false
+                                if s.dst.kind == OPND_VREG and (s.dst.vreg as i64) == vd:
+                                    ok = false
+                                // CALIBRATED 2026-07-30: flipping either of these two to `ok = true`
+                                // makes t_copychain return 1 at -O1 (sumto gives 45, not 55). Note
+                                // that bin/t_tailrecloop.ax still returns its expected 128 with the
+                                // guard broken -- the benchmark is value-blind to this miscompile,
+                                // which is why this oracle checks three distinct values.
+                                if s.src1.kind == OPND_VREG and (s.src1.vreg as i64) == vd:
+                                    ok = false
+                                if s.src2.kind == OPND_VREG and (s.src2.vreg as i64) == vd:
+                                    ok = false
+                            k = k + 1
+                    if ok:
+                        let nd = insts[j].dst
+                        insts[i] = MachInst(op: insts[i].op, cc: insts[i].cc, padding: insts[i].padding, dst: nd, src1: insts[i].src1, src2: insts[i].src2)
+                        dead[j] = 1 as u8
+                        // vD's def now lives at i, so a LATER copy off vD can chain onto it --
+                        // this is what collapses sumto's two-hop chains in a single pass. Every
+                        // guard is re-checked for the new (i, j') pair, span scan included.
+                        def_at[vd] = i
+        j = j + 1
+
+    mut w := 0 as i64
+    mut r := 0 as i64
+    while r < len:
+        if dead[r] == 0 as u8:
+            if w != r:
+                insts[w] = insts[r]
+            w = w + 1 as i64
+        r = r + 1 as i64
+    @free(counts as ptr[u8])
+    @free(def_at as ptr[u8])
+    @free(dead)
+    return w
+
 // PEEPHOLE 1e (M6): strength-reduce a multiply by a power-of-two immediate.
 //     IMUL vD, imm(2)    ->  ADD vD, vD
 //     IMUL vD, imm(2^k)  ->  SHL vD, imm(k)
@@ -28825,6 +29020,13 @@ pub fn select_all(f: ptr[AirFunc], abi: str, table: ptr[TypeTable], symbols: ptr
     // middle of the three-instruction window 1c matches on, so removing it here is what lets 1c
     // fire at all on those. See fold_alu_immediate.
     result.len = fold_alu_immediate(result.data, result.len, sel.max_vreg)
+    // Peephole 1f (M6): collapse non-adjacent copy chains. BEFORE 1c on purpose, and the reason
+    // is compaction rather than counts: deleting the intervening copies is what brings 1c's
+    // three-instruction shape-A window ADJACENT. On sumto, 1f removes the v6 and v11 links, which
+    // leaves `MOV v7,v2 ; ADD v7,v1 ; MOV v2,v7` consecutive so 1c can fold it to `ADD v2,v1` --
+    // neither pass reaches that alone. After 1d for the same reason 1c is: a folded-away constant
+    // is one less instruction inside the window. See collapse_copy_chain.
+    result.len = collapse_copy_chain(result.data, result.len, sel.max_vreg)
     // Peephole 1c (M6): fold the destructive two-operand form's copy pair into the op itself.
     // After 1b, so the counts it reasons about are not inflated by constants already known
     // dead, and before allocation, because the allocator's interval model provably cannot

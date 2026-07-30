@@ -1,0 +1,53 @@
+// PIN: the FLOAT PARAMETER PROLOGUE must survive copy-chain folding.
+//
+// Why this exists. Peephole 1f (non-adjacent copy-chain collapse, 2026-07-30b) folded the
+// parameter prologue -- `MOV vTemp,<xmm arg reg>` ... `MOV vParam,vTemp`, which is NON-adjacent
+// because the four register-passed parameters interleave -- and silently miscompiled every
+// float-heavy function with 4+ f64 parameters. It was caught only by t_interpolation,
+// t_colorhsl and t_quatrot: three LARGE tests whose names say nothing about parameter passing,
+// where the failure surfaced as a wrong arithmetic total (127 -> 79) many steps downstream.
+//
+// This test is the minimal form of that defect: 5 f64 parameters (Windows x64 passes the first
+// four in XMM0-XMM3 and the fifth on the stack, so it exercises BOTH paths), enough live f64
+// temporaries to put the allocator under real float pressure, and an exact expected value.
+// With 1f applied it returns -62 instead of 42; on a correct compiler it is 42 at every
+// optimization level.
+//
+// It checks a VALUE, deliberately. A fold that corrupts a parameter still produces a plausible
+// number, so asserting "it ran" would pass on the miscompile -- the trap t_spawnsmoke sat in
+// for months, and the same trap meant bin/t_tailrecloop.ax returned its expected 128 while the
+// compiler was wrong.
+fn cat_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64:
+    let t2 = t * t
+    let t3 = t2 * t
+    let a = 2.0 * p1
+    let b = (0.0 - p0 + p2) * t
+    let c = (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+    let d = (0.0 - p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+    return 0.5 * (a + b + c + d)
+
+// Six f64 parameters: two arrive on the stack, so a fold that mishandles the register-passed
+// four but not the spilled remainder still shows up here.
+fn bilerp6(c00: f64, c10: f64, c01: f64, c11: f64, tx: f64, ty: f64) -> f64:
+    let x0 = c00 + (c10 - c00) * tx
+    let x1 = c01 + (c11 - c01) * tx
+    return x0 + (x1 - x0) * ty
+
+fn near(v: f64, w: f64) -> bool:
+    mut d := v - w
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.00001
+
+fn main() -> i64:
+    // Catmull-Rom through (0,0,1,1) at t=0.5 is exactly 0.5.
+    if not near(cat_rom(0.0, 0.0, 1.0, 1.0, 0.5), 0.5):
+        return 1
+    // Bilinear interpolation of the unit corners at the centre is 1.5.
+    if not near(bilerp6(0.0, 1.0, 2.0, 3.0, 0.5, 0.5), 1.5):
+        return 2
+    // Same function, asymmetric arguments, so a parameter swapped for another parameter
+    // (rather than corrupted outright) cannot slip through symmetry.
+    if not near(cat_rom(1.0, 2.0, 4.0, 8.0, 0.25), 2.3828125):
+        return 3
+    return 42
