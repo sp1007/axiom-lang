@@ -1,0 +1,49 @@
+mut gf: f64 = 0.0
+
+struct Hold:
+    v: f64
+
+struct Src:
+    s: f64
+    fn area(self: Src) -> f64:
+        return self.s * self.s
+
+struct Gen[T]:
+    v: T
+    fn scaled(self: Gen[T]) -> f64:
+        return 2.0
+
+fn takef(x: f64) -> i64:
+    if x > 8.99 and x < 9.01:
+        return 1
+    return 0
+
+fn main() -> i64:
+    let q = Src(s: 3.0)
+    mut r: i64 = 0
+    // 1: method float result as a call ARGUMENT
+    r = r + takef(q.area())
+    // 2: into a struct field
+    let h = Hold(v: q.area())
+    if h.v > 8.99 and h.v < 9.01:
+        r = r + 2
+    // 3: into a global
+    gf = q.area()
+    if gf > 8.99 and gf < 9.01:
+        r = r + 4
+    // 4: into an array element
+    mut arr: [f64; 2] = [0.0, 0.0]
+    arr[0] = q.area()
+    if arr[0] > 8.99 and arr[0] < 9.01:
+        r = r + 8
+    // 5: mut reassign from a method
+    mut m: f64 = 0.0
+    m = q.area()
+    if m > 8.99 and m < 9.01:
+        r = r + 16
+    // 6: generic in-struct method returning f64
+    let g = Gen[i64](v: 5)
+    let gs = g.scaled()
+    if gs > 1.99 and gs < 2.01:
+        r = r + 32
+    return r

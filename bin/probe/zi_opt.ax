@@ -1,0 +1,32 @@
+struct P:
+    x: i64
+    y: i64
+
+interface Src:
+    fn maybe(self: Self) -> Option[i64]
+    fn point(self: Self) -> P
+    fn ratio(self: Self) -> f32
+
+struct S1:
+    v: i64
+    fn maybe(self: S1) -> Option[i64]:
+        return Some(self.v)
+    fn point(self: S1) -> P:
+        return P(x: self.v, y: self.v * 2)
+    fn ratio(self: S1) -> f32:
+        return 2.5
+
+fn useit(s: Src) -> i64:
+    mut r: i64 = 0
+    let o = s.maybe()
+    if o.unwrap() == 7:
+        r = r + 1
+    let p = s.point()
+    if p.x == 7 and p.y == 14:
+        r = r + 2
+    let f = s.ratio()
+    if f > 2.49 and f < 2.51:
+        r = r + 4
+    return r
+fn main() -> i64:
+    return useit(S1(v: 7))

@@ -1,0 +1,136 @@
+// PIN (exit 42): method RETURN-TYPE resolution across return classes AND result positions.
+//
+// Companion to t_methfloatret and t_ifaceretnoni64, which pin the two defects fixed on 2026-07-30
+// (376af08 interface dynamic dispatch resolved no return type; eb88586 float-returning in-struct
+// methods). Those two tests pin the FAILING shapes. This one pins the BREADTH that was probed
+// immediately afterwards and found already correct -- so that a future change to the method-return
+// recovery cannot quietly break a class or position that works today.
+//
+// Both defects were narrow gaps in one shared mechanism: the recovery block that restores a method
+// call's result type only for an enumerated set of return kinds. Every time that enumeration has
+// been extended (struct, then str/bytes by RFC 0020 P3, then f32/f64) the missing class had been
+// silently miscompiling. This test is the guard against the next such extension regressing an
+// existing entry.
+struct P:
+    x: i64
+    y: i64
+
+mut gf: f64 = 0.0
+
+struct Hold:
+    v: f64
+
+struct Box:
+    v: i64
+    fn maybe(self: Box) -> Option[i64]:
+        return Some(self.v)
+    fn res(self: Box) -> Result[i64, str]:
+        return Ok(self.v * 2)
+    fn point(self: Box) -> P:
+        return P(x: self.v, y: self.v + 1)
+    fn flag(self: Box) -> bool:
+        return self.v > 3
+    fn pair(self: Box) -> (i64, f64):
+        return (self.v, 1.5)
+
+struct Src:
+    s: f64
+    fn area(self: Src) -> f64:
+        return self.s * self.s
+
+struct Gen[T]:
+    v: T
+    fn scaled(self: Gen[T]) -> f64:
+        return 2.0
+
+interface Shape:
+    fn maybe(self: Self) -> Option[i64]
+    fn point(self: Self) -> P
+    fn ratio(self: Self) -> f32
+
+struct S1:
+    v: i64
+    fn maybe(self: S1) -> Option[i64]:
+        return Some(self.v)
+    fn point(self: S1) -> P:
+        return P(x: self.v, y: self.v * 2)
+    fn ratio(self: S1) -> f32:
+        return 2.5
+
+fn takef(x: f64) -> i64:
+    if x > 8.99 and x < 9.01:
+        return 1
+    return 0
+
+// STRUCTURED and float returns through DYNAMIC DISPATCH, each bound to a `let`.
+fn viaiface(s: Shape) -> i64:
+    mut r: i64 = 0
+    let o = s.maybe()
+    if o.unwrap() == 7:
+        r = r + 1
+    let p = s.point()
+    if p.x == 7 and p.y == 14:
+        r = r + 2
+    let f = s.ratio()
+    if f > 2.49 and f < 2.51:
+        r = r + 4
+    return r
+
+// Every return CLASS from an in-struct method, bound to a `let`.
+fn classes() -> i64:
+    let b = Box(v: 7)
+    mut r: i64 = 0
+    let o = b.maybe()
+    if o.unwrap() == 7:
+        r = r + 1
+    let e = b.res()
+    if e.unwrap() == 14:
+        r = r + 2
+    let p = b.point()
+    if p.x == 7 and p.y == 8:
+        r = r + 4
+    let f = b.flag()
+    if f:
+        r = r + 8
+    let t = b.pair()
+    if t.0 == 7 and t.1 > 1.49 and t.1 < 1.51:
+        r = r + 16
+    return r
+
+// Every POSITION a float method result can land in. The defect was in the type recorded for the
+// call result, so each of these consumes that type differently.
+fn positions() -> i64:
+    let q = Src(s: 3.0)
+    mut r: i64 = 0
+    r = r + takef(q.area())                 // call argument
+    let h = Hold(v: q.area())               // struct field initializer
+    if h.v > 8.99 and h.v < 9.01:
+        r = r + 2
+    gf = q.area()                           // global assignment
+    if gf > 8.99 and gf < 9.01:
+        r = r + 4
+    mut arr: [f64; 2] = [0.0, 0.0]
+    arr[0] = q.area()                       // array element
+    if arr[0] > 8.99 and arr[0] < 9.01:
+        r = r + 8
+    mut m: f64 = 0.0
+    m = q.area()                            // mut reassignment
+    if m > 8.99 and m < 9.01:
+        r = r + 16
+    let g = Gen[i64](v: 5)
+    let gs = g.scaled()                     // GENERIC in-struct method returning f64
+    if gs > 1.99 and gs < 2.01:
+        r = r + 32
+    return r
+
+fn main() -> i64:
+    let a = viaiface(S1(v: 7))
+    if a != 7:
+        return a
+    let b = classes()
+    if b != 31:
+        return 40 + b
+    let c = positions()
+    if c != 63:
+        return 100 + c
+    return 42

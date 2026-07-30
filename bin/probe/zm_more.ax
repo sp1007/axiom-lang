@@ -1,0 +1,36 @@
+struct P:
+    x: i64
+    y: i64
+
+struct Box:
+    v: i64
+    fn maybe(self: Box) -> Option[i64]:
+        return Some(self.v)
+    fn res(self: Box) -> Result[i64, str]:
+        return Ok(self.v * 2)
+    fn point(self: Box) -> P:
+        return P(x: self.v, y: self.v + 1)
+    fn flag(self: Box) -> bool:
+        return self.v > 3
+    fn pair(self: Box) -> (i64, f64):
+        return (self.v, 1.5)
+
+fn main() -> i64:
+    let b = Box(v: 7)
+    mut r: i64 = 0
+    let o = b.maybe()
+    if o.unwrap() == 7:
+        r = r + 1
+    let e = b.res()
+    if e.unwrap() == 14:
+        r = r + 2
+    let p = b.point()
+    if p.x == 7 and p.y == 8:
+        r = r + 4
+    let f = b.flag()
+    if f:
+        r = r + 8
+    let t = b.pair()
+    if t.0 == 7 and t.1 > 1.49 and t.1 < 1.51:
+        r = r + 16
+    return r
