@@ -607,16 +607,53 @@ All decisions must optimize for:
 { "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/autopilot-session-start.sh\"" } ] } ] } }
 ```
 
-**Context hygiene — checkpoint at ~30%, don't run to full (user, 2026-07-29):** the old rule
-("auto-compact when near full") let a session accumulate a huge context before anything was
-written down, so a compaction or crash risked losing hard-won findings. New rule: **when the
-context reaches roughly 30%, CHECKPOINT** — finish or park the current step, commit whatever is
-GREEN, write/refresh a `knowledge/session-handoff-*.md` with the exact resume point, and say
-plainly that it is a good moment to `/clear`. Split of concerns, identical to the bash-permission
-and SessionStart-hook caveats above: the *discipline* is Claude's and lives here; the *trigger*
-is the user's, because **there is no auto-clear-at-N% setting and Claude cannot invoke `/clear`
-itself** (it is a built-in CLI command, not a tool). Do not fake it by hibernating — the monitor
-loop keeps running; just make sure the next session can resume from the handoff alone.
+**Context hygiene — continuous handoff, lean on auto-compact, NO user babysitting (user, 2026-07-29; refined 2026-07-30):**
+Verified against current Claude Code docs (2026-07-30): **there is NO way to auto-`/clear`** — not
+as a tool, not via any hook (Stop/SessionEnd/PreCompact/…), not via a settings.json threshold, not
+via `/loop` or scheduled agents, not via MCP/env/CLI flag. `/clear` is an interactive CLI command
+only. So "automatically clear at ~30%" is not implementable and must not be faked or promised.
+    The user's actual need is **"stop making me watch the token meter and type `/clear`."** That IS
+satisfiable, by the one context-reduction mechanism that already runs with zero keystrokes:
+**auto-compact** (built-in summarization near the context limit). It is not a wipe and fires near
+full, not at 30% — but it needs no user action. Claude's job is to make auto-compact *safe* so the
+user never has to pre-empt it:
+    1. **Continuously persist the handoff.** After each completed task (and before any risky long
+       step), commit whatever is GREEN and write/refresh `knowledge/session-handoff-*.md` with the
+       exact resume point. Because this is always on disk, a compaction or crash at ANY moment loses
+       nothing — the 30% pre-empt is no longer needed as a safety net.
+    2. **Do NOT nag the user to `/clear`.** Do not end turns telling the user to watch the meter or
+       press `/clear`. Let auto-compact do its job silently. Only *mention* `/clear` if the user
+       asks, or as a single optional aside when starting a genuinely unrelated task — never as a
+       standing chore assigned to the user.
+    3. **Task boundary is the checkpoint point**, not a clear point: carry a task to committable
+       GREEN, checkpoint, continue. The monitor loop keeps running throughout.
+    Split of concerns (same as the bash-permission / SessionStart-hook caveats above): Claude owns
+the *continuous-handoff discipline*; the *only* thing that ever required a user keystroke — `/clear`
+— is now optional, because auto-compact + always-fresh handoff removes the need to babysit.
+
+**Token economy — per-task context isolation IS the implementable `/clear` (user, 2026-07-30):**
+The user asked a third time for "auto-`/clear` after each task, to save tokens". `/clear` itself is
+still not callable (above, unchanged, verified). But the *token saving* they want does not require
+`/clear` at all — it requires that **one task's tool traffic must not be paid for by every later
+task**. Two rules deliver that with zero keystrokes:
+    1. **Delegate task execution to a sub-agent by DEFAULT, not as the exception.** A sub-agent runs
+       on a fresh context and returns only its report, so the orchestrator's context grows by ~a
+       summary per task instead of by every file read, build log and disassembly dump. That is
+       functionally per-task `/clear`. Inline execution is now the *exception*, justified only when
+       the change is genuinely self-host-critical and needs the orchestrator's accumulated context
+       (backend/ABI/regalloc work mid-diagnosis). ⚠️ Sub-agents are NOT free — each one re-reads its
+       own orientation. Delegate a *whole task*, never a two-tool errand.
+    2. **NEVER read `knowledge/MEMORY.md` wholesale.** Measured 2026-07-30: it is **175 KB ≈ 87k
+       tokens**, over the read cap, and even ONE truncated page costs ~25k tokens *before any work
+       starts* — that single read was the largest token sink in the loop, far larger than anything
+       `/clear` would have recovered. Orientation reads **`knowledge/BACKLOG.md`** (compact, live,
+       ~2k tokens) plus the newest `session-handoff-*.md`; reach into `MEMORY.md` only by `Grep` for
+       a named topic. `MEMORY.md` remains the detail store and the authority — `BACKLOG.md` is a
+       pointer file and must never hold facts of its own (two copies of one walk is exactly the
+       defect class that produced the interface-return miscompile).
+    ⇒ Restated plainly for future sessions: **the answer to "save tokens" is not clearing the
+context, it is not loading 87k tokens of index and not accumulating task traffic in the
+orchestrator.** Both are Claude's job and need no user keystroke.
 
 **Change log:**
 | Date | Change | Target | Reason |
@@ -626,3 +663,6 @@ loop keeps running; just make sure the next session can resume from the handoff 
 | 2026-07-13 | Added "Continuous supervision (NO hibernation)" directive: self-perpetuating loop via `ScheduleWakeup(prompt="tiếp tục")` with a ~5-min (300s) heartbeat; never `stop:true` unless user says; each wake auto-determines the next task. Stops the prior behavior of ending with `ScheduleWakeup(stop)` and waiting for the user to type "tiếp tục". | CLAUDE.md §24 | User: "chạy giám sát định kỳ mỗi 5 phút, nếu phiên kết thúc tự động xác định nhiệm vụ tiếp theo, tự thực hiện tiếp tục, không được ngủ đông" |
 | 2026-07-13 | Switched heartbeat mechanism from `ScheduleWakeup` (did not fire on idle) to a **persistent `Monitor`** emitting a 300s tick line; each tick notification drives the next iteration. | CLAUDE.md §24 | User: "vòng lặp không chạy, thay bằng monitor" |
 | 2026-07-14 | Formalized the session-start rule: arming the 5-min `Monitor` is now the explicit FIRST step of autopilot Phase 0, backed by a `SessionStart` hook script (`.claude/hooks/autopilot-session-start.sh`) that re-surfaces the reminder every session. Hook must be user-installed into `.claude/settings.local.json` (auto-mode classifier blocks Claude from self-installing SessionStart hooks / editing `permissions`). | CLAUDE.md §24, .claude/skills/axiom-autopilot/SKILL.md (Phase 0 step 0), .claude/hooks/autopilot-session-start.sh | User (/harness): "mỗi khi tạo mới session chạy monitor 5 phút giám sát; idle thì tự tìm task giá trị cao nhất; không được ngủ đông" || 2026-07-29 | Added "Context hygiene — checkpoint at ~30%": commit + write `knowledge/session-handoff-*.md` + tell the user to `/clear` once context passes ~30%, instead of running to full and relying on compaction. Noted that no auto-clear setting exists and Claude cannot call `/clear`, so the trigger stays with the user. | CLAUDE.md §24 | User: "tự động clear session nếu session đầy 30%" |
+| 2026-07-30 | Refined the context-hygiene rule: neo trigger vào **ranh giới hoàn thành task** — sau mỗi task xong, nếu token ~≥30% thì checkpoint (commit GREEN + handoff) rồi báo user `/clear` ngay, không cắt task giữa chừng. Vẫn ghi rõ ràng buộc: Claude không tự gọi được `/clear`, user gõ 1 phím. | CLAUDE.md §24 | User: "tự động xóa session sau mỗi lần hoàn thành task nếu token ~30%" |
+| 2026-07-30 | Superseded above: verified (docs) NO auto-`/clear` exists via any tool/hook/setting/loop/MCP. Rewrote rule to **remove the user's babysitting burden** — rely on built-in auto-compact (zero-keystroke), keep the `knowledge/session-handoff-*.md` continuously committed so compaction/crash is always safe, and STOP nagging the user to type `/clear`. | CLAUDE.md §24 | User: "tôi cần bạn tự động thực hiện /clear, đừng bắt tôi phải theo dõi để gõ" |
+| 2026-07-30 | Added "**Token economy — per-task context isolation IS the implementable `/clear`**": (a) delegating a whole task to a sub-agent is now the DEFAULT execution mode (fresh context per task ⇒ functionally per-task clear), inline is the exception for self-host-critical work; (b) **MEASURED the real token sink** — `knowledge/MEMORY.md` is 175 KB ≈ 87k tokens and one truncated page costs ~25k tokens per session just to orient ⇒ created compact `knowledge/BACKLOG.md` for orientation, `MEMORY.md` now Grep-only. | CLAUDE.md §24, knowledge/BACKLOG.md (new), .claude/skills/axiom-autopilot/SKILL.md | User: "tự động /clear sau khi hoàn task và chuyển sang task mới để tiết kiệm token" |

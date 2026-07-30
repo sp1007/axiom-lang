@@ -19,7 +19,7 @@ Purpose: run the AXIOM compiler project the way the user wants — **auto-decide
 0. **Arm the continuous-supervision heartbeat FIRST (every new session).** Check running tasks; if NO persistent autopilot `Monitor` is armed, arm exactly ONE now:
    `Monitor(persistent:true, command:'while true; do sleep 300; echo "[autopilot-tick] $(date -u +%H:%M:%S)"; done')`.
    It emits a heartbeat line every 5 minutes. Each `[autopilot-tick]` — and any moment you would otherwise finish a turn and go idle — re-runs Phase 0 → Phase 1 and executes the next task WITHOUT asking. **Never idle-hibernate.** Only `TaskStop` the monitor when the user explicitly says to stop. (A SessionStart hook at `.claude/hooks/autopilot-session-start.sh` surfaces this same reminder; if the hook is installed the reminder arrives automatically, but arming the monitor is still THIS step's job — the hook cannot call tools.) See CLAUDE.md §24 "Continuous supervision".
-1. Read `CLAUDE.md` (operating manual) and `MEMORY.md` + the handoff memory (the entry marked "ĐỌC ĐẦU TIÊN" / newest `session-handoff-*`). This is the live state: current fixpoint hash, baseline test count, OPEN items.
+1. Read `CLAUDE.md` (operating manual) + **`knowledge/BACKLOG.md`** (compact orientation: fixpoint hash, baseline count, OPEN items, refuted ideas) + the newest `knowledge/session-handoff-*.md`. ⛔ **NEVER read `knowledge/MEMORY.md` wholesale** — it is 175 KB ≈ 87k tokens and one truncated page costs ~25k tokens before any work starts; reach into it **only by `Grep`** for a named topic. It stays the detail store and the authority on any conflict (CLAUDE.md §24 "Token economy").
 2. `git status` + `git log --oneline -5`. Determine: clean tree? uncommitted in-flight work? on `main` or a branch?
 3. If there is uncommitted in-flight work from a prior session, resume it (gate → commit) before starting anything new.
 
@@ -38,7 +38,7 @@ State the chosen task in one line and proceed — do not ask which one.
 For a bug/feature, spawn `axiom-investigator` (read-only) to reproduce, localize to `file:line`, check the spec/RFC (strange behavior is often intended design — do NOT "fix" design), and propose a minimal fix + oracle. Spawn **multiple investigators in parallel** only for independent candidates. For a task whose design is already clear from memory, skip to Phase 3.
 
 ## Phase 3 — Implement
-Implement inline (main agent) for context-heavy / self-host-sensitive changes, OR delegate to `axiom-implementer` for a cleanly-scoped independent change. Rules: minimal first, respect pipeline layering, add an oracle test, RFC for any syntax/IR/ABI/linker change. Never edit `tmp_concatenated_air.ax` directly (it is generated).
+**Delegate to `axiom-implementer` BY DEFAULT** (CLAUDE.md §24 "Token economy"): a sub-agent runs on a fresh context and returns only its report, so one task's file reads, build logs and disassembly dumps are not paid for by every later task — that is functionally a per-task `/clear`. Implement **inline only as the exception**, when the change is genuinely self-host-critical and needs the orchestrator's accumulated diagnosis (backend/ABI/regalloc mid-investigation). ⚠️ Delegate a WHOLE task, never a two-tool errand — each sub-agent re-reads its own orientation. Rules: minimal first, respect pipeline layering, add an oracle test, RFC for any syntax/IR/ABI/linker change. Never edit `tmp_concatenated_air.ax` directly (it is generated).
 
 ## Phase 4 — Gate (invoke the `axiom-fixpoint-gate` skill, or spawn `axiom-verifier`)
 - Rebuild the daily driver if source changed.
