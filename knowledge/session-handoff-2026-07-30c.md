@@ -1,20 +1,25 @@
 ---
 name: session-handoff-2026-07-30c
-description: "HANDOFF 2026-07-30c — peephole 1f is SHIPPED and GREEN (d454c49, B==C B71DF82A, 581/581). The RED was ABI, not float pressure. NEXT TARGET identified and evidenced: LOOP-HEADER alignment — a pure +16-byte code shift costs callloop 7%, which is what makes the M6-codegen milestone unmeasurable."
+description: "HANDOFF 2026-07-30c — peephole 1f SHIPPED GREEN (its RED was ABI ordering, not float pressure); loop-header alignment REFUTED before building it; M6 gate re-read over layout distributions (3 of 4 shapes PASS, fib undecidable as specified — a D1 call); and TWO probe-found silent miscompiles in method return-type resolution fixed. HEAD c0bca94, driver A==B 0148CBB3, baseline 590/590."
 metadata:
   node_type: memory
   type: project
 ---
 
-# HANDOFF 2026-07-30c — 1f shipped GREEN; next target is LOOP alignment
+# HANDOFF 2026-07-30c — 1f shipped; layout measured honestly; two miscompiles fixed
+
+⚠️ **This file's original "NEXT TARGET: loop-header alignment" was REFUTED later in the same
+session** (§ below). Do not act on it. The real next steps are in "ACTUAL next target" and the
+probing recommendation.
 
 ## State of the tree
 - **HEAD = `eb88586`**, pushed to `main`. Clean except two things that are NOT mine and should be
   left alone: `CLAUDE.md` (user's context-hygiene edit) and untracked `.claude/settings.json`.
 - **Daily driver `bin/axc_native.exe` = `A == B 0148CBB3`** (both typecheck fixes; frontend-only so
   A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
-- **BASELINE = 587 / 587, 0 failed.** Was 578; `t_floatparamchain`, `t_ifaceretnoni64` and
-  `t_methfloatret` each add a main-list row plus the O2/O3 sweep (+3 each). Below 587 is RED.
+- **BASELINE = 590 / 590, 0 failed.** Was 578; `t_floatparamchain`, `t_ifaceretnoni64`,
+  `t_methfloatret` and `t_methretbreadth` each add a main-list row plus the O2/O3 sweep (+3 each).
+  Below 590 is RED.
 - `bin/axc_pre1f.exe` is a reference compiler built from pre-1f source, kept for paired pricing.
 
 ## ✅ Two silent miscompiles found and fixed this session (probing, not backlog)
