@@ -11,10 +11,24 @@ metadata:
 Short handoff by design — it is a harness/docs session, not a compiler session. Compiler state is
 unchanged from [[session-handoff-2026-07-30c]]; read [[BACKLOG]] first for live state.
 
-## State of the tree
-- **HEAD `5507dd1`** (docs/harness only). Compiler source **untouched** ⇒ no gate owed.
-- Driver `bin/axc_native.exe` = **A==B `105B623C`**, baseline **593/593** — both unchanged.
-- Untracked and deliberately left alone: `.claude/settings.json`, `bin/probe3/`.
+## State of the tree (refreshed 2026-07-31)
+- **HEAD `b6c12ea`**. Driver `bin/axc_native.exe` = **A==B `1DE7823C`** (promoted after I re-verified).
+- **BASELINE = 619/619** at default AND `-O0`. Below 619 is RED. (593 → 597 → 607 → 611 → 619 across
+  this session's five fixes.)
+- Untracked and deliberately left alone: `bin/probe3/`.
+- ⚠️ `.claude/settings.json` was fixed by the user mid-session: it had `"allow": ["All"]` (not a valid
+  rule — matches no tool) plus `"defaultMode": "bypassPermissions"`, which project-level settings are
+  not permitted to set. Their user-level file already had valid `["Bash","PowerShell"]`; the broken
+  project file was masking it. Now `{"permissions":{"allow":["Bash","PowerShell"]}}`.
+
+## Shipped this session (all gated, all re-verified by me before or after commit)
+| commit | what | gate |
+|---|---|---|
+| `76de988` | int literal adopted into a float type was `OP_ICONST` ⇒ `let a: f64 = 3` gave 0.0 | A==B==C `824807E2`, 597 |
+| `abfe985` | **E3030** — out-of-range integer literal at an explicitly written narrow type is now rejected (user's D1 decision) | A==B `78295509`, 607 |
+| `5359a39` | interface dispatch never coerced its ARGUMENTS (`i.c32(1.5)` arrived as 0.0) | A==B==C `5b0eb92c`, 611 |
+| `a281992` | **method chosen by `_`-bounded SUBSTRING of another method's name** — wrong function called | A==B `1DE7823C`, 619 |
+| `0590035` | fib measured but no longer gating (my decision, rationale in the script header) | n/a |
 
 ## What shipped and why
 The user asked a **third** time for "auto-`/clear` after each task to save tokens". `/clear` is still
