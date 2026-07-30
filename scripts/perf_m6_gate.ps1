@@ -61,6 +61,27 @@ fn hot() -> i64:
         i = i + 1
     return acc & 255
 "@
+# arrwalk needs a module-level global, which sits in the shape body above `main` -- the template
+# splices the body between padfn and main, so a global declaration there is module scope as usual.
+# The fill loop (65536 iterations) is inside `hot()` exactly as in perf_suite.ps1 and is not the
+# measurement; the walk is 40M dependent loads.
+$ax["arrwalk"] = @"
+mut tbl: [i64; 65536]
+
+fn hot() -> i64:
+    mut i: i64 = 0
+    while i < 65536:
+        tbl[i] = (i * 2654435761 + 12345) & 65535
+        i = i + 1
+    mut idx: i64 = 0
+    mut acc: i64 = 0
+    mut k: i64 = 0
+    while k < 40000000:
+        idx = tbl[idx]
+        acc = acc + idx
+        k = k + 1
+    return acc & 255
+"@
 $ax["fib"] = @"
 fn fib(n: i64) -> i64:
     if n < 2:
@@ -104,6 +125,37 @@ main:
     inc     rcx
     cmp     rcx, r8
     jb      .loop
+    and     rax, 255
+    ret
+"@
+$asm["arrwalk"] = @"
+default rel
+section .bss
+tbl:    resq 65536
+section .text
+global main
+main:
+    lea     r9, [tbl]
+    mov     r10, 2654435761
+    xor     rax, rax
+.fill:
+    mov     rdx, rax
+    imul    rdx, r10
+    add     rdx, 12345
+    and     rdx, 65535
+    mov     [r9 + rax*8], rdx
+    inc     rax
+    cmp     rax, 65536
+    jb      .fill
+    xor     rax, rax
+    xor     rcx, rcx
+    mov     r8, 40000000
+.walk:
+    mov     rax, [r9 + rax*8]
+    add     rcx, rax
+    dec     r8
+    jnz     .walk
+    mov     rax, rcx
     and     rax, 255
     ret
 "@
