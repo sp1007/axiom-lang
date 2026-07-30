@@ -135,7 +135,48 @@ assuming "42 means pass" invents regressions that do not exist.
 denominator is bimodal with spread larger than the whole gate margin, so it is a specification choice,
 not a measurement to redo.
 
-## ⛔ NEXT TASK — probe4 bug #2, NOT STARTED (quota, not a technical block)
+## ✅ probe4 bug #2 SHIPPED — `5359a39`, `A==B==C 5b0eb92c`, **611/611** at default AND -O0
+Verified by me: I re-ran both regression passes (611/0 each) and re-ran the oracles
+(`t_ifacefloatarg` 42 at -O0/-O2; probe4 `f2`→42, `f3`→255, `f6`→107, `e4`→42).
+
+⭐ **The valuable part is that the agent answered a scope challenge instead of building through it.**
+Its work-in-progress touched `typetable.ax` and `air_builder.ax` when the brief said "one accessor in
+`typecheck.ax`", so I stopped it and required three answers before it continued:
+1. **Why the accessor cannot work — a concrete obstacle, not a preference.** Method-argument coercion
+   **does not live in typecheck at all**: a method call's callee is `NODE_FIELD_EXPR`, so static method
+   args are *already* inferred with `expected = TYPE_UNKNOWN` and are nonetheless CORRECT, because
+   `air_builder.coerce_float_arg` emits `OP_CAST` from the param types on the **resolved callee
+   symbol** — and that function returns immediately when `fn_sym == 0`, which is exactly dispatch's
+   situation by construction. Threading an expected type also cannot fix `i.c64(v)` with `v: f32`:
+   that needs a real `cvtss2sd` emitted, not a retyped expectation.
+2. **No second home for signatures.** `NODE_INTERFACE_DECL` stays the sole authority; the table is
+   *derived* by the same single walk (`interface_method_sig`) that already yields arity and return
+   type, and `iface_method_sigs` is pushed **in lockstep** with the existing `iface_methods` list under
+   the same `extra` index. A new **consumer**, never a second producer.
+3. **RFC written, not skipped** — RFC 0029 §9, with three rejected alternatives. No new RFC because
+   there is no new AIR opcode (`OP_CAST` is what the static path already emits), no box-layout, vtable,
+   ABI, linker or syntax change: it makes the implementation match what RFC 0029 already claimed.
+⇒ Worth keeping as a pattern: **"you went wider than the brief" is a question, not a verdict.** The
+wider design was right, and the challenge is what produced the evidence and the RFC.
+
+⚠️ **It also declined to declare victory.** `f1.ax` is **110, not 42** — rows R1–R5 now pass and
+execution reaches a **different, pre-existing** defect (below). I verified that attribution the only
+way that settles it: built a reference compiler from `0ad19c0`'s concat and ran both. `r6e.ax` = **101
+on BOTH sides**, `r6f` = 42 on both. My first attempt used `axc_pre1f` and read 68 — **the wrong
+reference** (it predates all of today's fixes), which proves nothing either way; the right boundary is
+the commit, not the oldest binary lying around.
+
+## ⏳ IN FLIGHT — backlog #4: f32 RETURN through dispatch reads a stale register
+Trigger is a combination: an f32-returning dispatch call **that takes arguments**, followed by another
+f32-returning dispatch call. Established: `r6e`=101 both sides (pre-existing), `r6f`=42 (two **no-arg**
+f32 dispatch calls are fine), `r6c`=42 (slot index alone is not the trigger). **Success oracle: f1 →
+42.** Investigator briefed to distinguish three candidate mechanisms **by disassembly**, not by
+plausibility — (a) coercion temporaries clobbering a live XMM, (b) XMM0 not treated as clobbered across
+the indirect call, (c) the return read after a later call overwrote XMM0. Standing lead: the float
+spill scratch is **XMM2**, which on win64 is also the **third float argument register** — the same
+collision that made peephole 1f RED — while an f32 return arrives in **XMM0**.
+
+## ⛔ REMAINING QUEUE (was: bug #2, now done)
 Dispatched at 08:43 and it died immediately on **"session limit · resets 7:40pm Asia/Saigon"**, having
 produced only "I'll start by orienting myself". **Tree verified clean — nothing half-done, nothing to
 unwind.** Re-dispatch it as-is after the reset; the brief was complete and is reproduced here:
