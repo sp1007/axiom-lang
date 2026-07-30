@@ -11702,7 +11702,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // bundled code uses fixed-array params, the self-host fixpoint is unaffected.
             mut fp_data := null as ptr[u32]
             mut fp_len := 0 as i64
-            if not did_ctor_args and not is_generic_call and self.tree.nodes.data[callee].kind == NODE_IDENT and callee_type != TYPE_UNKNOWN and (callee_type as i64) < self.types.entries.len:
+            // NODE_INDEX_EXPR is admitted alongside NODE_IDENT for the EXPLICIT type-argument
+            // call form `f[T](...)`. That form does NOT go through the is_generic_call
+            // instantiation path above (measured 2026-07-30: an instrumented print of
+            // `inferred[]` shows no user-level entry for `idf[f32](2.5)` at all), so its
+            // arguments were never given an expected type and a float literal kept its f64
+            // default -> a DOUBLE bit pattern passed into an f32 parameter slot -> read back 0.
+            //
+            // The type argument itself IS honoured: `wid[f32](a)` returning
+            // `@compiler_intrinsic("size_of")[T]()` reports 4, and `wid[f64]` reports 8, so a
+            // real f32 instance exists with a concrete f32 parameter. Only the ARGUMENT was
+            // left uncoerced.
+            //
+            // Admitting this callee kind is safe for the exact reason the `not is_generic_call`
+            // gate exists. That gate is there because a GENERIC callee's declared params are
+            // type PARAMETERS, so threading them would push a placeholder down as the expected
+            // type. By the time this call is typed, `f[T]` has already been resolved to the
+            // MONOMORPHISED instance, whose params are concrete â€” so there is no placeholder to
+            // push. And if `callee_type` is not a FUNC type here, the inner check below leaves
+            // fp_data null and the whole block is inert.
+            if not did_ctor_args and not is_generic_call and (self.tree.nodes.data[callee].kind == NODE_IDENT or self.tree.nodes.data[callee].kind == NODE_INDEX_EXPR) and callee_type != TYPE_UNKNOWN and (callee_type as i64) < self.types.entries.len:
                 let ce = self.types.entries.data[callee_type as i64]
                 if ce.kind == TYPE_KIND_FUNC and (ce.extra as i64) < self.types.funcs.len:
                     let fi2 = self.types.funcs.data[ce.extra as i64]

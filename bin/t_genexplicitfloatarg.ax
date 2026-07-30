@@ -1,0 +1,93 @@
+// PIN (exit 42): a float literal passed to a generic call with an EXPLICIT type argument must be
+// coerced to the instantiated parameter type.
+//
+// Why this exists. `idf[f32](2.5)` returned 0. A float literal defaults to f64, the monomorphised
+// parameter is f32, and the explicit-type-argument call form was never given an expected type for
+// its arguments -- so a DOUBLE bit pattern was passed into a 4-byte f32 slot and read back as
+// garbage. Measured cause: that form does not go through the generic-instantiation path in
+// typecheck at all (an instrumented print of `inferred[]` showed no user-level entry for it), and
+// the expected-type threading it needed was gated to NODE_IDENT callees.
+//
+// The type argument itself was always honoured -- `wid[f32]` reports size_of(T) == 4 and `wid[f64]`
+// reports 8 -- so a genuine f32 instance existed with a concrete f32 parameter. Only the argument
+// was uncoerced, which is why nothing rejected and the wrong answer was silent.
+//
+// This test pins BOTH SIDES of that boundary. The failing shapes are obvious; the passing ones are
+// here because the fix admits a new callee kind into an expected-type threading block, and the risk
+// of such a change is over-reach -- coercing something that was previously left alone. Each row
+// below was verified correct BEFORE the fix and must stay correct after it.
+fn idf[T](a: T) -> T:
+    return a
+
+fn pick[T](a: T, b: T) -> T:
+    return a
+
+fn wid[T](a: T) -> i64:
+    return @compiler_intrinsic("size_of")[T]()
+
+struct W[T]:
+    v: T
+    fn setv(self: W[T], nv: T) -> T:
+        return nv
+
+fn main() -> i64:
+    // ---- was BROKEN: explicit type arg + float literal ----
+    if (idf[f32](2.5) * 100.0) as i64 != 250:
+        return 1
+    // folded literal expression, same shape
+    if (idf[f32](2.0 + 0.5) * 100.0) as i64 != 250:
+        return 2
+    // two parameters
+    if (pick[f32](2.5, 1.0) * 100.0) as i64 != 250:
+        return 3
+    // an explicit BINDING annotation never rescued it, so pin that form too
+    let y: f32 = pick[f32](2.5, 1.0)
+    if (y * 100.0) as i64 != 250:
+        return 4
+
+    // ---- was already correct: guards against the fix over-reaching ----
+    // f64 explicit (the literal's own default -- no coercion needed)
+    if (idf[f64](2.5) * 100.0) as i64 != 250:
+        return 5
+    // explicit type arg with f32 VARIABLES rather than literals
+    let p: f32 = 2.5
+    let q: f32 = 1.0
+    if (pick[f32](p, q) * 100.0) as i64 != 250:
+        return 6
+    // INFERRED type args from f32 variables
+    if (pick(p, q) * 100.0) as i64 != 250:
+        return 7
+    // integer explicit type args. IN-RANGE values only, deliberately: what an OUT-OF-RANGE
+    // literal should do for a narrow type (`pick[u8](300, 1)`) is an open question, not
+    // established behaviour, so asserting it here would pin an unverified expectation. The
+    // measured fact is that it keeps 300 rather than narrowing to 44, in the generic AND the
+    // plain `let x: u8 = 300` case alike -- recorded separately, not judged here.
+    if pick[i32](250, 1) as i64 != 250:
+        return 8
+    if pick[u8](250, 1) as i64 != 250:
+        return 9
+    // generic struct ctor, and a generic METHOD taking a float literal
+    let w = W[f32](v: 1.0)
+    if (w.setv(2.5) * 100.0) as i64 != 250:
+        return 10
+    let w2 = W[f32](v: 2.5)
+    if (w2.v * 100.0) as i64 != 250:
+        return 11
+    // builtin generic container and a variant ctor with a float literal
+    mut v: Vec[f32] = Vec[f32].new()
+    v.push(2.5)
+    if (v.get(0).unwrap() * 100.0) as i64 != 250:
+        return 12
+    let o: Option[f32] = Some(2.5)
+    if (o.unwrap() * 100.0) as i64 != 250:
+        return 13
+
+    // ---- the type argument must still bind to what was WRITTEN, not to the literal's default ----
+    if wid[f32](2.5) != 4:
+        return 14
+    if wid[f64](2.5) != 8:
+        return 15
+    if wid(p) != 4:
+        return 16
+
+    return 42
