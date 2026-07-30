@@ -62,12 +62,34 @@ top of `MEMORY.md`.
    ⚠️ It also falsified a written claim: `knowledge/bugs.md:1015-1019` asserted *"`let x: f64 = 3` →
    OK"*. It was never verified and it is false.
 
-## ⏳ IN FLIGHT — fix for probe4 bug #1 (`OP_ICONST` with a float type_id)
-Sub-agent dispatched with: the one-site fix in `lower_int_lit` mirroring `lower_float_lit:601-614`,
-**plus an AIR verifier rule that `OP_ICONST` must not carry a float `type_id`** (CLAUDE.md §9 — the
-missing invariant is what let this live), plus the `bugs.md` correction, an oracle calibrated at both
-**-O0 and -O1** (this defect diverges between them), and the **full B==C gate** despite the change
-looking self-host-inert. If no commit from it exists, re-dispatch rather than assume.
+## ✅ probe4 bug #1 SHIPPED — `76de988`, `A==B==C 824807E2`, **597/597** (new baseline)
+Verified by me row by row, not accepted on report. `let a: f64 = 3` now yields 3.0 (`h1` 42 at -O0
+**and** -O1; oracle `t_intlitfloatctx` 42 at -O0/-O2; the f32 twin `i2` still 42).
+- ⭐ The fix **merged the drifted copies instead of adding a third**: `emit_float_const` is now the
+  single emit site for a float constant, `lower_float_lit` gave up its private copy to call it, and
+  `lower_int_lit` routes into it when the adopted `type_id` is 9/10.
+- **The §9 invariant is the durable product**, not the one-line fix: `verify_air_const_types` rejects
+  `OP_ICONST` carrying a float `type_id` (and the symmetric FCONST case, ignoring type_id 0 = unset),
+  called from `lower_func` for every function. **Calibrated** — with the fix disabled the build prints
+  `internal error: OP_ICONST carries a float type_id … inst #0 … type_id=10` and exits 1 with no
+  output file. RFC 0006 gained §7.1 stating it as a *requirement*; `bugs.md:1019`'s false claim was
+  corrected in place. No new RFC — RFC 0006 already governed this and only lacked the invariant.
+- ⭐ **The agent did not overclaim its scope, and I checked**: it reported four positions still broken
+  because the literal's node type stays INTEGER there (nothing float to materialize) — f64 struct
+  field, f64 fn param, f64 method param, `let c: f64 = 3 + 1`. Measured `i1`→2, `g7`→100, `g13`→3,
+  matching its claims exactly. Every **f32** twin passes because `typecheck.ax:5208` hints `TYPE_F32`
+  only ⇒ **the drifted-copy class AGAIN**. That is now BACKLOG task 0, with oracle rows **4, 8, 9, 11
+  reserved** so it lands without renumbering. It has real fixpoint exposure ⇒ full gate.
+
+⇒ **The drifted-copy defect class has now produced FOUR bugs in two sessions** (interface return type,
+generic explicit type args, `lower_int_lit` vs `lower_float_lit`, and the `TYPE_F32`-only hint). "One
+walk, one predicate" is now written into the brief for every fix in this family.
+
+## ⏳ IN FLIGHT — fix for probe4 bug #2 (dispatch drops argument coercion)
+Dispatched with the measured control matrix and an explicit instruction **not to add a second walk
+over `NODE_INTERFACE_DECL`** — extend `interface_method_sig` (which already walks it correctly) with a
+parameter-type accessor and use it at `typecheck.ax:4336`. Frontend ⇒ **A==B**, baseline **597/597**
+including the `-O0` pass. If no commit exists, re-dispatch rather than assume.
 
 ## ⭐ LESSON — the "transient flake" was OUR OWN concurrency, and calling it a flake was the error
 The arrwalk agent hit 592/593 (`t_localtuplenoinit@-O0`), passed on rerun, and filed it as a transient
