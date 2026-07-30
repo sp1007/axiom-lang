@@ -28,7 +28,40 @@ unchanged from [[session-handoff-2026-07-30c]]; read [[BACKLOG]] first for live 
 | `abfe985` | **E3030** — out-of-range integer literal at an explicitly written narrow type is now rejected (user's D1 decision) | A==B `78295509`, 607 |
 | `5359a39` | interface dispatch never coerced its ARGUMENTS (`i.c32(1.5)` arrived as 0.0) | A==B==C `5b0eb92c`, 611 |
 | `a281992` | **method chosen by `_`-bounded SUBSTRING of another method's name** — wrong function called | A==B `1DE7823C`, 619 |
+| `e6c507c` | **E3031** — implicit float→int at an annotated target rejected (RFC 0006 §4 was already ruled, only enforcement was missing) | A==B `407E0805`, 630 |
 | `0590035` | fib measured but no longer gating (my decision, rationale in the script header) | n/a |
+
+⭐ **E3030 + E3031 were deliberately built to be un-driftable**: both run from ONE call-site list
+(`check_annotated_target`) and render through ONE snippet printer
+(`print_annotated_expr_snippet`). After six bugs traced to two copies of one rule drifting apart, a
+conversion rule shipping as a seventh copy would have been absurd — so the pair shares its machinery
+by construction, not by discipline.
+⚠️ E3031's IDENT arm is bound to the **written annotation text**, not the symbol's `type_id`, and that
+is why the **parameter** case is a documented gap rather than a coverage win: a symbol's `type_id` is
+rewritten per monomorphised instance, so reading it would falsely reject the i64 copy of
+`fn id[T](v: T)`. Deliberate, and worth not "fixing" later without understanding it.
+
+## Still open after this session (ordered)
+1. **int → float is incomplete** — f64 field/param/method-param/`3 + 1`, plus `takes_f64(9)` and
+   `Mixed(f: 5)` reading garbage, plus int **variable** → float (`g7.ax`). Cause is the same shape
+   again: `typecheck.ax:5208` hints `TYPE_F32` **only**, so every f32 twin is correct. ⚠️ **This one
+   has real fixpoint exposure** — widening the hint can change the AIR the compiler emits for itself,
+   so `A != B` is a result to investigate, not a failure to avoid. IN FLIGHT.
+2. **f64 → f32 narrowing** accepted and wrong (`let s: f32 = d` ⇒ `s != 3.5`), `probe6/g_f64tof32.ax`.
+   May be a REJECT rather than a conversion — a §4 spec row, decide before implementing.
+3. **Method arguments bypass both E3030 and E3031** (`s.setv(300)`, `s.setv(3.0)`) — they resolve
+   through the `mfi.params` symbol scan, not the `fp_data` path. That scan is the hook.
+4. Dead code flagged for deletion: `match_base_names`, `match_mangled_method_name` (zero callers).
+5. RFC 0037 follow-up: retiring rank 1 entirely was **measured safe** for this repo (619/619 and a
+   byte-identical self-build) but kept because it could break user code outside the corpus.
+
+## ⚠️ OPERATIONAL NOTE — quota, not technique, is the binding constraint
+This session hit the usage limit **three times** (resets 19:40 → 00:40 → 05:40 Asia/Saigon), each time
+killing a sub-agent mid-task. The 5-minute heartbeat is NOT the cause — those wakeups are tiny. The
+cost is the work itself: each sub-agent spent 110k–225k tokens, across eight dispatches. ⇒ Honest
+statement of what delegation bought: it keeps the orchestrator's context clean (which is what was
+asked for) but **it does not reduce total spend, it relocates it.** Reducing total spend means fewer
+tasks per session — a pacing decision for the user, not a rule to self-impose.
 
 ## What shipped and why
 The user asked a **third** time for "auto-`/clear` after each task to save tokens". `/clear` is still
