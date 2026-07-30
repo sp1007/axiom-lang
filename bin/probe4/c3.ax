@@ -1,0 +1,57 @@
+// C3: float values crossing function boundaries -- nested calls, live-across-call
+// floats, >4 float args (stack slots), mixed int/float ordering (Win64 assigns the
+// register by SLOT INDEX, so ordering is the risk), float return feeding an arg.
+fn f2(a: f64, b: f64) -> f64:
+    return a * 10.0 + b
+fn f6(a: f64, b: f64, c: f64, d: f64, e: f64, g: f64) -> f64:
+    return a + b * 2.0 + c * 4.0 + d * 8.0 + e * 16.0 + g * 32.0
+fn mixed(a: i64, b: f64, c: i64, d: f64, e: i64, g: f64) -> f64:
+    return (a as f64) + b * 2.0 + (c as f64) * 4.0 + d * 8.0 + (e as f64) * 16.0 + g * 32.0
+fn fmix2(a: f64, b: i64, c: f32, d: i64) -> f64:
+    return a + (b as f64) * 2.0 + (c as f64) * 4.0 + (d as f64) * 8.0
+fn one(x: f64) -> f64:
+    return x + 1.0
+fn callee(x: i64) -> i64:
+    return x * 2
+fn f32args(a: f32, b: f32, c: f32, d: f32, e: f32) -> f32:
+    return a + b * 2.0 + c * 4.0 + d * 8.0 + e * 16.0
+
+fn main() -> i64:
+    // 1: two float args
+    let r1 = f2(1.5, 2.5)
+    if r1 < 17.49 or r1 > 17.51:
+        return 1
+    // 2: six float args -- last two go on the stack under Win64
+    let r2 = f6(1.0, 1.0, 1.0, 1.0, 1.0, 1.0)   // 1+2+4+8+16+32 = 63
+    if r2 < 62.99 or r2 > 63.01:
+        return 2
+    // 3: interleaved int/float args
+    let r3 = mixed(1, 1.0, 1, 1.0, 1, 1.0)      // 63
+    if r3 < 62.99 or r3 > 63.01:
+        return 3
+    // 4: f32 among i64 args
+    let r4 = fmix2(1.0, 1, 1.0, 1)              // 1+2+4+8 = 15
+    if r4 < 14.99 or r4 > 15.01:
+        return 4
+    // 5: nested calls -- float result straight into a float arg
+    let r5 = one(one(one(1.5)))
+    if r5 < 4.49 or r5 > 4.51:
+        return 5
+    let r6 = f2(one(1.5), one(0.5))             // f2(2.5,1.5) = 26.5
+    if r6 < 26.49 or r6 > 26.51:
+        return 6
+    // 6: float LIVE ACROSS an unrelated (integer) call
+    let keep: f64 = 3.5
+    let k = callee(4)
+    if k != 8:
+        return 7
+    if keep < 3.49 or keep > 3.51:
+        return 8
+    // 7: float live across a call that itself uses XMM args
+    let keep2: f64 = 6.5
+    let z = f6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    if keep2 < 6.49 or keep2 > 6.51:
+        return 9
+    if z < 320.99 or z > 321.01:
+        return 100
+    return 42

@@ -1,0 +1,79 @@
+// E4: FLOAT ARGUMENTS through dynamic dispatch. `self` occupies slot 0, so every
+// float parameter's XMM index is shifted by one relative to a free function -- the
+// exact kind of slot-index arithmetic that the 07-30 interface-return bug lived in.
+interface Calc:
+    fn one(self: Self, a: f64) -> f64
+    fn many(self: Self, a: f64, b: f64, c: f64, d: f64) -> f64
+    fn inter(self: Self, a: i64, b: f64, c: i64, d: f64) -> f64
+    fn small(self: Self, a: f32, b: f32) -> f32
+    fn opt(self: Self) -> Option[f64]
+    fn pair(self: Self) -> (f64, str)
+
+struct M:
+    k: f64
+    fn one(self: M, a: f64) -> f64:
+        return self.k + a
+    fn many(self: M, a: f64, b: f64, c: f64, d: f64) -> f64:
+        return self.k + a + b * 2.0 + c * 4.0 + d * 8.0
+    fn inter(self: M, a: i64, b: f64, c: i64, d: f64) -> f64:
+        return self.k + (a as f64) + b * 2.0 + (c as f64) * 4.0 + d * 8.0
+    fn small(self: M, a: f32, b: f32) -> f32:
+        return a + b * 2.0
+    fn opt(self: M) -> Option[f64]:
+        return Some(self.k * 2.0)
+    fn pair(self: M) -> (f64, str):
+        return (self.k, "mm")
+
+fn main() -> i64:
+    let m = M(k: 0.5)
+    // --- CONTROL: direct (static) calls on the concrete struct ---
+    let d1 = m.one(1.0)
+    if d1 < 1.49 or d1 > 1.51:
+        return 1
+    let d2 = m.many(1.0, 1.0, 1.0, 1.0)          // 0.5+1+2+4+8 = 15.5
+    if d2 < 15.49 or d2 > 15.51:
+        return 2
+    let d3 = m.inter(1, 1.0, 1, 1.0)             // 0.5+1+2+4+8 = 15.5
+    if d3 < 15.49 or d3 > 15.51:
+        return 3
+    let d4 = m.small(1.5, 2.0)                   // 5.5
+    if d4 < 5.49 or d4 > 5.51:
+        return 4
+    // --- DYNAMIC dispatch through the interface ---
+    let c: Calc = M(k: 0.5)
+    let r1 = c.one(1.0)
+    if r1 < 1.49 or r1 > 1.51:
+        return 5
+    let r2 = c.many(1.0, 1.0, 1.0, 1.0)
+    if r2 < 15.49 or r2 > 15.51:
+        return 6
+    let r3 = c.inter(1, 1.0, 1, 1.0)
+    if r3 < 15.49 or r3 > 15.51:
+        return 7
+    let r4 = c.small(1.5, 2.0)
+    if r4 < 5.49 or r4 > 5.51:
+        return 8
+    // Option[f64] through dispatch
+    let o = c.opt()
+    let ov = o.unwrap()
+    if ov < 0.99 or ov > 1.01:
+        return 9
+    // tuple (f64, str) through dispatch
+    let t = c.pair()
+    if t.0 < 0.49 or t.0 > 0.51:
+        return 10
+    if t.1 != "mm":
+        return 11
+    let (pa, pb) = c.pair()
+    if pa < 0.49 or pa > 0.51:
+        return 12
+    if pb != "mm":
+        return 13
+    // float args with a distinct value per slot (catches a swap, which equal args hide)
+    let r5 = c.many(1.0, 2.0, 3.0, 4.0)          // 0.5+1+4+12+32 = 49.5
+    if r5 < 49.49 or r5 > 49.51:
+        return 14
+    let r6 = c.inter(1, 2.0, 3, 4.0)             // 0.5+1+4+12+32 = 49.5
+    if r6 < 49.49 or r6 > 49.51:
+        return 15
+    return 42

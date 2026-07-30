@@ -1,0 +1,72 @@
+// D1: MATRIX for "f32 / f32 result keeps double precision".
+// single(1/3) = 0.3333333432674408 ; double(1/3) = 0.3333333333333333
+// bracket: single => rd > 0.33333334 ; double => rd < 0.33333334 and rd > 0.33333333
+fn isSingle(v: f64) -> i64:
+    if v > 0.33333334:
+        return 1        // f32-rounded
+    if v > 0.33333333:
+        return 2        // double-precision leaked
+    return 3            // something else entirely
+fn f32ret(a: f32, b: f32) -> f32:
+    return a / b
+struct H:
+    v: f32
+mut gv: f32 = 0.0
+
+fn main() -> i64:
+    let p: f32 = 1.0
+    let q: f32 = 3.0
+    // ROW 1: inferred `let` (the failing form in c4)
+    let r1 = p / q
+    let k1 = isSingle(r1 as f64)
+    // ROW 2: ANNOTATED let
+    let r2: f32 = p / q
+    let k2 = isSingle(r2 as f64)
+    // ROW 3: mut f32 assigned
+    mut r3: f32 = 0.0
+    r3 = p / q
+    let k3 = isSingle(r3 as f64)
+    // ROW 4: returned from an f32 function
+    let r4 = f32ret(p, q)
+    let k4 = isSingle(r4 as f64)
+    // ROW 5: stored in an f32 struct field
+    let h = H(v: p / q)
+    let k5 = isSingle(h.v as f64)
+    // ROW 6: stored to a global f32
+    gv = p / q
+    let k6 = isSingle(gv as f64)
+    // ROW 7: f32 array element
+    mut arr: [f32; 1] = [0.0]
+    arr[0] = p / q
+    let k7 = isSingle(arr[0] as f64)
+    // ROW 8: explicit cast of the expression
+    let r8 = (p / q) as f32
+    let k8 = isSingle(r8 as f64)
+    // ROW 9: literal-operand division in f32 context
+    let r9: f32 = 1.0 / 3.0
+    let k9 = isSingle(r9 as f64)
+    // ROW 10: inferred let from f32 literal operands
+    let r10 = (1.0 as f32) / (3.0 as f32)
+    let k10 = isSingle(r10 as f64)
+    // report: first non-1 row identifies the broken form
+    if k1 != 1:
+        return 10 + k1
+    if k2 != 1:
+        return 20 + k2
+    if k3 != 1:
+        return 30 + k3
+    if k4 != 1:
+        return 40 + k4
+    if k5 != 1:
+        return 50 + k5
+    if k6 != 1:
+        return 60 + k6
+    if k7 != 1:
+        return 70 + k7
+    if k8 != 1:
+        return 80 + k8
+    if k9 != 1:
+        return 90 + k9
+    if k10 != 1:
+        return 100 + k10
+    return 42

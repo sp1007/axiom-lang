@@ -1,0 +1,80 @@
+// C4: f32 casts and mixed-width float arithmetic. The discriminator rows check that
+// f32 arithmetic is actually done in SINGLE precision -- if the backend silently keeps
+// f32 values in double, 1/3 and 16777217 both give away the difference.
+fn tof32(x: f64) -> f32:
+    return x as f32
+fn f32id(x: f32) -> f32:
+    return x
+
+fn main() -> i64:
+    // 1: i64 -> f32 -> i64 round trip
+    let n: i64 = 7
+    let a = n as f32
+    if (a as i64) != 7:
+        return 1
+    // 2: truncation toward zero, positive and negative
+    let b: f64 = 2.7
+    if (b as i64) != 2:
+        return 2
+    let c: f64 = 0.0 - 2.7
+    if (c as i64) != -2:
+        return 3
+    let d: f32 = 2.7
+    if (d as i64) != 2:
+        return 4
+    // 3: f32 -> f64 widening keeps the f32 value
+    let e: f32 = 0.5
+    let f = e as f64
+    if f < 0.49 or f > 0.51:
+        return 5
+    // 4: f64 -> f32 DOWNCAST must lose precision (16777217 is not representable in f32)
+    let g: f64 = 16777217.0
+    let h = g as f32
+    if (h as i64) != 16777216:
+        return 6
+    // 5: an f32 LITERAL of the same value must already be rounded
+    let i2: f32 = 16777217.0
+    if (i2 as i64) != 16777216:
+        return 7
+    // 6: f32 division must round to single precision.
+    //    single: 0.3333333432674408   double: 0.3333333333333333
+    let p: f32 = 1.0
+    let q: f32 = 3.0
+    let r = p / q
+    let rd = r as f64
+    if rd < 0.33333334:
+        return 8
+    if rd > 0.33333335:
+        return 9
+    // 7: same through a function boundary
+    let s = f32id(p / q) as f64
+    if s < 0.33333334 or s > 0.33333335:
+        return 10
+    // 8: f64 division stays double (control row)
+    let t: f64 = 1.0
+    let u: f64 = 3.0
+    let w = t / u
+    if w > 0.33333334:
+        return 11
+    if w < 0.33333333:
+        return 12
+    // 9: f64 -> f32 via a call, then compare
+    let x = tof32(2.5)
+    if (x as i64) != 2:
+        return 13
+    // 10: mixed f32/f64 arithmetic promotes
+    let y: f32 = 1.5
+    let z: f64 = 2.5
+    let m = (y as f64) + z
+    if m < 3.99 or m > 4.01:
+        return 14
+    // 11: int widths into float
+    let i8v: u8 = 200
+    let fw = (i8v as f64) * 2.0
+    if fw < 399.99 or fw > 400.01:
+        return 15
+    let i32v: i32 = -5
+    let fw2 = (i32v as f64) / 2.0
+    if fw2 < -2.51 or fw2 > -2.49:
+        return 16
+    return 42

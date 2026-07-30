@@ -1,0 +1,93 @@
+// F2: characterize the f32-param-through-dynamic-dispatch defect.
+// The impl CLASSIFIES what it received and returns the class as an i64, so every row
+// reports independently (no early exit hides later rows).
+//   class 1 = 1.5 (correct), 2 = zero, 3 = tiny/denormal, 4 = huge, 5 = other
+interface I:
+    fn c32(self: Self, a: f32) -> i64
+    fn c64(self: Self, a: f64) -> i64
+    fn cif(self: Self, a: i64, b: f32) -> i64
+    fn cfi(self: Self, a: f32, b: i64) -> i64
+    fn cff(self: Self, a: f32, b: f32) -> i64
+    fn cdf(self: Self, a: f64, b: f32) -> i64
+
+fn cls(v: f64) -> i64:
+    if v > 1.49 and v < 1.51:
+        return 1
+    if v > -0.000001 and v < 0.000001:
+        return 2
+    mut m = v
+    if m < 0.0:
+        m = 0.0 - m
+    if m < 0.001:
+        return 3
+    if m > 1000000.0:
+        return 4
+    return 5
+
+struct S:
+    k: i64
+    fn c32(self: S, a: f32) -> i64:
+        return cls(a as f64)
+    fn c64(self: S, a: f64) -> i64:
+        return cls(a)
+    fn cif(self: S, a: i64, b: f32) -> i64:
+        return cls(b as f64) * 10 + a
+    fn cfi(self: S, a: f32, b: i64) -> i64:
+        return cls(a as f64) * 10 + b
+    fn cff(self: S, a: f32, b: f32) -> i64:
+        return cls(a as f64) * 10 + cls(b as f64)
+    fn cdf(self: S, a: f64, b: f32) -> i64:
+        return cls(a) * 10 + cls(b as f64)
+
+fn main() -> i64:
+    let s = S(k: 0)
+    let i: I = S(k: 0)
+    let v: f32 = 1.5
+    let d: f64 = 1.5
+    // STATIC controls, expected: 1, 1, 11, 11, 11, 11
+    let s1 = s.c32(1.5)
+    let s2 = s.c64(1.5)
+    let s3 = s.cif(1, 1.5)
+    let s4 = s.cfi(1.5, 1)
+    let s5 = s.cff(1.5, 1.5)
+    let s6 = s.cdf(1.5, 1.5)
+    if s1 != 1:
+        return 100 + s1
+    if s2 != 1:
+        return 110 + s2
+    if s3 != 11:
+        return 120 + s3
+    if s4 != 11:
+        return 130 + s4
+    if s5 != 11:
+        return 140 + s5
+    if s6 != 11:
+        return 150 + s6
+    // DYNAMIC rows
+    let d1 = i.c32(1.5)          // f32 literal arg
+    let d2 = i.c32(v)            // f32 VARIABLE arg
+    let d3 = i.c32(d as f32)     // explicitly cast f64 -> f32
+    let d4 = i.c64(1.5)          // control: f64 param through dispatch
+    let d5 = i.cif(1, 1.5)       // f32 in slot 2 (after an int)
+    let d6 = i.cfi(1.5, 1)       // f32 in slot 1, int in slot 2
+    let d7 = i.cff(1.5, 1.5)     // two f32
+    let d8 = i.cdf(1.5, 1.5)     // f64 then f32
+    // BITMASK report: bit set = row CORRECT. All correct => 255.
+    mut mask: i64 = 0
+    if d1 == 1:
+        mask = mask + 1
+    if d2 == 1:
+        mask = mask + 2
+    if d3 == 1:
+        mask = mask + 4
+    if d4 == 1:
+        mask = mask + 8
+    if d5 == 11:
+        mask = mask + 16
+    if d6 == 11:
+        mask = mask + 32
+    if d7 == 11:
+        mask = mask + 64
+    if d8 == 11:
+        mask = mask + 128
+    return mask

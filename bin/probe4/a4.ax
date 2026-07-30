@@ -1,0 +1,32 @@
+// A4: Option[struct] payload -- struct is reference-semantics (RFC 0001), so this
+// only checks field values survive the box, not copy semantics.
+struct P:
+    x: i64
+    y: f64
+
+fn makep() -> Option[P]:
+    return Some(P(x: 3, y: 1.5))
+
+fn main() -> i64:
+    let o = Some(P(x: 3, y: 1.5))
+    let p = o.unwrap()
+    if p.x != 3:
+        return 1
+    if p.y < 1.49 or p.y > 1.51:
+        return 2
+    let o2 = makep()
+    let p2 = o2.unwrap()
+    if p2.x != 3:
+        return 3
+    if p2.y < 1.49 or p2.y > 1.51:
+        return 4
+    mut hit: i64 = 0
+    match o2:
+        Some(q):
+            if q.x == 3 and q.y > 1.49 and q.y < 1.51:
+                hit = 1
+        None:
+            hit = 9
+    if hit != 1:
+        return 5
+    return 42

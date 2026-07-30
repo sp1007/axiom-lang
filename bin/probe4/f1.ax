@@ -1,0 +1,95 @@
+// F1: isolate WHICH half breaks -- f32 PARAM passing vs f32 RETURN, static vs dynamic.
+interface I:
+    fn p32_r32(self: Self, a: f32) -> f32       // f32 in, f32 out
+    fn p32_ri(self: Self, a: f32) -> i64        // f32 in, i64 out  -> tests PARAM only
+    fn p32_r64(self: Self, a: f32) -> f64       // f32 in, f64 out
+    fn pi_r32(self: Self, a: i64) -> f32        // i64 in, f32 out  -> tests RETURN only
+    fn p64_r64(self: Self, a: f64) -> f64       // control: f64 both
+    fn r32(self: Self) -> f32                   // control: no params, f32 out
+    fn p32x2_ri(self: Self, a: f32, b: f32) -> i64
+
+struct S:
+    k: i64
+    fn p32_r32(self: S, a: f32) -> f32:
+        return a
+    fn p32_ri(self: S, a: f32) -> i64:
+        return (a * 100.0) as i64
+    fn p32_r64(self: S, a: f32) -> f64:
+        return a as f64
+    fn pi_r32(self: S, a: i64) -> f32:
+        return (a as f32) / 2.0
+    fn p64_r64(self: S, a: f64) -> f64:
+        return a
+    fn r32(self: S) -> f32:
+        return 2.5
+    fn p32x2_ri(self: S, a: f32, b: f32) -> i64:
+        return (a * 100.0) as i64 + (b * 10000.0) as i64
+
+// classify an f64: 1 = exactly 1.5, 2 = zero, 3 = tiny, 4 = huge, 5 = other
+fn cls(v: f64) -> i64:
+    if v > 1.49 and v < 1.51:
+        return 1
+    if v > -0.000001 and v < 0.000001:
+        return 2
+    mut m = v
+    if m < 0.0:
+        m = 0.0 - m
+    if m < 0.001:
+        return 3
+    if m > 1000000.0:
+        return 4
+    return 5
+
+fn main() -> i64:
+    let s = S(k: 0)
+    // ---- STATIC control rows (direct calls on the concrete type) ----
+    let a1 = s.p32_r32(1.5)
+    if cls(a1 as f64) != 1:
+        return 10 + cls(a1 as f64)
+    if s.p32_ri(1.5) != 150:
+        return 20
+    if cls(s.p32_r64(1.5)) != 1:
+        return 30
+    if cls(s.pi_r32(3) as f64) != 1:
+        return 40
+    if s.p32x2_ri(1.5, 2.5) != 25150:
+        return 50
+    // ---- DYNAMIC rows ----
+    let i: I = S(k: 0)
+    // R1: f32 param, i64 return -> pure PARAM test
+    let b1 = i.p32_ri(1.5)
+    if b1 != 150:
+        if b1 == 0:
+            return 61          // param arrived as 0
+        return 62              // param arrived as something else
+    // R2: f32 param, f64 return
+    let b2 = i.p32_r64(1.5)
+    if cls(b2) != 1:
+        return 70 + cls(b2)
+    // R3: f32 param, f32 return
+    let b3 = i.p32_r32(1.5)
+    if cls(b3 as f64) != 1:
+        return 80 + cls(b3 as f64)
+    // R4: i64 param, f32 return -> pure RETURN test
+    let b4 = i.pi_r32(3)
+    if cls(b4 as f64) != 1:
+        return 90 + cls(b4 as f64)
+    // R5: f64 param+return control
+    let b5 = i.p64_r64(1.5)
+    if cls(b5) != 1:
+        return 100 + cls(b5)
+    // R6: no-param f32 return control
+    let b6 = i.r32()
+    if (b6 as i64) != 2:
+        return 110
+    // R7: two f32 params
+    let b7 = i.p32x2_ri(1.5, 2.5)
+    if b7 != 25150:
+        if b7 == 0:
+            return 121
+        if b7 == 150:
+            return 122         // second param lost
+        if b7 == 25000:
+            return 123         // first param lost
+        return 124
+    return 42

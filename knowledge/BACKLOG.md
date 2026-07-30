@@ -25,9 +25,43 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 2. **`let x: u8 = 300` giữ nguyên 300, không chẩn đoán** → [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md).
    Ba đáp án đều bảo vệ được; **khuyến nghị: REJECT** (duy nhất không có kết cục âm thầm).
 
+## 🐞 BUG MỞ — probe4 tìm ra 2026-07-30, ĐÃ TỰ XÁC MINH LẠI (không chỉ theo báo cáo agent)
+Cả ba đều **accept-then-miscompile** (lớp BUG#53) và đều có ma trận đối chứng trong
+`bin/probe4/`. Repro chạy bằng `sh bin/probe4/run.sh <file.ax>`.
+⚠️ Driver cần subcommand `build`: `bin/axc_native.exe build f.ax -o out.exe -O0`. **Thiếu `build`
+thì nó exit 0 mà KHÔNG sinh file** — đừng đọc đó là build thành công (tôi đã mắc đúng bẫy này).
+
+1. ⛔⛔⛔ **`OP_ICONST` mang `type_id` FLOAT** — `let a: f64 = 3` ra **0.0**. Xác minh: `probe4/h1.ax`
+   -O0 exit **1** (đúng phải 42). Root: `air_builder.ax:572-589` `lower_int_lit` phát `OP_ICONST` với
+   type_id 9/10, còn sibling `lower_float_lit` (`:591`, emit `:601-614`) làm đúng — **bản sao int
+   chưa từng được mở rộng**. Breadth CỰC RỘNG: `let`/assign/param/field-init/array-elem/`return`/
+   `3 as f64`/`c + 3`/`3 / 2.0`/`c > 2`. -O0 và -O1 **phân kỳ** (họ aliasing `R10 ≡ XMM10`) ⇒ oracle
+   phải chạy CẢ HAI. ⚠️ `knowledge/bugs.md:1015-1019` khẳng định *"`let x: f64 = 3` → OK"* — **câu đó
+   SAI và chưa từng được kiểm**. **ĐANG SỬA** (sub-agent, kèm invariant §9: `OP_ICONST` không được
+   mang type_id float).
+2. **Dynamic dispatch bỏ HẾT coercion cho ĐỐI SỐ** — `i.c32(1.5)` callee nhận đúng **0.0**. Xác minh:
+   `probe4/f1.ax` exit **61** (đúng phải 42). Root: `typecheck.ax:4336` chỉ phân giải **kiểu KẾT QUẢ**
+   từ contract; `interface_method_sig` (`:1742`) chỉ expose `out_nparams`+`out_ret`, **không có
+   accessor cho kiểu THAM SỐ** ⇒ args suy với `expected = TYPE_UNKNOWN`. **Cùng họ hệt hai bug đã sửa
+   hôm nay** (`376af08` kiểu trả về, `0bf34ee` type arg tường minh) — lần này là THAM SỐ. Frontend ⇒
+   **A==B**. Dấu hiệu "đúng 0.0 chứ không phải rác": low 32 bit của double 1,5 là 0, `movss` đọc đúng
+   chỗ đó. Int narrowing "đúng" chỉ do **tình cờ** (sub-register GPR trùng nhau, không cần lệnh nào).
+3. **`let a: i64 = 3.0` được NHẬN, cho ra bit pattern IEEE thô** — `probe4/g13.ax` exit **3** (i64 giữ
+   `0x4008000000000000`). **Spec ĐÃ chốt hướng này**: `knowledge/bugs.md:1015` — *"float → int: CẤM
+   ngầm, phải `as`"* ⇒ **REJECT + chẩn đoán**, KHÔNG cần user quyết (khác ca `u8 = 300` ở §CẦN USER
+   QUYẾT, ca đó chưa có phán quyết). Frontend ⇒ A==B.
+
+## ✅ Bề mặt đã QUÉT SẠCH (probe4, bankable làm oracle — đừng quét lại)
+Option/Result payload × type class (`a1`–`a4`), generics × type class kể cả type arg tường minh
+(`b1`,`b2`), str/bytes qua interface (`b3`), aggregate × float + global float (`c1`,`c2`), ABI float
+qua biên 6 đối số + xen kẽ int/float (`c3`), cast/độ chính xác f32 kể cả chia single-rounded
+(`c4`,`d1`), ADT user payload non-i64 (`e1`), tuple có float/str/struct (`e2`), stdlib container ở
+element non-i64 (`e3`), interface breadth (`e4` — chỉ hàng f32 fail = bug #2).
+
 ## 🔜 TASK MỞ (tự làm được, theo thứ tự giá trị)
-1. **Probing tiếp các bề mặt chưa quét** — đã trả lãi **3 miscompile im lặng trong MỘT phiên**
-   (07-30c). Dùng skill `axiom-bug-probe`. Bề mặt đã quét sạch được bank ở `bin/t_methretbreadth.ax`.
+1. **Probing tiếp các bề mặt chưa quét** — đã trả lãi **3 miscompile trong phiên 07-30c, rồi 3 nữa
+   trong phiên 07-30d**. Dùng skill `axiom-bug-probe`. Bề mặt sạch bank ở `bin/t_methretbreadth.ax`
+   + danh sách probe4 ngay trên.
 2. **Nợ kỹ thuật đo:** mọi tuyên bố perf phải là **median trên nhiều layout + spread bên cạnh**
    (`scripts/perf_layout_dist.ps1`, `scripts/perf_m6_gate.ps1`). **KHÔNG dùng `perf_suite.ps1`** để
    phán quyết gate nữa.

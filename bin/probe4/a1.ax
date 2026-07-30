@@ -1,0 +1,48 @@
+// A1: Option[f64] payload -- construct, unwrap into `let`, match, pass, return.
+fn makeo() -> Option[f64]:
+    return Some(2.5)
+
+fn takeo(o: Option[f64]) -> i64:
+    let v = o.unwrap()
+    if v > 2.49 and v < 2.51:
+        return 1
+    return 0
+
+fn main() -> i64:
+    // 1: unwrap bound to let, DIRECT compare (no param coercion)
+    let o = Some(2.5)
+    let v = o.unwrap()
+    if v < 2.49 or v > 2.51:
+        return 1
+    // 2: match payload direct compare
+    mut hit: i64 = 0
+    match o:
+        Some(x):
+            if x > 2.49 and x < 2.51:
+                hit = 1
+        None:
+            hit = 9
+    if hit != 1:
+        return 2
+    // 3: annotated Option local
+    let o2: Option[f64] = Some(3.5)
+    let v2 = o2.unwrap()
+    if v2 < 3.49 or v2 > 3.51:
+        return 3
+    // 4: returned from a function
+    let o3 = makeo()
+    let v3 = o3.unwrap()
+    if v3 < 2.49 or v3 > 2.51:
+        return 4
+    // 5: unwrap directly on the call result
+    let v4 = makeo().unwrap()
+    if v4 < 2.49 or v4 > 2.51:
+        return 5
+    // 6: passed as a parameter
+    if takeo(o) != 1:
+        return 6
+    // 7: arithmetic on the unwrapped value
+    let s = v + v2
+    if s < 5.99 or s > 6.01:
+        return 7
+    return 42

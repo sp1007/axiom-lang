@@ -1,0 +1,41 @@
+// A2: Option[f32] payload + Result with float/str payloads.
+fn makef32() -> Option[f32]:
+    return Some(1.5)
+fn makeres() -> Result[f64, str]:
+    return Ok(4.5)
+fn makeerr() -> Result[f64, str]:
+    return Err("bad")
+
+fn main() -> i64:
+    let o = Some(1.5 as f32)
+    let v = o.unwrap()
+    if v < 1.49 or v > 1.51:
+        return 1
+    let o2 = makef32()
+    let v2 = o2.unwrap()
+    if v2 < 1.49 or v2 > 1.51:
+        return 2
+    let r = makeres()
+    let rv = r.unwrap()
+    if rv < 4.49 or rv > 4.51:
+        return 3
+    mut hit: i64 = 0
+    match r:
+        Ok(x):
+            if x > 4.49 and x < 4.51:
+                hit = 1
+        Err(e):
+            hit = 9
+    if hit != 1:
+        return 4
+    let e = makeerr()
+    mut hit2: i64 = 0
+    match e:
+        Ok(x):
+            hit2 = 8
+        Err(m):
+            if m == "bad":
+                hit2 = 1
+    if hit2 != 1:
+        return 5
+    return 42

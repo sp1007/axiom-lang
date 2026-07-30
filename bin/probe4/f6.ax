@@ -1,0 +1,21 @@
+// F6: completes the dispatch matrix -- the REVERSE narrowing direction (f32 var -> f64 param).
+interface I:
+    fn c64(self: Self, a: f64) -> i64
+struct S:
+    k: i64
+    fn c64(self: S, a: f64) -> i64:
+        if a > 1.49 and a < 1.51:
+            return 1
+        return 0
+fn main() -> i64:
+    let s = S(k: 0)
+    let v: f32 = 1.5
+    mut m: i64 = 0
+    if s.c64(v) == 1:            // static, f32 var -> f64 param (needs cvtss2sd)
+        m = m + 1
+    let i: I = S(k: 0)
+    if i.c64(v) == 1:            // dynamic, same
+        m = m + 2
+    if i.c64(1.5) == 1:          // dynamic, f64 literal (no coercion needed)
+        m = m + 4
+    return 100 + m               // 107 => all correct

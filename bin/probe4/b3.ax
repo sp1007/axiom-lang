@@ -1,0 +1,87 @@
+// B3: str / bytes flowing THROUGH an interface (dynamic dispatch) and through
+// generic params. The 07-30 interface-return bug was exactly "non-i64 return through
+// dynamic dispatch"; str was one of the wrong classes (returned 115). This re-checks
+// str/bytes both as a RETURN and as a PARAMETER of an interface method.
+interface Named:
+    fn name(self: Self) -> str
+    fn tag(self: Self, p: str) -> str
+    fn raw(self: Self) -> bytes
+    fn size(self: Self) -> i64
+
+struct A:
+    v: i64
+    fn name(self: A) -> str:
+        return "alpha"
+    fn tag(self: A, p: str) -> str:
+        return p + "-a"
+    fn raw(self: A) -> bytes:
+        return "AB" as bytes
+    fn size(self: A) -> i64:
+        return 3
+
+struct B:
+    v: str
+    fn name(self: B) -> str:
+        return self.v
+    fn tag(self: B, p: str) -> str:
+        return p + self.v
+    fn raw(self: B) -> bytes:
+        return self.v as bytes
+    fn size(self: B) -> i64:
+        return len(self.v)
+
+fn viaif(n: Named, expsize: i64) -> i64:
+    mut r: i64 = 0
+    if n.size() == expsize:
+        r = r + 1
+    let s = n.name()
+    if len(s) == 5:
+        r = r + 2
+    return r
+
+// generic fn over a str type arg, passing the value through
+fn wrap[T](x: T) -> T:
+    return x
+
+fn main() -> i64:
+    let n: Named = A(v: 1)
+    // 1: str return through dynamic dispatch, bound to a let, DIRECT compare
+    let s = n.name()
+    if s != "alpha":
+        return 1
+    if len(s) != 5:
+        return 2
+    // 2: str PARAM through dynamic dispatch + str return
+    let t = n.tag("x")
+    if t != "x-a":
+        return 3
+    // 3: bytes return through dynamic dispatch
+    let b = n.raw()
+    if b.len != 2:
+        return 4
+    if (b[0] as i64) != 65:
+        return 5
+    // 4: control -- i64 return through the same interface
+    if n.size() != 3:
+        return 6
+    // 5: second impl, str-backed
+    let n2: Named = B(v: "beta!")
+    let s2 = n2.name()
+    if s2 != "beta!":
+        return 7
+    if viaif(n2, 5) != 3:
+        return 8
+    if viaif(n, 3) != 3:
+        return 9
+    // 6: interface str return fed into a generic
+    let w = wrap(n.name())
+    if w != "alpha":
+        return 10
+    let w2 = wrap[str](n2.name())
+    if w2 != "beta!":
+        return 11
+    // 7: bytes through a generic
+    let w3 = wrap(n.raw())
+    if w3.len != 2:
+        return 12
+    return 42

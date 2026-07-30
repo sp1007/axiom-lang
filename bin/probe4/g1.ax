@@ -1,0 +1,57 @@
+// G1: does an INT literal in an f64/f32 context get converted? Bit set = row CORRECT.
+struct H:
+    a: f64
+    b: f32
+mut gd: f64 = 3
+fn freef(a: f64) -> i64:
+    if a > 2.99 and a < 3.01:
+        return 1
+    return 0
+fn freef32(a: f32) -> i64:
+    if a > 2.99 and a < 3.01:
+        return 1
+    return 0
+fn retf() -> f64:
+    return 3
+fn gen[T](x: T) -> T:
+    return x
+struct M:
+    k: i64
+    fn m64(self: M, a: f64) -> i64:
+        if a > 2.99 and a < 3.01:
+            return 1
+        return 0
+fn ok(v: f64) -> i64:
+    if v > 2.99 and v < 3.01:
+        return 1
+    return 0
+
+fn main() -> i64:
+    mut m: i64 = 0
+    // 1: annotated let
+    let a: f64 = 3
+    if ok(a) == 1:
+        m = m + 1
+    // 2: free fn param
+    if freef(3) == 1:
+        m = m + 2
+    // 3: f32 param
+    if freef32(3) == 1:
+        m = m + 4
+    // 4: struct field initializer
+    let h = H(a: 3, b: 3)
+    if ok(h.a) == 1:
+        m = m + 8
+    if ok(h.b as f64) == 1:
+        m = m + 16
+    // 5: global initializer
+    if ok(gd) == 1:
+        m = m + 32
+    // 6: return position
+    if ok(retf()) == 1:
+        m = m + 64
+    // 7: method param (static)
+    let mm = M(k: 0)
+    if mm.m64(3) == 1:
+        m = m + 128
+    return m       // 255 => all correct

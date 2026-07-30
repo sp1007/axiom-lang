@@ -1,0 +1,81 @@
+// E2: TUPLES whose members are floats / str / structs. The suite's tuple tests are
+// (i64,i64) plus one (i64,str) len check -- the float member class is unexercised
+// outside the one in-struct method in t_methretbreadth.
+struct Pt:
+    x: i64
+    y: f64
+fn mkff() -> (f64, f64):
+    return (1.5, 2.5)
+fn mkmix() -> (i64, f64, str):
+    return (7, 3.5, "hi")
+fn mkagg() -> (Pt, f32):
+    return (Pt(x: 4, y: 0.5), 1.5)
+fn takeff(t: (f64, f64)) -> i64:
+    if t.0 > 1.49 and t.0 < 1.51 and t.1 > 2.49 and t.1 < 2.51:
+        return 1
+    return 0
+struct Holder:
+    t: (f64, str)
+
+fn main() -> i64:
+    // 1: tuple literal with float members, field select
+    let t = (1.5, 2.5)
+    if t.0 < 1.49 or t.0 > 1.51:
+        return 1
+    if t.1 < 2.49 or t.1 > 2.51:
+        return 2
+    // 2: returned from a fn, field select
+    let u = mkff()
+    if u.0 < 1.49 or u.0 > 1.51:
+        return 3
+    if u.1 < 2.49 or u.1 > 2.51:
+        return 4
+    // 3: DESTRUCTURED from a fn returning floats
+    let (a, b) = mkff()
+    if a < 1.49 or a > 1.51:
+        return 5
+    if b < 2.49 or b > 2.51:
+        return 6
+    // 4: mixed classes in one tuple
+    let (n, f, s) = mkmix()
+    if n != 7:
+        return 7
+    if f < 3.49 or f > 3.51:
+        return 8
+    if s != "hi":
+        return 9
+    let m = mkmix()
+    if m.1 < 3.49 or m.1 > 3.51:
+        return 10
+    if m.2 != "hi":
+        return 11
+    // 5: struct + f32 members
+    let (p, g) = mkagg()
+    if p.x != 4:
+        return 12
+    if p.y < 0.49 or p.y > 0.51:
+        return 13
+    if g < 1.49 or g > 1.51:
+        return 14
+    // 6: tuple with floats as a PARAMETER
+    if takeff(t) != 1:
+        return 15
+    if takeff((1.5, 2.5)) != 1:
+        return 16
+    // 7: nested tuple with float leaves
+    let nt = ((1.5, 2), 3.5)
+    if nt.0.0 < 1.49 or nt.0.0 > 1.51:
+        return 17
+    if nt.1 < 3.49 or nt.1 > 3.51:
+        return 18
+    // 8: tuple as a struct field
+    let h = Holder(t: (4.5, "zz"))
+    if h.t.0 < 4.49 or h.t.0 > 4.51:
+        return 19
+    if h.t.1 != "zz":
+        return 20
+    // 9: arithmetic on destructured floats
+    let sum = a + b
+    if sum < 3.99 or sum > 4.01:
+        return 21
+    return 42

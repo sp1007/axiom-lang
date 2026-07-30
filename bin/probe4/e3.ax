@@ -1,0 +1,85 @@
+// E3: stdlib generic containers at NON-i64 element types.
+// elfvec.ax exercises Vec[i64] only; probe3/c1 touched HashMap[str,f32].get once.
+import std.collections
+struct Pt:
+    x: i64
+    y: f64
+
+fn main() -> i64:
+    // 1: Vec[f64] push/get/unwrap into a let, direct compare
+    mut v: Vec[f64] = Vec[f64]()
+    v.push(1.5)
+    v.push(2.5)
+    let a = v.get(0).unwrap()
+    if a < 1.49 or a > 1.51:
+        return 1
+    let b = v.get(1).unwrap()
+    if b < 2.49 or b > 2.51:
+        return 2
+    if v.len != 2:
+        return 3
+    // 2: loop-accumulate a Vec[f64]
+    mut s: f64 = 0.0
+    mut i: i64 = 0
+    while i < v.len:
+        s = s + v.get(i).unwrap()
+        i = i + 1
+    if s < 3.99 or s > 4.01:
+        return 4
+    // 3: Vec[f32]
+    mut vf: Vec[f32] = Vec[f32]()
+    vf.push(1.5)
+    let c = vf.get(0).unwrap()
+    if c < 1.49 or c > 1.51:
+        return 5
+    // 4: Vec[str]
+    mut vs: Vec[str] = Vec[str]()
+    vs.push("alpha")
+    vs.push("beta")
+    let d = vs.get(0).unwrap()
+    if d != "alpha":
+        return 6
+    if len(vs.get(1).unwrap()) != 4:
+        return 7
+    // 5: Vec of structs with a float field
+    mut vp: Vec[Pt] = Vec[Pt]()
+    vp.push(Pt(x: 3, y: 0.5))
+    let e = vp.get(0).unwrap()
+    if e.x != 3:
+        return 8
+    if e.y < 0.49 or e.y > 0.51:
+        return 9
+    // 6: HashMap[str, f64]
+    mut hm: HashMap[str, f64] = HashMap[str, f64].new()
+    hm.insert("k", 2.5)
+    hm.insert("j", 3.5)
+    let g = hm.get("k").unwrap()
+    if g < 2.49 or g > 2.51:
+        return 10
+    let h = hm.get("j").unwrap()
+    if h < 3.49 or h > 3.51:
+        return 11
+    // 7: HashMap[i64, f64] -- int key, float value
+    mut h2: HashMap[i64, f64] = HashMap[i64, f64].new()
+    h2.insert(7, 4.5)
+    let i3 = h2.get(7).unwrap()
+    if i3 < 4.49 or i3 > 4.51:
+        return 12
+    // 8: HashMap[str, str]
+    mut h3: HashMap[str, str] = HashMap[str, str].new()
+    h3.insert("a", "value")
+    let j = h3.get("a").unwrap()
+    if j != "value":
+        return 13
+    // 9: missing key -> None (control)
+    match hm.get("nope"):
+        Some(x):
+            return 14
+        None:
+            s = s + 0.0
+    // 10: overwrite a float value
+    hm.insert("k", 9.5)
+    let k = hm.get("k").unwrap()
+    if k < 9.49 or k > 9.51:
+        return 15
+    return 42

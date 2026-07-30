@@ -1,0 +1,46 @@
+// B1: generic struct field of type T instantiated at f64 / f32 / str.
+// The T-typed FIELD read and the T-returning METHOD are the two places a generic
+// instantiation must record the substituted type. i64 is the class that always works.
+struct Gen[T]:
+    v: T
+    fn get(self: Gen[T]) -> T:
+        return self.v
+    fn same(self: Gen[T], o: T) -> bool:
+        return true
+
+fn main() -> i64:
+    // --- control: i64 ---
+    let gi = Gen[i64](v: 7)
+    if gi.v != 7:
+        return 1
+    let ri = gi.get()
+    if ri != 7:
+        return 2
+    // --- f64 field read, direct compare ---
+    let gd = Gen[f64](v: 2.5)
+    if gd.v < 2.49 or gd.v > 2.51:
+        return 3
+    let rd = gd.get()                  // T-returning generic method, bound to let
+    if rd < 2.49 or rd > 2.51:
+        return 4
+    // --- f32 ---
+    let gf = Gen[f32](v: 1.5)
+    if gf.v < 1.49 or gf.v > 1.51:
+        return 5
+    let rf = gf.get()
+    if rf < 1.49 or rf > 1.51:
+        return 6
+    // --- str (>8 byte repr) ---
+    let gs = Gen[str](v: "hello")
+    if gs.v != "hello":
+        return 7
+    let rs = gs.get()
+    if rs != "hello":
+        return 8
+    if len(rs) != 5:
+        return 9
+    // --- arithmetic on the T-returned float ---
+    let sum = rd + rd
+    if sum < 4.99 or sum > 5.01:
+        return 10
+    return 42

@@ -1,0 +1,23 @@
+// G4: cross-check g2 with a CONTROL float literal, and observe the value three ways
+// so no single mechanism (the `as i64` cast) can be blamed alone.
+fn main() -> i64:
+    let ctl: f64 = 3.0        // control: real float literal
+    let sub: f64 = 3          // subject: int literal in an f64 context
+    mut m: i64 = 0
+    // control rows (must all be set)
+    if ctl > 2.99 and ctl < 3.01:
+        m = m + 1
+    if (ctl as i64) == 3:
+        m = m + 2
+    if ctl + 0.5 > 3.49 and ctl + 0.5 < 3.51:
+        m = m + 4
+    // subject rows
+    if sub > 2.99 and sub < 3.01:
+        m = m + 8
+    if (sub as i64) == 3:
+        m = m + 16
+    if sub + 0.5 > 3.49 and sub + 0.5 < 3.51:
+        m = m + 32
+    if sub == ctl:
+        m = m + 64
+    return m                  // 127 => int literal adopted f64 correctly

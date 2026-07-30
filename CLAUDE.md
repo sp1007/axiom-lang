@@ -651,6 +651,19 @@ task**. Two rules deliver that with zero keystrokes:
        a named topic. `MEMORY.md` remains the detail store and the authority — `BACKLOG.md` is a
        pointer file and must never hold facts of its own (two copies of one walk is exactly the
        defect class that produced the interface-return miscompile).
+    3. **Parallel sub-agents must NOT both drive the compiler.** Delegation is now the default, so
+       parallel delegation will be common — but two agents compiling into `bin/` at once corrupt each
+       other on Windows (an exe being rewritten while another process launches it). Serialize anything
+       that writes into `bin/` or runs the regression suite; parallelise only read-only investigation,
+       or give each agent its own output directory. Measured 2026-07-30: two parallel agents produced
+       a 592/593 run, and `t_localtuplenoinit@-O0` was then verified **deterministic — exit 12, 6/6,
+       byte-identical binaries** (12 is also what the suite expects), so the failure was the harness,
+       not the compiler.
+    4. ⛔ **Never file an unreproducible test failure as a "flake".** §3 makes determinism absolute,
+       so a one-off failure is a **bug report until it is attributed to a named cause**. "It passed on
+       rerun" is a claim about the rerun, not an explanation — the same shape as "its caller copes with
+       the degenerate value", which hid a real miscompile for six days. Concurrent compilation is the
+       first suspect to check, not the conclusion to assume.
     ⇒ Restated plainly for future sessions: **the answer to "save tokens" is not clearing the
 context, it is not loading 87k tokens of index and not accumulating task traffic in the
 orchestrator.** Both are Claude's job and need no user keystroke.

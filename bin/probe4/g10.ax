@@ -1,0 +1,35 @@
+// G10: the ADJACENT CORRECT forms for the int->float gap.
+// Bit set = row CORRECT.
+fn main() -> i64:
+    mut m: i64 = 0
+    let n: i64 = 3
+    // 1: EXPLICIT cast literal (the documented workaround)
+    let a: f64 = 3 as f64
+    if a > 2.99 and a < 3.01:
+        m = m + 1
+    // 2: EXPLICIT cast of an int variable
+    let b: f64 = n as f64
+    if b > 2.99 and b < 3.01:
+        m = m + 2
+    // 3: float literal (control)
+    let c: f64 = 3.0
+    if c > 2.99 and c < 3.01:
+        m = m + 4
+    // 4: MIXED binary arithmetic float-var + int-var (bugs.md:981 says ITOF is inserted)
+    let d = c + n
+    if d > 5.99 and d < 6.01:
+        m = m + 8
+    // 5: MIXED binary arithmetic float-var + int-literal
+    let e = c + 3
+    if e > 5.99 and e < 6.01:
+        m = m + 16
+    // 6: int-literal / float-literal division (RFC 0005 literal adoption in a binop)
+    let f = 3 / 2.0
+    if f > 1.49 and f < 1.51:
+        m = m + 32
+    // 7: int-var promoted in a comparison against a float
+    if (n as f64) < 3.5:
+        m = m + 64
+    if c > 2:
+        m = m + 128
+    return m       // 255 => all these adjacent forms are correct
