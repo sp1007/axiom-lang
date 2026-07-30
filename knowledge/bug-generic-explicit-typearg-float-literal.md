@@ -1,12 +1,32 @@
 ---
 name: bug-generic-explicit-typearg-float-literal
-description: "OPEN 2026-07-30 (probe-found) — a FLOAT LITERAL passed to a generic FREE function with an EXPLICIT type argument (`idf[f32](2.5)`) is never coerced to the instantiated width: it stays f64 against an f32 param and the callee reads garbage (returns 0). The INFERRED path coerces correctly, and INT literals coerce correctly on the same explicit path — so it is one missing float clause on a sibling branch."
+description: "FIXED 2026-07-30 (0bf34ee, A==B 105B623C, 593/593) — admitted NODE_INDEX_EXPR into the expected-type threading at typecheck.ax:5257, so the explicit-type-arg call form coerces its arguments; the existing f32 clause then does the work. Was: (probe-found) — a FLOAT LITERAL passed to a generic FREE function with an EXPLICIT type argument (`idf[f32](2.5)`) is never coerced to the instantiated width: it stays f64 against an f32 param and the callee reads garbage (returns 0). The INFERRED path coerces correctly, and INT literals coerce correctly on the same explicit path — so it is one missing float clause on a sibling branch."
 metadata:
   node_type: memory
   type: project
 ---
 
-# OPEN — float literal + explicit generic type arg is not coerced
+# ✅ FIXED — float literal + explicit generic type arg was not coerced
+
+## Fix (`0bf34ee`, `A==B 105B623C`, 593/593)
+`typecheck.ax:5257` gated its expected-type threading to `NODE_IDENT` callees; `NODE_INDEX_EXPR` is
+now admitted alongside it. Safe for exactly the reason the neighbouring `not is_generic_call` gate
+exists: that gate blocks threading a GENERIC callee's declared params because those are type
+PARAMETERS (a placeholder would be pushed down), but by the time this call is typed `f[T]` has been
+resolved to the MONOMORPHISED instance whose params are concrete. If `callee_type` is not a FUNC
+type the block leaves `fp_data` null and is inert. The pre-existing f32 clause at `:5278` then does
+the work — **no new coercion logic was added.**
+
+Oracle `bin/t_genexplicitfloatarg.ax` (calibrated: 1 pre-fix, 42 after) pins the 4 broken shapes plus
+12 rows that were already correct, because admitting a new callee kind into a coercion path risks
+over-reach.
+
+⚠️ **The guard rows earned their keep immediately** — see the exit-code retraction below.
+
+The investigation record follows; the boundary table is the diagnosis.
+
+---
+
 
 Probe-found 2026-07-30, batch 2. **Accept-then-miscompile** (BUG#53 class): no diagnostic, silent
 wrong value.
@@ -98,17 +118,24 @@ clause covers it for free rather than growing a second copy. Two copies of one w
 inference. Confirm by probe that the clause FIRES on `t3` (per the peephole-1d lesson: prove it acts,
 not merely that it is safe), then gate `A==B` + full regression.
 
-## ⚠️ RETRACTION — `t1` does not prove int literals are coerced
-I first read `pick[u8](300, 1) -> 44` as proof that the explicit-type-arg path coerces INT literals
-and therefore that only a float clause was missing. **That inference is invalid.** 44 is `300 & 255`,
-which is what you get EITHER from a real coercion OR from the callee simply reading the low 8 bits of
-a register holding 300. For integers those two are indistinguishable by construction — reading the
-low N bits IS truncation — so **no integer test can discriminate here.** My original "integers merely
-mask the defect" hypothesis, which I dismissed on the strength of `t1`, is back on the table and is
-now the more likely one.
+## ⚠️⚠️ RETRACTION — `t1 = 44` was EXIT-CODE MASKING, not coercion
+I first read `pick[u8](300, 1) -> 44` as proof that the explicit-type-arg path coerces INT literals,
+and concluded only a float clause was missing. Retracted twice over, and the second reason is the
+real one.
 
-This matters because it changes the fix: if nothing is coerced on the generic path, the fix is to
-thread an expected type there at all, not to add one clause beside an existing one.
+**Process exit codes are masked to 8 bits.** `return 300` exits with 44. The value here is really
+**300** — the literal is not narrowed at all — confirmed by comparing IN-PROGRAM
+(`bin/probe2/w3.ax`, `w4.ax`) rather than through the exit code. The same holds for plain
+`let x: u8 = 300`, so it was never generic-specific either.
+
+That means the exit code could not possibly have distinguished "the compiler narrowed it" from "the
+OS masked it": truncation, wrapping, and masking all compute `v & 0xFF`. See
+[[lesson-exit-code-8bit-masking]] — this is a harness-wide hazard, not a one-off.
+
+It also cost a bad oracle assertion: the first `t_genexplicitfloatarg` asserted `== 44`, failed
+post-fix, and briefly looked like the fix breaking integers. The guard rows are what surfaced it.
+Out-of-range narrow-int literal behaviour is now filed as
+[[question-out-of-range-narrow-int-literal]] — measured, deliberately not judged.
 
 ## Located, 2026-07-30 — the site and why the shape is what it is
 `typecheck.ax:5257` builds `fp_data`, the parameter list used to thread an expected type down to each

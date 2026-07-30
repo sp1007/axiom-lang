@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-07-30c
-description: "HANDOFF 2026-07-30c — peephole 1f SHIPPED GREEN (its RED was ABI ordering, not float pressure); loop-header alignment REFUTED before building it; M6 gate re-read over layout distributions (3 of 4 shapes PASS, fib undecidable as specified — a D1 call); and TWO probe-found silent miscompiles in method return-type resolution fixed. HEAD c0bca94, driver A==B 0148CBB3, baseline 590/590."
+description: "HANDOFF 2026-07-30c — peephole 1f SHIPPED GREEN (its RED was ABI ordering, not float pressure); loop-header alignment REFUTED before building it; M6 gate re-read over layout distributions (3 of 4 shapes PASS, fib undecidable as specified — a D1 call); and THREE probe-found silent miscompiles fixed (two in method return-type resolution, one in explicit generic type args). HEAD 0bf34ee, driver A==B 105B623C, baseline 593/593. Also a harness-wide lesson: exit codes are masked to 8 bits."
 metadata:
   node_type: memory
   type: project
@@ -13,16 +13,17 @@ session** (§ below). Do not act on it. The real next steps are in "ACTUAL next 
 probing recommendation.
 
 ## State of the tree
-- **HEAD = `eb88586`**, pushed to `main`. Clean except two things that are NOT mine and should be
+- **HEAD = `0bf34ee`**, pushed to `main`. Clean except two things that are NOT mine and should be
   left alone: `CLAUDE.md` (user's context-hygiene edit) and untracked `.claude/settings.json`.
-- **Daily driver `bin/axc_native.exe` = `A == B 0148CBB3`** (both typecheck fixes; frontend-only so
-  A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
-- **BASELINE = 590 / 590, 0 failed.** Was 578; `t_floatparamchain`, `t_ifaceretnoni64`,
-  `t_methfloatret` and `t_methretbreadth` each add a main-list row plus the O2/O3 sweep (+3 each).
-  Below 590 is RED.
+- **Daily driver `bin/axc_native.exe` = `A == B 105B623C`** (all three typecheck fixes; frontend-only
+  so A==B is the criterion). The earlier backend fixpoint for 1f was B==C `B71DF82A`.
+- **BASELINE = 593 / 593, 0 failed.** Was 578; `t_floatparamchain`, `t_ifaceretnoni64`,
+  `t_methfloatret`, `t_methretbreadth` and `t_genexplicitfloatarg` each add a main-list row plus
+  the O2/O3 sweep (+3 each).
+  Below 593 is RED.
 - `bin/axc_pre1f.exe` is a reference compiler built from pre-1f source, kept for paired pricing.
 
-## ✅ Two silent miscompiles found and fixed this session (probing, not backlog)
+## ✅ THREE silent miscompiles found and fixed this session (probing, not backlog)
 Both were method RETURN-TYPE resolution failures, both accept-then-miscompile, both invisible to the
 whole suite for the same structural reason. See [[bug-method-float-return-let-infer]].
 
@@ -44,9 +45,26 @@ the first `t_methfloatret` checked f64 via `near(a, 9.0)` and **passed on the br
 because passing the binding to an f64 parameter coerces it and masks the defect. Only a direct
 comparison observes the binding's own type.
 
-⇒ **Probing this area paid off twice in one pass. The surrounding surface is worth more probing**:
-other return-type classes through interfaces (Option/Result/struct/generic), and other
-`let`-inference sites for in-struct methods.
+3. **Explicit generic type args never coerced their arguments** (`0bf34ee`). `idf[f32](2.5)` returned
+   0: a float literal defaults to f64, the monomorphised param is f32, and a DOUBLE bit pattern went
+   into a 4-byte slot. The type ARG was always honoured (`wid[f32]` reports `size_of(T)==4`), so a
+   real f32 instance existed — only the argument was uncoerced. Measured cause: that call form does
+   not reach the `is_generic_call` path at all, and the expected-type threading it needed was gated
+   to `NODE_IDENT` callees. Fix admits `NODE_INDEX_EXPR`; the pre-existing f32 clause does the rest,
+   **no new coercion logic**. See [[bug-generic-explicit-typearg-float-literal]].
+
+## ⚠️⚠️⚠️ HARNESS-WIDE LESSON — exit codes are masked to 8 bits
+`return 300` exits with **44**. Every oracle here reports through the exit code, so **any expected
+value must be < 256** and **no value may be inferred from an exit code** when the truth could exceed
+255. ⭐ What made this genuinely deceptive: truncation, wrapping and masking all compute `v & 0xFF`,
+so an exit code **cannot distinguish "the compiler narrowed it" from "the OS masked it"** — exactly
+the arithmetic being tested. It cost me a wrong hypothesis, a retraction, and a bad oracle assertion
+that failed and briefly looked like a correct fix breaking integers. Full rule:
+[[lesson-exit-code-8bit-masking]]. Side finding, measured but deliberately NOT judged:
+[[question-out-of-range-narrow-int-literal]] (`let x: u8 = 300` keeps 300, no diagnostic).
+
+⇒ **Probing paid off three times in one session, and the two adjacent-surface sweeps that came back
+CLEAN are banked as `t_methretbreadth`.** Worth continuing on surfaces not yet swept.
 
 ## What shipped
 **Peephole 1f `collapse_copy_chain`** — the non-adjacent copy-chain collapse that was left RED and
