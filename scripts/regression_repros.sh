@@ -760,6 +760,28 @@ rows=(
   # i32/u32 edges), the 64-bit widths that are deliberately NOT range-checked, `300 as u8`,
   # and the UNANNOTATED magnitude-inference precedent must all still compile and run.
   "t_intrangeok|exit|42"
+  # RFC 0006 §4/§6.2 (E3031): the MIRROR of E3030 -- an implicit float -> int conversion is
+  # REJECTED. `let a: i64 = 3.0` used to compile and bind the RAW IEEE BITS of 3.0
+  # (0x4008000000000000), so `a > 4000000000` was TRUE: an i64 that was really an f64, with
+  # no diagnostic (bin/probe4/g13.ax exited 3). `3.0 as i64` is unchanged. One reject row per
+  # POSITION so a partial regression names the position that broke; all ten BUILT on the
+  # pre-fix compiler (measured 2026-07-31). Both rules are driven from ONE call-site list
+  # (typecheck.ax::check_annotated_target) so they cannot drift apart.
+  "t_f2ilet|reject|"
+  "t_f2ivar|reject|"
+  "t_f2iassign|reject|"
+  "t_f2ifieldasg|reject|"
+  "t_f2iarg|reject|"
+  "t_f2igen|reject|"
+  "t_f2ifield|reject|"
+  "t_f2iarr|reject|"
+  "t_f2iret|reject|"
+  "t_f2ineg|reject|"
+  # ...and the positive partner. The row that matters most is `let x: f64 = 3`: int -> float
+  # stays IMPLICITLY legal (RFC 0006 §4 widening, fixed in 76de988), and breaking it is the
+  # obvious overreach of a float->int reject. Also pins `3.0 as i64`, float->float, and every
+  # integer position.
+  "t_f2iok|exit|42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

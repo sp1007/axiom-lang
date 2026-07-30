@@ -7240,9 +7240,9 @@ pub fn check_ctor_field_str_num(mut self: ptr[TypeChecker], callee: u32):
                 if (f_num and v_strlit) or (f_str and v_numlit):
                     ax_printf_local("error: struct field initializer type mismatch: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
-                // RFC 0006 Â§6.1: `P(x: 300)` where `P.x: u8` â€” the field's declared type is
+                // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): `P(x: 300)` where `P.x: u8` â€” the field's declared type is
                 // an explicit annotation, so the literal must fit it.
-                self.check_int_lit_range(ftype, val_node, "struct field initializer")
+                self.check_annotated_target(ftype, val_node, "struct field initializer")
                 // RFC 0029: an interface-typed field must be initialized with a struct that
                 // implements it (else dispatch through the field calls a null vtable slot).
                 self.check_iface_conformance(ftype, val_node)
@@ -8682,16 +8682,20 @@ pub fn int_lit_type_display(t: u32) -> str:
         return "usize"
     return "int"
 
-// Render the offending source line with a caret span under the literal (CLAUDE.md Â§8).
-// `from` is the outermost node of the literal expression (the unary `-` when negated) and
-// `lit` the INT_LIT itself, so the span covers `-128` and not just `128`.
+// Render the offending source line with a caret span under the offending expression
+// (CLAUDE.md Â§8). `from` is the outermost node of the expression (the unary `-` when
+// negated) and `lit` the inner literal/identifier, so the span covers `-128` and not just
+// `128`. `msg` is printed after the carets and names the specific rule that fired.
+//
+// Shared by BOTH RFC 0006 annotation rules (E3030 out-of-range integer literal, E3031
+// implicit float->int) so the rendered shape can never drift between them.
 //
 // A `file.ax:line:col` header is deliberately NOT printed: the frontend's `tree.src` is the
 // CONCATENATED compilation unit (the driver bundles std/*.ax ahead of the user's file), so
 // an absolute line number would name the wrong line of the wrong file. The snippet + caret
 // is the part of the house format that is accurate today; every other diagnostic in this
 // pass prints a byte offset for the same reason.
-pub fn print_int_lit_snippet(self: ptr[TypeChecker], from: u32, lit: u32, tname: str):
+pub fn print_annotated_expr_snippet(self: ptr[TypeChecker], from: u32, lit: u32, msg: str):
     let ftok_idx = self.tree.nodes.data[from].token_idx
     let ltok_idx = self.tree.nodes.data[lit].token_idx
     if (ftok_idx as i64) >= self.tree.tokens.len or (ltok_idx as i64) >= self.tree.tokens.len:
@@ -8731,7 +8735,7 @@ pub fn print_int_lit_snippet(self: ptr[TypeChecker], from: u32, lit: u32, tname:
         cbuf[pad + j] = '^' as u8
         j = j + 1
     cbuf[pad + span] = 0 as u8
-    ax_printf_local("   | %s value does not fit in `%s`\n   |\n", cbuf as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("   | %s %s\n   |\n", cbuf as i64, get_str_ptr(msg) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     @free(cbuf)
 
 // True iff `lhs` is a plain variable whose declaration carried an EXPLICIT type
@@ -8830,13 +8834,154 @@ pub fn check_int_lit_range(mut self: ptr[TypeChecker], exp_type: u32, expr: u32,
         ax_printf_local("error[E3030]: integer literal `%s` is out of range for type `%s` (valid range %d to %d)\n", get_str_ptr(disp) as i64, get_str_ptr(tname) as i64, int_lit_range_lo(exp_type), int_lit_range_hi(exp_type), 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     else:
         ax_printf_local("error[E3030]: integer literal `%s` is out of range for type `%s` (an unsigned type cannot represent a negative value)\n", get_str_ptr(disp) as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    self.print_int_lit_snippet(expr, lit, tname)
+    let cm1 = std.string.concat("value does not fit in `", tname)
+    let cmsg = std.string.concat(cm1, "`")
+    self.print_annotated_expr_snippet(expr, lit, cmsg)
+    safe_free_str(cm1)
+    safe_free_str(cmsg)
     ax_printf_local("   = note: the type `%s` is written explicitly at this %s, so the literal is not widened to fit\n", get_str_ptr(tname) as i64, get_str_ptr(ctx) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     ax_printf_local("   = help: write `%s as %s` if truncating to `%s` is intended\n", get_str_ptr(disp) as i64, get_str_ptr(tname) as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     self.diags_count = self.diags_count + 1 as i64
     if neg:
         safe_free_str(disp)
     safe_free_str(text)
+
+// â”€â”€â”€ RFC 0006 Â§4/Â§6.2: implicit float â†’ int is forbidden (E3031) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// The mirror image of Â§6.1 above, and the other half of the SAME conversion policy the
+// user ruled on 2026-06-26 (RFC 0006 Â§4 table): int â†’ float widens IMPLICITLY, float â†’
+// int must be spelled `as`. Before this reject `let a: i64 = 3.0` compiled and the binding
+// held the RAW IEEE BITS of 3.0 (0x4008000000000000), so `a > 4000000000` was TRUE â€” an
+// `i64` that was really an f64, with no diagnostic at all (measured: bin/probe4/g13.ax
+// exited 3). Same accept-then-miscompile shape as E3030 (BUG#53 convention), so it is
+// enforced from exactly the SAME positions â€” see check_annotated_target below, the single
+// call-site list the two rules share.
+//
+// `3.0 as i64` keeps working: a cast is a different node kind and never reaches here.
+// The REVERSE direction is untouched â€” this fires only when the TARGET is integer-family,
+// so `let x: f64 = 3` (legal implicit widening, fixed in 76de988) is not affected.
+pub fn is_int_family_type(t: u32) -> bool:
+    return t == TYPE_I8 or t == TYPE_I16 or t == TYPE_I32 or t == TYPE_I64 or t == TYPE_U8 or t == TYPE_U16 or t == TYPE_U32 or t == TYPE_U64 or t == TYPE_ISIZE or t == TYPE_USIZE
+
+pub fn float_type_display(t: u32) -> str:
+    if t == TYPE_F32:
+        return "f32"
+    return "f64"
+
+// The float type an IDENT was DECLARED with, or TYPE_UNKNOWN when it is not a plainly
+// float-declared local. Read from the declaration's WRITTEN type-annotation text, not from
+// the symbol's `type_id`: a symbol's type_id is rewritten per monomorphised instance, so
+// `fn id[T](v: T) -> T: return v` instantiated at f64 and then at i64 would make the i64
+// copy's `return v` look like a float and be falsely REJECTED. The annotation TEXT is fixed
+// by the source and cannot be contaminated that way. Restricted to `let`/`const`
+// declarations for the same reason (a PARAM's spelled type may be a generic name) â€” the
+// param case is listed as out of scope in the RFC rather than guessed at.
+pub fn ident_declared_float(self: ptr[TypeChecker], node: u32) -> u32:
+    if node == 0 as u32 or (node as i64) >= self.tree.nodes.len:
+        return TYPE_UNKNOWN
+    if self.tree.nodes.data[node].kind != NODE_IDENT:
+        return TYPE_UNKNOWN
+    let sym_idx = self.tree.nodes.data[node].payload
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return TYPE_UNKNOWN
+    let sym = self.symtable.symbols.data[sym_idx]
+    if sym.decl_node == 0 as u32 or sym.decl_node == 0xffffffff as u32:
+        return TYPE_UNKNOWN
+    mut dtree := self.tree
+    if (sym_idx as i64) < self.symtable.symbol_trees.len:
+        let st = self.symtable.symbol_trees.data[sym_idx as i64]
+        if st != null as ptr[AstTree]:
+            dtree = st
+    if (sym.decl_node as i64) >= dtree.nodes.len:
+        return TYPE_UNKNOWN
+    let dk = dtree.nodes.data[sym.decl_node].kind
+    if dk != NODE_VAR_DECL and dk != NODE_CONST_DECL:
+        return TYPE_UNKNOWN
+    mut c := dtree.nodes.data[sym.decl_node].first_child
+    while c != 0 as u32:
+        if dtree.nodes.data[c].kind == NODE_TYPE_EXPR:
+            let tn = self.node_text_in_tree(dtree, c)
+            mut res := TYPE_UNKNOWN
+            if tn == "f64":
+                res = TYPE_F64
+            elif tn == "f32":
+                res = TYPE_F32
+            safe_free_str(tn)
+            return res
+        c = dtree.nodes.data[c].next_sibling
+    return TYPE_UNKNOWN
+
+// Reject `expr` when the target type is integer-family and the expression is unambiguously
+// a FLOAT value: a float literal (optionally wrapped in a unary `-`), or an identifier whose
+// own `let`/`const` declaration spells `f32`/`f64`.
+//
+// Deliberately NOT derived from infer_node. At every call site the expression has already
+// been inferred WITH the integer target as its hint, so the inferred type reports the
+// TARGET, not the source â€” the same reason the neighbouring str/numeric rejects in this
+// file are gated on node kind ("infer is imprecise ... trusting it over-rejected valid
+// compiler source"). Everything the syntax does not make certain (a CALL result, a binary
+// expression, a field/index read, a param identifier) is therefore inert here and recorded
+// as out of scope in RFC 0006 Â§6.2 instead of being guessed at.
+pub fn check_float_to_int(mut self: ptr[TypeChecker], exp_type: u32, expr: u32, ctx: str):
+    if expr == 0 as u32 or (expr as i64) >= self.tree.nodes.len:
+        return
+    if not is_int_family_type(exp_type):
+        return
+    // Unwrap a unary `-`: `-2.5` parses as UNARY(-) over FLOAT_LIT(2.5), so without this
+    // the most obvious negative float form would slip through.
+    mut inner := expr
+    mut neg := false
+    let ek = self.tree.nodes.data[expr].kind
+    if ek == NODE_UNARY_EXPR:
+        let ch = self.tree.nodes.data[expr].first_child
+        if ch == 0 as u32:
+            return
+        let op = self.node_text(expr)
+        let is_minus = op == "-"
+        safe_free_str(op)
+        if not is_minus:
+            return
+        inner = ch
+    mut src_ty := TYPE_UNKNOWN
+    if self.tree.nodes.data[inner].kind == NODE_FLOAT_LIT:
+        src_ty = TYPE_F64
+    else:
+        src_ty = self.ident_declared_float(inner)
+    if src_ty == TYPE_UNKNOWN:
+        return
+    if ek == NODE_UNARY_EXPR:
+        neg = true
+    let text = self.node_text(inner)
+    mut disp := text
+    if neg:
+        disp = std.string.concat("-", text)
+    let tname = int_lit_type_display(exp_type)
+    let fname = float_type_display(src_ty)
+    ax_printf_local("error[E3031]: cannot implicitly convert `%s` (type `%s`) to the integer type `%s`\n", get_str_ptr(disp) as i64, get_str_ptr(fname) as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    let cm1 = std.string.concat("float value here; `", tname)
+    let cmsg = std.string.concat(cm1, "` is an integer type")
+    self.print_annotated_expr_snippet(expr, inner, cmsg)
+    safe_free_str(cm1)
+    safe_free_str(cmsg)
+    // ASCII only, like E3030's messages: the Windows console codepage mangles UTF-8, so a
+    // `Â§`/em-dash in an EMITTED diagnostic prints as mojibake for the user (verified).
+    // Non-ASCII stays in the source COMMENTS, which no console renders.
+    ax_printf_local("   = note: the type `%s` is written explicitly at this %s, and AXIOM never converts float to int implicitly (RFC 0006 section 4) -- the truncation must be visible in the source\n", get_str_ptr(tname) as i64, get_str_ptr(ctx) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("   = help: write `%s as %s` if truncating toward zero is intended\n", get_str_ptr(disp) as i64, get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.diags_count = self.diags_count + 1 as i64
+    if neg:
+        safe_free_str(disp)
+    safe_free_str(text)
+
+// SINGLE position list shared by both RFC 0006 annotation rules: Â§6.1 (E3030, an integer
+// literal outside the annotated type's range) and Â§4/Â§6.2 (E3031, an implicit floatâ†’int).
+// Every site where the programmer wrote an explicit integer target calls THIS â€” never one
+// of the two checks directly â€” so the rules cannot drift to different position lists.
+// Two copies of one rule drifting apart is the defect class that has already produced five
+// bugs here (376af08, 0bf34ee, 76de988, a281992, and the dispatch-coercion bug); one entry
+// point is the structural fix.
+pub fn check_annotated_target(mut self: ptr[TypeChecker], exp_type: u32, expr: u32, ctx: str):
+    self.check_int_lit_range(exp_type, expr, ctx)
+    self.check_float_to_int(exp_type, expr, ctx)
 
 pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]
@@ -10402,8 +10547,8 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if (exp_is_num and rhs_is_strlit) or (exp_is_str and rhs_is_numlit):
                     ax_printf_local("error: type mismatch in `let`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
-                // RFC 0006 Â§6.1: `let x: u8 = 300` â€” the literal must fit the ANNOTATED type.
-                self.check_int_lit_range(exp_type, init_expr, "`let` binding")
+                // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): `let x: u8 = 300` â€” the literal must fit the ANNOTATED type.
+                self.check_annotated_target(exp_type, init_expr, "`let` binding")
             // BUG#53 (let-binding analog of the call-arg reject at ~L4653): an
             // Option/Result/sum VALUE bound to a `let`/`mut` whose ANNOTATED type is a
             // plain SCALAR primitive or a STRUCT (the programmer forgot `.unwrap()`) was
@@ -10490,9 +10635,9 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if (ret_is_num and e_strlit) or (ret_is_str and e_numlit):
                     ax_printf_local("error: type mismatch in `return`: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     self.diags_count = self.diags_count + 1 as i64
-                // RFC 0006 Â§6.1: `-> u8: return 300` â€” the literal must fit the DECLARED
+                // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): `-> u8: return 300` â€” the literal must fit the DECLARED
                 // return type (an explicit annotation, exactly like a `let`'s).
-                self.check_int_lit_range(rt, expr, "`return` from a declared return type")
+                self.check_annotated_target(rt, expr, "`return` from a declared return type")
 
     elif kind == NODE_DEFER_STMT:
         // #38.4: typecheck the deferred expression so its node_types are
@@ -11621,11 +11766,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                     if (p_num and a_strlit) or (p_str and a_numlit):
                                         ax_printf_local("error: argument type mismatch in call to '%s': a string and a numeric type are not compatible\n", get_str_ptr(fnm) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                         self.diags_count = self.diags_count + 1 as i64
-                                    // RFC 0006 Â§6.1: `f(300)` where the param is `u8`. Every
+                                    // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): `f(300)` where the param is `u8`. Every
                                     // param is annotated by the language, so `pt` is always a
                                     // user-written type here (a generic param has GENERIC kind
                                     // and is skipped by check_int_lit_range).
-                                    self.check_int_lit_range(pt, anode, "function argument")
+                                    self.check_annotated_target(pt, anode, "function argument")
                                     // RFC 0029: a concrete struct passed where an interface is
                                     // expected must structurally IMPLEMENT it â€” else dispatch
                                     // builds a vtable slot from a 0 method-symbol and calls
@@ -12134,7 +12279,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                         let asym = self.tree.nodes.data[arg].payload
                         if asym != 0 as u32 and (asym as i64) < self.symtable.symbols.len:
                             arg_decl_t = self.symtable.symbols.data[asym].type_id
-                    // RFC 0006 Â§6.1: the EXPLICIT type-argument call form `f[u8](300, 1)`.
+                    // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): the EXPLICIT type-argument call form `f[u8](300, 1)`.
                     // Its callee is a NODE_INDEX_EXPR and it does NOT go through the
                     // is_generic_call instantiation path, so the per-param reject further up
                     // (which resolves a NODE_IDENT callee by name) never sees it â€” measured:
@@ -12143,7 +12288,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // u8 the user spelled in `[u8]`. Gated to this callee kind precisely so a
                     // plain `f(300)` is not diagnosed twice.
                     if self.tree.nodes.data[callee].kind == NODE_INDEX_EXPR and fp_data != null as ptr[u32] and apos < fp_len:
-                        self.check_int_lit_range(fp_data[apos], arg, "function argument (explicit type argument)")
+                        self.check_annotated_target(fp_data[apos], arg, "function argument (explicit type argument)")
                     let at = self.infer_node(arg, pexp)
                     if param_is_arr and at != pexp and at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and self.types.entries.data[at as i64].kind == TYPE_KIND_ARRAY:
                         ax_printf_local("error: array argument type mismatch: this argument is a different fixed-array type than the parameter (different element type or length); annotate the local `let x: [T;N] = ..` or cast the elements to match\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -12533,7 +12678,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             let exp_entry = self.types.entries.data[expected as i64]
             if exp_entry.kind == TYPE_KIND_ARRAY:
                 expected_elem = exp_entry.extra as u32
-        // RFC 0006 Â§6.1: element type that came from an ANNOTATED array type (`let a:
+        // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): element type that came from an ANNOTATED array type (`let a:
         // [u8;3] = [1, 2, 300]`). Captured BEFORE the sticky recovery below on purpose:
         // a recovered hint may descend from an unannotated first element, and an
         // unannotated `[1, 5000000000]` must keep inferring by magnitude.
@@ -12578,7 +12723,7 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if (el_num and c_strlit) or (el_str and c_numlit):
                     mixed_strnum = true
             if annotated_elem != TYPE_UNKNOWN:
-                self.check_int_lit_range(annotated_elem, child, "array element (annotated element type)")
+                self.check_annotated_target(annotated_elem, child, "array element (annotated element type)")
             count = count + 1 as u32
             child = self.tree.nodes.data[child].next_sibling
         if mixed_strnum:
@@ -13375,11 +13520,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     if (l_num and a_strlit) or (l_str and a_numlit):
                         ax_printf_local("error: type mismatch in assignment: a string and a numeric type are not compatible\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         self.diags_count = self.diags_count + 1 as i64
-                // RFC 0006 Â§6.1: `x = 300` where x was declared `mut x: u8`. Gated on the
+                // RFC 0006 Â§6.1 (E3030) + Â§6.2 (E3031): `x = 300` where x was declared `mut x: u8`. Gated on the
                 // lvalue's declaration carrying an EXPLICIT annotation â€” an inferred `mut x
                 // := 0` has no user-written type to respect, so it keeps the magnitude rule.
                 if self.lvalue_type_is_annotated(lhs_a):
-                    self.check_int_lit_range(lhs_ty, rhs_a, "assignment to an annotated binding")
+                    self.check_annotated_target(lhs_ty, rhs_a, "assignment to an annotated binding")
 
     else:
         // Default traversal

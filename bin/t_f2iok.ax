@@ -1,0 +1,117 @@
+// RFC 0006 §4 — POSITIVE guard for the implicit-float-to-int reject (E3031). Every row
+// here is either an EXPLICIT conversion, a legal implicit widening, or a same-family
+// assignment, and must keep compiling and running exactly as before the reject was added.
+// This is the calibration partner of t_f2i{let,var,assign,fieldasg,arg,gen,field,arr,ret,
+// neg}.ax, which must all be REJECTED.
+//
+// The row that matters most: int -> float stays IMPLICITLY LEGAL (RFC 0006 §4, widening),
+// so `let x: f64 = 3` must still compile. It was fixed in 76de988 and is the most likely
+// thing an over-broad float->int reject would break.
+//
+// Distinct small return code per row so a failure names itself; 42 = all rows pass.
+// Every expected value is compared IN-PROGRAM and stays < 256 at the exit
+// ([[lesson-exit-code-8bit-masking]]).
+//
+// ⚠️ TWO int->float positions are deliberately ABSENT because they are ALREADY broken on
+// the pre-E3031 compiler and fixing them is a separate change (measured 2026-07-31 with
+// bin/probe6/q1.ax): a call ARGUMENT `takes_f64(9)` and a struct-field INITIALIZER
+// `Mixed(f: 5)` do not convert the int literal, so the f64 reads as garbage. They are NOT
+// regressions of this reject -- it does not touch the int->float direction at all.
+
+struct Mixed:
+    i: i32
+    f: f64
+
+fn takes_i32(v: i32) -> i64:
+    return v as i64
+
+fn takes_f64(v: f64) -> f64:
+    return v
+
+fn ret_i32() -> i32:
+    return 42
+
+fn ret_f64_from_int() -> f64:
+    return 7
+
+fn pick[T](a: T, b: T) -> T:
+    return a
+
+fn main() -> i64:
+    // --- `as` is the sanctioned way to say "convert float to int" --------------------
+    let z: i64 = 3.0 as i64
+    if z != 3:
+        return 1
+    let zn: i64 = -3.9 as i64
+    if zn != -3:
+        return 2
+    let z32: i32 = 5.9 as i32
+    if z32 as i64 != 5:
+        return 3
+
+    // --- int -> float WIDENING stays implicit (76de988, t_intlitfloatctx) ------------
+    let x: f64 = 3
+    if x != 3.0:
+        return 4
+    let y: f32 = 2
+    if y != 2.0:
+        return 5
+    let xn: f64 = -4
+    if xn != -4.0:
+        return 6
+    if ret_f64_from_int() != 7.0:
+        return 8
+    let farr: [f64; 3] = [1, 2.5, 3]
+    if farr[0] != 1.0:
+        return 9
+    if farr[1] != 2.5:
+        return 10
+    let mx = Mixed(i: 4, f: 5.0)
+    if mx.i as i64 != 4:
+        return 11
+    if mx.f != 5.0:
+        return 12
+
+    // --- float -> float is untouched -------------------------------------------------
+    let g: f64 = 1.5
+    if g != 1.5:
+        return 13
+    let h: f32 = 1.5
+    if h != 1.5:
+        return 14
+    mut fm: f64 = 0.0
+    fm = 2.25
+    if fm != 2.25:
+        return 15
+
+    // --- integers at integer positions are untouched ---------------------------------
+    let i8v: i32 = 100
+    if i8v as i64 != 100:
+        return 16
+    if takes_i32(7) != 7:
+        return 17
+    if ret_i32() as i64 != 42:
+        return 18
+    if pick[i64](11, 1) != 11:
+        return 19
+    mut mi: i32 = 1
+    mi = 12
+    if mi as i64 != 12:
+        return 20
+    let iarr: [i32; 3] = [1, 2, 3]
+    if iarr[2] as i64 != 3:
+        return 21
+
+    // --- a float-typed VARIABLE at a float target is untouched (the IDENT arm of the
+    // reject must not fire when the target is float too) ------------------------------
+    let fv: f64 = 6.5
+    let fv2: f64 = fv
+    if fv2 != 6.5:
+        return 22
+    let fvi: i64 = fv as i64
+    if fvi != 6:
+        return 23
+    if takes_f64(fv) != 6.5:
+        return 24
+
+    return 42

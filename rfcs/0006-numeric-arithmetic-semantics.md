@@ -37,7 +37,7 @@ Một toán hạng float → cả phép là float; toán hạng int được **p
 | Từ → Đến | Chính sách |
 |---|---|
 | int → float (vd i32→f64) | **ngầm OK**, chèn cvt thật (cvtsi2sd) |
-| float → int (vd f32→i32) | **CẤM ngầm → LỖI**; phải `as` (truncate toward zero) |
+| float → int (vd f32→i32) | **CẤM ngầm → LỖI**; phải `as` (truncate toward zero) — ✅ cưỡng chế ở **§6.2** (`E3031`) |
 | f32 → f64 (widen) | **ngầm OK** (cvtss2sd) |
 | f64 → f32 (narrow, lossy) | **CẤM ngầm → LỖI**; phải `as` (cvtsd2ss) |
 | int → int khác kiểu | [TBD] widening ngầm OK; narrowing/đổi-dấu: cảnh báo hay cấm? |
@@ -129,11 +129,88 @@ in `file.ax:line:col`: `tree.src` của frontend là compilation unit đã NỐI
 std/*.ax trước file người dùng) nên số dòng tuyệt đối sẽ chỉ sai file — snippet + caret là
 phần chính xác được của format §8 hiện nay.
 
-**Cài đặt & test:** `typecheck.ax::check_int_lit_range` (+ 7 call site);
+**Cài đặt & test:** `typecheck.ax::check_int_lit_range`, gọi qua entry point chung
+`check_annotated_target` (8 call site, dùng chung với §6.2 — xem dưới);
 `bin/t_intrange{let,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows,
 `bin/t_intrangeok.ax` = mọi biên hợp lệ + tiền lệ suy-theo-độ-lớn phải vẫn chạy (42).
 Gate: A==B `78295509`, regression **607/607** ở default và `-O0`. Audit breakage: 0 hit trên
 source của chính compiler (qua cả hai hop) và trên 833 file `.ax` khác trong repo.
+
+### 6.2 REQUIREMENT — float → int NGẦM ⇒ LỖI (thi hành §4, user chốt 2026-06-26) ✅ IMPLEMENTED
+
+Đây là **ảnh gương của §6.1** và là nửa còn lại của CÙNG chính sách conversion ở §4
+(int→float ngầm OK / float→int **CẤM ngầm, phải `as`**). Quyết định đã chốt từ 2026-06-26
+(`knowledge/bugs.md:1015`, BUG#35): "`let a: i32 = 3.0` → LỖI". Phần này chỉ cưỡng chế.
+
+**Quy tắc (bắt buộc):** một **giá trị float** viết tại vị trí mà lập trình viên đã
+**CHÚ THÍCH TƯỜNG MINH** một kiểu **nguyên** (i8/i16/i32/i64/isize/u8/u16/u32/u64/usize)
+⇒ **`error[E3031]`** + `diags_count++` (driver dừng trước codegen). Muốn cắt phần lẻ thì
+viết `3.0 as i64` (vẫn hợp lệ, không đổi). **Chiều ngược lại KHÔNG đổi:** int → float vẫn
+ngầm hợp lệ (§4), `let x: f64 = 3` phải tiếp tục biên dịch (76de988, `t_intlitfloatctx`).
+
+Lý do REJECT: giống §6.1, đây là lựa chọn DUY NHẤT không IM LẶNG. Trước thay đổi này
+`let a: i64 = 3.0` **biên dịch được** và `a` giữ **nguyên mẫu bit IEEE** của 3.0
+(`0x4008000000000000` = 4611686018427387904) — nên `a > 4000000000` là ĐÚNG. Một `i64`
+thật ra là một `f64`, không một chẩn đoán nào (đo bằng `bin/probe4/g13.ax`, exit 3). Đúng
+dạng accept-then-miscompile mà quy ước BUG#53 coi là kết cục tệ nhất.
+
+**Nguồn float được nhận diện (chỉ những dạng CÚ PHÁP chắc chắn):** float literal (kể cả
+khi bọc trong unary `-`), và **identifier có khai báo `let`/`const` ghi rõ `f32`/`f64`**.
+KHÔNG suy từ `infer_node`: tại mọi call site biểu thức đã được infer VỚI kiểu nguyên đích
+làm hint, nên kiểu suy ra báo lại chính ĐÍCH chứ không phải nguồn — cùng lý do các reject
+str/numeric kế bên trong file này đều gate theo node kind. `3.0 as i64` là node kind khác
+nên không bao giờ chạm tới check này.
+
+**Vị trí áp dụng** (dùng CHUNG một call-site list với §6.1 —
+`typecheck.ax::check_annotated_target` — nên hai luật không thể trôi lệch nhau):
+
+| Vị trí | Ví dụ bị từ chối | Hành vi CŨ (đã đo) |
+|---|---|---|
+| `let`/`const` có chú thích | `let a: i64 = 3.0` | giữ **bit IEEE** (a > 4e9) |
+| `let`/`const` **global** | `let G: i64 = 3.0` | như trên |
+| literal float ÂM | `let a: i64 = -2.5` | như trên |
+| **IDENT khai báo f32/f64** | `let f: f64 = 3.0` … `let a: i64 = f` | như trên |
+| gán vào binding CÓ chú thích | `mut x: i32 = 1; x = 2.5` | nhận |
+| gán vào **field struct** | `s.v = 2.5` | nhận |
+| đối số của tham số nguyên | `fn takes(v: i32)` … `takes(4.5)` | nhận |
+| đối số dạng **type-arg tường minh** | `pick[i64](3.0, 1)` | nhận |
+| khởi tạo field struct | `P(a: 3.5)` | nhận |
+| phần tử mảng có kiểu phần tử chú thích | `let a: [i32;3] = [1, 2.5, 3]` | nhận |
+| `return` của hàm khai báo kiểu nguyên | `fn g() -> i32: return 3.0` | nhận |
+
+**Ngoài phạm vi (đã ĐO từng ca 2026-07-31, ghi rõ để không bị hiểu là thiếu sót):**
+1. **Biểu thức** `let a: i64 = f + 1.0` — vẫn nhận. Cần kiểu suy diễn đáng tin ở vị trí có
+   hint; xem lý do "không dùng infer_node" ở trên.
+2. **Kết quả CALL** `let a: i64 = getf()` (getf → f64) — vẫn nhận.
+3. **IDENT là PARAM** `fn h(x: f64): let a: i64 = x` — vẫn nhận. Kiểu ghi của param có thể
+   là tên generic, và `type_id` của symbol bị ghi đè theo từng bản monomorphise (`fn id[T]
+   (v: T)` khởi tạo ở f64 rồi i64 sẽ khiến bản i64 bị TỪ CHỐI OAN) ⇒ cố ý không đọc.
+4. **Đọc field** `let a: i64 = s.f` (S.f: f64) — vẫn nhận.
+5. **Gán vào binding SUY DIỄN** `mut x := 0; x = 3.0` — vẫn nhận (dùng chung annotation
+   gate với §6.1) và **gán vào PHẦN TỬ mảng** `a[0] = 3.0` — cùng ranh giới §6.1 vẽ.
+6. **Đối số của PHƯƠNG THỨC** `s.setv(3.0)` — vẫn nhận (đo: kết quả 16). Cùng lỗ hổng
+   §6.1 mục 3b: method resolution đi qua khối quét `mfi.params`, không dùng `fp_data`.
+7. **f64 → f32 (narrowing)** — hàng KHÁC của bảng §4, chưa cưỡng chế: `let d: f64 = 3.5;
+   let s: f32 = d` vẫn nhận và **sai giá trị** (đo: `s != 3.5`). Việc riêng.
+8. ⚠️ Phát hiện phụ (KHÔNG do luật này, đã hỏng từ trước — `bin/probe6/q1.ax`): chiều
+   int→float NGẦM còn thiếu ở hai vị trí — đối số `takes_f64(9)` và khởi tạo field
+   `Mixed(f: 5)` không chèn cvt, f64 đọc ra rác. Là khiếm khuyết RIÊNG, cần fix riêng.
+
+**Mã lỗi:** `E3031` (kế tiếp E3030 trong dải type errors E3000–E3999). Chẩn đoán in giá
+trị, kiểu NGUỒN, kiểu ĐÍCH, snippet + caret, và cách sửa (`3.0 as i64`). Dùng lại đúng bộ
+render của E3030 (`print_annotated_expr_snippet`) nên hai chẩn đoán không thể lệch hình
+dạng. KHÔNG in `file.ax:line:col`, cùng lý do §6.1. Chuỗi in ra **thuần ASCII** (console
+Windows làm hỏng UTF-8 — `§`/em-dash ra mojibake; ký tự non-ASCII chỉ nằm trong COMMENT).
+
+**Cài đặt & test:** `typecheck.ax::{check_float_to_int, ident_declared_float,
+is_int_family_type, float_type_display}` + entry point chung `check_annotated_target`
+(8 call site, dùng chung với `check_int_lit_range`);
+`bin/t_f2i{let,var,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows (cả 10 đều
+BUILD trên compiler trước fix), `bin/t_f2iok.ax` = `3.0 as i64` + int→float widening +
+float→float + mọi vị trí nguyên phải vẫn chạy (42), pass cả TRƯỚC và SAU.
+Gate: A==B `407E0805`, regression **630/630** ở default và `-O0`. Audit breakage: 0 hit
+trên source của chính compiler (qua cả hai hop) và trên 190 file `.ax` có float trong repo
+(chỉ 10 oracle reject cố ý).
 
 ## 7. Float codegen (BUG#33)
 
