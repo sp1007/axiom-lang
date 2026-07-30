@@ -163,14 +163,43 @@ median over layouts with the spread reported next to it.**
 BETWEEN TWO BUILDS**, never on one build. Judging a determinism fix by whether one number improved
 is the category error that already caused one unjust revert.
 
-## Current M6-codegen standing (ONE suite run — do not bank it)
-`scripts/perf_suite.ps1`: fib **1.12x** ✅, xorshift **0.99x** ✅, arrwalk **1.08x** ✅,
-callloop **1.17x** ❌ vs the hand-written NASM floor (gate is ≤1.15x, user decision D1).
+## ⭐⭐⭐ Current M6-codegen standing — READ WITH `scripts/perf_m6_gate.ps1`, not `perf_suite.ps1`
+New script averages **both sides** of the gate ratio over N controlled layouts and prints a 2-SE
+confidence band. First honest reading (10 layouts/side, best-of-9):
 
-⚠️ A single `perf_suite` run is explicitly untrustworthy in this project — the FIXED asm-floor
-binary has itself swung 569→514 ms between runs. Treat the above as a pointer, not a result.
-Notably fib is back inside the gate: the unguarded 1f's fib +14.5% was itself layout, and the guard
-removed the prologue folds that caused the shift.
+    callloop  1.107x +- 1.0%   PASS by 3.8%
+    xorshift  0.995x +- 0.7%   PASS by 13.4%
+    fib       1.145x +- 6.2%   INDETERMINATE, 0.4% from the gate
+
+**callloop PASSES.** It read 1.17x MISS on `perf_suite`'s single draw — that MISS was a layout draw,
+exactly like 1f's phantom callloop regression.
+
+## ⛔⛔⛔ fib is NOT DECIDABLE by the D1 gate as written — this needs a USER decision
+fib's layout spread is **17.2%** (AXIOM) and **13.7%** (floor), both **larger than the entire 15%
+gate margin**. The floor's raw samples show the mechanism, with nothing varying but nop padding:
+
+    520.7  459.5  515.1  461.1  522.5  460.8  522.3  462.2  522.5  459.9
+
+Hand-written assembly alternating **13% with the PARITY of a 16-byte shift** — i.e. 32-byte
+alignment of the recursive call target. **The denominator of fib's gate ratio is itself bimodal.**
+
+⇒ No backend work can move a ratio whose inputs swing more than the threshold, and raising n does
+not rescue it either: with bimodal distributions the mean depends on which cluster proportions the
+sampled shifts happen to draw. **fib's gate needs restating** (compare distributions, or pin ONE
+reference layout on both sides) **or fib excluded from the gate.** That is a D1-class decision —
+recorded here, deliberately NOT taken unilaterally, since D1 was the user's call.
+
+Remaining to do: arrwalk still has no distribution reading (it needs a global array, so the
+`hot()`-wrapper template in `perf_m6_gate.ps1` needs extending for it).
+
+⚠️ Two construction errors made while building that harness, both instructive:
+- The verdict first compared the gate margin to the raw **min-max spread**, which made every shape
+  INDETERMINATE by construction — the spread describes the population and does NOT shrink with n.
+  It must be the **standard error of the mean**, propagated into the ratio.
+- The xorshift body was **paraphrased instead of copied** (`x * 8192` / `x / 128` on i64) and
+  measured **1.50x**. Pure construction error: `x / 128` is a signed division rounding toward zero,
+  not the floor's `shr`, so the two sides were no longer the same algorithm. Copied verbatim it
+  reads 0.995x. **A floor is only a floor if the program matches it exactly.**
 
 ## Method notes worth keeping
 - A reference compiler from `git show HEAD~1:<file>` is cheap and decisive; restore the working
