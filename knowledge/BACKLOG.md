@@ -11,11 +11,12 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-07-31)
-- **HEAD** = `f6ac69e` — E3030/E3031/E3032 phủ cả **đối số method** bằng MỘT hook. Driver
-  `bin/axc_native.exe` = **A==B `9D8C7D68`** (mốc B==C gần nhất: `D3EABC61` ở `b8ac125`).
-- **BASELINE = 649/649**, đo ở **cả default lẫn `-O0`**. Dưới 649 là RED.
-  (611 trong bản cũ của file này đã lỗi thời: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`.)
+## Trạng thái cây (cập nhật 2026-07-31, sau `a538983`)
+- **HEAD** = `a538983` — **retire rank 1** (không còn chọn method theo substring). Driver
+  `bin/axc_native.exe` = **A==B `B10DABE66B5CA168A4D094CD0CBAFB68251C60B7A86818A7B27F5E4E44E1A34D`**
+  (2.297.856 byte; mốc B==C gần nhất: `D3EABC61` ở `b8ac125`).
+- **BASELINE = 662/662**, đo ở **cả default lẫn `-O0`**. Dưới 662 là RED.
+  (611 → 649 → 662: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
   `bin/probe5/axc_new.exe` (30/07 21:59) = mốc **trước** `6febd02`, hữu ích để quy trách nhiệm.
 - Handoff mới nhất: [session-handoff-2026-07-30d](session-handoff-2026-07-30d.md) — ⚠️ phần
@@ -104,7 +105,18 @@ Tất cả đều đo được, có control đối chứng, ở `bin/probe8/` (r
 Bài học bao trùm: `a281992` làm tên CHÍNH XÁC **thắng điểm** cửa sổ lỏng, nhưng **không chặn cửa sổ
 lỏng LÀM CÂU TRẢ LỜI khi không có tên chính xác nào**. Sửa một nửa của một luật.
 
-**A+B+B′ — rank-1 "loose" (ĐANG SỬA, frontend ⇒ A==B).** Chọn method theo **substring chặn `_`**:
+**A+B+B′ — rank-1 "loose": ✅ ĐÃ SỬA `a538983`** (A==B `B10DABE6`, regression 662/662, breakage
+audit 1215 file: 7 reject mới đúng như dự định, 2 accept mới, **0 collateral**). Đã xoá luôn **bốn**
+bản sao chết của cùng luật. Ngoài ra **hoàn thiện nhánh SỐ HỌC của RFC 0007 §3.1** (§2.2 chỉ hoãn
+tới khi có error infra — nay đã có): `a + b` trên struct không có `add` trước đây **SEGFAULT (139)**,
+nay là lỗi biên dịch. Tự kiểm chứng độc lập trên compiler CŨ: accept + exit 139.
+⚠️ **`h1_rank2_eq` KHÔNG được sửa và không thể sửa bằng việc bỏ rank 1** — nó là **rank 2**
+(`Num.eq__fast` khớp `eq` + dấu phân cách type-arg `__`). Cùng hình dạng với `h2_axstd_prefix`:
+**tên do user đặt bắt chước cách mangle của monomorphizer**. Xem "Over-reach còn lại" trong RFC 0037
+— sửa đúng là khoá rank 2/3 vào việc symbol **THỰC SỰ là một instantiation**, không phải vào cách
+viết; hạn chế rank 2 theo prefix `_AX_std_` **sẽ làm hỏng** method instantiated của struct generic
+(mangle đặt prefix TRƯỚC dấu chấm). Đó là **quyết định thiết kế**, không phải siết cơ học.
+Mô tả gốc — chọn method theo **substring chặn `_`**:
 - `==`/`<`/`+` gọi hàm user chưa từng đặt tên: chỉ có `deep_eq` ⇒ `a == b` trên hai struct KHÁC nhau
   ra **true** (`a1_op_deepeq` = 7). Chẩn đoán RFC 0007 §2.2 **đã tồn tại** trong compiler và bị
   rank 1 **bịt miệng**. Cùng cơ chế: `total_lt`→`<`, `checked_add`→`+`, `eq__fast` (rank 2).
@@ -156,6 +168,14 @@ Option/Result payload × type class (`a1`–`a4`), generics × type class kể c
 qua biên 6 đối số + xen kẽ int/float (`c3`), cast/độ chính xác f32 kể cả chia single-rounded
 (`c4`,`d1`), ADT user payload non-i64 (`e1`), tuple có float/str/struct (`e2`), stdlib container ở
 element non-i64 (`e3`), interface breadth (`e4` — chỉ hàng f32 fail = bug #2).
+
+## 🧪 BÀI HỌC ĐO — breakage audit: **đừng union một lượt chạy BỊ GIẾT với lượt chạy sạch**
+Audit 1215 file báo **10 file "mới bị reject"** ngoài dự kiến (kể cả `tests/lexer/hello.ax`), mâu
+thuẫn với 662/662. Kiểm lại từng file: **cả 10 đều biên dịch bình thường**. Nguyên nhân **có tên**:
+cả 10 đều nằm ở chỉ số ≥ 822 — đúng dải mà một chunk **bị cap 10 phút giết**; lượt chạy bị giết ghi
+"không có exe" thành "reject", và tôi đã **union** phần dở đó với lượt chạy lại sạch.
+**Union chỉ có thể BÁO THỪA reject, không bao giờ giấu mất một reject thật** ⇒ kết luận audit vẫn
+đứng vững. Lần sau: chunk < 10 phút, và **vứt** output của lượt bị giết thay vì gộp.
 
 ## 🔜 TASK MỞ (tự làm được, theo thứ tự giá trị)
 0. ✅ **XONG (`6febd02`)** — int → f64 ở các vị trí typecheck không lan hint. Xem bug #1 ở trên.
