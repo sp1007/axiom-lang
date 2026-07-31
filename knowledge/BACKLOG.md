@@ -99,6 +99,55 @@ thì nó exit 0 mà KHÔNG sinh file** — đừng đọc đó là build thành 
    hai lời gọi f32 **không đối số** liên tiếp thì ĐÚNG (`r6f.ax` = 42); riêng **vị trí slot** không phải nguyên
    nhân (`r6c.ax` = 42, slot 5). Đây là lý do `probe4/f1.ax` dừng ở **110** thay vì 42.
 
+## 🐞🐞 BUG MỞ — quét sau `a281992` (probe8, 2026-07-31). **KHÔNG phải quét sạch: 3 lỗ SỐNG.**
+Tất cả đều đo được, có control đối chứng, ở `bin/probe8/` (runner `run8.sh`, ma trận `matrix8.sh`).
+Bài học bao trùm: `a281992` làm tên CHÍNH XÁC **thắng điểm** cửa sổ lỏng, nhưng **không chặn cửa sổ
+lỏng LÀM CÂU TRẢ LỜI khi không có tên chính xác nào**. Sửa một nửa của một luật.
+
+**A+B+B′ — rank-1 "loose" (ĐANG SỬA, frontend ⇒ A==B).** Chọn method theo **substring chặn `_`**:
+- `==`/`<`/`+` gọi hàm user chưa từng đặt tên: chỉ có `deep_eq` ⇒ `a == b` trên hai struct KHÁC nhau
+  ra **true** (`a1_op_deepeq` = 7). Chẩn đoán RFC 0007 §2.2 **đã tồn tại** trong compiler và bị
+  rank 1 **bịt miệng**. Cùng cơ chế: `total_lt`→`<`, `checked_add`→`+`, `eq__fast` (rank 2).
+- **Drop glue TỰ CHẾ lời gọi**: kiểu chỉ khai báo `pre_drop(self)` bị gọi làm drop glue ở MỌI lối ra
+  scope (`a2` 5 lời gọi; `d4` 3 lời gọi vào method trả `ptr[i64]`) ⇒ **UAF đang chờ xảy ra**.
+  Quy trách nhiệm chính xác: 42 dưới `-no-ctgc-free`, 7 mặc định ⇒ `resolve_drop_method`+`lower_destroy`.
+  RFC 0014 định nghĩa hook là `Type.drop(self)`; `pre_drop` **không phải** `drop`.
+- **`ownership.ax:138,162` CHƯA TỪNG được chuyển** sang rank mới ⇒ `type_has_drop` true cho
+  `pre_drop` ⇒ `let b = a` bị **E4003 oan** (`a3`; control `a3c` dùng `cleanup` = 42). **Đúng hình
+  dạng "hai bản sao một luật, một bản không bao giờ được sửa".**
+- Bằng chứng an toàn: commit `a281992` ghi rằng bản compiler **bỏ hẳn rank 1** qua **619/619 và tự
+  dựng lại byte-identical** (stdlib đều gọi bằng tên đầy đủ = rank 3). Còn `air_builder.ax:1571`
+  `match_base_names` và `:1755` `match_mangled_method_name` = **bản sao CHẾT, 0 caller** ⇒ xóa.
+
+**C — overload cùng tên trên receiver struct đè nhau ở symbol** (⇒ **B==C**, chưa làm).
+`typecheck.ax:1233-1246` `free_fn_bare_mangles` trả false khi param 0 là struct/sum, tin rằng
+`x86_regs.ax:338` mangle ra `ax_<Struct>_<fn>` "duy nhất theo receiver" — nhưng đó là duy nhất theo
+**(receiver, tên)**, KHÔNG theo chữ ký. Vòng uniquing Phase-3.5 (`typecheck.ax:3227-3240`) không gắn
+`MODDUP` cho overload thứ hai ⇒ **mọi lời gọi bind vào body khai báo TRƯỚC**.
+⚠️ **Phân kỳ theo mức tối ưu**: `g10_seq` = **2 ở -O0/default, 42 ở -O1** (deterministic 5/5, dựng
+lại 2 lần, binary byte-identical; default ≡ -O0 vì `optimize` mặc định false ở `main_air.ax:854/943`).
+**-O1 chỉ CHE bằng inlining.** `g11_revboth` (đảo thứ tự khai báo) = 82. `g5_only2` = 22 nhưng **11
+dưới `-no-dfe`** ⇒ các ca "đúng" chỉ là **ảo giác do DFE** xóa hàm bị che. Receiver i64/str (`g12`,
+`g13`) = 42 vì chúng CÓ bare-mangle nên Phase 3.5 unique được.
+
+**Phát hiện KỀ BÊN (không phải luật tên) — mỗi cái là một item riêng:**
+- `check_iface_conformance` chỉ được gọi ở **3 site** (`typecheck.ax:764` field init, `:4193` let
+  init, `:4208` return) + check param inline `:5439`. **Gán (assignment)** và **payload Option**
+  KHÔNG được phủ ⇒ `f1_iface_optpayload` **SEGFAULT (139)** ở cả ba mức, `f5_iface_assign` = 7.
+  Control `f1d`/`f5d` (struct không có method na ná) fail y hệt ⇒ gốc là **thiếu check**, không phải
+  luật tên.
+- **Kiểu TRẢ VỀ của operator method không được kiểm**: `eq(self,o) -> f64` đặt tên CHÍNH XÁC vẫn làm
+  `a == b` ra true (đọc thanh ghi nguyên trong khi callee trả XMM0) — `d1c_eq_f64_exact`.
+- **Method generic mono hoá trả `-> T` với T ↦ f64 ra 0.0**: `i8_genf64ret` = 40 ở cả ba mức.
+  Controls thu hẹp rất gọn: `i6` đọc **field** f64 generic = 41 ✅, `i7` method f64 không generic
+  = 41 ✅, `i9` struct generic có `-> f64` **cụ thể** = 42 ✅, `i5` `Box[i32].get` = 42 ✅ ⇒ khuyết tật
+  đúng ở **`-> T` mono hoá sang f64**, nghi lớp thanh ghi trả về. Đáng một investigation riêng.
+- `h2_axstd_prefix` = 7 (mà `h3` đảo thứ tự = 42): phép **strip `_AX_std_`** biến một
+  `_AX_std_eq` do user định nghĩa thành **tie rank-3** cướp `==` khỏi `eq` thật — over-reach do
+  **chính `a281992`** đẻ ra, nằm ở luật phá hoà, không phải ở cửa sổ lỏng.
+- `resolver.ax:653/662`: biên `.` đúng, nhưng **việc CHỌN** giữa nhiều `M.foo` là tuỳ tiện (theo thứ
+  tự slot hash) — chưa bị chạm tới, ghi lại để không ai tưởng đã kiểm.
+
 ## ✅ Bề mặt đã QUÉT SẠCH (probe4, bankable làm oracle — đừng quét lại)
 Option/Result payload × type class (`a1`–`a4`), generics × type class kể cả type arg tường minh
 (`b1`,`b2`), str/bytes qua interface (`b3`), aggregate × float + global float (`c1`,`c2`), ABI float
