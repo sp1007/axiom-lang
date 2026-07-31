@@ -41,6 +41,32 @@ is why the **parameter** case is a documented gap rather than a coverage win: a 
 rewritten per monomorphised instance, so reading it would falsely reject the i64 copy of
 `fn id[T](v: T)`. Deliberate, and worth not "fixing" later without understanding it.
 
+## ✅ The RFC 0006 numeric-conversion table is now fully enforced (added after the table above)
+| `6febd02` | int→float emitted at **every** value site, not just f32 fields | A==B==C `DA5C96AC`, 630 |
+| `b8ac125` | **E3032** f64→f32 rejected, **and** f32→f64 made a real `cvtss2sd` | A==B==C `D3EABC61`, 642 |
+
+⭐ **`b8ac125`'s second half is the one to remember**: widening was not merely unverified, it was
+**broken** — an `OP_COPY` reinterpret reading a single's bits as the low half of a double, which
+RFC 0006 line 48 forbids in so many words. Cause: `coerce_float_arg_ft` held a **private copy** of
+the float-width rule, so **arguments were the only position that converted at all**. That shows up
+in the measurement as a fingerprint worth knowing: on the pre-change compiler nine positions
+returned **0** and exactly one — the argument — returned the correct **3**. *A lone correct value
+among uniform failures means one code path has its own copy of the rule.*
+
+⚠️ **Do not read "returns 3" as "covered".** Seven positions (method arg, array-element assign,
+expressions, call results, params, field reads, inferred bindings) now return 3 because half 2 fixed
+the *value*; they are still **accepted without a diagnostic**. Six of them returned garbage before.
+Moving from accept-and-miscompile to accept-silently is progress, not coverage.
+
+⚠️ **Why the widening bug survived every gate**: `verify_air_no_int_into_float` classifies only
+INT/FLOAT/UNKNOWN and **has no notion of WIDTH**, so an f64-typed `OP_COPY` reading an f32 vreg
+passes it cleanly. `bin/t_f32widen.ax` is the guard today (calibrated 1 → 42). Widening that abstract
+domain is a backlog item, recorded in RFC 0006 §7.3.
+
+⇒ Three diagnostics (**E3030 / E3031 / E3032**) now share ONE call-site list
+(`check_annotated_target`) and ONE renderer (`print_annotated_expr_snippet`). Eight bugs in this repo
+trace to two copies of one rule drifting apart; this trio cannot join them.
+
 ## Still open after this session (ordered)
 1. **int → float is incomplete** — f64 field/param/method-param/`3 + 1`, plus `takes_f64(9)` and
    `Mixed(f: 5)` reading garbage, plus int **variable** → float (`g7.ax`). Cause is the same shape
