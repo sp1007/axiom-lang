@@ -52,6 +52,45 @@ So the caller and the callee disagree about the name of the same function. **A m
 from per-compilation state cannot be a link-time contract.** `sym_idx` in particular is not
 stable across compilations — the task note predicted this, and P1 has now demonstrated it.
 
+## 2bis. The flag-2048 trigger was too NARROW as well as per-compilation (fixed 2026-07-31)
+
+§2 describes the trigger as "two **bare** module-level symbols in the same compilation share a
+`name_id`". The word *bare* was itself a defect. `free_fn_bare_mangles` (`typecheck.ax`) reported
+"no collision possible" for any function whose FIRST parameter is a named struct/sum type, on the
+reasoning written in its own comment: such a function mangles to `ax_<Struct>_<fn>`, which is
+"unique per receiver". It is unique per **(receiver, NAME)** — the decoration carries the
+receiver, never the SIGNATURE. So two overloads on one receiver
+
+```
+fn f(s: S) -> i64:          return 1
+fn f(s: S, x: i64) -> i64:  return x
+f(s, 41) + f(s)             // 2, not 42; 82 with the declarations reversed
+```
+
+both emitted `ax_S_f`, the linker's first-match scan kept one, and every call reached the
+first-DECLARED body — the §1 failure mode, reached from inside a single compilation.
+
+The fix does not add a mechanism: the Phase-3.5 scan is now keyed by **(name_id, mangle group)**
+instead of by "bare or not", where the group is `1` for `ax_<name>` and `1 + <receiver type
+name_id>` for `ax_<Struct>_<fn>` (`fn_mangle_group`, which replaced `free_fn_bare_mangles`).
+Two DIFFERENT receivers land in different groups, so a method name shared by two structs is
+untouched; scalar/str receivers keep the behaviour they already had. Gate: `A==B==C
+52D1ABD4`, i.e. the compiler's own sources contain no such collision, so this is inert on the
+self-host build — the §7bis warning applies and the evidence is the oracle
+(`bin/t_structoverload.ax` 1 → 42, `bin/t_structoverloaddfe.ax` 1 → 42 under `-no-dfe`), not the
+gate. `-O1` inlining and RFC 0031 dead-function elimination each hide this independently, which
+is why both oracles run at `-O0` and `-O1` and one of them also runs with `-no-dfe`.
+
+**Still open, and NOT this defect**: a call written in METHOD syntax (`s.f(41)`, an inline
+`fn f(self, x)` overload, or the static form `S.f(&s, 41)`) still binds to the wrong overload,
+because `resolve_method_overload` selects the first chain member compatible with the RECEIVER and
+never considers arity, while `resolve_free_call_overload` gates on arity plus argument types —
+the same rule in two copies, one of which was never extended. Attributed exactly, not assumed:
+the identical declarations reach the right body through free-call syntax and the wrong one
+through method syntax **on one compiler build**, so the emitted symbols are identical in both
+cases and only the binding differs. See
+`knowledge/bug-method-call-overload-ignores-arity.md`.
+
 ## 3. What P1 shipped
 
 `report_duplicate_definitions` (`linker.ax`) scans the defined TEXT symbols and warns

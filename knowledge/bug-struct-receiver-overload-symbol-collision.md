@@ -5,9 +5,19 @@ metadata:
   type: project
 ---
 
-# BUG MỞ (hole C) — overload cùng tên trên receiver **struct** đè nhau ở symbol
+# BUG (hole C) — overload cùng tên trên receiver **struct** đè nhau ở symbol
 
-**Trạng thái:** OPEN (phát hiện 2026-07-31, probe8). Gate khi sửa: **B==C** (chạm tên symbol phát ra).
+**Trạng thái:** ✅ **ĐÃ SỬA 2026-07-31** ở dạng gọi **TỰ DO** — `fn_mangle_group` thay
+`free_fn_bare_mangles`, vòng Phase-3.5 nay khoá theo **(name_id, nhóm mangle)**. Gate thực đo:
+**A==B==C `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B`** (inert với chính
+compiler ⇒ bằng chứng là ORACLE chứ không phải gate, đúng cảnh báo RFC 0035 §7bis).
+Oracle: `bin/t_structoverload.ax` + `bin/t_structoverloaddfe.ax` (1 → 42). Spec: RFC 0035 §2bis.
+
+⚠️ **CÒN MỞ, và KHÔNG phải bug này:** lời gọi viết bằng **cú pháp method** (`s.f(41)`, method
+inline, dạng tĩnh `S.f(&s,41)`) vẫn bind sai vì `resolve_method_overload` chọn theo RECEIVER,
+bỏ qua arity ⇒ [[bug-method-call-overload-ignores-arity]]. Quy trách nhiệm chắc chắn: cùng bộ
+khai báo, **một bản compiler**, dạng tự do ra 42 còn dạng method ra 2 ⇒ symbol giống hệt nhau,
+chỉ khác khâu bind.
 
 ## Cơ chế
 `typecheck.ax:1233-1246` `free_fn_bare_mangles` trả **false** khi param 0 là struct/sum, dựa trên giả
@@ -29,11 +39,14 @@ hàm phát ra **cùng một symbol** ⇒ **mọi lời gọi bind vào body đư
 Và `default ≡ -O0` vì `optimize` mặc định **false** (`main_air.ax:854/943`) — nên "default" KHÔNG
 phải một mức đo độc lập với `-O0`; muốn đối chứng thật thì phải chạy `-O1`.
 
-## Hướng sửa tối thiểu
-Bỏ việc coi param 0 kiểu struct/sum là "tự duy nhất": chạy vòng quét va chạm Phase-3.5 trên **mọi**
-SYM_FUNC không-extern, không-generic, khoá theo **(name_id, dạng mangle)** — chứ không chỉ trên các
-hàm bare-mangle. Chạm typecheck **và** tên symbol phát ra ⇒ **B==C bắt buộc trước commit**, không
-được coi là frontend-only.
+## Cách đã sửa (2026-07-31)
+Bỏ việc coi param 0 kiểu struct/sum là "tự duy nhất". `free_fn_bare_mangles` (trả bool) trở thành
+`fn_mangle_group` (trả u32): `0` = không tham gia (extern / đã MODDUP / generic template / tên đặc
+biệt), `1` = `ax_<name>`, `1 + <name_id của kiểu receiver>` = `ax_<Struct>_<fn>`. Vòng Phase-3.5
+gắn MODDUP khi trùng **CẢ** name_id **LẪN** nhóm ⇒ hai receiver KHÁC nhau nằm khác nhóm nên method
+trùng tên trên hai struct không bị đụng tới. Chạm tên symbol phát ra ⇒ **B==C bắt buộc** (đã đo,
+xem trên). Nhánh `unit_qualifier` cố tình KHÔNG mô hình hoá: nó được kiểm TRƯỚC MODDUP ở
+`x86_regs.ax:277` nên tag bị bỏ qua với những symbol đó.
 
 ## Oracle bắt buộc
 - Cả `-O0` **và** `-O1` (chỉ `-O0`/default là không đủ để thấy bug biến mất; chỉ `-O1` là không thấy

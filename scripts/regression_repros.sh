@@ -70,6 +70,13 @@ rows=(
   # can mis-select the other way, and these 12 calls all name methods that exist.
   "t_methnamestrict|exit|42"
   "t_dropglueexact|exit|42"
+  # Same-name overloads on a STRUCT receiver emitted ONE symbol (`ax_<Struct>_<fn>` names the
+  # receiver, not the signature), so every call reached the first-DECLARED body: 2 instead of
+  # 42, and 82 with the declarations reversed. Both -O0 and -O1 rows exist below because -O1
+  # INLINES the call and hides it; t_structoverloaddfe covers the shape that only
+  # dead-function elimination hid (see the -no-dfe block near the end).
+  "t_structoverload|exit|42"
+  "t_structoverloaddfe|exit|42"
   "t_opnooverload|reject|"
   "t_opnooverloadlt|reject|"
   "t_opnooverloadarith|reject|"
@@ -982,6 +989,7 @@ opt_rows=(
   "t_methshadowsig|42"
   "t_methnamestrict|42"
   "t_dropglueexact|42"
+  "t_structoverload|42"
   "t_genexplicitfloatarg|42"
   "t_intlitfloatctx|42"
   "t_negmatch|70"
@@ -1036,7 +1044,7 @@ done
 # t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
 # -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
 # a single opt level is not evidence.
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42" "t_methargok:42" "t_methnamestrict:42" "t_dropglueexact:42"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42" "t_methargok:42" "t_methnamestrict:42" "t_dropglueexact:42" "t_structoverload:42" "t_structoverloaddfe:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1
@@ -1046,6 +1054,28 @@ for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructno
     "$ze" >/dev/null 2>&1; ze_exit=$?
     if [ "$ze_exit" = "$zwant" ]; then echo "PASS ${zname}@-O0 (exit=$zwant)"; pass=$((pass+1)); else echo "FAIL ${zname}@-O0 (exit: got '$ze_exit' want $zwant)"; fail=$((fail+1)); failed="$failed ${zname}@O0"; fi
   fi
+done
+
+# --- -no-dfe: shapes where DEAD-FUNCTION ELIMINATION hides the defect ---
+# t_structoverloaddfe calls only ONE of two same-named overloads on a struct receiver. With
+# DFE on (the default since RFC 0031) the shadowed body is deleted, so the merged `ax_S_f`
+# symbol happens to resolve to the surviving body and the program returns the right answer --
+# the probe read 22 by default and 11 under -no-dfe. This block is the ONLY configuration
+# that observes the collision in that shape: a "correct" default result was an artefact of
+# the optimizer, not of correct symbol naming. t_structoverload rides along so the main
+# oracle is checked with the optimizer's masking removed too.
+for d in "t_structoverloaddfe:42" "t_structoverload:42"; do
+  dname="${d%%:*}"; dwant="${d##*:}"
+  for opt in O0 O1; do
+    de="$REGTMP/reg_${dname}_nodfe_${opt}.exe"; rm -f "$de"
+    timeout "$TIMEOUT" "$AXC" build "bin/${dname}.ax" -o "$de" -${opt} -no-dfe $AXEXTRA >/dev/null 2>&1
+    if [ ! -f "$de" ]; then
+      echo "FAIL ${dname}@-no-dfe-${opt} (no exe)"; fail=$((fail+1)); failed="$failed ${dname}@nodfe-${opt}"
+    else
+      "$de" >/dev/null 2>&1; de_exit=$?
+      if [ "$de_exit" = "$dwant" ]; then echo "PASS ${dname}@-no-dfe-${opt} (exit=$dwant)"; pass=$((pass+1)); else echo "FAIL ${dname}@-no-dfe-${opt} (exit: got '$de_exit' want $dwant)"; fail=$((fail+1)); failed="$failed ${dname}@nodfe-${opt}"; fi
+    fi
+  done
 done
 
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---

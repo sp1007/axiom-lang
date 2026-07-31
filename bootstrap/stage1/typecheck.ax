@@ -1203,25 +1203,35 @@ pub fn sym_decl_param_count(self: ptr[TypeChecker], sym_idx: u32) -> i64:
         c = tree.nodes.data[c as i64].next_sibling
     return n
 
-// True iff this SYM_FUNC would emit the BARE mangled name `ax_<name>` in the backend
-// (x86_resolve_sym_name / cgen), i.e. it has NO struct/sum receiver to disambiguate it.
-// Two bare-mangling functions with the same name link-collide (one `ax_<name>` wins),
-// silently mis-dispatching a call. Mirrors x86_regs.ax:198-302 so the uniquing pass in
-// run_type_checker tags precisely the functions the backend would otherwise merge.
-pub fn free_fn_bare_mangles(self: ptr[TypeChecker], sym_idx: u32) -> bool:
+// The mangling GROUP of a SYM_FUNC: two symbols that share BOTH a group and a name_id emit
+// the SAME symbol in the backend (x86_resolve_sym_name / cgen), so they link-collide (one
+// definition wins) and silently mis-dispatch every call to it. Returns
+//   0                      — does not participate (extern keeps its raw name; MODDUP is
+//                            already unique; a generic template is monomorphized, its
+//                            instances mangle under their own instantiated names; a special
+//                            name the backend passes through verbatim);
+//   1                      — `ax_<name>`, i.e. no struct/sum receiver to decorate the name;
+//   1 + <receiver name_id> — `ax_<Struct>_<name>`, a struct/sum FIRST parameter.
+// The receiver DECORATES the name; it does NOT encode the SIGNATURE. This returned "not a
+// collision" for the struct case until [[bug-struct-receiver-overload-symbol-collision]], on
+// the stated belief that `ax_<Struct>_<fn>` is "unique per receiver" — it is unique per
+// (receiver, NAME), so two overloads on ONE receiver collide exactly like two bare free fns
+// do, and every `f(s, x)` reached the first-DECLARED body. Mirrors x86_regs.ax:211-358
+// so the uniquing pass in run_type_checker tags precisely the functions the backend would
+// otherwise merge. (The unit_qualifier branch there is deliberately not modelled: a MODDUP tag
+// is ignored for the symbols it covers, since it is tested first — see x86_regs.ax:277.)
+pub fn fn_mangle_group(self: ptr[TypeChecker], sym_idx: u32) -> u32:
     if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
-        return false
+        return 0 as u32
     let sym = self.symtable.symbols.data[sym_idx as i64]
     if sym.kind != SYM_FUNC:
-        return false
-    // extern keeps its raw name; MODDUP is already unique; generic templates are
-    // monomorphized (instances mangle elsewhere) — none participate in this collision.
+        return 0 as u32
     if (sym.flags & SYM_FLAG_EXTERN) != 0 as u16:
-        return false
+        return 0 as u32
     if (sym.flags & 2048 as u16) != 0 as u16:
-        return false
+        return 0 as u32
     if (sym.flags & SYM_FLAG_GENERIC) != 0 as u16:
-        return false
+        return 0 as u32
     // Special names the backend passes through verbatim (never `ax_<name>`).
     let nm = self.intern.get(sym.name_id)
     let special = (nm == "main" or nm == "_AX_main_main_v_v" or nm == "memcpy" or
@@ -1229,9 +1239,9 @@ pub fn free_fn_bare_mangles(self: ptr[TypeChecker], sym_idx: u32) -> bool:
                    nm == "free" or nm == "alloc" or nm == "malloc")
     safe_free_str(nm)
     if special:
-        return false
+        return 0 as u32
     // A struct/sum FIRST parameter (single pointer unwrap, mirroring the backend, and only
-    // when it carries a name) yields `ax_<Struct>_<fn>` — unique per receiver, so NOT bare.
+    // when it carries a name) yields `ax_<Struct>_<fn>`: one group PER RECEIVER TYPE.
     if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.types.entries.len:
         let f_entry = self.types.entries.data[sym.type_id as i64]
         if f_entry.kind == TYPE_KIND_FUNC:
@@ -1243,8 +1253,9 @@ pub fn free_fn_bare_mangles(self: ptr[TypeChecker], sym_idx: u32) -> bool:
                     fp = pe.extra
                 let pe2 = self.types.entries.data[fp as i64]
                 if (pe2.kind == TYPE_KIND_STRUCT or pe2.kind == TYPE_KIND_SUM) and pe2.name_id != 0 as u32:
-                    return false
-    return true
+                    // name_id >= 1 whenever it is set, so this never aliases the bare group 1.
+                    return pe2.name_id + 1 as u32
+    return 1 as u32
 
 // Gate for a free-call overload candidate `ci` (already known to match the call
 // ARITY) given the inferred arg0 type: true iff `ci` is a plausible target.
@@ -3208,37 +3219,49 @@ pub fn run_type_checker(mut self: ptr[TypeChecker]):
     // (SIGSEGV / wrong result). The backend already emits a UNIQUE `ax_<name>__m<idx>` for
     // any symbol flagged SYM_FLAG_MODDUP, but the resolver only sets that for CROSS-TREE
     // dups — and the driver concatenates stdlib+user into ONE tree, so same-tree collisions
-    // slip through. Tag every bare-mangling function that shares its name with an EARLIER
-    // bare-mangling function so each gets a distinct symbol; the FIRST keeps the bare name
+    // slip through. Tag every function that shares BOTH its name and its mangling GROUP with
+    // an EARLIER one so each gets a distinct symbol; the FIRST keeps the undecorated name
     // (existing callers unchanged). Paired with the arity disambiguation in
     // resolve_free_call_overload, the call binds to the user's symbol and targets its unique
-    // body. Types are resolved now, so the struct-receiver test is reliable. Precompute the
-    // bare-mangle bitmap once (O(n)) so the pairwise scan is plain integer comparisons.
+    // body. Types are resolved now, so the receiver test is reliable.
+    //
+    // The scan is keyed by (name_id, mangle group), NOT by "bare-mangles or not"
+    // ([[bug-struct-receiver-overload-symbol-collision]]): a struct/sum receiver decorates
+    // the emitted name with the RECEIVER, never with the SIGNATURE, so `f(s: S)` and
+    // `f(s: S, x: i64)` both emitted `ax_S_f` and every call reached the first-DECLARED body
+    // (`f(s,41) + f(s)` = 2, not 42; reversing the declarations gives 82). Two DIFFERENT
+    // receivers stay in different groups, so a method name shared by two structs is
+    // untouched. Precompute the group per symbol once (O(n)) so the pairwise scan is plain
+    // integer comparisons.
+    //
+    // This fixes the NAME. A call written in METHOD syntax (`s.f(41)`, an inline
+    // `fn f(self, x)` overload, `S.f(&s, 41)`) still binds wrong, and that is a separate
+    // defect one layer up: resolve_method_overload picks the first chain member compatible
+    // with the RECEIVER and never checks arity, while resolve_free_call_overload does. Do
+    // not "fix" it here — the symbols are already distinct.
+    // [[bug-method-call-overload-ignores-arity]]
     let nsym = self.symtable.symbols.len
     if nsym > 1 as i64:
-        mut bare := @alloc(nsym) as ptr[u8]
+        mut grp := @alloc(nsym * 4 as i64) as ptr[u32]
         mut bi := 0 as i64
         while bi < nsym:
-            if self.free_fn_bare_mangles(bi as u32):
-                bare[bi] = 1 as u8
-            else:
-                bare[bi] = 0 as u8
+            grp[bi] = self.fn_mangle_group(bi as u32)
             bi = bi + 1
         mut mi := 1 as i64
         while mi < nsym:
-            if bare[mi] == 1 as u8:
+            if grp[mi] != 0 as u32:
                 let nm_id = self.symtable.symbols.data[mi].name_id
                 mut mj := 0 as i64
                 mut collides := false
                 while mj < mi:
-                    if bare[mj] == 1 as u8 and self.symtable.symbols.data[mj].name_id == nm_id:
+                    if grp[mj] == grp[mi] and self.symtable.symbols.data[mj].name_id == nm_id:
                         collides = true
                         mj = mi
                     mj = mj + 1
                 if collides:
                     self.symtable.symbols.data[mi].flags = self.symtable.symbols.data[mi].flags | 2048 as u16
             mi = mi + 1
-        @free(bare as ptr[u8])
+        @free(grp as ptr[u8])
 
     // Phase 4 (RFC 0017 / BUG#82): validate module-level global variables. A
     // module-level `let`/`mut` (not `const`) gets real static storage in the backend

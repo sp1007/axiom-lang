@@ -1,0 +1,29 @@
+// Companion to t_structoverload.ax: the shape where DEAD-FUNCTION ELIMINATION hides the bug.
+//
+// Only ONE of the two same-named overloads on receiver `S` is ever called, so DFE (on by
+// default, RFC 0031) deletes the other body -- and with the shadowed body gone, the merged
+// `ax_S_f` symbol happens to be the right one and the program prints the right answer. The
+// probe read 22 by default and 11 under `-no-dfe`: the "correct" default result was an
+// artefact of the optimizer, not of correct symbol naming.
+//
+// The suite therefore builds this file with `-no-dfe` (as well as plain), which is the only
+// configuration that observes the collision in this shape. Keep `f(s: S) -> 11` FIRST: it is
+// the shadowing declaration, and the call below targets the 2-param body.
+//
+// See [[bug-struct-receiver-overload-symbol-collision]].
+struct S:
+    n: i64
+
+fn f(s: S) -> i64:
+    return 11
+
+fn f(s: S, x: i64) -> i64:
+    return 22
+
+fn s_mk() -> S:
+    return S(n: 0)
+
+fn main() -> i64:
+    if f(s_mk(), 1) != 22:
+        return 1
+    return 42

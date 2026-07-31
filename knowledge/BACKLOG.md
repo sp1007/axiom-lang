@@ -15,8 +15,9 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 - **HEAD** = `a538983` — **retire rank 1** (không còn chọn method theo substring). Driver
   `bin/axc_native.exe` = **A==B `B10DABE66B5CA168A4D094CD0CBAFB68251C60B7A86818A7B27F5E4E44E1A34D`**
   (2.297.856 byte; mốc B==C gần nhất: `D3EABC61` ở `b8ac125`).
-- **BASELINE = 662/662**, đo ở **cả default lẫn `-O0`**. Dưới 662 là RED.
-  (611 → 649 → 662: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`.)
+- **BASELINE = 672/672**, đo ở **cả default lẫn `-O0`**. Dưới 672 là RED.
+  (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
+  hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
   `bin/probe5/axc_new.exe` (30/07 21:59) = mốc **trước** `6febd02`, hữu ích để quy trách nhiệm.
 - Handoff mới nhất: [session-handoff-2026-07-30d](session-handoff-2026-07-30d.md) — ⚠️ phần
@@ -131,9 +132,13 @@ Mô tả gốc — chọn method theo **substring chặn `_`**:
   dựng lại byte-identical** (stdlib đều gọi bằng tên đầy đủ = rank 3). Còn `air_builder.ax:1571`
   `match_base_names` và `:1755` `match_mangled_method_name` = **bản sao CHẾT, 0 caller** ⇒ xóa.
 
-**C — overload cùng tên trên receiver struct đè nhau ở symbol** (⇒ **B==C**, chưa làm) —
-chi tiết + bẫy đo: [[bug-struct-receiver-overload-symbol-collision]].
-`typecheck.ax:1233-1246` `free_fn_bare_mangles` trả false khi param 0 là struct/sum, tin rằng
+**C — overload cùng tên trên receiver struct đè nhau ở symbol: ✅ ĐÃ SỬA 2026-07-31** cho dạng gọi
+**TỰ DO** (A==B==C `52D1ABD4`, RFC 0035 §2bis, oracle `bin/t_structoverload{,dfe}.ax`).
+⚠️ **Nửa còn lại VẪN MỞ và là bug KHÁC:** gọi bằng **cú pháp method** (`s.f(41)`, method inline,
+`S.f(&s,41)`) bind theo RECEIVER, **bỏ qua arity** ⇒ [[bug-method-call-overload-ignores-arity]]
+(`resolve_method_overload` không có arity, `resolve_free_call_overload` thì có — lại là **một luật,
+hai bản sao**). Quy trách nhiệm chắc: cùng khai báo, **một** compiler, tự do ra 42 / method ra 2.
+Mô tả gốc: `typecheck.ax:1233-1246` `free_fn_bare_mangles` trả false khi param 0 là struct/sum, tin rằng
 `x86_regs.ax:338` mangle ra `ax_<Struct>_<fn>` "duy nhất theo receiver" — nhưng đó là duy nhất theo
 **(receiver, tên)**, KHÔNG theo chữ ký. Vòng uniquing Phase-3.5 (`typecheck.ax:3227-3240`) không gắn
 `MODDUP` cho overload thứ hai ⇒ **mọi lời gọi bind vào body khai báo TRƯỚC**.
