@@ -782,6 +782,38 @@ rows=(
   # obvious overreach of a float->int reject. Also pins `3.0 as i64`, float->float, and every
   # integer position.
   "t_f2iok|exit|42"
+  # RFC 0006 §4/§6.3 (E3032): the THIRD row of the same §4 conversion table -- an implicit
+  # f64 -> f32 NARROWING is REJECTED. `let d: f64 = 3.5; let s: f32 = d` used to compile and
+  # `s` was NOT 3.5: the f64 bit pattern was OP_COPY'd into an f32 slot, so the low half of a
+  # double was read as a single (bin/probe6/g_f64tof32.ax exited 1). `d as f32` is unchanged.
+  # One reject row per POSITION so a partial regression names the position that broke; all ten
+  # BUILT on the pre-fix compiler (measured 2026-07-31 -- and NINE of them returned 0 instead
+  # of 3, while the ARGUMENT row returned the correct 3, which is exactly the evidence that a
+  # call argument was the only position converting float widths at all). All three rules run
+  # from ONE call-site list (typecheck.ax::check_annotated_target) so they cannot drift apart.
+  "t_f64f32let|reject|"
+  "t_f64f32global|reject|"
+  "t_f64f32assign|reject|"
+  "t_f64f32fieldasg|reject|"
+  "t_f64f32arg|reject|"
+  "t_f64f32gen|reject|"
+  "t_f64f32field|reject|"
+  "t_f64f32arr|reject|"
+  "t_f64f32ret|reject|"
+  "t_f64f32neg|reject|"
+  # ...and the OVERREACH guard: `d as f32` (the remedy the diagnostic names), a float literal
+  # ADOPTING f32 (RFC 0005 -- not a narrowing), a negated f32 literal, single-rounded f32
+  # arithmetic, int -> float still implicit at BOTH widths, f32 params/returns/fields/elements/
+  # globals, and a generic instantiated at f64 AND f32 (the monomorphisation trap E3031
+  # documented). Passes on the pre-reject compiler too, at -O0 and -O1.
+  "t_f64f32ok|exit|42"
+  # The LEGAL half of the same table row: f32 -> f64 WIDENING must emit a real cvtss2sd, not an
+  # OP_COPY reinterpret (§4 line 48). It did not: `let x: f64 = f` emitted `%3: t10 = copy %2`
+  # and x was a denormal (bin/probe7/w1.ax exited 1). Fixed in air_builder by folding the
+  # float-width case into coerce_to_float_target, the ONE rule already called at every value
+  # site -- previously only a call ARGUMENT converted, which is why row 8 here passed before
+  # and rows 1-7 did not. This oracle FAILS (exit 1) on the pre-fix compiler by design.
+  "t_f32widen|exit|42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

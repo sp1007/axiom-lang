@@ -1,0 +1,10 @@
+// RFC 0006 §4 (E3032): an f64 value written where the programmer ANNOTATED `f32` must be
+// REJECTED -- the §4 table calls f64 -> f32 "narrow, lossy: CAM ngam -> LOI; phai `as`".
+// Before the reject this compiled and `s` was NOT 3.5: the f64 bit pattern was OP_COPY'd
+// into an f32 slot, so the low half of a double was read as a single (bin/probe6/
+// g_f64tof32.ax exited 1). `d as f32` is the spelling for "I accept the precision loss"
+// (guarded by t_f64f32ok).
+fn main() -> i64:
+    let d: f64 = 3.5
+    let s: f32 = d
+    return s as i64

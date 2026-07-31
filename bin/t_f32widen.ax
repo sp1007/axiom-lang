@@ -1,0 +1,74 @@
+// RFC 0006 §4 row 3: f32 -> f64 is an IMPLICIT WIDENING and must be a REAL convert
+// (cvtss2sd), never an OP_COPY reinterpret (§4 line 48). Before the fix `let x: f64 = f`
+// emitted `%3: t10 = copy %2` on dump-air, so the 32-bit single's bits were read as the
+// low half of a double and `x` was a denormal, not 1.5 (bin/probe7/w1.ax exited 1).
+//
+// This oracle FAILS on the pre-fix compiler and passes after -- it is the calibration for
+// the air_builder half, not an overreach guard (that is t_f64f32ok).
+//
+// Rows are INDEPENDENT and use distinct values on purpose: an f64 compare can pass
+// spuriously because an earlier row left the right bit pattern in the XMM register the
+// next row happens to read. NOTE also that the value under test is never handed to a
+// parameter of f64 type -- the argument position ALREADY converted correctly, so doing
+// that would hide the defect everywhere else.
+
+struct W:
+    d: f64
+
+fn wret(a: f32) -> f64:
+    return a
+
+fn takes64(v: f64) -> f64:
+    return v
+
+let GF: f32 = 6.5
+let GD: f64 = GF
+
+fn main() -> i64:
+    // 1. annotated `let`
+    let f1: f32 = 1.5
+    let x1: f64 = f1
+    if x1 != 1.5:
+        return 1
+
+    // 2. assignment to an annotated binding
+    let f2: f32 = 2.25
+    mut x2: f64 = 0.0
+    x2 = f2
+    if x2 != 2.25:
+        return 2
+
+    // 3. `return` against a declared f64 return type
+    let x3 = wret(3.125)
+    if x3 != 3.125:
+        return 3
+
+    // 4. struct-field initializer at a declared f64 field
+    let f4: f32 = 4.75
+    let w4 = W(d: f4)
+    if w4.d != 4.75:
+        return 4
+
+    // 5. assignment to a struct field
+    let f5: f32 = 5.25
+    mut w5 = W(d: 0.0)
+    w5.d = f5
+    if w5.d != 5.25:
+        return 5
+
+    // 6. global initializer
+    if GD != 6.5:
+        return 6
+
+    // 7. array element under an annotated f64 element type
+    let f7: f32 = 7.75
+    let arr: [f64; 2] = [f7, 8.5]
+    if arr[0] != 7.75:
+        return 7
+
+    // 8. the ARGUMENT position, which already worked -- it must stay working.
+    let f8: f32 = 9.25
+    if takes64(f8) != 9.25:
+        return 8
+
+    return 42

@@ -1,0 +1,103 @@
+// OVERREACH GUARD for RFC 0006 §4/§6.3 (E3032, implicit f64 -> f32 is rejected).
+// Everything here is EXPLICITLY sanctioned by the same RFC and must keep compiling AND
+// keep producing the right value. It passes on the compiler BEFORE the reject and on the
+// compiler AFTER it, at -O0 and -O1 -- a reject that only stops being wrong by rejecting
+// more than it was asked to is not a fix.
+//
+// Rows are deliberately INDEPENDENT and use distinct values: a float compare can pass
+// spuriously because an earlier row left the right bit pattern in an XMM register.
+// Each failing row returns its own small code so a regression names the row.
+
+struct P:
+    a: f32
+    b: f64
+
+// The monomorphisation trap E3031 documented: a generic instantiated at f64 AND at f32.
+// The check reads the WRITTEN annotation text, never a symbol's type_id (which is
+// rewritten per instance), so neither copy may be falsely rejected.
+fn idf[T](v: T) -> T:
+    return v
+
+fn takes32(v: f32) -> f32:
+    return v
+
+fn ret32() -> f32:
+    return 9.5
+
+let G32: f32 = 8.25
+
+fn main() -> i64:
+    // 1. EXPLICIT narrowing stays legal -- this is the remedy the diagnostic names.
+    let d: f64 = 3.5
+    let s: f32 = d as f32
+    if s != 3.5:
+        return 1
+
+    // 2. A float LITERAL adopts the annotated f32 type (RFC 0005 / RFC 0006 §2). It is
+    //    NOT an f64 being narrowed, so it must not be caught by the reject.
+    let a: f32 = 1.25
+    if a != 1.25:
+        return 2
+
+    // 3. A NEGATED float literal at an f32 target -- same rule, and the unary unwrap in
+    //    the reject must not turn this into a false positive.
+    let n: f32 = -2.75
+    if n != -2.75:
+        return 3
+
+    // 4. f32 arithmetic stays single-rounded (f32 op f32 -> f32, no f64 detour).
+    let x: f32 = 0.5
+    let y: f32 = 0.25
+    let z: f32 = x + y
+    if z != 0.75:
+        return 4
+
+    // 5. int -> float stays IMPLICIT in BOTH widths (§4 row 1, the direction that must
+    //    NOT be disturbed by a narrowing reject).
+    let i32t: f32 = 7
+    if i32t != 7.0:
+        return 5
+    let i64t: f64 = 11
+    if i64t != 11.0:
+        return 6
+
+    // 6. f32 through a declared f32 parameter and a declared f32 return type.
+    let p = takes32(4.5)
+    if p != 4.5:
+        return 7
+    let r = ret32()
+    if r != 9.5:
+        return 8
+
+    // 7. f32 and f64 fields, and an annotated f32 array element -- literal sources, so
+    //    still not narrowing.
+    let st = P(a: 5.5, b: 6.5)
+    if st.a != 5.5:
+        return 9
+    if st.b != 6.5:
+        return 10
+    let arr: [f32; 3] = [1.5, 2.5, 3.5]
+    if arr[2] != 3.5:
+        return 11
+
+    // 8. A global f32.
+    if G32 != 8.25:
+        return 12
+
+    // 9. The generic instantiated at BOTH float widths.
+    let g64 = idf[f64](12.5)
+    if g64 != 12.5:
+        return 13
+    let g32 = idf[f32](13.5)
+    if g32 != 13.5:
+        return 14
+
+    // 10. f64 -> f64 and f32 -> f32 (same width) are plain copies, never conversions.
+    let d2: f64 = d
+    if d2 != 3.5:
+        return 15
+    let s2: f32 = s
+    if s2 != 3.5:
+        return 16
+
+    return 42

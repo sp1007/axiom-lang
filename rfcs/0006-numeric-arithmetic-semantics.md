@@ -38,8 +38,8 @@ Một toán hạng float → cả phép là float; toán hạng int được **p
 |---|---|
 | int → float (vd i32→f64) | **ngầm OK**, chèn cvt thật (cvtsi2sd) |
 | float → int (vd f32→i32) | **CẤM ngầm → LỖI**; phải `as` (truncate toward zero) — ✅ cưỡng chế ở **§6.2** (`E3031`) |
-| f32 → f64 (widen) | **ngầm OK** (cvtss2sd) |
-| f64 → f32 (narrow, lossy) | **CẤM ngầm → LỖI**; phải `as` (cvtsd2ss) |
+| f32 → f64 (widen) | **ngầm OK** (cvtss2sd) — ✅ cưỡng chế ở **§7.3** (convert thật ở MỌI value site) |
+| f64 → f32 (narrow, lossy) | **CẤM ngầm → LỖI**; phải `as` (cvtsd2ss) — ✅ cưỡng chế ở **§6.3** (`E3032`) |
 | int → int khác kiểu | [TBD] widening ngầm OK; narrowing/đổi-dấu: cảnh báo hay cấm? |
 
 Quy tắc cài (typecheck, ở let/assign/arg/return): so *category* target vs expr:
@@ -130,7 +130,7 @@ std/*.ax trước file người dùng) nên số dòng tuyệt đối sẽ chỉ
 phần chính xác được của format §8 hiện nay.
 
 **Cài đặt & test:** `typecheck.ax::check_int_lit_range`, gọi qua entry point chung
-`check_annotated_target` (8 call site, dùng chung với §6.2 — xem dưới);
+`check_annotated_target` (7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với §6.2 — xem dưới);
 `bin/t_intrange{let,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows,
 `bin/t_intrangeok.ax` = mọi biên hợp lệ + tiền lệ suy-theo-độ-lớn phải vẫn chạy (42).
 Gate: A==B `78295509`, regression **607/607** ở default và `-O0`. Audit breakage: 0 hit trên
@@ -190,8 +190,9 @@ nên không bao giờ chạm tới check này.
    gate với §6.1) và **gán vào PHẦN TỬ mảng** `a[0] = 3.0` — cùng ranh giới §6.1 vẽ.
 6. **Đối số của PHƯƠNG THỨC** `s.setv(3.0)` — vẫn nhận (đo: kết quả 16). Cùng lỗ hổng
    §6.1 mục 3b: method resolution đi qua khối quét `mfi.params`, không dùng `fp_data`.
-7. **f64 → f32 (narrowing)** — hàng KHÁC của bảng §4, chưa cưỡng chế: `let d: f64 = 3.5;
-   let s: f32 = d` vẫn nhận và **sai giá trị** (đo: `s != 3.5`). Việc riêng.
+7. ~~**f64 → f32 (narrowing)** — hàng KHÁC của bảng §4, chưa cưỡng chế~~ → **ĐÃ LÀM: §6.3
+   (`E3032`, 2026-07-31)**, dùng chung `check_annotated_target` nên phủ đúng 10 vị trí như
+   E3030/E3031. Chiều widen f32 → f64 (hợp lệ) được sửa ở **§7.3**.
 8. ⚠️ Phát hiện phụ (KHÔNG do luật này, đã hỏng từ trước — `bin/probe6/q1.ax`): chiều
    int→float NGẦM còn thiếu ở hai vị trí — đối số `takes_f64(9)` và khởi tạo field
    `Mixed(f: 5)` không chèn cvt, f64 đọc ra rác. Là khiếm khuyết RIÊNG, cần fix riêng.
@@ -204,13 +205,100 @@ Windows làm hỏng UTF-8 — `§`/em-dash ra mojibake; ký tự non-ASCII chỉ
 
 **Cài đặt & test:** `typecheck.ax::{check_float_to_int, ident_declared_float,
 is_int_family_type, float_type_display}` + entry point chung `check_annotated_target`
-(8 call site, dùng chung với `check_int_lit_range`);
+(7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với `check_int_lit_range`);
 `bin/t_f2i{let,var,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows (cả 10 đều
 BUILD trên compiler trước fix), `bin/t_f2iok.ax` = `3.0 as i64` + int→float widening +
 float→float + mọi vị trí nguyên phải vẫn chạy (42), pass cả TRƯỚC và SAU.
 Gate: A==B `407E0805`, regression **630/630** ở default và `-O0`. Audit breakage: 0 hit
 trên source của chính compiler (qua cả hai hop) và trên 190 file `.ax` có float trong repo
 (chỉ 10 oracle reject cố ý).
+
+### 6.3 REQUIREMENT — f64 → f32 NGẦM ⇒ LỖI (thi hành §4, hàng 3) ✅ IMPLEMENTED
+
+Hàng thứ BA của **cùng** bảng §4, cưỡng chế từ **cùng** danh sách vị trí với §6.1/§6.2.
+§4 dòng 42: "f64 → f32 (narrow, lossy) | **CẤM ngầm → LỖI**; phải `as` (cvtsd2ss)"; §4 quy
+tắc cài: "target f32 & expr f64 → **LỖI**. target f64 & expr f32 → chèn cvt widen." Chiều
+widen là HỢP LỆ và được sửa riêng ở §7.3 — hai nửa của một hàng, làm cùng lượt.
+
+**Quy tắc:** một **giá trị f64** viết tại vị trí mà lập trình viên đã **CHÚ THÍCH TƯỜNG
+MINH** `f32` ⇒ **`error[E3032]`** + `diags_count++`. Muốn chấp nhận mất chính xác thì viết
+`d as f32` (không đổi).
+
+Lý do REJECT: giống §6.1/§6.2 — lựa chọn DUY NHẤT không IM LẶNG. Trước thay đổi này
+`let d: f64 = 3.5; let s: f32 = d` **biên dịch được** và `s` **không phải 3.5**: mẫu bit f64
+bị `OP_COPY` vào ô f32 nên nửa thấp của một double được đọc như một single
+(đo: `bin/probe6/g_f64tof32.ax` exit 1). Accept-then-miscompile, lớp BUG#53.
+
+**Nguồn f64 được nhận diện (chỉ dạng CÚ PHÁP chắc chắn):** **identifier có khai báo
+`let`/`const` ghi rõ `f64`** (kể cả khi bọc trong unary `-`).
+⚠️ **Float LITERAL KHÔNG bị bắt, có chủ ý**: RFC 0005 (mở rộng cho float literal ở §2) nói
+literal ADOPT kiểu ngữ cảnh, nên `let a: f32 = 1.5` là literal f32 thật, không phải f64 bị
+thu hẹp. Đọc từ **văn bản chú thích đã viết** (`ident_declared_float`), KHÔNG từ `type_id`
+của symbol — `type_id` bị ghi đè theo từng bản monomorphise nên `idf[f32](13.5)` sẽ bị TỪ
+CHỐI OAN (đúng cái bẫy §6.2 mục 3 đã ghi; `t_f64f32ok` ghim cả hai bản f64/f32).
+
+**Vị trí áp dụng** (10 vị trí, dùng CHUNG `check_annotated_target` với §6.1/§6.2). Cột cuối
+là giá trị ĐO ĐƯỢC trên compiler trước fix cho `let d: f64 = 3.5` … `return X as i64`
+(đúng phải là **3**):
+
+| Vị trí | Ví dụ bị từ chối | Hành vi CŨ (đã đo) |
+|---|---|---|
+| `let`/`const` có chú thích | `let s: f32 = d` | biên dịch, **0** |
+| `let` **global** | `let S: f32 = D` | biên dịch, **0** |
+| gán vào binding CÓ chú thích | `mut x: f32 = 1.0; x = d` | biên dịch, **0** |
+| gán vào **field struct** | `s.v = d` | biên dịch, **0** |
+| đối số của tham số `f32` | `fn takes(v: f32)` … `takes(d)` | biên dịch, **3** ⬅ xem dưới |
+| đối số dạng **type-arg tường minh** | `pick[f32](d, 1.0)` | biên dịch, **0** |
+| khởi tạo field struct | `P(a: d)` | biên dịch, **0** |
+| phần tử mảng có kiểu phần tử chú thích | `let a: [f32;3] = [1.0, d, 3.0]` | biên dịch, **0** |
+| `return` của hàm khai báo `-> f32` | `fn g() -> f32: return d` | biên dịch, **0** |
+| IDENT f64 bị NEGATE | `let s: f32 = -d` | biên dịch, **0** |
+
+⬅ Hàng ĐỐI SỐ trả **3** (đúng) trong khi chín hàng kia trả **0** — đó chính là bằng chứng
+đo được rằng *đối số là vị trí DUY NHẤT* có chuyển đổi bề rộng float, vì
+`coerce_float_arg_ft` giữ một BẢN SAO RIÊNG của luật. Đúng hình dạng "một luật tồn tại ở
+dạng hẹp hơn thứ nó phải phủ" mà §7.2 đã mô tả; §7.3 gộp bản sao đó vào luật chung.
+
+**Ngoài phạm vi (đã ĐO từng ca 2026-07-31 trên compiler SAU fix, ghi rõ để không bị hiểu là
+thiếu sót). Lưu ý quan trọng: nhờ §7.3 mọi ca dưới đây nay cho GIÁ TRỊ ĐÚNG (3) thay vì rác
+(0) — chúng là "nhận mà không chẩn đoán", KHÔNG còn là miscompile:**
+1. **Đối số của PHƯƠNG THỨC** `s.setv(d)` — vẫn nhận (đo: 3 trước và sau). Cùng lỗ hổng
+   §6.1 mục 3b và §6.2 mục 6: method resolution đi qua khối quét `mfi.params`, không dùng
+   `fp_data`. Một backlog item cho CẢ BA luật cùng lúc, không phải riêng luật này.
+2. **Gán vào PHẦN TỬ mảng** `a[0] = d` — vẫn nhận (0 → 3). Cùng ranh giới §6.1 vẽ.
+3. **Biểu thức** `let s: f32 = d + 1.0` — vẫn nhận (0 → 4). Cần kiểu suy diễn đáng tin ở vị
+   trí có hint; xem lý do "không dùng infer_node" ở §6.2.
+4. **Kết quả CALL** `let s: f32 = getd()` — vẫn nhận (0 → 3).
+5. **IDENT là PARAM** `fn h(x: f64): let s: f32 = x` — vẫn nhận (0 → 3), CỐ Ý: kiểu ghi của
+   param có thể là tên generic (§6.2 mục 3).
+6. **Đọc field** `let s: f32 = o.d` — vẫn nhận (0 → 3).
+7. **Gán vào binding SUY DIỄN** `mut x := 1.5 as f32; x = d` — vẫn nhận (0 → 3).
+
+**Mã lỗi:** `E3032` (kế tiếp E3031 trong dải type errors E3000–E3999). In tên nguồn, kiểu
+nguồn `f64`, kiểu đích `f32`, snippet + caret, và cách sửa (`d as f32`). Dùng lại đúng bộ
+render của E3030/E3031 (`print_annotated_expr_snippet`) nên ba chẩn đoán không thể lệch hình
+dạng. KHÔNG in `file.ax:line:col`, cùng lý do §6.1. Chuỗi in ra **thuần ASCII**.
+
+Hình dạng in ra (đo, không phải phác thảo):
+
+```
+error[E3032]: cannot implicitly convert `d` (type `f64`) to the narrower float type `f32`
+   |
+   |     let s: f32 = d
+   |                  ^ f64 value here; `f32` has less precision and a smaller range
+   |
+   = note: the type `f32` is written explicitly at this `let` binding, and AXIOM never narrows f64 to f32 implicitly (RFC 0006 section 4) -- the loss of precision must be visible in the source
+   = help: write `d as f32` if the loss of precision is intended
+```
+
+**Cài đặt & test:** `typecheck.ax::check_f64_to_f32` + entry point chung
+`check_annotated_target` (7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với `check_int_lit_range` và
+`check_float_to_int`); `bin/t_f64f32{let,global,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax`
+= reject rows (cả 10 đều BUILD trên compiler trước fix), `bin/t_f64f32ok.ax` = overreach guard
+(42 cả TRƯỚC và SAU, ở -O0 và -O1). Audit breakage: quét 120 file `.ax` có `f32` trong
+`bin/ tests/ examples/ std/ stdlib/ bootstrap/ docs/ rfcs/` bằng compiler sau fix — chỉ 12
+hit, đúng 10 oracle reject + 2 probe cố ý (`probe6/g_f64tof32`, `probe7/w2`); 0 hit trên
+source của chính compiler (hop B build sạch).
 
 ## 7. Float codegen (BUG#33)
 
@@ -245,9 +333,10 @@ Thực tế cài **khác** — và đây là một sai lệch có chủ ý, ghi 
   toán hạng của phép toán float (`lower_binary_expr`). Đặt quy tắc ngầm ở cùng tầng giữ
   đúng một chỗ phát OP_ITOF, thay vì hai cơ chế song song sẽ trôi lệch.
 
-Cài đặt: `air_builder.coerce_int_to_float(target_type, src_node, src_reg)` — anh em song sinh
-của `coerce_struct_to_interface`, tự-bảo-vệ (no-op trừ khi target là f32/f64 **và** kiểu node
-nguồn là kiểu nguyên XÁC ĐỊNH), và được gọi ở **MỌI** value site:
+Cài đặt: `air_builder.coerce_to_float_target(target_type, src_node, src_reg)` (2026-07-31 đổi
+tên từ `coerce_int_to_float` khi §7.3 gộp thêm nhánh float→float — tên cũ đã thành sai) — anh
+em song sinh của `coerce_struct_to_interface`, tự-bảo-vệ (no-op trừ khi target là f32/f64 **và**
+kiểu node nguồn là kiểu nguyên XÁC ĐỊNH), và được gọi ở **MỌI** value site:
 let / assign / phần tử mảng (literal + gán) / field struct (khởi tạo + gán) / return /
 đối số lời gọi (free fn, method, dynamic dispatch) / khởi tạo global.
 
@@ -270,10 +359,59 @@ thành bằng chứng**: site ĐỐI SỐ và site FIELD *không* được phủ
 trên OP_CALL, cũng không mang kiểu field trên OP_SET_FIELD (type_id ở đó là kiểu STRUCT); hai
 site này do oracle canh. Mở rộng AIR để mang các kiểu đó là thay đổi IR ⇒ cần RFC riêng.
 
-Calibrate (không phải giả định): stub `coerce_int_to_float` thành no-op thì check báo đúng
+Calibrate (không phải giả định): stub `coerce_to_float_target` thành no-op thì check báo đúng
 `main / inst #5 … type_id=10 src1=5` cho `let a: f64 = n`, `#22` cho `b = n`, `#50` cho
 `let c: f64 = 3 + 1`, và **không** sinh file output. Với fix, check im lặng trên cả 1053 hàm
 của chính compiler. Oracle `bin/t_intlitfloatctx.ax`: **4 → 42** ở -O0/-O1/-O2.
+
+### 7.3 f32 → f64 NGẦM: cvt THẬT ở MỌI value site, không chỉ ở đối số (2026-07-31) ✅ IMPLEMENTED
+
+Nửa HỢP LỆ của hàng §4 thứ ba (nửa kia là §6.3, reject chiều narrow). §4 dòng 47 nói
+"target f64 & expr f32 → **chèn cvt widen**", dòng 48 nói mọi cvt `f64↔f32` phải là **lệnh
+convert thật, KHÔNG phải OP_COPY reinterpret**. Cả hai đều bị vi phạm ở mọi vị trí trừ đối số.
+
+Đo được (không phải suy luận): `let f: f32 = 1.5; let x: f64 = f` sinh AIR
+
+```
+%2: t9  = copy %1
+%3: t10 = copy %2      <- bit của một single đọc như nửa thấp của một double
+```
+
+nên `x` là denormal chứ không phải 1.5 (`bin/probe7/w1.ax` exit **1**). Sau fix AIR có
+`%4 = cast %2` và máy sinh đúng **một** lệnh `cvtss2sd %xmm8,%xmm9` (objdump, `0x140006579`),
+`w1` exit **42**.
+
+Nguyên nhân gốc **giống hệt** §7.2: luật tồn tại ở dạng hẹp hơn thứ nó phải phủ.
+`coerce_float_arg_ft` giữ BẢN SAO RIÊNG của chuyển đổi bề rộng float (một `OP_CAST` phát tại
+chỗ), nên **đối số** là vị trí DUY NHẤT chuyển đúng, còn let/assign/field/element/return/global
+thì reinterpret. Bảng §6.3 đo được đúng vân tay này: hàng đối số trả **3**, chín hàng kia trả
+**0**.
+
+Cài đặt (tối thiểu, đúng hình dạng chống-trôi của §7.2): nhánh float→float chuyển vào **cùng**
+hàm `coerce_to_float_target` đã được gọi ở MỌI value site, và `coerce_float_arg_ft` nay chỉ còn
+việc TÌM kiểu tham số rồi ủy quyền. Một cài đặt, một danh sách vị trí.
+
+```
+int  -> f32/f64  (§4 hàng 1)  -> OP_ITOF  (cvtsi2sd / cvtsi2ss)
+f32  -> f64      (§4 hàng 3)  -> OP_CAST  (cvtss2sd, chọn ở x86_selector theo kiểu vreg nguồn)
+```
+
+Hệ quả PHỤ đáng ghi (đo trên compiler sau fix): những vị trí mà §6.3 **không** reject (đối số
+phương thức, `a[0] = d`, biểu thức, kết quả call, param ident, đọc field, binding suy diễn) nay
+phát `cvtsd2ss` thật nên cho **giá trị đúng (3)** thay vì rác (**0**). Chúng chuyển từ
+*accept-then-miscompile* sang *accept-without-diagnostic* — vẫn là lỗ hổng chẩn đoán, nhưng
+không còn là lỗi sinh mã. Nói thẳng ra để không ai đọc "3" thành "đã phủ".
+
+**Chưa có bất biến §9 cho bề rộng float.** `verify_air_no_int_into_float` chỉ phân lớp
+INT/FLOAT/UNKNOWN, không phân biệt f32 với f64, nên một `OP_COPY` kiểu f64 đọc vreg f32 vẫn
+KHÔNG bị bắt — chính là bug này. Mở rộng miền trừu tượng sang bề rộng là việc riêng (backlog);
+hiện tại `bin/t_f32widen.ax` là thứ canh, và nó FAIL (exit 1) trên compiler trước fix — đó là
+calibration, không phải giả định.
+
+Gate: thay đổi chạm air_builder ⇒ **B == C**. Đo được A == B == C =
+`D3EABC61F38B7A0BEA6E58598660D0475D7CA77ACCC832EC0FDF987940085CD4` (A == B vì source của chính
+compiler không có luồng f32↔f64 ngầm nào ⇒ thay đổi trơ với self-codegen). Regression
+**642/642** ở default và `-O0` (630 baseline + 12 hàng mới).
 
 ## 8. Test plan
 
@@ -286,6 +424,9 @@ của chính compiler. Oracle `bin/t_intlitfloatctx.ax`: **4 → 42** ở -O0/-O
 1. Float codegen (OP_F* theo kiểu) + int→float/f64→f32 cvt thật — làm `float`+`mixed`+`imix` pass.
 2. Unsigned div/mod (DIV) + shift signed-aware — làm `int` pass hết.
 3. Conversion policy diagnostics (float→int, f64→f32 → lỗi) + float-literal-adopt (mở rộng RFC 0005).
+   — **ĐÃ XONG cả hai chẩn đoán: §6.2 (E3031, float→int) và §6.3 (E3032, f64→f32), cùng nửa
+   hợp lệ §7.3 (f32→f64 cvt thật)**. Còn lại của mục này: bộ `.diag` test có hệ thống trong
+   `tests/arith/` (§8), và các vị trí ngoài phạm vi liệt kê ở §6.3.
 4. int→int narrowing policy (quyết định cuối). — **ca literal trần đã chốt & implement:
    §6.1 (REJECT, E3030, 2026-07-30)**; còn lại: biểu thức hằng gấp, và narrowing từ một
    GIÁ TRỊ runtime (`let x: u8 = some_i64`) vẫn chưa quyết.

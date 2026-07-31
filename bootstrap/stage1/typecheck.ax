@@ -2488,16 +2488,77 @@ pub fn check_float_to_int(mut self: ptr[TypeChecker], exp_type: u32, expr: u32, 
         safe_free_str(disp)
     safe_free_str(text)
 
-// SINGLE position list shared by both RFC 0006 annotation rules: §6.1 (E3030, an integer
-// literal outside the annotated type's range) and §4/§6.2 (E3031, an implicit float→int).
-// Every site where the programmer wrote an explicit integer target calls THIS — never one
-// of the two checks directly — so the rules cannot drift to different position lists.
-// Two copies of one rule drifting apart is the defect class that has already produced five
-// bugs here (376af08, 0bf34ee, 76de988, a281992, and the dispatch-coercion bug); one entry
-// point is the structural fix.
+// ─── RFC 0006 §4/§6.3: implicit f64 → f32 is forbidden (E3032) ───────────────────────
+// The third row of the SAME §4 conversion table, enforced from the SAME position list as
+// E3030/E3031. §4 line 42 reads "f64 → f32 (narrow, lossy) | CẤM ngầm → LỖI; phải `as`
+// (cvtsd2ss)" and §4's implementation rule spells it out: "target f32 & expr f64 → LỖI.
+// target f64 & expr f32 → chèn cvt widen." So this direction is a REJECT and the opposite
+// direction stays legal (that widening is handled in air_builder, not here).
+//
+// Before this, `let d: f64 = 3.5; let s: f32 = d` compiled and `s` was NOT 3.5 (measured:
+// bin/probe6/g_f64tof32.ax exited 1) — the f64 bit pattern was OP_COPY'd into an f32 slot,
+// so the low half of an IEEE-754 double was read as a single. Accept-then-miscompile, the
+// BUG#53 class, same shape as the two rules above.
+//
+// ⚠️ A float LITERAL at an f32 target is NOT narrowing and must keep working: RFC 0005
+// (extended to float literals by RFC 0006 §2) says a literal ADOPTS the context type, so
+// `let a: f32 = 1.5` is a genuine f32 literal, not an f64 being narrowed. Hence the only
+// source form recognised here is an IDENT whose own `let`/`const` declaration spells `f64`
+// — read from the WRITTEN annotation text via ident_declared_float, never from a symbol's
+// `type_id` (which is rewritten per monomorphised instance and would falsely reject the
+// f32 copy of a generic). Same reasoning, same trap, as E3031.
+pub fn check_f64_to_f32(mut self: ptr[TypeChecker], exp_type: u32, expr: u32, ctx: str):
+    if expr == 0 as u32 or (expr as i64) >= self.tree.nodes.len:
+        return
+    if exp_type != TYPE_F32:
+        return
+    // Unwrap a unary `-`: `-d` parses as UNARY(-) over IDENT(d), so without this the most
+    // obvious negated form would slip through.
+    mut inner := expr
+    mut neg := false
+    let ek = self.tree.nodes.data[expr].kind
+    if ek == NODE_UNARY_EXPR:
+        let ch = self.tree.nodes.data[expr].first_child
+        if ch == 0 as u32:
+            return
+        let op = self.node_text(expr)
+        let is_minus = op == "-"
+        safe_free_str(op)
+        if not is_minus:
+            return
+        inner = ch
+        neg = true
+    if self.ident_declared_float(inner) != TYPE_F64:
+        return
+    let text = self.node_text(inner)
+    mut disp := text
+    if neg:
+        disp = std.string.concat("-", text)
+    ax_printf_local("error[E3032]: cannot implicitly convert `%s` (type `f64`) to the narrower float type `f32`\n", get_str_ptr(disp) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    let cmsg = "f64 value here; `f32` has less precision and a smaller range"
+    self.print_annotated_expr_snippet(expr, inner, cmsg)
+    // ASCII only, like E3030/E3031: the Windows console codepage mangles UTF-8, so a
+    // `§`/em-dash in an EMITTED diagnostic prints as mojibake. Non-ASCII stays in comments.
+    ax_printf_local("   = note: the type `f32` is written explicitly at this %s, and AXIOM never narrows f64 to f32 implicitly (RFC 0006 section 4) -- the loss of precision must be visible in the source\n", get_str_ptr(ctx) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("   = help: write `%s as f32` if the loss of precision is intended\n", get_str_ptr(disp) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.diags_count = self.diags_count + 1 as i64
+    if neg:
+        safe_free_str(disp)
+    safe_free_str(text)
+
+// SINGLE position list shared by ALL THREE RFC 0006 annotation rules: §6.1 (E3030, an
+// integer literal outside the annotated type's range), §4/§6.2 (E3031, an implicit
+// float→int) and §4/§6.3 (E3032, an implicit f64→f32 narrowing). Every site where the
+// programmer wrote an explicit target type calls THIS — never one of the three checks
+// directly — so the rules cannot drift to different position lists, and all three render
+// through the one snippet printer so they cannot drift in shape either.
+// Two copies of one rule drifting apart is the defect class that has already produced seven
+// bugs here (376af08, 0bf34ee, 76de988, 5359a39, a281992, 6febd02, and the dispatch-coercion
+// bug); one entry point is the structural fix.
 pub fn check_annotated_target(mut self: ptr[TypeChecker], exp_type: u32, expr: u32, ctx: str):
     self.check_int_lit_range(exp_type, expr, ctx)
     self.check_float_to_int(exp_type, expr, ctx)
+    self.check_f64_to_f32(exp_type, expr, ctx)
 
 pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]

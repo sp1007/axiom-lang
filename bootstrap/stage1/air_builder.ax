@@ -1902,32 +1902,48 @@ fn air_is_int_type_id(t: u32) -> bool:
         return true
     return false
 
-// RFC 0006 §4: int -> float is an IMPLICIT WIDENING conversion, and it must be a real
-// OP_ITOF (cvtsi2sd) — never a copy. An integer value copied into a float-typed vreg is
+// RFC 0006 §4: a value flowing into a slot whose DECLARED type is f32/f64 must arrive as
+// the right KIND OF BITS, and every conversion on the way must be a real convert
+// instruction — "Mọi cvt int↔float / f64↔f32 phải là lệnh convert thật, KHÔNG phải
+// OP_COPY reinterpret" (§4 line 48). Two conversions land here:
+//
+//   int -> f32/f64   (§4 row 1, implicit widening)  -> OP_ITOF   (cvtsi2sd / cvtsi2ss)
+//   f32 -> f64       (§4 row 3, implicit widening)  -> OP_CAST   (cvtss2sd)
+//
+// int -> float: an integer value copied into a float-typed vreg is
 // GPR-classed while every consumer reads the aliasing XMM (the R10 ≡ XMM10 family), so
 // the value read back is 0.0 or a stale float: accepted by typecheck, wrong at runtime,
 // invisible to every gate (BUG#53 class).
+//
+// f32 -> f64: the same failure with different bits. `let f: f32 = 1.5; let x: f64 = f`
+// emitted `%3: t10 = copy %2` (measured on dump-air) — the 32-bit single's bit pattern
+// reinterpreted as the low half of a double, so `x` was a denormal, not 1.5
+// (bin/probe7/w1.ax exited 1). Widening is LEGAL per §4 row 3, so the fix is not a
+// diagnostic but the missing `cvtss2sd`; the NARROWING direction is rejected in typecheck
+// (E3032) and so never reaches a value site with an annotated target.
 //
 // This is the sibling of `coerce_struct_to_interface`, and it exists in exactly that
 // shape ON PURPOSE: ONE rule, called at EVERY site a value flows into a declared slot
 // (let / assign / element / field / return / argument / global init). The bug this
 // replaces was the opposite shape — a coercion that existed only for `f32` literals at
-// two of those sites, so f32 was right and f64 was garbage. `coerce_float_arg_ft`
-// (f32<->f64 narrowing) and the typecheck literal-adoption path (RFC 0005) already cover
-// the FLOAT-source cases; this covers the INTEGER-source ones, which is the whole
-// remaining half of the §4 table's int->float row.
+// two of those sites, so f32 was right and f64 was garbage. For exactly that reason the
+// float-width case now lives HERE too, instead of staying the private business of
+// `coerce_float_arg_ft`: an argument was the ONLY position that widened f32 correctly,
+// which is the same "one rule present in a narrower form than the thing it must cover"
+// shape. `coerce_float_arg_ft` now delegates here so there is one implementation.
 //
 // Self-guarding, so it is safe to call unconditionally: it is a no-op unless the target
-// is f32/f64 AND the source node's type is a definite integer. In particular an int
-// LITERAL that typecheck already adopted into the float type (`let a: f64 = 3`) has a
-// FLOAT node type here and is left completely untouched.
+// is f32/f64 AND the source node's type is a definite integer, or a float of the OTHER
+// width. In particular an int LITERAL that typecheck already adopted into the float type
+// (`let a: f64 = 3`) has a FLOAT node type of the SAME width here and is left completely
+// untouched, and so is every same-width float value.
 //
 // Signedness note: OP_ITOF is cvtsi2sd, so a u64/usize above 2^63 converts as negative.
 // That is the pre-existing behaviour of the EXPLICIT `x as f64` cast (lower_cast_expr
 // picks the same opcode by the same test); making the implicit path agree with the
 // explicit one is the correct minimal move, and unsigned-exact conversion is one fix for
 // both sites, not a reason to leave this one silently miscompiling.
-pub fn coerce_int_to_float(mut self: ptr[FuncLowering], target_type: u32, src_node: u32, src_reg: u32) -> u32:
+pub fn coerce_to_float_target(mut self: ptr[FuncLowering], target_type: u32, src_node: u32, src_reg: u32) -> u32:
     if self.mb.node_types == null as ptr[u32]:
         return src_reg
     if target_type != TYPE_F32 and target_type != TYPE_F64:
@@ -1935,10 +1951,17 @@ pub fn coerce_int_to_float(mut self: ptr[FuncLowering], target_type: u32, src_no
     if src_node == 0 as u32 or src_reg == 0 as u32:
         return src_reg
     let st = self.mb.node_types[src_node as i64]
-    if not air_is_int_type_id(st):
+    if air_is_int_type_id(st):
+        let ir = self.fb.fresh_reg()
+        self.fb.emit(AirInst(opcode: OP_ITOF, type_id: target_type, dest: ir, src1: src_reg, src2: 0 as u32))
+        return ir
+    // Float of the other width. OP_CAST over a float pair is selected to
+    // MACH_CVTSS2SD/MACH_CVTSD2SS (x86_selector), keyed on the SOURCE VREG's registered
+    // type — which is why the source must already be a float-classed vreg here.
+    if (st != TYPE_F32 and st != TYPE_F64) or st == target_type:
         return src_reg
     let cr = self.fb.fresh_reg()
-    self.fb.emit(AirInst(opcode: OP_ITOF, type_id: target_type, dest: cr, src1: src_reg, src2: 0 as u32))
+    self.fb.emit(AirInst(opcode: OP_CAST, type_id: target_type, dest: cr, src1: src_reg, src2: 0 as u32))
     return cr
 
 pub fn coerce_float_arg(mut self: ptr[FuncLowering], fn_sym: u32, param_idx: u32, arg_node: u32, arg_reg: u32) -> u32:
@@ -1966,22 +1989,13 @@ pub fn coerce_float_arg_ft(mut self: ptr[FuncLowering], fn_type: u32, param_idx:
     if (param_idx as i64) >= fi.params.len:
         return arg_reg
     let pt = fi.params.data[param_idx as i64]
-    if pt != 9 as u32 and pt != 10 as u32:
-        return arg_reg
-    let at = self.mb.node_types[arg_node as i64]
-    // RFC 0006 §4: an INTEGER argument at a float parameter (`takes_f64(9)`, `argf(n)`)
-    // is an implicit widening conversion and needs a real OP_ITOF. Before this, the
-    // guard below fell straight through for a non-float `at`, so the integer register
-    // was passed into the float parameter slot verbatim and the callee read garbage.
-    // Delegated to the shared rule rather than re-implemented here — the reason this
-    // whole family of bugs existed is a coercion that lived in two drifting copies.
-    if air_is_int_type_id(at):
-        return self.coerce_int_to_float(pt, arg_node, arg_reg)
-    if (at != 9 as u32 and at != 10 as u32) or at == pt:
-        return arg_reg
-    let cr = self.fb.fresh_reg()
-    self.fb.emit(AirInst(opcode: OP_CAST, type_id: pt, dest: cr, src1: arg_reg, src2: 0 as u32))
-    return cr
+    // This function's whole remaining job is FINDING the declared parameter type; the
+    // conversion decision itself belongs to the one shared rule. It used to carry its own
+    // copy of the float-width case (an OP_CAST emitted right here), which made an argument
+    // the ONLY position where an f32 widened correctly into an f64 slot — `let x: f64 = f`
+    // silently reinterpreted the bits instead. RFC 0006 §4 draws no distinction between
+    // positions, so neither does the code any more.
+    return self.coerce_to_float_target(pt, arg_node, arg_reg)
 
 pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> u32:
     let child = node.first_child
@@ -3116,7 +3130,7 @@ pub fn lower_array_lit(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
         elem_reg = self.coerce_struct_to_interface(elem_type_id, child, elem_reg)
         // RFC 0006 §4: `[f64; N] = [n, 4]` where an element is an int VARIABLE/expression.
         // (An int LITERAL element is already adopted into the element type by typecheck.)
-        elem_reg = self.coerce_int_to_float(elem_type_id, child, elem_reg)
+        elem_reg = self.coerce_to_float_target(elem_type_id, child, elem_reg)
 
         let idx_reg = self.fb.fresh_reg()
         self.fb.emit(AirInst(
@@ -3207,7 +3221,7 @@ pub fn coerce_field_value(mut self: ptr[FuncLowering], struct_index: i64, field_
         return val_reg
     let fty = si.fields.data[field_idx as i64].type_id
     mut out := self.coerce_struct_to_interface(fty, val_node, val_reg)
-    out = self.coerce_int_to_float(fty, val_node, out)
+    out = self.coerce_to_float_target(fty, val_node, out)
     return out
 
 pub fn emit_heap_alloc(mut self: ptr[FuncLowering], type_id: u32) -> u32:
@@ -4706,7 +4720,7 @@ pub fn lower_var_decl(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         // RFC 0006 §4: `let a: f64 = n` / `= 3 + 1` — an integer VALUE at an annotated
         // float target. (A bare int LITERAL is adopted into the float type by typecheck
         // and arrives already float-typed, so this is a no-op for it.)
-        src_reg = self.coerce_int_to_float(var_type_id, init_node_idx, src_reg)
+        src_reg = self.coerce_to_float_target(var_type_id, init_node_idx, src_reg)
 
         self.fb.emit(AirInst(
             opcode: OP_COPY,
@@ -4891,7 +4905,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         val_reg = self.coerce_struct_to_interface(type_id, rhs_idx, val_reg)
         // RFC 0006 §4: `arr[i] = n` into a float-element array. `type_id` is the ELEMENT
         // type here (see the comment above), which is the conversion target.
-        val_reg = self.coerce_int_to_float(type_id, rhs_idx, val_reg)
+        val_reg = self.coerce_to_float_target(type_id, rhs_idx, val_reg)
 
         self.fb.emit(AirInst(
             opcode: OP_STORE,
@@ -4949,7 +4963,7 @@ pub fn lower_assign(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
     // interface value (else the raw struct bytes are stored and dispatch reads garbage).
     val_reg = self.coerce_struct_to_interface(type_id, rhs_idx, val_reg)
     // RFC 0006 §4: `b = n` where `b` is a float local/global and `n` is an integer.
-    val_reg = self.coerce_int_to_float(type_id, rhs_idx, val_reg)
+    val_reg = self.coerce_to_float_target(type_id, rhs_idx, val_reg)
 
     // RFC 0017 / BUG#82: assigning to a module-level global writes its static storage
     // (OP_GLOBAL_ADDR + OP_STORE), not a per-function vreg — so the value persists
@@ -4986,7 +5000,7 @@ pub fn lower_return(mut self: ptr[FuncLowering], idx: u32, node: AstNode):
         // RFC 0029: `return <struct>` from a fn declared `-> Iface` boxes the struct.
         ret_val = self.coerce_struct_to_interface(self.fb.ret_type, fc, ret_val)
         // RFC 0006 §4: `return n` from a fn declared `-> f64` where `n` is an integer.
-        ret_val = self.coerce_int_to_float(self.fb.ret_type, fc, ret_val)
+        ret_val = self.coerce_to_float_target(self.fb.ret_type, fc, ret_val)
 
     // RFC 0015 P3 return-path free: CTGC appended NODE_DESTROY_STMT nodes as TRAILING
     // children of this return for every freeable local live on this path. Lower them
@@ -5772,7 +5786,7 @@ fn verify_air_const_types(f: ptr[AirFunc], fn_name: str) -> i64:
 // The copy is type-correct in isolation; only the pairing is wrong. At runtime %6 is
 // GPR-classed while every float consumer reads the aliasing XMM, so the value is 0.0 or
 // a stale float — accepted by typecheck, wrong at runtime, invisible to every gate. The
-// correct emission is `OP_ITOF` (cvtsi2sd), which `coerce_int_to_float` now inserts at
+// correct emission is `OP_ITOF` (cvtsi2sd), which `coerce_to_float_target` now inserts at
 // every value site; this check is what makes that a checked invariant instead of a
 // promise, including at sites written later.
 //
@@ -5792,7 +5806,7 @@ fn verify_air_const_types(f: ptr[AirFunc], fn_name: str) -> i64:
 // `takes_f64(9)` and `H(a: 3)` are therefore guarded by the oracle only. Extending AIR to
 // carry those types is an IR change and needs an RFC.
 //
-// CALIBRATED 2026-07-31, not assumed: with `coerce_int_to_float` stubbed to a no-op, this
+// CALIBRATED 2026-07-31, not assumed: with `coerce_to_float_target` stubbed to a no-op, this
 // reports `main / inst #5 opcode=262 dest=6 type_id=10 src1=5` for `let a: f64 = n`,
 // `inst #22` for `b = n`, and `inst #50` for `let c: f64 = 3 + 1`, and produces no output
 // file. With the coercion in place it is silent on all 1053 functions of the compiler's
@@ -5940,7 +5954,7 @@ pub fn lower_func(self: ptr[AirModuleBuilder], idx: u32, node: AstNode) -> AirFu
                 vreg = fl.coerce_struct_to_interface(g.type_id, g.init_node, vreg)
                 // RFC 0006 §4: the global-init prologue is a VALUE SITE like any other,
                 // so an integer initializer of a float global converts here too.
-                vreg = fl.coerce_int_to_float(g.type_id, g.init_node, vreg)
+                vreg = fl.coerce_to_float_target(g.type_id, g.init_node, vreg)
                 fl.lower_global_write(g.sym_id, g.type_id, vreg)
             gi = gi + 1
 

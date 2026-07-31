@@ -29,7 +29,11 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 - **`let x: u8 = 300` ⇒ REJECT `error[E3030]`** (user chốt 2026-07-30, option 2). Literal nguyên
   ngoài dải của kiểu **được chú thích tường minh** là lỗi biên dịch tại 8 vị trí (let/assign vào
   binding có chú thích/gán field struct/đối số/đối số dạng `f[u8](..)`/field init/phần tử mảng
-  có kiểu chú thích/`return`). **CHƯA phủ: đối số của PHƯƠNG THỨC** `s.setv(300)` (vẫn wrap 44). `300 as u8`
+  có kiểu chú thích/`return`). **CHƯA phủ: đối số của PHƯƠNG THỨC** `s.setv(300)` (vẫn wrap 44) —
+  ⬅ **nay là lỗ hổng CHUNG của cả BA luật chú thích** (E3030 int-range, E3031 float→int, E3032
+  f64→f32), vì cả ba chạy từ một `check_annotated_target` mà method resolution lại đi qua khối
+  quét `mfi.params` (`typecheck.ax` ~L4640), không dùng `fp_data`. **Một** hook ở đó vá cả ba;
+  đó là backlog item riêng, không phải thiếu sót của luật nào. `300 as u8`
   vẫn là cách nói "cố ý cắt bit". Suy-theo-độ-lớn ở vị trí KHÔNG chú thích giữ nguyên (tiền lệ
   [[bug-negative-literal-compare-o0]]). Spec: **RFC 0006 §6.1**; chi tiết + phần CHƯA phủ
   (i64/u64, biểu thức hằng gấp, narrowing từ giá trị runtime):
