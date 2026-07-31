@@ -1,0 +1,29 @@
+// R6 in CONTEXT: does a preceding dynamic call disturb the no-param f32-return call?
+// Reports the value class of b6 instead of a bare 110.
+interface I:
+    fn p32_ri(self: Self, a: f32) -> i64
+    fn p64_r64(self: Self, a: f64) -> f64
+    fn r32(self: Self) -> f32
+
+struct S:
+    k: i64
+    fn p32_ri(self: S, a: f32) -> i64:
+        return (a * 100.0) as i64
+    fn p64_r64(self: S, a: f64) -> f64:
+        return a
+    fn r32(self: S) -> f32:
+        return 2.5
+
+fn main() -> i64:
+    let i: I = S(k: 0)
+    let b1 = i.p32_ri(1.5)
+    if b1 != 150:
+        return 60 + b1
+    let b5 = i.p64_r64(1.5)
+    if (b5 as i64) != 1:
+        return 70
+    let b6 = i.r32()
+    let v = b6 as i64
+    if v != 2:
+        return 100 + v
+    return 42

@@ -1,0 +1,32 @@
+struct P:
+    a: i64
+    b: i64
+mut depth: i64 = 0
+fn isodd(n: i64) -> bool:
+    if n == 0:
+        return false
+    return iseven(n - 1)
+fn iseven(n: i64) -> bool:
+    if n == 0:
+        return true
+    return isodd(n - 1)
+fn mk(n: i64) -> P:
+    depth = depth + 1
+    if n <= 0:
+        return P(a: 0, b: 0)
+    let inner = mk(n - 1)
+    return P(a: inner.a + n, b: inner.b + 1)
+fn main() -> i64:
+    mut r: i64 = 0
+    if isodd(7):
+        r = r + 1
+    if iseven(8):
+        r = r + 2
+    let p = mk(4)          // a = 4+3+2+1 = 10, b = 4
+    if p.a == 10 and p.b == 4:
+        r = r + 4
+    if depth == 5:
+        r = r + 8
+    if r == 15:
+        return 42
+    return r

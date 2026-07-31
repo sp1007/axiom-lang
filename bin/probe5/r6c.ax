@@ -1,0 +1,32 @@
+// Narrow the PRE-EXISTING no-param-f32-return dispatch defect (independent of the
+// argument-coercion fix): does the method's SLOT index alone break it?
+interface I:
+    fn a0(self: Self) -> i64
+    fn a1(self: Self) -> i64
+    fn a2(self: Self) -> i64
+    fn a3(self: Self) -> i64
+    fn a4(self: Self) -> i64
+    fn r32(self: Self) -> f32
+
+struct S:
+    k: i64
+    fn a0(self: S) -> i64:
+        return 0
+    fn a1(self: S) -> i64:
+        return 1
+    fn a2(self: S) -> i64:
+        return 2
+    fn a3(self: S) -> i64:
+        return 3
+    fn a4(self: S) -> i64:
+        return 4
+    fn r32(self: S) -> f32:
+        return 2.5
+
+fn main() -> i64:
+    let i: I = S(k: 0)
+    let b = i.r32()
+    let v = b as i64
+    if v != 2:
+        return 100 + v
+    return 42

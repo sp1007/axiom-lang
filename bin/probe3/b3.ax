@@ -1,0 +1,26 @@
+fn half(n: i64) -> Result[i64, str]:
+    if n % 2 != 0:
+        return Err("odd")
+    return Ok(n / 2)
+fn chain(n: i64) -> Result[i64, str]:
+    let a = half(n)
+    if a.is_err():
+        return Err("first")
+    let b = half(a.unwrap())
+    if b.is_err():
+        return Err("second")
+    return Ok(b.unwrap() + 1)
+fn main() -> i64:
+    mut r: i64 = 0
+    let x = chain(8)        // 8->4->2 -> Ok(3)
+    if x.unwrap() == 3:
+        r = r + 1
+    let y = chain(7)        // odd -> Err("first")
+    if y.is_err():
+        r = r + 2
+    let z = chain(6)        // 6->3, 3 odd -> Err("second")
+    if z.is_err():
+        r = r + 4
+    if r == 7:
+        return 42
+    return r

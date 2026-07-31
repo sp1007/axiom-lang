@@ -1,0 +1,40 @@
+struct Mix:
+    a: f32
+    b: i64
+    c: f64
+    d: u8
+interface Sc:
+    fn scale(self: Self) -> f32
+struct SF:
+    v: f32
+    fn scale(self: SF) -> f32:
+        return self.v * 2.0
+fn near(x: f64, y: f64) -> bool:
+    mut d := x - y
+    if d < 0.0:
+        d = 0.0 - d
+    return d < 0.0001
+fn main() -> i64:
+    mut r: i64 = 0
+    let m = Mix(a: 1.5, b: 7, c: 2.5, d: 3)
+    if m.a > 1.49 and m.a < 1.51:
+        r = r + 1
+    if m.b == 7 and m.d == 3:
+        r = r + 2
+    if near(m.c, 2.5):
+        r = r + 4
+    mut fa: [f32; 3] = [1.5, 2.5, 3.5]
+    if fa[0] + fa[1] + fa[2] > 7.49 and fa[0] + fa[1] + fa[2] < 7.51:
+        r = r + 8
+    mut hm: HashMap[str, f32] = HashMap[str, f32].new()
+    hm.insert("k", 2.5)
+    let g = hm.get("k").unwrap()
+    if g > 2.49 and g < 2.51:
+        r = r + 16
+    let s: Sc = SF(v: 1.5)
+    let sv = s.scale()
+    if sv > 2.99 and sv < 3.01:
+        r = r + 32
+    if r == 63:
+        return 42
+    return r

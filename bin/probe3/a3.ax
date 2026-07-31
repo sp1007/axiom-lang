@@ -1,0 +1,23 @@
+type Inner = IA(i64) | IB
+type Outer = OA(Inner) | OB(i64)
+fn ev(o: Outer) -> i64:
+    match o:
+        OA(i):
+            match i:
+                IA(n):
+                    return n * 2
+                IB:
+                    return 7
+        OB(n):
+            return n + 100
+fn main() -> i64:
+    mut r: i64 = 0
+    if ev(OA(IA(5))) == 10:
+        r = r + 1
+    if ev(OA(IB)) == 7:
+        r = r + 2
+    if ev(OB(5)) == 105:
+        r = r + 4
+    if r == 7:
+        return 42
+    return r
