@@ -76,10 +76,14 @@ Literals are quoted AS WRITTEN, so `0xFFFFFFFF` at `i32` is reported as `0xFFFFF
 
 ## Deliberately NOT covered (report honestly, do not describe as complete)
 
-1. ⚠️ **METHOD arguments** — `s.setv(300)` with `setv(self, x: u8)` is still ACCEPTED and
-   silently wraps to 44. Measured, not assumed. Different mechanism: method calls resolve
-   params through the `mfi.params` symbol scan (`typecheck.ax` ~L4640), not the `fp_data` path
-   the free-function/explicit-type-arg checks use. That scan is the hook if this is extended.
+1. ~~⚠️ **METHOD arguments**~~ → **CLOSED 2026-07-31**, and it was the SHARED gap of all three
+   annotation rules (E3030/E3031/E3032), not a hole in this one. `s.setv(300)`, the static form
+   `S.setv(&s, 300)` and dynamic dispatch `i.take(300)` are now rejected. The diagnosis recorded
+   here was right about the mechanism (the `mfi.params` symbol scan, plus `interface_method_sig`
+   for dispatch) and one hook — `check_method_args_annotated` → `check_annotated_target` — closed
+   all three at once. The param types read there are the DECLARED ones (measured with a generic
+   method instantiated at three types); see RFC 0006 **§6.4** for the evidence and the positions
+   still uncovered.
 2. **Assignment to an array ELEMENT** (`a[0] = 300`) — deliberate: an array's element type may
    be inferred (`mut a = [1,2,3]` is `[i32;3]`), which is not a type the user wrote.
 3. **i64/isize** — `parse_comptime_int` wraps at 64 bits, so a literal beyond i64 cannot be told

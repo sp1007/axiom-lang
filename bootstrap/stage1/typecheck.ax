@@ -2560,6 +2560,31 @@ pub fn check_annotated_target(mut self: ptr[TypeChecker], exp_type: u32, expr: u
     self.check_float_to_int(exp_type, expr, ctx)
     self.check_f64_to_f32(exp_type, expr, ctx)
 
+// The METHOD-ARGUMENT position for all three rules at once. A method call never reaches the
+// free-function argument site: its parameter types come from the name+receiver SYMBOL SCAN in
+// infer_node's NODE_FIELD_EXPR callee branch (or, for dynamic dispatch, from the interface
+// decl), not from the `fp_data` path — which is why `s.setv(300)`, `s.setv(3.0)` and
+// `s.setv(d)` all slipped past E3030, E3031 AND E3032 together. This walks the explicit
+// arguments against the DECLARED parameter types and calls the ONE shared entry point above,
+// so this position can never enforce a different subset of the three rules than any other
+// annotated position.
+//
+// `params` is the callee's parameter list INCLUDING the receiver at index 0 — the shape of
+// both a FUNC type's `params` and of interface_method_sig's `out_params`. `skip_self` is
+// FALSE for a STATIC call `Type.m(recv, a)`, where the receiver is spelled as an ordinary
+// first argument and so lines up with params[0]; it is TRUE for the instance form `recv.m(a)`.
+// A parameter whose declared type is a generic name is inert here: a GENERIC-kind type is
+// neither range-checkable, nor int-family, nor TYPE_F32, so all three checks return at once.
+pub fn check_method_args_annotated(mut self: ptr[TypeChecker], callee: u32, params: U32Vec, skip_self: bool):
+    mut pidx := 0 as i64
+    if skip_self:
+        pidx = 1 as i64
+    mut anode := self.tree.nodes.data[callee].next_sibling
+    while anode != 0 as u32 and pidx < params.len:
+        self.check_annotated_target(params.data[pidx], anode, "method argument")
+        pidx = pidx + 1 as i64
+        anode = self.tree.nodes.data[anode as i64].next_sibling
+
 pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]
     let kind = node.kind
@@ -4851,7 +4876,27 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             // dispatch). air_builder lowers `iface.m()` to a vtable-box indirect
                             // call. Closes BUG#71. Downstream result_type recovery only fires when
                             // still UNKNOWN, so this value stands.
-                            result_type = self.interface_method_ret_type(rec_unwrapped, field_name_id)
+                            //
+                            // RFC 0006 §6.1/§6.2/§6.3 also apply to a DISPATCHED call's
+                            // arguments: the interface decl spells every parameter type, so
+                            // `i.setv(300)` has a user-written narrow target exactly like the
+                            // static form. interface_method_sig is called ONCE here, for the
+                            // return type AND the parameter list, because it is the same AST
+                            // walk (a second call would repeat an O(nodes) scan, and two walks
+                            // are how interface_method_ret_type drifted into returning 0
+                            // forever). The types come straight from the interface decl's
+                            // written annotations, so no monomorphised instance can reach them;
+                            // an unresolvable one infers to 0 and all three checks are inert.
+                            mut inp3 := 0 as i64
+                            mut iret3 := 0 as u32
+                            mut iparams3 := U32Vec(data: null as ptr[u32], len: 0, cap: 0)
+                            if self.interface_method_sig(rec_unwrapped, field_name_id, &inp3, &iret3, &iparams3):
+                                self.check_method_args_annotated(callee, iparams3, true)
+                            // `iret3` is 0 when the signature was not found, which is exactly
+                            // what interface_method_ret_type returned here before.
+                            result_type = iret3
+                            if iparams3.data != null as ptr[u32]:
+                                @free(iparams3.data as ptr[u8])
 
                     mut sym_idx := self.resolve_method_sym(field_name_id, rec_type)
                     if sym_idx != 0 as u32 and (sym_idx as i64) < self.symtable.symbols.len:
@@ -4912,6 +4957,26 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             let m_field_name = self.intern.get(field_name_id)
                             mut found_any := false
                             mut arity_ok := false
+                            // RFC 0006 §6.1/§6.2/§6.3 at the METHOD-ARGUMENT position: the
+                            // funcinfo of the UNIQUE method that matches name + receiver +
+                            // arity, and how many such methods there were. Its `params` are
+                            // the types the programmer WROTE on the declaration: this scan
+                            // skips SYM_FLAG_GENERIC symbols, a monomorphised instance is a
+                            // SEPARATE symbol whose MANGLED name (`f__i64`) cannot satisfy
+                            // name_matches_method (exact name or `Type.name` only), and
+                            // pre_infer_func_signature registers a func type ONCE per symbol
+                            // (`has_existing` guard) so the entry is never rewritten per
+                            // instantiation. That is the trap E3031/E3032 avoid on the SOURCE
+                            // side by reading annotation text instead of a symbol's type_id;
+                            // here it is avoided because the TARGET is a distinct symbol per
+                            // instance. Measured with a generic method instantiated at THREE
+                            // types (i64, f64, u8, then i64 again) and with two structs whose
+                            // same-named methods declare different param types — rows 40-44
+                            // and 30-31 of bin/t_methargok.ax.
+                            // With >1 match (an overload set) the binding is ambiguous at this
+                            // point, so no rule fires — conservative, never a false reject.
+                            mut chosen_fi := -1 as i64
+                            mut chosen_n := 0 as i64
                             mut msi := 0 as i64
                             while msi < self.symtable.symbols.len:
                                 let msym = self.symtable.symbols.data[msi]
@@ -4937,10 +5002,19 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                                             expected_expl = mdecl
                                                         if mact == expected_expl:
                                                             arity_ok = true
+                                                            chosen_fi = mfe.extra as i64
+                                                            chosen_n = chosen_n + 1 as i64
                                 msi = msi + 1 as i64
                             if found_any and not arity_ok:
                                 ax_printf_local("error: method '%s' called with %d argument(s) but no overload takes that many\n", get_str_ptr(m_field_name) as i64, mact, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                 self.diags_count = self.diags_count + 1 as i64
+                            // RFC 0006 §6.1/§6.2/§6.3: `s.setv(300)` / `s.setv(3.0)` /
+                            // `s.setv(d)` against the DECLARED parameter types of the ONE
+                            // method this call can bind to. Every parameter is annotated by
+                            // the language, so each `params[i]` is a user-written type — the
+                            // same premise the free-function argument site rests on.
+                            if chosen_n == 1 as i64 and chosen_fi >= 0 as i64 and chosen_fi < self.types.funcs.len:
+                                self.check_method_args_annotated(callee, self.types.funcs.data[chosen_fi].params, not is_static_call)
                             safe_free_str(m_field_name)
 
                     // BUG#93: a namespace-qualified call whose member did not resolve.

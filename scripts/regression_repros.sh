@@ -752,8 +752,9 @@ rows=(
   # ...and the two positions whose MECHANISM is different, hence their own rows: the explicit
   # type-argument call form `pick[u8](300,1)` (callee is a NODE_INDEX_EXPR that bypasses generic
   # instantiation — it kept 300, see bin/probe2/w3.ax) and assignment to a struct FIELD (which
-  # silently WRAPPED to 44 instead, a byte store truncating). A METHOD argument
-  # (`s.setv(300)`) is still NOT covered — see the RFC's out-of-scope list.
+  # silently WRAPPED to 44 instead, a byte store truncating). METHOD arguments
+  # (`s.setv(300)`) were the shared gap of all three rules and are covered as of 2026-07-31 --
+  # their own rows are at the end of this list (t_metharg*).
   "t_intrangegen|reject|"
   "t_intrangefieldasg|reject|"
   # ...and the positive partner: every in-range boundary (u8 0/255, i8 -128/127, i16/u16/
@@ -814,6 +815,28 @@ rows=(
   # site -- previously only a call ARGUMENT converted, which is why row 8 here passed before
   # and rows 1-7 did not. This oracle FAILS (exit 1) on the pre-fix compiler by design.
   "t_f32widen|exit|42"
+  # The METHOD-ARGUMENT position of all THREE rules above (E3030/E3031/E3032). A method call
+  # never reached the free-function argument site: its parameter types come from the
+  # name+receiver symbol scan in typecheck.ax, not from the `fp_data` path, so `s.setv(300)`,
+  # `s.setv(3.0)` and `s.setv(d)` slipped past all three at once -- ONE gap, not three. Every
+  # row BUILT on the pre-hook compiler and returned a wrong value with no diagnostic
+  # (measured 2026-07-31): 44 for the u8 rows (300 & 255), a garbage positive integer for the
+  # float->int row (the f64 went to XMM and the callee read an uninitialised integer register
+  # -- NOT the IEEE bits, and NOT 3), and 3 for the f64->f32 row (correct value, no
+  # diagnostic). The static and dispatch rows are separate because their argument/parameter
+  # ALIGNMENT differs: `Type.m(recv, a)` spells the receiver as argument 0, and an interface
+  # call reads its declared types from the interface decl instead of from a method symbol.
+  "t_methargrange|reject|"
+  "t_methargf2i|reject|"
+  "t_methargf64f32|reject|"
+  "t_methargstatic|reject|"
+  "t_methargiface|reject|"
+  # ...and the OVERREACH guard, which passes on the pre-hook compiler too. The rows that
+  # matter most are 40-44: ONE generic method instantiated at i64, f64 and u8. A parameter
+  # type read from a symbol scan could have been a MONOMORPHISED instance's type, which would
+  # falsely reject the other instantiation -- the same trap E3031/E3032 avoid on the source
+  # side by reading annotation text rather than a symbol's type_id.
+  "t_methargok|exit|42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
@@ -995,7 +1018,7 @@ done
 # t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
 # -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
 # a single opt level is not evidence.
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42" "t_methargok:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

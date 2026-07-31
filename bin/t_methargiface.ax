@@ -1,0 +1,21 @@
+// The DISPATCHED form of the method-argument position: an interface decl spells every
+// parameter type, so `i.take(300)` has a user-written narrow target exactly like the static
+// call does. The declared types come from the interface decl's own annotation text
+// (interface_method_sig), which no monomorphised instance can contaminate.
+//
+// This BUILT on the pre-hook compiler and returned the WRAPPED value (300 & 255 = 44) with
+// no diagnostic, so the row is calibrated: it must now fail to BUILD, not merely differ.
+interface Sink:
+    fn take(self: ptr[Sink], x: u8) -> i64
+
+struct S:
+    v: u8
+
+fn take(mut self: ptr[S], x: u8) -> i64:
+    self.v = x
+    return x as i64
+
+fn main() -> i64:
+    let s = S(v: 0 as u8)
+    let i: Sink = s
+    return i.take(300)

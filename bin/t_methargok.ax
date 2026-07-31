@@ -1,0 +1,149 @@
+// OVERREACH GUARD for the method-argument position of RFC 0006 §6.1/§6.2/§6.3 (E3030/
+// E3031/E3032). The three rejects are enforced at `s.m(x)` from the method's DECLARED
+// parameter types; everything here is a method argument that must keep compiling and keep
+// producing the right value. It passes on the pre-hook compiler too, so a failure means the
+// new check over-reached rather than that the oracle is new.
+//
+// ⚠️ Two rules this file obeys, both learned the hard way:
+//   * exit codes are masked to 8 bits ([[lesson-exit-code-8bit-masking]]) -- every check is
+//     made INSIDE the program, each failure returns its own small code, success is 42;
+//   * a float row can pass SPURIOUSLY because the previous row left the right value in an
+//     XMM register, so every float row uses a DISTINCT value, exact in binary.
+//
+// ⚠️ And the trap that made this position its own task: a parameter type read from a symbol
+// scan could be a MONOMORPHISED instance's type rather than the declared one, which would
+// falsely reject the other instantiation of a generic method. Rows 40-43 are the control:
+// one generic method instantiated at i64, f64 and u8, plus two structs whose same-named
+// methods declare DIFFERENT parameter types (rows 30-31).
+
+struct Narrow:
+    v: u8
+
+struct Wide:
+    v: i64
+
+struct Fl:
+    a: f32
+    b: f64
+
+// --- non-generic methods, one per parameter shape -----------------------------------
+fn setu8(mut self: ptr[Narrow], x: u8):
+    self.v = x
+
+fn seti64(mut self: ptr[Wide], x: i64):
+    self.v = x
+
+// same NAME on two receivers, with DIFFERENT declared parameter types
+fn setv(mut self: ptr[Wide], x: i64):
+    self.v = x
+
+fn setv(mut self: ptr[Narrow], x: u8):
+    self.v = x
+
+fn set32(mut self: ptr[Fl], x: f32):
+    self.a = x
+
+fn set64(mut self: ptr[Fl], x: f64):
+    self.b = x
+
+fn two32(self: ptr[Fl], p: f32, q: f32) -> i64:
+    mut r := 0 as i64
+    if p > 1.49 and p < 1.51:
+        r = r + 1 as i64
+    if q > 2.24 and q < 2.26:
+        r = r + 2 as i64
+    return r
+
+// an INLINE-declared method (declared inside the struct body) -- the same resolution path
+struct Inline:
+    v: u8
+
+    fn put(mut self: ptr[Inline], x: u8):
+        self.v = x
+
+// --- a generic method, instantiated at three different types ------------------------
+struct G:
+    k: i64
+
+fn idm[T](self: ptr[G], x: T) -> T:
+    return x
+
+fn main() -> i64:
+    // 1x: in-range integer literals at narrow parameters
+    mut n := Narrow(v: 0 as u8)
+    n.setu8(255)
+    if n.v != 255 as u8:
+        return 10
+    n.setu8(0)
+    if n.v != 0 as u8:
+        return 11
+
+    // 2x: the casts the diagnostics name as the remedy
+    n.setu8(300 as u8)
+    if n.v != 44 as u8:                 // 300 & 255 -- deliberate truncation, still legal
+        return 20
+    mut w := Wide(v: 0 as i64)
+    w.seti64(3.0 as i64)
+    if w.v != 3 as i64:
+        return 21
+    let d: f64 = 7.25
+    mut f := Fl(a: 0.5, b: 0.5)
+    f.set32(d as f32)
+    if f.a < 7.24 or f.a > 7.26:
+        return 22
+
+    // 3x: same-name methods on different receivers keep their own declared parameter types
+    w.setv(300)                          // i64 parameter: 300 is in range
+    if w.v != 300 as i64:
+        return 30
+    n.setv(200)                          // u8 parameter: 200 is in range
+    if n.v != 200 as u8:
+        return 31
+    mut il := Inline(v: 0 as u8)
+    il.put(77)
+    if il.v != 77 as u8:
+        return 32
+
+    // 4x: the MONOMORPHISATION control -- one generic method at three types
+    let g = G(k: 0)
+    let ga = g.idm(300)                  // T = i64: 300 must NOT be range-checked as u8
+    if ga != 300 as i64:
+        return 40
+    let gb = g.idm(4.75)                 // T = f64
+    if gb < 4.74 or gb > 4.76:
+        return 41
+    let gc = g.idm(9 as u8)              // T = u8
+    if (gc as i64) != 9 as i64:
+        return 43
+    let gd = g.idm(200)                  // T = i64 again, AFTER the u8 instantiation
+    if gd != 200 as i64:
+        return 44
+
+    // 5x: float arguments at float parameters of the SAME width (no narrowing at all)
+    let fv: f32 = 3.75
+    f.set32(fv)
+    if f.a < 3.74 or f.a > 3.76:
+        return 50
+    f.set64(d)                           // f64 identifier at an f64 parameter
+    if f.b < 7.24 or f.b > 7.26:
+        return 51
+    f.set32(6.5)                         // float LITERAL adopts f32 (RFC 0005), not narrowing
+    if f.a < 6.49 or f.a > 6.51:
+        return 52
+    f.set64(0.5)
+    if f.b < 0.49 or f.b > 0.51:
+        return 53
+    if f.two32(1.5, 2.25) != 3 as i64:   // two f32 slots at once, distinct values
+        return 54
+
+    // 6x: an int literal WIDENING into a float parameter stays implicit (RFC 0006 §4)
+    f.set64(6)
+    if f.b < 5.99 or f.b > 6.01:
+        return 60
+
+    // 7x: the STATIC call form -- the receiver occupies parameter slot 0
+    Narrow.setu8(&n, 250)
+    if n.v != 250 as u8:
+        return 70
+
+    return 42

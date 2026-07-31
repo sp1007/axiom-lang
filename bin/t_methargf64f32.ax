@@ -1,0 +1,14 @@
+// RFC 0006 §4/§6.3 (E3032) at the METHOD-ARGUMENT position: an f64-declared identifier
+// handed to a declared `f32` parameter. Before the hook this compiled (and, since §7.3,
+// silently narrowed) with no diagnostic at all.
+struct S:
+    v: f32
+
+fn setv(mut self: ptr[S], x: f32):
+    self.v = x
+
+fn main() -> i64:
+    let d: f64 = 3.5
+    mut s := S(v: 1.0)
+    s.setv(d)
+    return s.v as i64

@@ -1,0 +1,21 @@
+// CONTROL: generic method on a non-generic struct, instantiated at THREE types.
+// If the scan read a MONOMORPHISED param type, one of these would falsely reject.
+struct S:
+    v: i64
+
+fn idm[T](self: ptr[S], x: T) -> T:
+    return x
+
+fn main() -> i64:
+    let s = S(v: 0 as i64)
+    let a = s.idm(300)
+    let b = s.idm(2.5)
+    let c: u8 = s.idm(7 as u8)
+    mut r := 0 as i64
+    if a == 300 as i64:
+        r = r + 10 as i64
+    if b > 2.4:
+        r = r + 10 as i64
+    if c == 7 as u8:
+        r = r + 22 as i64
+    return r

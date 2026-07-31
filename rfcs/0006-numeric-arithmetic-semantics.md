@@ -100,6 +100,9 @@ quy ước BUG#53 của dự án coi là kết cục tệ nhất.
 | khởi tạo field struct | `struct P: a: u8` … `P(a: 300)` | wrap 44 |
 | phần tử mảng có kiểu phần tử chú thích | `let a: [u8;3] = [1,2,300]` | wrap 44 |
 | `return` của hàm khai báo kiểu hẹp | `fn g() -> u8: return 300` | giữ 300 |
+| **đối số của PHƯƠNG THỨC** (2026-07-31) | `s.setv(300)` với `setv(self, x: u8)` | wrap 44 |
+| **đối số ở dạng gọi TĨNH** (2026-07-31) | `S.setv(&s, 300)` | wrap 44 |
+| **đối số qua DYNAMIC DISPATCH** (2026-07-31) | `let i: Sink = s` … `i.take(300)` | wrap 44 |
 
 **Dải hợp lệ** (bất đối xứng của min có dấu là bắt buộc đúng): i8 `-128..127`, i16
 `-32768..32767`, i32 `-2147483648..2147483647`, u8 `0..255`, u16 `0..65535`, u32
@@ -113,11 +116,14 @@ quy ước BUG#53 của dự án coi là kết cục tệ nhất.
    (t_u64cmp ghim điều này).
 3. **Biểu thức hằng gấp** (`let b: u8 = 255 + 1` ở §6) — vẫn TODO; cần constant folding ở
    typecheck, không thuộc thay đổi này.
-3b. ⚠️ **ĐỐI SỐ của lời gọi PHƯƠNG THỨC** (`s.setv(300)` với `setv(self, x: u8)`) — **CHƯA
-   phủ**, đã đo: vẫn nhận và **wrap âm thầm về 44**. Cơ chế khác (phân giải method đi qua
-   khối quét `mfi.params` ở `typecheck.ax` ~L4640, không dùng `fp_data`); đó là chỗ móc nếu
-   mở rộng. Cũng chưa phủ: **gán vào PHẦN TỬ mảng** (`a[0] = 300`) — cố ý, vì kiểu phần tử có
-   thể do suy diễn (`mut a = [1,2,3]` là `[i32;3]`), không phải kiểu người dùng viết.
+3b. ~~**ĐỐI SỐ của lời gọi PHƯƠNG THỨC**~~ → **ĐÃ PHỦ 2026-07-31** (ba hàng cuối bảng trên).
+   Đây là **một lỗ hổng CHUNG của cả ba luật**, không phải thiếu sót riêng của luật nào: phân
+   giải method đi qua khối quét `mfi.params` (`typecheck.ax`, khối kiểm arity của nhánh callee
+   `NODE_FIELD_EXPR`), còn dispatch động đọc từ `interface_method_sig` — cả hai đều **không**
+   dùng `fp_data`. Vá bằng **MỘT** hook (`check_method_args_annotated`) gọi đúng
+   `check_annotated_target`, nên cả ba luật bật cùng lúc ở vị trí này và không thể phủ lệch
+   nhau. Vẫn chưa phủ: **gán vào PHẦN TỬ mảng** (`a[0] = 300`) — cố ý, vì kiểu phần tử có thể
+   do suy diễn (`mut a = [1,2,3]` là `[i32;3]`), không phải kiểu người dùng viết.
 4. **Vị trí KHÔNG chú thích**: literal quá lớn cho i32 vẫn suy ra i64 **theo độ lớn**
    ([[bug-negative-literal-compare-o0]]) — ca đó không có chú thích nào để tôn trọng.
    Cũng vì vậy `let arr = [1, 5000000000]` (kiểu phần tử suy từ phần tử ĐẦU) vẫn giữ hành
@@ -130,11 +136,17 @@ std/*.ax trước file người dùng) nên số dòng tuyệt đối sẽ chỉ
 phần chính xác được của format §8 hiện nay.
 
 **Cài đặt & test:** `typecheck.ax::check_int_lit_range`, gọi qua entry point chung
-`check_annotated_target` (7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với §6.2 — xem dưới);
+`check_annotated_target` (**8 call site** sau 2026-07-31 — 7 vị trí trực tiếp + 1 nằm trong
+`check_method_args_annotated`, bản thân helper này được gọi từ 2 chỗ: khối quét method cụ thể
+và site dispatch động; dùng chung với §6.2/§6.3);
 `bin/t_intrange{let,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows,
 `bin/t_intrangeok.ax` = mọi biên hợp lệ + tiền lệ suy-theo-độ-lớn phải vẫn chạy (42).
 Gate: A==B `78295509`, regression **607/607** ở default và `-O0`. Audit breakage: 0 hit trên
 source của chính compiler (qua cả hai hop) và trên 833 file `.ax` khác trong repo.
+Ba hàng METHOD/STATIC/DISPATCH thêm 2026-07-31: `bin/t_metharg{range,static,iface}.ax` = reject
+rows (cả ba BUILD và trả **44** trên compiler trước hook), `bin/t_methargok.ax` = overreach
+guard (42, trước và sau, ở `-O0` và `-O1`). Gate: A==B `9D8C7D68`, regression **649/649** ở
+default và `-O0`.
 
 ### 6.2 REQUIREMENT — float → int NGẦM ⇒ LỖI (thi hành §4, user chốt 2026-06-26) ✅ IMPLEMENTED
 
@@ -177,6 +189,8 @@ nên không bao giờ chạm tới check này.
 | khởi tạo field struct | `P(a: 3.5)` | nhận |
 | phần tử mảng có kiểu phần tử chú thích | `let a: [i32;3] = [1, 2.5, 3]` | nhận |
 | `return` của hàm khai báo kiểu nguyên | `fn g() -> i32: return 3.0` | nhận |
+| **đối số của PHƯƠNG THỨC** (2026-07-31) | `s.setv(3.0)` với `setv(self, x: i64)` | nhận, **rác** ⬅ xem dưới |
+| **đối số gọi TĨNH / DISPATCH** (2026-07-31) | `S.setv(&s, 3.0)` · `i.take(3.0)` | như trên |
 
 **Ngoài phạm vi (đã ĐO từng ca 2026-07-31, ghi rõ để không bị hiểu là thiếu sót):**
 1. **Biểu thức** `let a: i64 = f + 1.0` — vẫn nhận. Cần kiểu suy diễn đáng tin ở vị trí có
@@ -188,8 +202,12 @@ nên không bao giờ chạm tới check này.
 4. **Đọc field** `let a: i64 = s.f` (S.f: f64) — vẫn nhận.
 5. **Gán vào binding SUY DIỄN** `mut x := 0; x = 3.0` — vẫn nhận (dùng chung annotation
    gate với §6.1) và **gán vào PHẦN TỬ mảng** `a[0] = 3.0` — cùng ranh giới §6.1 vẽ.
-6. **Đối số của PHƯƠNG THỨC** `s.setv(3.0)` — vẫn nhận (đo: kết quả 16). Cùng lỗ hổng
-   §6.1 mục 3b: method resolution đi qua khối quét `mfi.params`, không dùng `fp_data`.
+6. ~~**Đối số của PHƯƠNG THỨC** `s.setv(3.0)`~~ → **ĐÃ PHỦ 2026-07-31**, cùng một hook với
+   §6.1 mục 3b và §6.3 mục 1. ⚠️ Đo lại kỹ hơn khi đóng: hành vi CŨ **không** phải là giữ
+   mẫu bit IEEE như ca `let` — literal float đi vào **XMM**, còn tham số `i64` được đọc từ
+   **thanh ghi nguyên chưa khởi tạo**, nên field nhận một số nguyên dương RÁC (không phải 3,
+   không phải 0, không > 4e9; `bin/probe8/m2.ax` exit **16**, `m2b.ax` phân loại). Tệ hơn ca
+   `let`: giá trị còn không tất định theo ngữ cảnh gọi.
 7. ~~**f64 → f32 (narrowing)** — hàng KHÁC của bảng §4, chưa cưỡng chế~~ → **ĐÃ LÀM: §6.3
    (`E3032`, 2026-07-31)**, dùng chung `check_annotated_target` nên phủ đúng 10 vị trí như
    E3030/E3031. Chiều widen f32 → f64 (hợp lệ) được sửa ở **§7.3**.
@@ -205,7 +223,7 @@ Windows làm hỏng UTF-8 — `§`/em-dash ra mojibake; ký tự non-ASCII chỉ
 
 **Cài đặt & test:** `typecheck.ax::{check_float_to_int, ident_declared_float,
 is_int_family_type, float_type_display}` + entry point chung `check_annotated_target`
-(7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với `check_int_lit_range`);
+(**8 call site** sau 2026-07-31 — xem §6.1; dùng chung với `check_int_lit_range`);
 `bin/t_f2i{let,var,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax` = reject rows (cả 10 đều
 BUILD trên compiler trước fix), `bin/t_f2iok.ax` = `3.0 as i64` + int→float widening +
 float→float + mọi vị trí nguyên phải vẫn chạy (42), pass cả TRƯỚC và SAU.
@@ -253,6 +271,8 @@ là giá trị ĐO ĐƯỢC trên compiler trước fix cho `let d: f64 = 3.5` �
 | phần tử mảng có kiểu phần tử chú thích | `let a: [f32;3] = [1.0, d, 3.0]` | biên dịch, **0** |
 | `return` của hàm khai báo `-> f32` | `fn g() -> f32: return d` | biên dịch, **0** |
 | IDENT f64 bị NEGATE | `let s: f32 = -d` | biên dịch, **0** |
+| **đối số của PHƯƠNG THỨC** (2026-07-31) | `s.setv(d)` với `setv(self, x: f32)` | biên dịch, **3** |
+| **đối số gọi TĨNH / DISPATCH** (2026-07-31) | `S.setv(&s, d)` · `i.take(d)` | biên dịch, **3** |
 
 ⬅ Hàng ĐỐI SỐ trả **3** (đúng) trong khi chín hàng kia trả **0** — đó chính là bằng chứng
 đo được rằng *đối số là vị trí DUY NHẤT* có chuyển đổi bề rộng float, vì
@@ -262,9 +282,10 @@ dạng hẹp hơn thứ nó phải phủ" mà §7.2 đã mô tả; §7.3 gộp b
 **Ngoài phạm vi (đã ĐO từng ca 2026-07-31 trên compiler SAU fix, ghi rõ để không bị hiểu là
 thiếu sót). Lưu ý quan trọng: nhờ §7.3 mọi ca dưới đây nay cho GIÁ TRỊ ĐÚNG (3) thay vì rác
 (0) — chúng là "nhận mà không chẩn đoán", KHÔNG còn là miscompile:**
-1. **Đối số của PHƯƠNG THỨC** `s.setv(d)` — vẫn nhận (đo: 3 trước và sau). Cùng lỗ hổng
-   §6.1 mục 3b và §6.2 mục 6: method resolution đi qua khối quét `mfi.params`, không dùng
-   `fp_data`. Một backlog item cho CẢ BA luật cùng lúc, không phải riêng luật này.
+1. ~~**Đối số của PHƯƠNG THỨC** `s.setv(d)`~~ → **ĐÃ PHỦ 2026-07-31** bằng **một** hook chung
+   cho cả ba luật (`check_method_args_annotated` → `check_annotated_target`), đúng như mục
+   này dự đoán. Ở luật NÀY đó là ca "nhận mà không chẩn đoán" (giá trị đã đúng, 3, nhờ §7.3),
+   trong khi §6.1/§6.2 ở cùng vị trí là miscompile thật — một lý do nữa để không tách ba hook.
 2. **Gán vào PHẦN TỬ mảng** `a[0] = d` — vẫn nhận (0 → 3). Cùng ranh giới §6.1 vẽ.
 3. **Biểu thức** `let s: f32 = d + 1.0` — vẫn nhận (0 → 4). Cần kiểu suy diễn đáng tin ở vị
    trí có hint; xem lý do "không dùng infer_node" ở §6.2.
@@ -292,13 +313,72 @@ error[E3032]: cannot implicitly convert `d` (type `f64`) to the narrower float t
 ```
 
 **Cài đặt & test:** `typecheck.ax::check_f64_to_f32` + entry point chung
-`check_annotated_target` (7 call site — đếm lại 2026-07-31, con số "8" ghi trước đây SAI, dùng chung với `check_int_lit_range` và
+`check_annotated_target` (**8 call site** sau 2026-07-31 — xem §6.1; dùng chung với
+`check_int_lit_range` và
 `check_float_to_int`); `bin/t_f64f32{let,global,assign,fieldasg,arg,gen,field,arr,ret,neg}.ax`
 = reject rows (cả 10 đều BUILD trên compiler trước fix), `bin/t_f64f32ok.ax` = overreach guard
 (42 cả TRƯỚC và SAU, ở -O0 và -O1). Audit breakage: quét 120 file `.ax` có `f32` trong
 `bin/ tests/ examples/ std/ stdlib/ bootstrap/ docs/ rfcs/` bằng compiler sau fix — chỉ 12
 hit, đúng 10 oracle reject + 2 probe cố ý (`probe6/g_f64tof32`, `probe7/w2`); 0 hit trên
 source của chính compiler (hop B build sạch).
+
+### 6.4 ĐỐI SỐ của PHƯƠNG THỨC — vị trí chung của cả ba luật (2026-07-31) ✅ IMPLEMENTED
+
+Không phải luật thứ tư: là **VỊ TRÍ thứ mười một** của ba luật §6.1/§6.2/§6.3, và là lỗ hổng
+duy nhất mà cả ba cùng có. Ghi riêng vì **cơ chế phân giải** ở đây khác hẳn mọi vị trí khác.
+
+**Vì sao nó lọt:** bảy call site cũ của `check_annotated_target` đều lấy kiểu đích từ đường
+`fp_data` (kiểu khai báo của một hàm tự do). Lời gọi phương thức **không đi đường đó**:
+
+- `s.m(a)` / `S.m(&s, a)` — kiểu tham số đến từ **khối quét symbol theo tên + kiểu receiver**
+  trong nhánh callee `NODE_FIELD_EXPR` của `infer_node` (khối kiểm arity, đọc `mfi.params`);
+- `i.m(a)` (dispatch động) — kiểu tham số đến từ **`interface_method_sig`**, đọc thẳng AST
+  của khai báo interface.
+
+⇒ **MỘT** hook (`check_method_args_annotated`) gọi đúng `check_annotated_target`, dùng ở CẢ HAI
+chỗ. Không thêm luật, không nhân bản luật — đây chính là lớp defect (hai bản sao của một luật
+trôi lệch) đã sinh ra tám bug trong repo này, gần nhất là bản sao riêng của luật độ-rộng-float
+trong `coerce_float_arg_ft` (§6.3, `b8ac125`).
+
+**Cái bẫy monomorphise — đã ĐO, không đoán.** §6.2 mục 3 / §6.3 ghi rõ: `type_id` của một
+symbol bị **ghi đè theo từng bản monomorphise**, nên đọc nó ở phía NGUỒN sẽ từ chối oan bản
+i64 của `fn id[T](v: T)`. Ở đây kiểu đến từ một symbol scan, nên phải trả lời cho phía ĐÍCH.
+Kết luận: **là kiểu KHAI BÁO**, vì ba lý do độc lập, mỗi lý do đủ một mình:
+
+1. khối quét **bỏ qua** symbol có `SYM_FLAG_GENERIC`;
+2. một bản monomorphise là **symbol RIÊNG** với tên **đã mangle** (`f__i64`), mà
+   `name_matches_method` chỉ khớp tên chính xác hoặc dạng `Type.name` ⇒ không bao giờ khớp;
+3. `pre_infer_func_signature` đăng ký func type **một lần cho mỗi symbol** (guard
+   `has_existing`), và `register_function` luôn **push entry mới** ⇒ entry không bị ghi đè
+   theo từng lần khởi tạo.
+
+Chứng cứ đo được (`bin/t_methargok.ax`, hàng 40–44 và 30–31, chạy 42 ở `-O0` lẫn `-O1`, trước
+và sau): **một** method generic khởi tạo ở **i64, f64, u8** rồi **quay lại i64** — không hàng
+nào bị từ chối oan; và **hai struct có method TRÙNG TÊN, kiểu tham số KHÁC nhau**
+(`Wide.setv(x: i64)` nhận 300, `Narrow.setv(x: u8)` từ chối 300) ⇒ kiểu đọc ra đúng là của
+khai báo thuộc receiver đó. Với nhiều hơn một method khớp (overload cùng receiver + arity),
+hook **không kích hoạt** — thà bỏ sót còn hơn từ chối oan.
+
+**Đã phủ:** instance `s.m(a)` · static `S.m(&s, a)` · dispatch `i.m(a)` · method khai báo
+**inline** trong thân struct · receiver là **enum/sum** (`bin/probe8/{c5,c6,c7,c8}.ax`).
+
+**Chưa phủ (đo, ghi rõ):** receiver là builtin/generic-inst (`Vec`/`Option`/`HashMap` — khối
+quét chỉ nhận receiver STRUCT/SUM của người dùng, cố ý để không đụng method bị backend chặn);
+lời gọi method **generic** (đi nhánh `is_generic_call`, tham số là tên generic nên cả ba luật
+đằng nào cũng trơ); và mọi vị trí §6.2/§6.3 vốn đã ngoài phạm vi (biểu thức, kết quả call,
+đọc field, ident là param, `a[0] = …`).
+
+**Test:** `bin/t_metharg{range,f2i,f64f32,static,iface}.ax` = reject rows — **cả năm BUILD**
+trên compiler trước hook và trả giá trị sai âm thầm (44 / rác dương / 3 / 44 / 44);
+`bin/t_methargok.ax` = overreach guard (42 trước và sau, `-O0` và `-O1`).
+Gate: A==B `9D8C7D68`, regression **649/649** ở default và `-O0`. Audit breakage: quét **1193**
+file `.ax` trong `bin/ tests/ examples/ std/ stdlib/ bootstrap/ docs/ rfcs/` bằng cả hai
+compiler và **diff** danh sách bị từ chối — mới thêm **đúng 16 file**, toàn bộ là oracle/probe
+của chính thay đổi này cộng hai probe có sẵn được viết ra để GHI LẠI lỗ hổng
+(`bin/probe6/g_method.ax`, `bin/probe7/gap_method.ax`); 0 hit trong `std/ stdlib/ tests/
+examples/ bootstrap/`. Riêng 31 chương trình có `interface` được chạy đối chứng cũ/mới ở `-O1`
+(vì site dispatch được đổi sang gọi `interface_method_sig` một lần cho cả ret lẫn params):
+mọi exit code trùng khớp.
 
 ## 7. Float codegen (BUG#33)
 

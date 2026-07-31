@@ -1,0 +1,13 @@
+// RFC 0006 §4/§6.2 (E3031) at the METHOD-ARGUMENT position: a float literal handed to a
+// declared INTEGER parameter. Before the hook this compiled and the callee read the raw
+// IEEE bits of 3.0 as an i64 (measured exit 16 through the field, bin/probe8/m2.ax).
+struct S:
+    v: i64
+
+fn setv(mut self: ptr[S], x: i64):
+    self.v = x
+
+fn main() -> i64:
+    mut s := S(v: 1 as i64)
+    s.setv(3.0)
+    return s.v
