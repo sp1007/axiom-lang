@@ -3,11 +3,12 @@
 Trạng thái chuẩn để tiếp tục. Đọc file này + [BACKLOG](BACKLOG.md); **không** đọc `MEMORY.md` nguyên
 file (175 KB ≈ 87k token) — chỉ `Grep` theo tên topic.
 
-## Mốc cây
-- HEAD khi mở phiên: `f6ac69e`. Commit của phiên này: `bc30f58` (docs, đã push).
-- Driver `bin/axc_native.exe` = **A==B `9D8C7D68`**; mốc B==C gần nhất `D3EABC61` (`b8ac125`).
-- **BASELINE = 649/649** (default **và** `-O0`).
-- Cây sạch; chỉ còn untracked: `.claude/settings.json`, `bin/probe3/`, `bin/probe5/`, `bin/probe8/`.
+## Mốc cây (cập nhật cuối phiên)
+- HEAD khi mở phiên: `f6ac69e` → nay **`3370f19`**. Commit code của phiên: **`a538983`** (retire rank 1).
+- Driver `bin/axc_native.exe` = **A==B `B10DABE6…`** (2.297.856 byte, đã promote + sanity 42);
+  mốc B==C gần nhất `D3EABC61` (`b8ac125`).
+- **BASELINE = 662/662** (default **và** `-O0`).
+- Cây sạch; untracked còn lại: `.claude/settings.json` (của user, đừng đụng).
 
 ## Việc đã làm trong phiên
 1. **Làm mới BACKLOG** (`bc30f58`) — nó sai ở gần như mọi dòng quan trọng: baseline 611 (thật 649),
@@ -39,7 +40,28 @@ Root cause `ec5667d`, có trước công việc dispatch **hai tháng** ⇒ đó
 hai phía của `5359a39`. Bug **type-agnostic**, **không riêng dispatch** (gọi tĩnh cũng sai), dạng
 nặng là **nhầm ARITY** và **nhầm KIỂU** (-O0 vs -O1 bất đồng). Refute: `3741afc`; fix: `a281992`.
 
-## 🔄 ĐANG CHẠY khi viết file này
+## ✅ ĐÃ SHIP trong phiên: `a538983` — retire rank 1
+Chi tiết đầy đủ trong commit message + [[BACKLOG]]. Ba điều đáng nhớ:
+1. **Implementer phản biện 3 điểm trong brief của tôi và ĐÚNG cả 3.** (a) Tôi ghi "a1/d5/d2 phải ra
+   42" — sai: không có method `eq`/`lt`/`add` thì **không tồn tại** toán tử, nên **REJECT** mới là
+   đúng; 42 chỉ khả dĩ vì cửa sổ lỏng đang trả lời. (b) Bỏ rank 1 làm `+` trên struct thành SIGSEGV;
+   agent xác minh segfault đó **có sẵn từ trước**, rồi hoàn thiện nhánh số học RFC 0007 §3.1.
+   (c) `h1` là **rank 2**, nên "xoá rank 1" và "h1 phải ra 42" **mâu thuẫn nhau** — agent từ chối mở
+   scope, đúng. ⇒ Bài học viết brief: **đừng ghi kỳ vọng số cụ thể cho ca mà semantics đúng là lỗi.**
+2. **Tôi tự kiểm chứng độc lập trước khi commit**, không tin báo cáo: md5 A==B, 3 oracle reject không
+   sinh exe trong khi compiler CŨ nhận và cho 7/7/8, diagnostic render tận mắt, và breakage audit
+   1215 file (7 reject mới đúng dự định, 2 accept mới, 0 collateral).
+3. **Bẫy đo của chính tôi**: xem mục "BÀI HỌC ĐO" trong [[BACKLOG]] — union lượt chạy bị giết.
+
+## 🔄 ĐANG CHẠY khi viết file này (đã cập nhật)
+**Implementer — hole C** ([[bug-struct-receiver-overload-symbol-collision]]): overload cùng tên trên
+receiver struct đè nhau ở symbol. Đã tự xác minh lại trên driver MỚI trước khi dispatch: `g10_seq`
+= **2 ở -O0 / 42 ở -O1**, `g11_revboth` = **82**, control `g12` (receiver i64) = 42. Brief nhấn:
+**B==C BẮT BUỘC** (đổi tên symbol phát ra), oracle phải đánh bại **cả hai** cơ chế che (`-O1` inline
+và **DFE** — thêm lượt `-no-dfe`), và **mở rộng cơ chế uniquing đã có** (`fb74dd8` BUG#50,
+`7f3aee3` RFC 0035-P2) chứ không đẻ bản sao thứ ba của cùng một luật.
+
+## 🔄 (lịch sử) investigator probe8 — ĐÃ XONG
 **Investigator** (read-only, ghi vào `bin/probe8/`, đã sinh ~60 chương trình probe): câu hỏi là
 **fix `a281992` đã phủ MỌI site phân giải tên chưa**, hay còn matcher anh em vẫn khớp theo
 substring/prefix/suffix — hình dạng defect tái diễn của repo ("hai bản sao một luật, một bản không
