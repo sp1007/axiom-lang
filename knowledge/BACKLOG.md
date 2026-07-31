@@ -119,7 +119,8 @@ lỏng LÀM CÂU TRẢ LỜI khi không có tên chính xác nào**. Sửa một
   dựng lại byte-identical** (stdlib đều gọi bằng tên đầy đủ = rank 3). Còn `air_builder.ax:1571`
   `match_base_names` và `:1755` `match_mangled_method_name` = **bản sao CHẾT, 0 caller** ⇒ xóa.
 
-**C — overload cùng tên trên receiver struct đè nhau ở symbol** (⇒ **B==C**, chưa làm).
+**C — overload cùng tên trên receiver struct đè nhau ở symbol** (⇒ **B==C**, chưa làm) —
+chi tiết + bẫy đo: [[bug-struct-receiver-overload-symbol-collision]].
 `typecheck.ax:1233-1246` `free_fn_bare_mangles` trả false khi param 0 là struct/sum, tin rằng
 `x86_regs.ax:338` mangle ra `ax_<Struct>_<fn>` "duy nhất theo receiver" — nhưng đó là duy nhất theo
 **(receiver, tên)**, KHÔNG theo chữ ký. Vòng uniquing Phase-3.5 (`typecheck.ax:3227-3240`) không gắn
@@ -135,13 +136,14 @@ dưới `-no-dfe`** ⇒ các ca "đúng" chỉ là **ảo giác do DFE** xóa h�
   init, `:4208` return) + check param inline `:5439`. **Gán (assignment)** và **payload Option**
   KHÔNG được phủ ⇒ `f1_iface_optpayload` **SEGFAULT (139)** ở cả ba mức, `f5_iface_assign` = 7.
   Control `f1d`/`f5d` (struct không có method na ná) fail y hệt ⇒ gốc là **thiếu check**, không phải
-  luật tên.
+  luật tên. → [[bug-iface-conformance-unchecked-sites]].
 - **Kiểu TRẢ VỀ của operator method không được kiểm**: `eq(self,o) -> f64` đặt tên CHÍNH XÁC vẫn làm
   `a == b` ra true (đọc thanh ghi nguyên trong khi callee trả XMM0) — `d1c_eq_f64_exact`.
 - **Method generic mono hoá trả `-> T` với T ↦ f64 ra 0.0**: `i8_genf64ret` = 40 ở cả ba mức.
   Controls thu hẹp rất gọn: `i6` đọc **field** f64 generic = 41 ✅, `i7` method f64 không generic
   = 41 ✅, `i9` struct generic có `-> f64` **cụ thể** = 42 ✅, `i5` `Box[i32].get` = 42 ✅ ⇒ khuyết tật
-  đúng ở **`-> T` mono hoá sang f64**, nghi lớp thanh ghi trả về. Đáng một investigation riêng.
+  đúng ở **`-> T` mono hoá sang f64**, nghi lớp thanh ghi trả về (**chưa xác minh** — xem objdump
+  trước khi tin). → [[bug-mono-generic-ret-typaram-f64]].
 - `h2_axstd_prefix` = 7 (mà `h3` đảo thứ tự = 42): phép **strip `_AX_std_`** biến một
   `_AX_std_eq` do user định nghĩa thành **tie rank-3** cướp `==` khỏi `eq` thật — over-reach do
   **chính `a281992`** đẻ ra, nằm ở luật phá hoà, không phải ở cửa sổ lỏng.
