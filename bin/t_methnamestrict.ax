@@ -1,0 +1,136 @@
+// RFC 0037 (rank-1 retirement) OVER-REACH GUARD.
+//
+// Removing the loose `_`-bounded substring window from method-name resolution must
+// not swing the other way: every call below names a method that genuinely exists,
+// and each must still select ITS OWN method. Each check returns a distinct small
+// code so a failure names itself; 42 = all clear.
+//
+// Companion oracles: t_dropglueexact.ax (RFC 0014 drop glue), t_opnooverload*.ax
+// (RFC 0007 §2.2 rejections), t_methshadow.ax (the ranking itself).
+import std.collections
+
+// Exact `eq` present alongside `deep_eq`: the exact one wins (rank 3 > nothing).
+struct Num:
+    v: i64
+    fn deep_eq(self, o: Num) -> bool:
+        return true
+    fn eq(self, o: Num) -> bool:
+        return self.v == o.v
+
+// `len` and `buf_len` both defined and both called, in BOTH declaration orders --
+// the original defect was order-sensitive.
+struct Buf:
+    n: i64
+    fn len(self) -> i64:
+        return 40
+    fn buf_len(self) -> i64:
+        return 2
+
+struct BufRev:
+    n: i64
+    fn buf_len(self) -> i64:
+        return 2
+    fn len(self) -> i64:
+        return 40
+
+// Two structs sharing one method name.
+struct GA:
+    v: i64
+    fn get(self) -> i64:
+        return 20
+
+struct GB:
+    v: i64
+    fn get(self) -> i64:
+        return 22
+
+// Static call form (S.r(&s)) must select the same exact method as s.r().
+struct Stat:
+    n: i64
+    fn a_r(self: Stat, x: i64) -> i64:
+        return x
+    fn r(self: Stat) -> i64:
+        return 42
+
+// Interface declaring BOTH names; both vtable slots must be filled distinctly.
+interface I:
+    fn p32_r32(self: Self, a: i64) -> i64
+    fn r32(self: Self) -> i64
+
+struct IS:
+    k: i64
+    fn p32_r32(self: IS, a: i64) -> i64:
+        return a
+    fn r32(self: IS) -> i64:
+        return 2
+
+// Generic struct method (rank 2: the monomorphized `_AX_std_get__i32` form must
+// still answer `get`).
+struct Box[T]:
+    v: T
+    fn get(self) -> T:
+        return self.v
+
+// Generic free fns, one shadowing the other's name by the retired window.
+fn ident[T](x: T) -> T:
+    return x
+
+fn safe_ident[T](x: T) -> T:
+    return x
+
+// Module-level free fn whose name ENDS in a would-be method name.
+struct Plain:
+    n: i64
+
+fn buf_len(b: Plain) -> i64:
+    return 100
+
+fn main() -> i64:
+    let a = Num(v: 1)
+    let b = Num(v: 2)
+    if a == b:
+        return 1
+    let c = Num(v: 1)
+    if not (a == c):
+        return 2
+
+    let bf = Buf(n: 0)
+    if bf.len() + bf.buf_len() != 42:
+        return 3
+    let bfr = BufRev(n: 0)
+    if bfr.len() + bfr.buf_len() != 42:
+        return 4
+
+    let ga = GA(v: 0)
+    let gb = GB(v: 0)
+    if ga.get() + gb.get() != 42:
+        return 5
+
+    let st = Stat(n: 0)
+    if Stat.r(&st) != 42:
+        return 6
+    if st.a_r(7) != 7:
+        return 8
+
+    let iv: I = IS(k: 0)
+    if iv.p32_r32(40) + iv.r32() != 42:
+        return 9
+
+    let bx = Box[i32](v: 2 as i32)
+    if 40 + (bx.get() as i64) != 42:
+        return 10
+
+    let g1 = ident[i64](40 as i64)
+    let g2 = ident[i32](2 as i32)
+    let g3 = safe_ident[i64](0 as i64)
+    if g1 + (g2 as i64) + g3 != 42:
+        return 11
+
+    // stdlib call by full name (rank 3) beside a free fn whose plain name is a
+    // superstring of it.
+    let s = "abc"
+    let pl = Plain(n: 0)
+    if std.string.len(s) + (buf_len(pl) / 100) != 4:
+        return 12
+
+    return 42

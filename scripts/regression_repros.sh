@@ -59,6 +59,22 @@ rows=(
   # forms (f64 return read as i64, extra param). Pre-fix: 1 / 1@-O0,2@-O1.
   "t_methshadow|exit|42"
   "t_methshadowsig|exit|42"
+  # RFC 0037 rank-1 RETIREMENT: a method is never selected by a `_`-bounded SUBSTRING
+  # of another name, even when NO exactly-named method exists. Ranking alone only fixed
+  # the case where an exact match also existed; the loose window was still the ANSWER
+  # otherwise, so `==`/`<`/`+` called a method the user never named (pre-fix exit 7/7/8,
+  # now the RFC 0007 §2.2 diagnostic the compiler already had) and drop glue INVOKED
+  # `pre_drop` as drop glue at every scope exit while E4003 rejected copying that same
+  # type (t_dropglueexact was REJECTED pre-fix, 42 post-fix).
+  # t_methnamestrict is the OVER-REACH guard: 42 before AND after -- a tightened matcher
+  # can mis-select the other way, and these 12 calls all name methods that exist.
+  "t_methnamestrict|exit|42"
+  "t_dropglueexact|exit|42"
+  "t_opnooverload|reject|"
+  "t_opnooverloadlt|reject|"
+  "t_opnooverloadarith|reject|"
+  "t_ufcsnoexact|reject|"
+  "t_ifacenoexact|reject|"
   "t_genexplicitfloatarg|exit|42"
   "t_intlitfloatctx|exit|42"
   "t_param5|out|A38"
@@ -964,6 +980,8 @@ opt_rows=(
   "t_methretbreadth|42"
   "t_methshadow|42"
   "t_methshadowsig|42"
+  "t_methnamestrict|42"
+  "t_dropglueexact|42"
   "t_genexplicitfloatarg|42"
   "t_intlitfloatctx|42"
   "t_negmatch|70"
@@ -1018,7 +1036,7 @@ done
 # t_intlitfloatctx is in this list because the defect it pins DIVERGED between -O0 and
 # -O1 (a stale XMM value could make a row pass at one level and fail at the other), so
 # a single opt level is not evidence.
-for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42" "t_methargok:42"; do
+for z in "t_negbiglitcmp:42" "t_tostr:88" "t_localarrnoinit:12" "t_localstructnoinit:12" "t_localtuplenoinit:12" "t_ifacefnbuiltinname:36" "t_intlitfloatctx:42" "t_ifacefloatarg:42" "t_methshadow:42" "t_methshadowsig:42" "t_methargok:42" "t_methnamestrict:42" "t_dropglueexact:42"; do
   zname="${z%%:*}"; zwant="${z##*:}"
   ze="$REGTMP/reg_${zname}_O0.exe"; rm -f "$ze"
   timeout "$TIMEOUT" "$AXC" build "bin/${zname}.ax" -o "$ze" -O0 $AXEXTRA >/dev/null 2>&1

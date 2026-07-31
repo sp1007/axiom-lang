@@ -1,0 +1,11 @@
+// A: ownership.ax type_has_drop uses the LOOSE matcher. A type with only
+// `pre_drop(self)` has no drop; copying it must be legal.
+mut sink: i64 = 0
+struct Res:
+    id: i64
+    fn pre_drop(self):
+        sink = sink + self.id
+fn main() -> i64:
+    let a = Res(id: 42)
+    let b = a
+    return b.id

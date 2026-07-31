@@ -1,0 +1,21 @@
+// D: the drop-glue slot filled by a method with a NON-void return, called for
+// its side effect by machinery that expects `drop(self)`.
+mut hits: i64 = 0
+struct Res:
+    id: i64
+    fn late_drop(self) -> ptr[i64]:
+        hits = hits + 1
+        return &hits
+fn work():
+    mut i = 0
+    while i < 3:
+        let r = Res(id: i)
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
+fn main() -> i64:
+    work()
+    if hits == 0:
+        return 42
+    return 7

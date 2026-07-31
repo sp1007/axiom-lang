@@ -1,0 +1,17 @@
+// F control: Option[I] payload whose struct has NO method at all resembling
+// `r`. If this ALSO segfaults, the missing check -- not the loose window -- is
+// the whole story for f1.
+interface I:
+    fn r(self: Self) -> i64
+
+struct S:
+    n: i64
+    fn zzz(self: S) -> i64:
+        return 1
+
+fn main() -> i64:
+    let o: Option[I] = Some(S(n: 1))
+    let i = o.unwrap()
+    if i.r() == 42:
+        return 42
+    return 7

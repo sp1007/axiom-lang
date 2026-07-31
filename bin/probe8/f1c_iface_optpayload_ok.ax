@@ -1,0 +1,16 @@
+// F control: SAME shape as f1 but S implements `r` EXACTLY. If this is 42 the
+// Option[I] payload path itself is sound and f1's segfault is the mis-selection.
+interface I:
+    fn r(self: Self) -> i64
+
+struct S:
+    n: i64
+    fn r(self: S) -> i64:
+        return 42
+
+fn main() -> i64:
+    let o: Option[I] = Some(S(n: 1))
+    let i = o.unwrap()
+    if i.r() == 42:
+        return 42
+    return 7

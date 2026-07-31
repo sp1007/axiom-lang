@@ -1,0 +1,17 @@
+// UFCS/free-fn method-form selection must be by NAME, not by a `_`-bounded
+// substring of a longer free function's name. MUST BE REJECTED (no executable).
+//
+// `s_len`'s first parameter is S, so it is a candidate receiver-wise, and "len"
+// sits at a `_`-bounded position inside its name -- the retired rank-1 window
+// (RFC 0037) therefore let `s.len()` call a two-parameter function through a
+// one-argument call site (arity confusion, the second argument read from
+// whatever the previous call left in the register).
+struct S:
+    n: i64
+
+fn s_len(x: S, k: i64) -> i64:
+    return k
+
+fn main() -> i64:
+    let s = S(n: 5)
+    return s.len()

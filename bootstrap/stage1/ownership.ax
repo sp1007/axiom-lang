@@ -128,14 +128,20 @@ fn ownership_unwrap_type(self: ptr[OwnershipChecker], t: u32) -> u32:
     return u
 
 // RFC 0014 P1: one-time scan — does ANY `<Type>.drop(self)` method exist in the
-// program? Uses the same mangled-name match as air_builder.ax::resolve_drop_method
-// (an inline `fn drop(self)` carries a dotted mangled name resolve_method_sym misses).
+// program? Calls air_builder.ax::method_name_rank_raw_bytes, the SINGLE method-name
+// rule, exactly as resolve_drop_method does (an inline `fn drop(self)` carries a
+// dotted mangled name resolve_method_sym misses). This pass used to call a separate
+// wrapper that was never converted when the rule became rank-based, so the two
+// copies drifted: ownership still honoured the retired loose byte-window and
+// reported "has drop" for a type declaring only `pre_drop`, rejecting a legal
+// `let b = a` with E4003. One rule, one caller shape: `rank != 0` is exactly the
+// condition under which resolve_drop_method returns a non-zero symbol.
 fn scan_has_drop(self: ptr[OwnershipChecker]) -> bool:
     let method_id = self.pool.intern("drop")
     mut i := 0 as i64
     while i < self.symtable.symbols.len:
         let sym = self.symtable.symbols.data[i]
-        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.pool, sym.name_id, method_id):
+        if sym.kind == SYM_FUNC and method_name_rank_raw_bytes(self.pool, sym.name_id, method_id) != 0 as i64:
             let t_entry = self.typetable.entries.data[sym.type_id as i64]
             if t_entry.kind == TYPE_KIND_FUNC:
                 let fi = self.typetable.funcs.data[t_entry.extra as i64]
@@ -148,7 +154,7 @@ fn scan_has_drop(self: ptr[OwnershipChecker]) -> bool:
 // A pointer/ref receiver is NOT a value copy (copying `ptr[T]` copies the pointer,
 // and pointer-typed locals are never CTGC-freed) -> only flag direct value types.
 // The drop method's self param may be `self`(value) OR `ptr[T]`, so unwrap the param
-// and compare to the value receiver type.
+// and compare to the value receiver type. Same single rule as scan_has_drop above.
 fn type_has_drop(self: ptr[OwnershipChecker], rec_type: u32) -> bool:
     if rec_type == 0 as u32 or (rec_type as i64) >= self.typetable.entries.len:
         return false
@@ -159,7 +165,7 @@ fn type_has_drop(self: ptr[OwnershipChecker], rec_type: u32) -> bool:
     mut i := 0 as i64
     while i < self.symtable.symbols.len:
         let sym = self.symtable.symbols.data[i]
-        if sym.kind == SYM_FUNC and match_mangled_method_raw_bytes(self.pool, sym.name_id, method_id):
+        if sym.kind == SYM_FUNC and method_name_rank_raw_bytes(self.pool, sym.name_id, method_id) != 0 as i64:
             let t_entry = self.typetable.entries.data[sym.type_id as i64]
             if t_entry.kind == TYPE_KIND_FUNC:
                 let fi = self.typetable.funcs.data[t_entry.extra as i64]

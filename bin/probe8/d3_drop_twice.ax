@@ -1,0 +1,15 @@
+// D: drop glue invents a call to a method the user never named `drop`.
+// The user calls `on_drop` EXACTLY once by hand; the compiler adds its own.
+mut hits: i64 = 0
+struct Res:
+    id: i64
+    fn on_drop(self):
+        hits = hits + 1
+fn work():
+    let r = Res(id: 1)
+    r.on_drop()
+fn main() -> i64:
+    work()
+    if hits == 1:
+        return 42
+    return 7 + hits

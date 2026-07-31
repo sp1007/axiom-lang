@@ -1,0 +1,21 @@
+// A: drop glue (RFC 0014) must call `<T>.drop(self)`. This type declares only
+// `pre_drop(self)`. If the loose window answers "drop" with `pre_drop`, the
+// compiler INVENTS a call the user never wrote, at every scope exit.
+mut hits: i64 = 0
+struct Res:
+    id: i64
+    fn pre_drop(self):
+        hits = hits + 1
+fn work():
+    mut i = 0
+    while i < 5:
+        let r = Res(id: i)
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
+fn main() -> i64:
+    work()
+    if hits == 0:
+        return 42
+    return 7

@@ -1,6 +1,6 @@
 # RFC 0037 — Method name resolution is RANKED, and exact names win
 
-- Status: implemented
+- Status: implemented; **amended 2026-07-31 — rank 1 (the loose window) is RETIRED, see §"Amendment"**
 - Date: 2026-07-31
 - Affects: `bootstrap/stage1/air_builder.ax` (AIR-build method resolution), `bootstrap/stage1/typecheck.ax`
   (the diagnostic mirror). No IR, ABI, linker or syntax change.
@@ -103,3 +103,62 @@ identically.
   the namespaced form explicitly (`self.locals.local_map_get(...)`, `scope.scope_get(...)`), i.e. rank
   3, so self-compilation is unaffected — a compiler built with rank 1 removed entirely emits
   byte-identical code size for the same source.
+
+## Amendment (2026-07-31) — rank 1 is RETIRED
+
+Ranking fixed only the case where an exactly-named candidate **also** existed. When none did, the
+loose window was still the ANSWER, and that turned out not to be a compatibility niche but three live
+defects — each measured, each an accept-then-miscompile (BUG#53 class):
+
+| symptom | measured |
+|---------|----------|
+| `a == b` on a type declaring only `deep_eq` called deep_eq and returned true for unequal values. Same for `total_lt`/`<` and `checked_add`/`+`. The RFC 0007 §2.2 diagnostic the compiler **already had** was suppressed by rank 1. | exit 7 / 7 / 8 → now rejected |
+| RFC 0014 drop glue INVENTED a call the user never wrote: a type declaring only `pre_drop(self)` had it invoked at every scope exit, including a `late_drop(self) -> ptr[i64]` called through a `drop(self)` shape. Running an arbitrary method on a block about to be freed is a UAF, not a wrong number. | 5 and 3 spurious calls → now 0 |
+| `ownership.ax type_has_drop` reported "has drop" for `pre_drop`, so `let b = a` on a type with no drop was rejected with **E4003**. | rejected → accepted |
+
+The third one is also where the *two copies* of the rule bit. `match_mangled_method_raw_bytes` was
+retained as `rank != 0` for ownership.ax's existence tests (see §Design above) — but that only kept
+ownership in step by accident of the rank-1 fallback, and it was never converted when the rule became
+rank-based. There is now **exactly one** function, `method_name_rank_raw_bytes`, and every consumer
+calls it directly: `resolve_op_method`, `resolve_drop_method`, `find_struct_method_sym`, the UFCS
+dispatch loop, `typecheck.diag_resolve_op_method`, and ownership's `scan_has_drop` / `type_has_drop`
+(as `rank != 0`, which is exactly when `resolve_drop_method` returns a non-zero symbol). Three further
+dead near-copies of the same idea — `match_base_names`, `match_mangled_method_name`,
+`match_mangled_method_loose` — are deleted rather than left unused; leaving a fourth copy of a rule
+that just caused a bug is how it comes back.
+
+Ranks are now `{3, 2, 0}`; the selection loops are unchanged (highest rank wins, rank 3 short-circuits,
+rank 2 remembered as a fallback for the monomorphized `_AX_std_<name>__<typeargs>` form).
+
+**Named consequence, accepted:** a module-level function used as a namespaced method
+(`os.pathbuf_to_str(self: PathBuf)` answering `p.to_str()`) no longer resolves. Nothing in this repo
+does that — every such form is called by its full name — and the alternative is silently calling a
+function the user did not name.
+
+**Known remaining over-reach, NOT addressed here** (both introduced by the mangling-aware rules of the
+original RFC, not by the loose window, and both need their own decision):
+
+- rank 2 accepts a **user-declared** `eq__fast` as an answer to `eq` (`bin/probe8/h1_rank2_eq.ax`,
+  still exit 7). The `__` separator is mono's, but the rule does not require the name to have carried
+  a mono prefix.
+- the `_AX_std_` strip makes a user-declared `_AX_std_eq` a rank-3 **tie** with a genuine `eq`, decided
+  by declaration order (`bin/probe8/h2_axstd_prefix.ax` = 7 vs `h3_axstd_prefix_rev.ax` = 42).
+
+Both are the same shape: a user name that *mimics* the monomorphizer's mangling is treated as if the
+monomorphizer had produced it. A fix would key ranks 2/3 on the symbol actually being an instantiation
+rather than on its spelling.
+
+### Evidence (amendment)
+
+- `bin/t_dropglueexact.ax` — REJECTED (E4003) before, **42** after; pins 0 spurious `pre_drop`/
+  `late_drop` calls, 6 real `drop` calls when a real `drop` exists, and the legality of copying a
+  `pre_drop`-only type.
+- `bin/t_opnooverload.ax` / `t_opnooverloadlt.ax` / `t_opnooverloadarith.ax` — exit 7 / 7 / 8 before,
+  **rejected** after.
+- `bin/t_ufcsnoexact.ax`, `bin/t_ifacenoexact.ax` — rejected before and after (guards against
+  re-loosening).
+- `bin/t_methnamestrict.ax` — **42 before and after**: the over-reach guard. 12 calls that all name a
+  method that exists (both declaration orders of `len`/`buf_len`, two structs sharing `get`, the
+  static call form, an interface declaring both `r32` and `p32_r32`, a generic struct method, generic
+  free fns, a stdlib call beside a superstring-named free fn, exact `eq` beside `deep_eq`).
+- All rows registered in `scripts/regression_repros.sh` (main list, the -O0 list and the -O2/-O3 list).

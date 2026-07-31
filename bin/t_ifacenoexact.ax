@@ -1,0 +1,20 @@
+// RFC 0029 interface conformance + vtable slot fill require NAME EQUALITY.
+// MUST BE REJECTED (no executable): S does not implement `r`.
+//
+// `a_r` ends in "_r", which the retired rank-1 window (RFC 0037) accepted as an
+// answer to `r`, so the conformance check passed and slot 0 was filled with a
+// two-parameter function -- `i.r()` then called it through a one-argument call
+// site and returned its second parameter.
+interface I:
+    fn r(self: Self) -> i64
+
+struct S:
+    n: i64
+    fn a_r(self: S, x: i64) -> i64:
+        return x
+
+fn main() -> i64:
+    let i: I = S(n: 1)
+    if i.r() == 42:
+        return 42
+    return 7

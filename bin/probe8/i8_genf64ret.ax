@@ -1,0 +1,12 @@
+// Monomorphised generic method whose RETURN type is the type parameter bound to
+// f64. Expect 42; a 0.0 return (wrong register class) gives 40.
+struct Box[T]:
+    v: T
+    fn get(self) -> T:
+        return self.v
+fn main() -> i64:
+    let c = Box[f64](v: 2.5)
+    let g = c.get()
+    let n = g as i64        // 2
+    let d = Box[i64](v: 40 as i64)
+    return d.get() + n      // 42

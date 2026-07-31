@@ -1,0 +1,98 @@
+// RFC 0014 drop glue is `<Type>.drop(self)` -- NOTHING ELSE.
+//
+// The retired rank-1 loose window (RFC 0037) let a `_`-bounded substring answer the
+// name `drop`, so a type declaring only `pre_drop(self)` had that method INVOKED as
+// drop glue at every scope exit -- a call the user never wrote, on a block about to
+// be freed (a UAF waiting to happen), and ownership.ax's type_has_drop reported the
+// same type as "has drop" so `let b = a` was rejected with E4003.
+//
+// Every check returns a distinct small code; 42 = all clear.
+
+mut pre_hits: i64 = 0
+mut late_hits: i64 = 0
+mut real_drops: i64 = 0
+mut shadow_pre: i64 = 0
+mut sink: i64 = 0
+
+// Only `pre_drop`: not drop glue, and copyable.
+struct ResPre:
+    id: i64
+    fn pre_drop(self):
+        pre_hits = pre_hits + 1
+
+// Only `late_drop`, and it returns a value -- machinery expecting `drop(self)`
+// would call it for its side effect through a non-void signature.
+struct ResLate:
+    id: i64
+    fn late_drop(self) -> ptr[i64]:
+        late_hits = late_hits + 1
+        return &late_hits
+
+// A REAL `drop` beside a `pre_drop`: glue must run `drop`, exactly, every time.
+struct ResBoth:
+    id: i64
+    fn pre_drop(self):
+        shadow_pre = shadow_pre + 1
+    fn drop(self):
+        real_drops = real_drops + 1
+
+// Control for the copy rule: an unrelated method name, no drop.
+struct ResClean:
+    id: i64
+    fn cleanup(self):
+        sink = sink + self.id
+
+fn work_pre():
+    mut i = 0
+    while i < 5:
+        let r = ResPre(id: i)
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
+
+fn work_late():
+    mut i = 0
+    while i < 3:
+        let r = ResLate(id: i)
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
+
+fn work_both():
+    mut i = 0
+    while i < 6:
+        let r = ResBoth(id: i)
+        if r.id >= 0:
+            i = i + 1
+        else:
+            i = i + 1
+
+fn main() -> i64:
+    work_pre()
+    if pre_hits != 0:
+        return 1
+    work_late()
+    if late_hits != 0:
+        return 2
+    work_both()
+    if shadow_pre != 0:
+        return 3
+    if real_drops != 6:
+        return 4
+
+    // E4003 (implicit copy of a drop-typed value) must NOT fire for a type whose
+    // only method merely CONTAINS "drop" as a `_`-bounded substring.
+    let a = ResPre(id: 20)
+    let b = a
+    if b.id != 20:
+        return 5
+    let c = ResClean(id: 22)
+    let d = c
+    if d.id != 22:
+        return 6
+    if b.id + d.id != 42:
+        return 7
+
+    return 42

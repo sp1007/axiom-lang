@@ -1,0 +1,18 @@
+// RFC 0007 §2.2: a struct lhs with NO `eq` method must be a typecheck ERROR.
+// MUST BE REJECTED (no executable).
+//
+// `deep_eq` ends in "_eq", which the retired rank-1 loose window (RFC 0037)
+// accepted as an answer to `eq` -- so `a == b` silently called deep_eq and
+// returned true for two unequal values, and the diagnostic below (which the
+// compiler already had) never fired.
+struct Num:
+    v: i64
+    fn deep_eq(self, o: Num) -> bool:
+        return true
+
+fn main() -> i64:
+    let a = Num(v: 1)
+    let b = Num(v: 2)
+    if a == b:
+        return 7
+    return 42

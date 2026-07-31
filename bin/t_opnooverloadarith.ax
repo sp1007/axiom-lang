@@ -1,0 +1,21 @@
+// RFC 0007 §2.2, ARITHMETIC arm: a struct lhs with NO `add` method must be a
+// typecheck ERROR. MUST BE REJECTED (no executable).
+//
+// §3 mandates the check on both the comparison and the arithmetic branch, but only
+// the comparison branch had been implemented (§2.2 deferred this one until error
+// infra existed). Without it, air_builder falls through to OP_IADD on the two
+// aggregates' ADDRESSES and `c.v` dereferences the sum of two pointers -> SIGSEGV
+// with no diagnostic at all. `checked_add` ends in "_add", which the retired rank-1
+// loose window (RFC 0037) used to accept as `add`.
+struct Num:
+    v: i64
+    fn checked_add(self, o: Num) -> Num:
+        return Num(v: 999)
+
+fn main() -> i64:
+    let a = Num(v: 10)
+    let b = Num(v: 32)
+    let c = a + b
+    if c.v == 42:
+        return 42
+    return 8

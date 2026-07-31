@@ -1,0 +1,13 @@
+// D: TYPE confusion through the surviving loose rank-1 window. `==` looks up
+// `eq`; only `bad_eq` exists and it returns f64 (XMM0), while the `==` site
+// consumes a bool from an integer register.
+struct Num:
+    v: i64
+    fn bad_eq(self, o: Num) -> f64:
+        return 0.0
+fn main() -> i64:
+    let a = Num(v: 1)
+    let b = Num(v: 2)
+    if a == b:
+        return 7
+    return 42

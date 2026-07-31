@@ -899,9 +899,9 @@ pub fn try_instantiate_struct_ctor(mut self: ptr[TypeChecker], callee: u32, stru
 // symbols whose (mangled) name matches `method_name` (struct methods declared
 // INLINE under `struct X: fn eq(self, o): ...` get a dotted mangled name like
 // "X.eq", which plain self.symtable.resolve("eq") does NOT find -- this must
-// use the SAME substring-match helper air_builder uses at codegen time, or the
-// diagnostic and the actual lowering decision can disagree). Returns 0 when no
-// method matches, meaning air_builder would ALSO find nothing and fall back to
+// use the SAME method_name_rank_raw_bytes rule air_builder uses at codegen time,
+// or the diagnostic and the actual lowering decision can disagree). Returns 0 when
+// no method matches, meaning air_builder would ALSO find nothing and fall back to
 // the broken native-opcode (pointer) comparison.
 pub fn diag_resolve_op_method(self: ptr[TypeChecker], method_name: str, rec_type: u32, rhs_type: u32) -> u32:
     let method_id = self.intern.intern(method_name)
@@ -918,8 +918,8 @@ pub fn diag_resolve_op_method(self: ptr[TypeChecker], method_name: str, rec_type
             rhs_unwrapped = re.extra as u32
             re = self.types.entries.data[rhs_unwrapped as i64]
     // Same RANK-based pick as air_builder's resolve_op_method (an exactly-named
-    // method outranks a loose substring hit): a diagnostic that disagrees with the
-    // resolver is its own bug.
+    // method outranks its rank-2 monomorphized form): a diagnostic that disagrees
+    // with the resolver is its own bug.
     mut best := 0 as u32
     mut best_rank := 0 as i64
     mut i := 0 as i64
@@ -4782,6 +4782,41 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     ax_printf_local("error: operator '%s' is not defined between a string and a numeric operand\n", get_str_ptr(bot2) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     safe_free_str(bot2)
                     self.diags_count = self.diags_count + 1 as i64
+                // RFC 0007 §2.2 ("lhs là struct mà KHÔNG có method tương ứng -> lỗi
+                // typecheck"), arithmetic arm. §3 mandates the check on BOTH branches;
+                // only the comparison branch above was implemented, because §2.2
+                // deferred this one until error infra existed. It exists now, and the
+                // gap is not benign: with no `add` method, air_builder falls through to
+                // OP_IADD on the two aggregates' ADDRESSES and `c.v` then dereferences
+                // the sum of two pointers -> SIGSEGV with no diagnostic (measured; this
+                // predates the rank-1 retirement, which only made it reachable for a
+                // type whose only method was `checked_add`). Cannot regress a working
+                // program: every program this now rejects crashes today.
+                // Bitwise/shift/range operators have no RFC 0007 method name, so mname
+                // stays "" and they are untouched.
+                if (t1 as i64) < self.types.entries.len:
+                    let at1_entry = self.types.entries.data[t1 as i64]
+                    if at1_entry.kind == TYPE_KIND_STRUCT or at1_entry.kind == TYPE_KIND_SUM or at1_entry.kind == TYPE_KIND_GENERIC_INST:
+                        let aop_text = self.node_text(node_idx)
+                        mut amname := ""
+                        if aop_text == "+":
+                            amname = "add"
+                        elif aop_text == "-":
+                            amname = "sub"
+                        elif aop_text == "*":
+                            amname = "mul"
+                        elif aop_text == "/":
+                            amname = "div"
+                        elif aop_text == "%":
+                            amname = "rem"
+                        safe_free_str(aop_text)
+                        if amname != "":
+                            let amsym = self.diag_resolve_op_method(amname, t1, t2)
+                            if amsym == 0 as u32:
+                                let atname = self.intern.get(at1_entry.name_id)
+                                ax_printf_local("error: type '%s' does not implement '%s' for this operator; no operator overload found\n", get_str_ptr(atname) as i64, get_str_ptr(amname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                                self.diags_count = self.diags_count + 1 as i64
+
                 // numeric promotion simple. RFC 0007: for a user-type lhs (operator
                 // overload, lowered to a method call by air_builder) the result is
                 // the lhs type — which the final `else` already yields.

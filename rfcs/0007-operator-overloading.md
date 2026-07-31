@@ -61,6 +61,19 @@ NGUYÊN codegen native hiện tại (OP_IADD/OP_FADD/mask...) → **byte-identic
 giữ**. Nếu lhs là struct mà KHÔNG có method tương ứng → lỗi typecheck (BUG#35 infra,
 tạm thời: bỏ qua/giữ hành vi cũ cho tới khi có error infra).
 
+**Cập nhật 2026-07-31 — §2.2 nay ĐÃ thực thi ĐẦY ĐỦ (cả hai nhánh, đúng như §3.1 yêu cầu).**
+Nhánh **so sánh** đã có chẩn đoán từ trước (`error: type 'T' does not implement 'eq' for this
+comparison`). Nhánh **số học** là phần "tạm thời bỏ qua" còn lại, và nó KHÔNG vô hại: không có
+method `add`, air_builder rơi xuống `OP_IADD` trên **ĐỊA CHỈ** của hai aggregate, rồi `c.v`
+deref tổng hai con trỏ → **SIGSEGV, không một chẩn đoán nào** (đo được: `bin/t_opnooverloadarith.ax`
+crash trên compiler tiền-fix khi không có method nào khớp). Nay:
+`error: type 'T' does not implement 'add' for this operator; no operator overload found`
+(+ `sub`/`mul`/`div`/`rem`). Không thể hồi quy chương trình đang chạy được: mọi chương trình bị
+từ chối mới đều đang **crash** ở hiện tại. Toán tử bit/dịch/range không có tên method theo §2.1
+nên không bị chạm. Oracle: `bin/t_opnooverload{,lt,arith}.ax` (7 / 7 / 8 trước → REJECT sau).
+Lỗ hổng này bị PHƠI RA bởi việc gỡ rank 1 (RFC 0037 §Amendment): trước đó `checked_add` được
+cửa sổ lỏng nhận làm `add`, che mất ca "không có method".
+
 ## 3. Implementation
 
 1. **typecheck.ax** (NODE_BINARY_EXPR, cả nhánh so sánh op==1 và số học):

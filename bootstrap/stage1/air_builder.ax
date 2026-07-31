@@ -1137,8 +1137,10 @@ pub fn resolve_op_method(self: ptr[FuncLowering], method_name: str, rec_type: u3
                                 if sp == rhs_unwrapped:
                                     rhs_ok = true
                         if rhs_ok:
-                            // Exactly-named operator method wins over a loose
-                            // substring hit (`Vec.eq` over `Vec.deep_eq`).
+                            // Exactly-named operator method wins over a rank-2
+                            // monomorphized form (`Vec.eq` over `_AX_std_eq__i64`);
+                            // nothing else is a candidate, so a type declaring only
+                            // `deep_eq` has NO `eq` and `==` reports RFC 0007 §2.2.
                             if rank >= 3 as i64:
                                 return i as u32
                             if rank > best_rank:
@@ -1309,9 +1311,10 @@ pub fn resolve_drop_method(self: ptr[FuncLowering], rec_type: u32) -> u32:
                 if fi.params.len == 1 as i64:
                     let fp = self.op_unwrap_type(fi.params.data[0] as u32)
                     if fp == unwrapped:
-                        // A real `drop(self)` outranks a `pre_drop(self)` that the
-                        // loose rule also accepts -- running the wrong one on a
-                        // block about to be freed is a UAF, not a wrong number.
+                        // Only a method actually NAMED `drop` (rank 3, or its
+                        // rank-2 monomorphized form) is drop glue. A `pre_drop`
+                        // is not `drop`: inventing that call on a block about to
+                        // be freed is a UAF, not a wrong number.
                         if rank >= 3 as i64:
                             return i as u32
                         if rank > best_rank:
@@ -1554,98 +1557,42 @@ pub fn lower_unary_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) ->
     ))
     return reg
 
-fn air_starts_with(s: str, prefix: str) -> bool:
-    let s_len = std.string.len(s)
-    let p_len = std.string.len(prefix)
-    if s_len < p_len:
-        return false
-    let s_ptr = get_str_ptr(s)
-    let p_ptr = get_str_ptr(prefix)
-    mut i := 0 as i64
-    while i < p_len:
-        if s_ptr[i] != p_ptr[i]:
-            return false
-        i = i + 1 as i64
-    return true
-
-fn match_base_names(base1: str, base2: str) -> bool:
-    if base1 == base2:
-        return true
-    let len1 = std.string.len(base1)
-    let len2 = std.string.len(base2)
-    if len1 == 0 as i64 or len2 == 0 as i64:
-        return false
-        
-    let ptr1 = get_str_ptr(base1)
-    let ptr2 = get_str_ptr(base2)
-    
-    mut dot1 := -1 as i64
-    mut i1 := len1 - 1 as i64
-    while i1 >= 0 as i64:
-        if ptr1[i1] == '.' as u8:
-            dot1 = i1
-            break
-        i1 = i1 - 1
-        
-    mut dot2 := -1 as i64
-    mut i2 := len2 - 1 as i64
-    while i2 >= 0 as i64:
-        if ptr2[i2] == '.' as u8:
-            dot2 = i2
-            break
-        i2 = i2 - 1
-        
-    mut start1 := 0 as i64
-    if dot1 != -1 as i64:
-        start1 = dot1 + 1 as i64
-        
-    mut start2 := 0 as i64
-    if dot2 != -1 as i64:
-        start2 = dot2 + 1 as i64
-    
-    let sub_len1 = len1 - start1
-    let sub_len2 = len2 - start2
-    
-    if sub_len1 != sub_len2:
-        return false
-        
-    mut k := 0 as i64
-    while k < sub_len1:
-        if ptr1[start1 + k] != ptr2[start2 + k]:
-            return false
-        k = k + 1
-        
-    return true
-
 // How well does the interned symbol name `sym_id` answer a call to the method
 // name `method_id`? Higher rank wins; every resolution loop below picks the
 // HIGHEST-ranked candidate that also passes its receiver/param filter, instead of
 // the first candidate in symbol order.
 //
-// The loose byte-window rule (rank 1, the original body of
-// match_mangled_method_raw_bytes) accepts the key as a `.`/`_`-bounded SUBSTRING.
-// It let a LONGER method answer a SHORTER one on the SAME receiver: `S.p32_r32`
-// answered `r32`, so `i.r32()` called p32_r32 whenever the longer name was
-// declared first. Silent, type-agnostic, and worse than a wrong number when the
-// two signatures differ (return type in the wrong register class, missing arg).
-// RFC 0029 §"vtable slot k" requires name EQUALITY, so this is unambiguously a bug.
+// This is THE method-name rule -- there is exactly one copy of it, and every
+// consumer (resolve_op_method, resolve_drop_method, find_struct_method_sym, the
+// UFCS dispatch loop, typecheck's diag_resolve_op_method, ownership's drop scans)
+// calls THIS function. Earlier there were four near-copies (match_base_names,
+// match_mangled_method_name, match_mangled_method_raw_bytes and a loose byte-window
+// rule); they drifted apart and produced wrong-symbol selection, so the copies are
+// gone rather than merely unused.
 //
-// Ranking rather than tightening is the strictly smaller behaviour change: only the
-// cases where an exactly-named candidate ALSO exists get re-decided, so a program
-// that resolves today keeps resolving to the same symbol unless an exact match
-// exists. MEASURED, not assumed (2026-07-31): a compiler built with rank 1 removed
-// ENTIRELY still passes 619/619 regressions and rebuilds the whole compiler+stdlib
-// to a byte-identical binary -- nothing in this repo actually relies on the loose
-// rule, because the namespaced stdlib forms are always called by their full name
-// (`self.locals.local_map_get(..)`, `pathbuf_to_str(p)`). Rank 1 is kept only as a
-// compatibility fallback for user code outside the corpus; retiring it is an
-// RFC-level decision (RFC 0037 "Drawbacks"), not a bug fix.
-//   3 = the symbol's PLAIN name -- the segment after the last '.' (same
-//       after-last-dot rule as match_base_names), minus an `_AX_std_`
-//       monomorphization prefix -- IS the key
+// RETIRED (2026-07-31): the loose byte-window rank 1 accepted the key as a
+// `.`/`_`-bounded SUBSTRING of the symbol's name. Ranking it below an exact match
+// (RFC 0037) only fixed the case where an exactly-named method ALSO existed; when
+// none did, the loose window was still the ANSWER, so a method the user never named
+// got selected:
+//   - `a == b` on a type declaring only `deep_eq` called deep_eq (RFC 0007 §2.2
+//     requires `error: type 'T' does not implement 'eq'` instead -- rank 1 was
+//     suppressing a diagnostic the compiler already had). Same for `total_lt`/`<`
+//     and `checked_add`/`+`.
+//   - drop glue (RFC 0014 defines the hook as `T.drop(self)`) INVENTED a call at
+//     every scope exit on a type declaring only `pre_drop(self)`: running an
+//     arbitrary method on a block about to be freed is a UAF, not a wrong number.
+//   - ownership.ax's type_has_drop reported "has drop" for `pre_drop`, so E4003
+//     rejected `let b = a` on a type with no drop at all.
+// MEASURED, not assumed: a compiler with rank 1 removed entirely passes the full
+// regression suite and rebuilds the whole compiler+stdlib to a byte-identical
+// binary -- nothing here relied on the loose rule, because the namespaced stdlib
+// forms are always called by their full name (`self.locals.local_map_get(..)`,
+// `pathbuf_to_str(p)`), i.e. rank 3.
+//   3 = the symbol's PLAIN name -- the segment after the last '.', minus an
+//       `_AX_std_` monomorphization prefix -- IS the key
 //   2 = ... is the key followed by the `__` type-argument separator mono.ax
 //       mangle_name emits (`_AX_std_push__i64` answers `push`)
-//   1 = the legacy loose window hit
 //   0 = no match
 fn method_name_rank_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> i64:
     if sym_id == method_id:
@@ -1693,74 +1640,7 @@ fn method_name_rank_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32
             if seg_len >= r_method_len + 2 as i64 and r_sym_bytes[start + r_method_len] == '_' as u8 and r_sym_bytes[start + r_method_len + 1] == '_' as u8:
                 return 2 as i64
 
-    if match_mangled_method_loose(pool, sym_id, method_id):
-        return 1 as i64
     return 0 as i64
-
-fn match_mangled_method_raw_bytes(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
-    return method_name_rank_raw_bytes(pool, sym_id, method_id) != 0 as i64
-
-fn match_mangled_method_loose(pool: ptr[InternPool], sym_id: u32, method_id: u32) -> bool:
-    if sym_id == method_id:
-        return true
-    if sym_id == 0 as u32 or method_id == 0 as u32:
-        return false
-
-    let sym_entry = pool.ids[sym_id as i64 - 1]
-    let method_entry = pool.ids[method_id as i64 - 1]
-    
-    let sym_bytes = (pool.arena as i64 + sym_entry.start as i64) as ptr[u8]
-    let method_bytes = (pool.arena as i64 + method_entry.start as i64) as ptr[u8]
-    
-    let sym_len = sym_entry.len as i64
-    let method_len = method_entry.len as i64
-    
-    if sym_len < method_len:
-        return false
-        
-    mut i := 0 as i64
-    while i <= sym_len - method_len:
-        mut matches := true
-        mut j := 0 as i64
-        while j < method_len:
-            if sym_bytes[i + j] != method_bytes[j]:
-                matches = false
-                break
-            j = j + 1 as i64
-            
-        if matches:
-            mut post_ok := false
-            if i + method_len == sym_len:
-                post_ok = true
-            elif i + method_len + 2 <= sym_len:
-                if sym_bytes[i + method_len] == 95 as u8 and sym_bytes[i + method_len + 1] == 95 as u8:
-                    post_ok = true
-                    
-            if post_ok:
-                mut pre_ok := false
-                if i == 0:
-                    pre_ok = true
-                else:
-                    let prev_char = sym_bytes[i - 1]
-                    if prev_char == 46 as u8 or prev_char == 95 as u8: // '.' or '_'
-                        pre_ok = true
-                        
-                if pre_ok:
-                    return true
-                    
-        i = i + 1 as i64
-        
-    return false
-
-fn match_mangled_method_name(sym_name: str, method_name: str) -> bool:
-    if sym_name == method_name:
-        return true
-    let prefix = std.string.concat("_AX_std_", method_name)
-    let full_prefix = std.string.concat(prefix, "__")
-    let starts := air_starts_with(sym_name, full_prefix)
-    @free(get_str_ptr(prefix))
-    @free(get_str_ptr(full_prefix))
-    return starts
 
 // f32<->f64 implicit argument coercion. A call argument whose static type is one
 // float width, passed to a parameter of the OTHER float width, needs a real convert
@@ -1795,8 +1675,9 @@ pub fn find_struct_method_sym(mut self: ptr[FuncLowering], struct_type: u32, met
                             fp = pe.extra
                             pe = self.mb.typetable.entries.data[fp as i64]
                         if fp == struct_type:
-                            // Exact plain-name match wins outright; a looser hit is
-                            // only remembered in case nothing exact ever shows up.
+                            // Exact plain-name match wins outright; the rank-2
+                            // monomorphized form is only remembered in case
+                            // nothing exact ever shows up.
                             if rank >= 3 as i64:
                                 return i as u32
                             if rank > best_rank:
@@ -2327,8 +2208,10 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                             let method_id = self.mb.pool.intern(m_name_tok)
                             safe_free_str(m_name_tok)
                             // Highest-ranked candidate wins, not the first in symbol
-                            // order: an exactly-named method outranks the loose
-                            // substring hit that made `s.r32()` call `S.p32_r32`.
+                            // order: an exactly-named method outranks its rank-2
+                            // monomorphized form. A differently-named method (the
+                            // retired loose window, which made `s.r32()` call
+                            // `S.p32_r32`) is not a candidate at all.
                             mut ufcs_best := 0 as u32
                             mut ufcs_best_rank := 0 as i64
                             mut i := 0 as i64
