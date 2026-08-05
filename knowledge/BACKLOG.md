@@ -11,10 +11,12 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-07-31, sau `c3eae77`)
-- **HEAD** = `c3eae77` — hole C: Phase-3.5 khoá theo **nhóm mangle**. Driver
-  `bin/axc_native.exe` = **A==B==C `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B`**
-  (2.297.856 byte; mốc B==C này chính là hiện tại).
+## Trạng thái cây (cập nhật 2026-08-05, sau `2234451`)
+- **HEAD** = `2234451` — RFC 0038: `print`/`println` variadic, desugar ở **AIR** (không ở selector).
+  Driver `bin/axc_native.exe` = **A==B `99F795C212B3CFE2BF28DCB3CEF06CDA0CAF133F09EBC7D12F5400B13B3FF783`**
+  (2.308.096 byte). ⚠️ Mốc **B==C** gần nhất vẫn là `c3eae77` /
+  `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — RFC 0038 là
+  frontend-only nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ driver mới này**.
 - **BASELINE = 677/677**, đo ở **cả default lẫn `-O0`**. Dưới 677 là RED. (672 → 677 khi RFC 0038 thêm 5 hàng print.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
