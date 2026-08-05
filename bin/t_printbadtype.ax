@@ -1,0 +1,13 @@
+// RFC 0038 section 4 (error[E3033]): printing a STRUCT must be REJECTED.
+// x86_selector.ax:1742 classifies type ids 1..8/15/16 as int, 11 bool, 9/10 float and
+// lets EVERYTHING ELSE fall through to the `str` case, where the value is dereferenced as
+// a string pointer -- a struct printed a blank line and exited 0 (accept-then-miscompile).
+// The variadic desugar multiplies exposure to this hole, so the diagnostic ships with it.
+struct Point:
+    x: i64
+    y: i64
+
+fn main() -> i32:
+    let p = Point(x: 40, y: 2)
+    println("p = ", p)
+    return 42

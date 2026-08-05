@@ -1,0 +1,24 @@
+// RFC 0038: `print`/`println` are VARIADIC. Every argument after the FIRST used to be
+// silently DROPPED (x86_selector.ax read only extras[arg_start+1], retargeted the call to
+// a 1-parameter runtime shim and never adjusted arg_count), so `println("val: ", s)`
+// printed `val: ` and stopped -- accept-then-miscompile, BUG#53 class.
+//
+// The MIXED-TYPE call is load-bearing: it fails if anyone "fixes" this by applying the
+// FIRST argument's type to every argument. `n=` is a str, `15` an i64, ` b=` a str and
+// `true` a bool, all in ONE call.
+//
+// The non-ASCII segment pins UTF-8 literals end to end: the compiler must carry the raw
+// bytes of `Kết quả` from the lexer through the string pool into .rdata untouched. (Any
+// mojibake seen at a terminal is the CONSOLE CODEPAGE, not the compiler -- verify with
+// `./t_printvariadic.exe | xxd`.)
+//
+// Kept to ONE output line on purpose: the regression harness captures stdout with command
+// substitution, which strips only TRAILING newlines.
+fn main() -> i32:
+    print("A", "B", "C")
+    print("/")
+    print("n=", 15, " b=", true)
+    print(" f=", 2.5)
+    print(" Kết quả: ", 42)
+    println(" end")
+    return 42

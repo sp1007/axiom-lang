@@ -2497,6 +2497,102 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                 temp_count = temp_count + 1 as u32
             safe_free_str(cnm)
 
+    // RFC 0038: `print`/`println` are VARIADIC (std/fmt.ax:47,52 already declares them
+    // `pub fn print(args: ...)`), but every backend's runtime shim takes exactly ONE
+    // value. Desugar a call with N != 1 arguments into N one-argument calls HERE, in
+    // AIR, so all three backends (x86_selector, cgen, wasm) are fixed by one change and
+    // the instruction selector is not asked to synthesize N calls out of one
+    // (CLAUDE.md §4). Before this, x86_selector.ax:1737-1776 read only the FIRST
+    // argument, retargeted to a 1-parameter shim and never adjusted arg_count, so
+    // arguments 2..N were marshalled into RDX/R8/... where nothing read them --
+    // `println("val: ", s)` printed `val: ` and stopped (accept-then-miscompile,
+    // BUG#53 class), and a bare `println()` selected ax_println_str with NO argument
+    // and dereferenced garbage in RCX (exit 139).
+    //
+    //   print(a, b, c)   -> print(a);  print(b);  print(c)
+    //   println(a, b, c) -> print(a);  print(b);  println(c)   (only the LAST newlines)
+    //   println()        -> println("")
+    //   print()          -> nothing
+    //
+    // The argument loop above already ran to completion, so every argument is evaluated
+    // LEFT TO RIGHT BEFORE ANY OUTPUT (printf's rule) and coerce_float_arg /
+    // coerce_interface_arg still apply. Rewriting to a literal `print(a); print(b)`
+    // would instead evaluate `b` after `a` was already printed -- a gratuitous change
+    // to observable interleaving.
+    //
+    // temp_count == 1 falls through to the pre-existing path UNTOUCHED, so the AIR for
+    // every single-argument call stays byte-identical (the compiler's own sources use
+    // only `print(<one str>)`, print_helpers.ax:75,80, and never a bare `println()`)
+    // -> self-host fixpoint is A == B.
+    //
+    // (`child` is the stable callee node index; re-read it because lowering args may
+    // have reallocated the node array -- BUG#51.)
+    if not is_method_call and temp_count != 1 as u32 and self.mb.symbols != null as ptr[SymbolTable]:
+        let pn_fresh = self.mb.tree.nodes.data[child as i64]
+        if pn_fresh.kind == NODE_IDENT and pn_fresh.payload != 0 as u32 and (pn_fresh.payload as i64) < self.mb.symbols.symbols.len:
+            let psym = self.mb.symbols.symbols.data[pn_fresh.payload as i64]
+            // Gate on the symbol KIND, not on the name text: a user-defined
+            // `fn println(...)` is a SYM_FUNC and must never be desugared.
+            if psym.kind == SYM_BUILTIN_TYPE:
+                let pnm = self.mb.pool.get(psym.name_id)
+                let is_pr = (pnm == "print")
+                let is_pl = (pnm == "println")
+                safe_free_str(pnm)
+                if is_pr or is_pl:
+                    // The non-final calls target the `print` BUILTIN. Look the symbol up
+                    // by (name_id, kind) -- never derive it as `println_sym - 1`, even
+                    // though resolver.ax:484-485 happens to declare the two adjacently
+                    // (matching by position/spelling instead of identity is the defect
+                    // class RFC 0037 documents). Builtins occupy the first ~40 slots, so
+                    // this terminates immediately and deterministically.
+                    mut print_sym := pn_fresh.payload
+                    if is_pl and temp_count >= 2 as u32:
+                        print_sym = 0 as u32
+                        let pr_name_id = self.mb.pool.intern("print")
+                        mut psi := 0 as i64
+                        while psi < self.mb.symbols.symbols.len:
+                            let cand = self.mb.symbols.symbols.data[psi]
+                            if cand.kind == SYM_BUILTIN_TYPE and cand.name_id == pr_name_id:
+                                print_sym = psi as u32
+                                break
+                            psi = psi + 1 as i64
+                    // No builtin `print` (cannot happen with the standard prelude):
+                    // decline to desugar rather than emit a call to symbol 0.
+                    if print_sym != 0 as u32:
+                        // `println()` == `println("")`. The interned text carries its
+                        // QUOTES: lower_string_lit (:669-682) interns the raw token text
+                        // including `"`, and the backends strip them via
+                        // unescape_string_literal (print_helpers.ax:24-37). The `assert`
+                        // desugar above interns UNQUOTED text; that survives only because
+                        // unescape_string_literal no-ops on a non-quote first char.
+                        if temp_count == 0 as u32 and is_pl:
+                            let es_reg = self.fb.fresh_reg()
+                            let es_id = self.mb.pool.intern("\"\"")
+                            self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 12 as u32, dest: es_reg, src1: es_id, src2: 0 as u32))
+                            temp_args[0] = es_reg
+                            temp_count = 1 as u32
+                        mut last_call_reg := 0 as u32
+                        mut pi := 0 as u32
+                        while pi < temp_count:
+                            let call_extra = self.fb.emit_extra(1 as u32)
+                            self.fb.emit_extra(temp_args[pi as i64])
+                            mut call_target := print_sym
+                            if is_pl and pi == temp_count - 1 as u32:
+                                call_target = pn_fresh.payload
+                            last_call_reg = self.fb.fresh_reg()
+                            self.fb.emit(AirInst(
+                                opcode: OP_CALL,
+                                type_id: call_target,
+                                dest: last_call_reg,
+                                src1: 0 as u32,
+                                src2: call_extra,
+                            ))
+                            pi = pi + 1 as u32
+                        // This branch returns EARLY, so the shared @free below is
+                        // skipped -- release the scratch buffer here.
+                        @free(temp_args as ptr[u8])
+                        return last_call_reg
+
     let arg_start = self.fb.emit_extra(temp_count)
     mut i := 0 as u32
     while i < temp_count:

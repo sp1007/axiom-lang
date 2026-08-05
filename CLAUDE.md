@@ -271,6 +271,43 @@ Claude MUST add tests when:
 
 Never modify tests merely to pass failing code.
 
+## 7.1 ORACLE FORM — assert on STDOUT, not on the exit code (user, 2026-08-05)
+
+**Rule:** a test MUST NOT be judged by its return/exit code. It MUST print an explicit,
+distinctive line and be judged on that stdout:
+
+```axiom
+println("<distinctive UTF-8 string>: ", <value being checked>)
+```
+
+Both halves are mandatory — the **string** (so the line is unmistakably from this oracle and not
+from stray output) and the **printed value** (so the observed result is explicit, not encoded).
+AXIOM is UTF-8 by default; oracle strings SHOULD use non-ASCII text, which simultaneously
+regression-tests UTF-8 literal handling end to end.
+
+**Why the exit code is not acceptable as the verdict channel:**
+- it is masked to 8 bits (`return 300` → 44), so every expectation had to be contorted below 256
+  — see `knowledge/lesson-exit-code-8bit-masking.md`;
+- one integer cannot distinguish *which* of several checks failed, nor carry the actual value, so
+  a failure reports "not 42" instead of what was actually computed;
+- a crash (139) and a wrong answer are the same kind of signal, which is how several
+  accept-then-miscompile bugs stayed invisible;
+- it cannot express a non-integer result (str, f64, bool) without an encoding step that is itself
+  untested code.
+
+**Constraints when writing such an oracle** (`scripts/regression_repros.sh`, rows
+`name|cmp|expected`, `cmp ∈ {out, exit, reject}`):
+- keep the printed output to **one line** — the harness compares via command substitution, which
+  strips only *trailing* newlines;
+- never put a literal `|` in the expected text — it is the row field delimiter;
+- run every oracle at **`-O0` and `-O1`**; a defect that diverges by optimization level is common
+  in this codebase and only shows up if both are run.
+
+⚠️ **Prerequisite:** this rule needs `println("...", value)` to actually print the value.
+That is currently broken (every argument after the first is silently dropped — see
+`knowledge/BACKLOG.md` "P1"). Fix P1 first, then migrate oracles incrementally; do NOT
+big-bang-rewrite the existing `exit|` rows.
+
 ---
 
 # 8. DIAGNOSTICS STANDARDS

@@ -860,6 +860,27 @@ rows=(
   # falsely reject the other instantiation -- the same trap E3031/E3032 avoid on the source
   # side by reading annotation text rather than a symbol's type_id.
   "t_methargok|exit|42"
+  # RFC 0038: `print`/`println` are VARIADIC. Every argument after the FIRST used to be
+  # silently DROPPED (the x86 selector read only extras[arg_start+1], retargeted the call
+  # to a 1-parameter runtime shim and never adjusted arg_count) -- `println("val: ", s)`
+  # printed `val: ` and stopped. Fixed by desugaring N args into N one-arg calls in AIR,
+  # so all three backends are covered by one change.
+  # The `out` row is the real assertion, and it is deliberately MIXED-TYPE inside one call
+  # (str, i64, str, bool): it fails if anyone "fixes" this by applying the FIRST argument's
+  # type to every argument. It also pins UTF-8 end to end -- the compiler must carry the
+  # raw bytes of `Kết quả` from lexer to .rdata untouched (measured: 4b e1 ba bf 74 ...).
+  "t_printvariadic|out|ABC/n=15 b=true f=2.500000 Kết quả: 42 end"
+  "t_printvariadic|exit|42"
+  # A bare `println()` selected ax_println_str with NO argument and the runtime
+  # dereferenced garbage in RCX: this program exited 139 pre-fix. Now `println("")`.
+  "t_printbarenewline|exit|42"
+  # RFC 0038 section 4 (error[E3033]): the type-id classification in the selector let
+  # EVERYTHING outside {ints, bool, floats} fall through to the `str` shim and be
+  # dereferenced as a string pointer -- a struct printed a blank line and exited 0, a
+  # char8 SEGFAULTED. Rejected at typecheck now; ships with the desugar because the
+  # desugar multiplies exposure (a dropped argument becomes a real call).
+  "t_printbadtype|reject|"
+  "t_printchar8|reject|"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

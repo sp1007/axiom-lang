@@ -2596,6 +2596,101 @@ pub fn check_method_args_annotated(mut self: ptr[TypeChecker], callee: u32, para
         pidx = pidx + 1 as i64
         anode = self.tree.nodes.data[anode as i64].next_sibling
 
+// ─── RFC 0038 §4: the `print`/`println` argument type set (E3033) ────────────────────
+// This is the FIRST type checking these builtins have ever had: `typecheck.ax` contained
+// no occurrence of "print"/"println" at all, and resolver.ax:484-485 declares them as
+// SYM_BUILTIN_TYPE with no signature. Every backend's runtime shim formats exactly the
+// set below; every OTHER type fell through x86_selector.ax:1742's classification to the
+// `str` case and was DEREFERENCED as a string pointer -- measured: `char8` (id 13)
+// SEGFAULTED, and a struct / `ptr[T]` / `void` printed a blank line and exited 0
+// (accept-then-miscompile, BUG#53 class).
+//
+// It ships WITH the RFC 0038 variadic desugar, not after it, because the desugar
+// MULTIPLIES exposure: an argument in position 2 was harmlessly dropped before and
+// becomes a real call now.
+pub fn is_printable_type(t: u32) -> bool:
+    return (t >= TYPE_I8 and t <= TYPE_U64) or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_BOOL or t == TYPE_STRING or t == TYPE_ISIZE or t == TYPE_USIZE or t == TYPE_BYTES
+
+// Render E3033 in the house format (CLAUDE.md §8): message, source line + caret span,
+// a `note:` naming the permitted set, and an actionable `help:`. The type is named by a
+// readable display form -- a mangled struct name is reduced with
+// extract_qualified_base_name, and a structural type prints its shape (`ptr[T]`, `[T; N]`)
+// because it has no user-facing name. ASCII only, like E3030/E3031/E3032: the Windows
+// console codepage mangles UTF-8 in EMITTED diagnostics.
+pub fn report_unprintable_arg(mut self: ptr[TypeChecker], callee: u32, arg: u32, at: u32):
+    mut tname := "this type"
+    mut owned := false
+    if at == TYPE_CHAR8:
+        tname = "char8"
+    elif at == TYPE_VOID:
+        tname = "void"
+    elif at == TYPE_ACTOR_REF:
+        tname = "ActorRef"
+    else:
+        let e = self.types.entries.data[at as i64]
+        if e.kind == TYPE_KIND_POINTER:
+            tname = "ptr[T]"
+        elif e.kind == TYPE_KIND_REF:
+            tname = "&T"
+        elif e.kind == TYPE_KIND_ARRAY:
+            tname = "[T; N]"
+        elif e.kind == TYPE_KIND_SLICE:
+            tname = "slice"
+        elif e.kind == TYPE_KIND_FUNC:
+            tname = "function"
+        elif e.kind == TYPE_KIND_OPTION:
+            tname = "Option[T]"
+        elif e.kind == TYPE_KIND_RESULT:
+            tname = "Result[T, E]"
+        elif e.name_id != 0 as u32:
+            let raw = self.intern.get(e.name_id)
+            tname = extract_qualified_base_name(raw)
+            safe_free_str(raw)
+            owned = true
+    ax_printf_local("error[E3033]: cannot print a value of type `%s`\n", get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.print_annotated_expr_snippet(callee, arg, "only primitive values can be printed")
+    ax_printf_local("   = note: `print`/`println` accept i8..u64, isize, usize, bool, f32, f64, str and bytes (RFC 0038 section 2)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("   = help: print a field (`v.x`), convert the value with `as u32` / `as i64`, or add a `to_str()` method and print its result\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.diags_count = self.diags_count + 1 as i64
+    if owned:
+        safe_free_str(tname)
+
+// Walk the explicit arguments of a call whose callee is the `print`/`println` BUILTIN and
+// reject any that the runtime cannot format. Called from the NODE_CALL_EXPR branch AFTER
+// the argument-inference loop, so `node_types` is populated for every argument.
+pub fn check_print_args(mut self: ptr[TypeChecker], callee: u32):
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return
+    let csym = self.tree.nodes.data[callee].payload
+    if csym == 0 as u32 or (csym as i64) >= self.symtable.symbols.len:
+        return
+    let sym = self.symtable.symbols.data[csym as i64]
+    // Gate on the symbol KIND, never on the spelling: a user-defined `fn println(..)` is
+    // a SYM_FUNC and RFC 0038's contract does not apply to it.
+    if sym.kind != SYM_BUILTIN_TYPE:
+        return
+    let cname = self.intern.get(sym.name_id)
+    let is_print_builtin = (cname == "print" or cname == "println")
+    safe_free_str(cname)
+    if not is_print_builtin:
+        return
+    mut anode := self.tree.nodes.data[callee].next_sibling
+    while anode != 0 as u32:
+        mut at := TYPE_UNKNOWN
+        if (anode as i64) < self.node_types_cap:
+            at = self.node_types[anode as i64]
+        if at == TYPE_UNKNOWN:
+            at = self.infer_node(anode, TYPE_UNKNOWN)
+        // Never judge what is not CONFIDENTLY known. An UNKNOWN type, an id past the end
+        // of the table, or a GENERIC type parameter inside an un-instantiated template
+        // body (`fn dump[T](v: T): println(v)`, where the monomorphised copies carry the
+        // concrete types and ARE checked) is left alone -- conservative by construction,
+        // so this rule cannot produce a false reject.
+        if at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and not is_printable_type(at):
+            if self.types.entries.data[at as i64].kind != TYPE_KIND_GENERIC:
+                self.report_unprintable_arg(callee, anode, at)
+        anode = self.tree.nodes.data[anode as i64].next_sibling
+
 pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]
     let kind = node.kind
@@ -6044,7 +6139,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             self.diags_count = self.diags_count + 1 as i64
                     arg = self.tree.nodes.data[arg].next_sibling
                     apos = apos + 1 as i64
-                
+
+            // RFC 0038 section 4: `print`/`println` argument types (E3033). Placed AFTER
+            // the loop above so every argument's type is already in `node_types`.
+            self.check_print_args(callee)
+
     elif kind == NODE_IDENT:
         let sym_idx = self.tree.nodes.data[node_idx].payload
         let is_substituted := ((self.tree.nodes.data[node_idx].flags & FLAG_IS_SUBSTITUTED) != 0 as u16)

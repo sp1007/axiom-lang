@@ -9080,6 +9080,101 @@ pub fn check_method_args_annotated(mut self: ptr[TypeChecker], callee: u32, para
         pidx = pidx + 1 as i64
         anode = self.tree.nodes.data[anode as i64].next_sibling
 
+// â”€â”€â”€ RFC 0038 Â§4: the `print`/`println` argument type set (E3033) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// This is the FIRST type checking these builtins have ever had: `typecheck.ax` contained
+// no occurrence of "print"/"println" at all, and resolver.ax:484-485 declares them as
+// SYM_BUILTIN_TYPE with no signature. Every backend's runtime shim formats exactly the
+// set below; every OTHER type fell through x86_selector.ax:1742's classification to the
+// `str` case and was DEREFERENCED as a string pointer -- measured: `char8` (id 13)
+// SEGFAULTED, and a struct / `ptr[T]` / `void` printed a blank line and exited 0
+// (accept-then-miscompile, BUG#53 class).
+//
+// It ships WITH the RFC 0038 variadic desugar, not after it, because the desugar
+// MULTIPLIES exposure: an argument in position 2 was harmlessly dropped before and
+// becomes a real call now.
+pub fn is_printable_type(t: u32) -> bool:
+    return (t >= TYPE_I8 and t <= TYPE_U64) or t == TYPE_F32 or t == TYPE_F64 or t == TYPE_BOOL or t == TYPE_STRING or t == TYPE_ISIZE or t == TYPE_USIZE or t == TYPE_BYTES
+
+// Render E3033 in the house format (CLAUDE.md Â§8): message, source line + caret span,
+// a `note:` naming the permitted set, and an actionable `help:`. The type is named by a
+// readable display form -- a mangled struct name is reduced with
+// extract_qualified_base_name, and a structural type prints its shape (`ptr[T]`, `[T; N]`)
+// because it has no user-facing name. ASCII only, like E3030/E3031/E3032: the Windows
+// console codepage mangles UTF-8 in EMITTED diagnostics.
+pub fn report_unprintable_arg(mut self: ptr[TypeChecker], callee: u32, arg: u32, at: u32):
+    mut tname := "this type"
+    mut owned := false
+    if at == TYPE_CHAR8:
+        tname = "char8"
+    elif at == TYPE_VOID:
+        tname = "void"
+    elif at == TYPE_ACTOR_REF:
+        tname = "ActorRef"
+    else:
+        let e = self.types.entries.data[at as i64]
+        if e.kind == TYPE_KIND_POINTER:
+            tname = "ptr[T]"
+        elif e.kind == TYPE_KIND_REF:
+            tname = "&T"
+        elif e.kind == TYPE_KIND_ARRAY:
+            tname = "[T; N]"
+        elif e.kind == TYPE_KIND_SLICE:
+            tname = "slice"
+        elif e.kind == TYPE_KIND_FUNC:
+            tname = "function"
+        elif e.kind == TYPE_KIND_OPTION:
+            tname = "Option[T]"
+        elif e.kind == TYPE_KIND_RESULT:
+            tname = "Result[T, E]"
+        elif e.name_id != 0 as u32:
+            let raw = self.intern.get(e.name_id)
+            tname = extract_qualified_base_name(raw)
+            safe_free_str(raw)
+            owned = true
+    ax_printf_local("error[E3033]: cannot print a value of type `%s`\n", get_str_ptr(tname) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.print_annotated_expr_snippet(callee, arg, "only primitive values can be printed")
+    ax_printf_local("   = note: `print`/`println` accept i8..u64, isize, usize, bool, f32, f64, str and bytes (RFC 0038 section 2)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("   = help: print a field (`v.x`), convert the value with `as u32` / `as i64`, or add a `to_str()` method and print its result\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    self.diags_count = self.diags_count + 1 as i64
+    if owned:
+        safe_free_str(tname)
+
+// Walk the explicit arguments of a call whose callee is the `print`/`println` BUILTIN and
+// reject any that the runtime cannot format. Called from the NODE_CALL_EXPR branch AFTER
+// the argument-inference loop, so `node_types` is populated for every argument.
+pub fn check_print_args(mut self: ptr[TypeChecker], callee: u32):
+    if self.tree.nodes.data[callee].kind != NODE_IDENT:
+        return
+    let csym = self.tree.nodes.data[callee].payload
+    if csym == 0 as u32 or (csym as i64) >= self.symtable.symbols.len:
+        return
+    let sym = self.symtable.symbols.data[csym as i64]
+    // Gate on the symbol KIND, never on the spelling: a user-defined `fn println(..)` is
+    // a SYM_FUNC and RFC 0038's contract does not apply to it.
+    if sym.kind != SYM_BUILTIN_TYPE:
+        return
+    let cname = self.intern.get(sym.name_id)
+    let is_print_builtin = (cname == "print" or cname == "println")
+    safe_free_str(cname)
+    if not is_print_builtin:
+        return
+    mut anode := self.tree.nodes.data[callee].next_sibling
+    while anode != 0 as u32:
+        mut at := TYPE_UNKNOWN
+        if (anode as i64) < self.node_types_cap:
+            at = self.node_types[anode as i64]
+        if at == TYPE_UNKNOWN:
+            at = self.infer_node(anode, TYPE_UNKNOWN)
+        // Never judge what is not CONFIDENTLY known. An UNKNOWN type, an id past the end
+        // of the table, or a GENERIC type parameter inside an un-instantiated template
+        // body (`fn dump[T](v: T): println(v)`, where the monomorphised copies carry the
+        // concrete types and ARE checked) is left alone -- conservative by construction,
+        // so this rule cannot produce a false reject.
+        if at != TYPE_UNKNOWN and (at as i64) < self.types.entries.len and not is_printable_type(at):
+            if self.types.entries.data[at as i64].kind != TYPE_KIND_GENERIC:
+                self.report_unprintable_arg(callee, anode, at)
+        anode = self.tree.nodes.data[anode as i64].next_sibling
+
 pub fn eval_comptime(mut self: ptr[TypeChecker], node_idx: u32) -> ComptimeValue:
     let node = self.tree.nodes.data[node_idx]
     let kind = node.kind
@@ -12528,7 +12623,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                             self.diags_count = self.diags_count + 1 as i64
                     arg = self.tree.nodes.data[arg].next_sibling
                     apos = apos + 1 as i64
-                
+
+            // RFC 0038 section 4: `print`/`println` argument types (E3033). Placed AFTER
+            // the loop above so every argument's type is already in `node_types`.
+            self.check_print_args(callee)
+
     elif kind == NODE_IDENT:
         let sym_idx = self.tree.nodes.data[node_idx].payload
         let is_substituted := ((self.tree.nodes.data[node_idx].flags & FLAG_IS_SUBSTITUTED) != 0 as u16)
@@ -17857,6 +17956,102 @@ pub fn lower_call_expr(mut self: ptr[FuncLowering], idx: u32, node: AstNode) -> 
                 temp_args[temp_count as i64] = msg_reg
                 temp_count = temp_count + 1 as u32
             safe_free_str(cnm)
+
+    // RFC 0038: `print`/`println` are VARIADIC (std/fmt.ax:47,52 already declares them
+    // `pub fn print(args: ...)`), but every backend's runtime shim takes exactly ONE
+    // value. Desugar a call with N != 1 arguments into N one-argument calls HERE, in
+    // AIR, so all three backends (x86_selector, cgen, wasm) are fixed by one change and
+    // the instruction selector is not asked to synthesize N calls out of one
+    // (CLAUDE.md Â§4). Before this, x86_selector.ax:1737-1776 read only the FIRST
+    // argument, retargeted to a 1-parameter shim and never adjusted arg_count, so
+    // arguments 2..N were marshalled into RDX/R8/... where nothing read them --
+    // `println("val: ", s)` printed `val: ` and stopped (accept-then-miscompile,
+    // BUG#53 class), and a bare `println()` selected ax_println_str with NO argument
+    // and dereferenced garbage in RCX (exit 139).
+    //
+    //   print(a, b, c)   -> print(a);  print(b);  print(c)
+    //   println(a, b, c) -> print(a);  print(b);  println(c)   (only the LAST newlines)
+    //   println()        -> println("")
+    //   print()          -> nothing
+    //
+    // The argument loop above already ran to completion, so every argument is evaluated
+    // LEFT TO RIGHT BEFORE ANY OUTPUT (printf's rule) and coerce_float_arg /
+    // coerce_interface_arg still apply. Rewriting to a literal `print(a); print(b)`
+    // would instead evaluate `b` after `a` was already printed -- a gratuitous change
+    // to observable interleaving.
+    //
+    // temp_count == 1 falls through to the pre-existing path UNTOUCHED, so the AIR for
+    // every single-argument call stays byte-identical (the compiler's own sources use
+    // only `print(<one str>)`, print_helpers.ax:75,80, and never a bare `println()`)
+    // -> self-host fixpoint is A == B.
+    //
+    // (`child` is the stable callee node index; re-read it because lowering args may
+    // have reallocated the node array -- BUG#51.)
+    if not is_method_call and temp_count != 1 as u32 and self.mb.symbols != null as ptr[SymbolTable]:
+        let pn_fresh = self.mb.tree.nodes.data[child as i64]
+        if pn_fresh.kind == NODE_IDENT and pn_fresh.payload != 0 as u32 and (pn_fresh.payload as i64) < self.mb.symbols.symbols.len:
+            let psym = self.mb.symbols.symbols.data[pn_fresh.payload as i64]
+            // Gate on the symbol KIND, not on the name text: a user-defined
+            // `fn println(...)` is a SYM_FUNC and must never be desugared.
+            if psym.kind == SYM_BUILTIN_TYPE:
+                let pnm = self.mb.pool.get(psym.name_id)
+                let is_pr = (pnm == "print")
+                let is_pl = (pnm == "println")
+                safe_free_str(pnm)
+                if is_pr or is_pl:
+                    // The non-final calls target the `print` BUILTIN. Look the symbol up
+                    // by (name_id, kind) -- never derive it as `println_sym - 1`, even
+                    // though resolver.ax:484-485 happens to declare the two adjacently
+                    // (matching by position/spelling instead of identity is the defect
+                    // class RFC 0037 documents). Builtins occupy the first ~40 slots, so
+                    // this terminates immediately and deterministically.
+                    mut print_sym := pn_fresh.payload
+                    if is_pl and temp_count >= 2 as u32:
+                        print_sym = 0 as u32
+                        let pr_name_id = self.mb.pool.intern("print")
+                        mut psi := 0 as i64
+                        while psi < self.mb.symbols.symbols.len:
+                            let cand = self.mb.symbols.symbols.data[psi]
+                            if cand.kind == SYM_BUILTIN_TYPE and cand.name_id == pr_name_id:
+                                print_sym = psi as u32
+                                break
+                            psi = psi + 1 as i64
+                    // No builtin `print` (cannot happen with the standard prelude):
+                    // decline to desugar rather than emit a call to symbol 0.
+                    if print_sym != 0 as u32:
+                        // `println()` == `println("")`. The interned text carries its
+                        // QUOTES: lower_string_lit (:669-682) interns the raw token text
+                        // including `"`, and the backends strip them via
+                        // unescape_string_literal (print_helpers.ax:24-37). The `assert`
+                        // desugar above interns UNQUOTED text; that survives only because
+                        // unescape_string_literal no-ops on a non-quote first char.
+                        if temp_count == 0 as u32 and is_pl:
+                            let es_reg = self.fb.fresh_reg()
+                            let es_id = self.mb.pool.intern("\"\"")
+                            self.fb.emit(AirInst(opcode: OP_ICONST, type_id: 12 as u32, dest: es_reg, src1: es_id, src2: 0 as u32))
+                            temp_args[0] = es_reg
+                            temp_count = 1 as u32
+                        mut last_call_reg := 0 as u32
+                        mut pi := 0 as u32
+                        while pi < temp_count:
+                            let call_extra = self.fb.emit_extra(1 as u32)
+                            self.fb.emit_extra(temp_args[pi as i64])
+                            mut call_target := print_sym
+                            if is_pl and pi == temp_count - 1 as u32:
+                                call_target = pn_fresh.payload
+                            last_call_reg = self.fb.fresh_reg()
+                            self.fb.emit(AirInst(
+                                opcode: OP_CALL,
+                                type_id: call_target,
+                                dest: last_call_reg,
+                                src1: 0 as u32,
+                                src2: call_extra,
+                            ))
+                            pi = pi + 1 as u32
+                        // This branch returns EARLY, so the shared @free below is
+                        // skipped -- release the scratch buffer here.
+                        @free(temp_args as ptr[u8])
+                        return last_call_reg
 
     let arg_start = self.fb.emit_extra(temp_count)
     mut i := 0 as u32
