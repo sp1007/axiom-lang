@@ -53,13 +53,30 @@ Chi tiết đầy đủ trong commit message + [[BACKLOG]]. Ba điều đáng nh
    1215 file (7 reject mới đúng dự định, 2 accept mới, 0 collateral).
 3. **Bẫy đo của chính tôi**: xem mục "BÀI HỌC ĐO" trong [[BACKLOG]] — union lượt chạy bị giết.
 
-## 🔄 ĐANG CHẠY khi viết file này (đã cập nhật)
-**Implementer — hole C** ([[bug-struct-receiver-overload-symbol-collision]]): overload cùng tên trên
-receiver struct đè nhau ở symbol. Đã tự xác minh lại trên driver MỚI trước khi dispatch: `g10_seq`
-= **2 ở -O0 / 42 ở -O1**, `g11_revboth` = **82**, control `g12` (receiver i64) = 42. Brief nhấn:
-**B==C BẮT BUỘC** (đổi tên symbol phát ra), oracle phải đánh bại **cả hai** cơ chế che (`-O1` inline
-và **DFE** — thêm lượt `-no-dfe`), và **mở rộng cơ chế uniquing đã có** (`fb74dd8` BUG#50,
-`7f3aee3` RFC 0035-P2) chứ không đẻ bản sao thứ ba của cùng một luật.
+## ✅ ĐÃ SHIP thứ hai: `c3eae77` — hole C (Phase-3.5 khoá theo **nhóm mangle**)
+Driver promote sang bản **B==C `52D1ABD4`**, baseline **672/672**. Ba điểm đáng nhớ:
+1. **Implementer lại phản biện đúng**: hai shape tôi liệt trong oracle (`g1`, `g2`) là **defect
+   KHÁC** và vẫn = 2 — `resolve_method_overload` (`typecheck.ax:1135`) chọn theo **RECEIVER**, không
+   hề thấy **arity**, trong khi `resolve_free_call_overload` có gate theo số tham số. Lại đúng hình
+   dạng "một luật, hai bản sao, một bản không bao giờ được mở rộng". Quy trách nhiệm **đo được**:
+   CÙNG một bản compiler, CÙNG bộ khai báo — dạng gọi tự do ra **42**, dạng method ra **2** ⇒ symbol
+   giống hệt, chỉ khác khâu bind. Cần **quyết định semantics** trước ⇒ tách ra
+   [[bug-method-call-overload-ignores-arity]], và đặt comment ngay tại site Phase-3.5: *đừng "sửa"
+   ở đây*. **Không hàng test nào bị làm yếu** — các hàng đó chưa từng pass.
+2. **Oracle phải CALIBRATE, không được pass rỗng**: `t_structoverloaddfe` = **42 trên driver cũ ở
+   default** nhưng **1 dưới `-no-dfe`** ⇒ đó là lý do tồn tại khối `-no-dfe` riêng. Tôi tự đo lại.
+3. **Tôi chạy bốn suite mà implementer khai là CHƯA chạy** (RFC 0035 §9 gate vào chúng, và thay đổi
+   này đụng đúng mangler): `lib_collision` 6/6, `exe_size` 4/4, `ctgc` 16/16, `elf_linux` 12/12.
+   ⇒ Bài học: khi agent nói thẳng "cái này tôi chưa chạy", **đó là danh sách việc của mình**, không
+   phải câu xã giao.
+
+## 🔄 ĐANG CHẠY khi viết file này
+**Investigator — mono `-> T` ↦ f64 trả 0.0** ([[bug-mono-generic-ret-typaram-f64]]). Đã tự xác minh
+lại trên driver mới: `i8` = **40** ở CẢ `-O0` lẫn `-O1`; control `i9`/`i5` = 42, `i6`/`i7` = 41.
+Brief bắt buộc **phán quyết bằng disassembly** (tiền lệ bug #4: ba lần chẩn đoán "thanh ghi float
+cũ" đều sai), và bắt đo **breadth chưa từng đo**: f32, struct, str, tuple, free fn generic.
+Lead: họ fix mono đã có (`bf67c7d`, `82d0565`, `ccecc6a`) đều cùng hình dạng "mất width/class của
+type argument đã thay" ⇒ nếu lặp lại thì **mở rộng cơ chế đó**, đừng đẻ bản song song.
 
 ## 🔄 (lịch sử) investigator probe8 — ĐÃ XONG
 **Investigator** (read-only, ghi vào `bin/probe8/`, đã sinh ~60 chương trình probe): câu hỏi là

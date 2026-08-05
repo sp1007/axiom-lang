@@ -273,16 +273,23 @@ pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string �
 2. **Nợ kỹ thuật đo:** mọi tuyên bố perf phải là **median trên nhiều layout + spread bên cạnh**
    (`scripts/perf_layout_dist.ps1`, `scripts/perf_m6_gate.ps1`). **KHÔNG dùng `perf_suite.ps1`** để
    phán quyết gate nữa.
-3. 🆕 **GỠ PHỤ THUỘC libc khỏi `std/` — AXIOM phải ĐỘC LẬP với libc** (user, 2026-08-05).
-   Đã xác nhận `std/io.ax:10-18` khai báo `extern "C" fopen/fclose/fread/fwrite/fseek/ftell/rewind/
-   fflush/fputs` và dùng ở `:48,:58,:80`. Comment `std/io.ax:4-5` tự khai lý do: *"Uses libc … for
-   portability across bootstrap stages. This avoids the cross-module extern-C resolver issue with
-   win32.CreateFileA"* ⇒ **có một blocker resolver có thật phải gỡ trước**, không phải chỉ đổi lời
-   gọi. `docs/stage_C.md:40` đã đặt sẵn hướng: viết lại `print`/`println`/`puts`/đọc-ghi fd sang
-   **wrapper syscall AXIOM-native** (`bootstrap/runtime/syscall.ax` đã có `GetStdHandle`/`WriteFile`
-   cho Windows). Việc cần làm: **quét TOÀN BỘ `std/` + `stdlib/`** liệt kê mọi `extern "C"` vào libc,
-   phân loại (thay được ngay / chặn bởi resolver extern-C xuyên module), rồi xử lý. Nhiều file ⇒ tách
-   theo module, mỗi module một commit, gate A==B nếu không chạm backend.
+3. 🆕 **GỠ PHỤ THUỘC libc — AXIOM phải ĐỘC LẬP với libc** (user, 2026-08-05). **ĐÃ AUDIT XONG.**
+   📄 Chi tiết + kế hoạch 11 bước: [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
+   Số đo (bảng import PE thật, **không** phải `strings`): `axc_native.exe` import **16 ký hiệu
+   `ucrtbase.dll`**; chương trình tầm thường chỉ **3** (memset/memcpy/strlen).
+   ⭐ **Hai giả thiết bị LẬT:** (a) "blocker resolver extern-C" ở comment `std/io.ax:4-5` là **comment
+   LỖI THỜI, không phải bug** — resolver/mangler đã đúng từ `a61b19e`, cái hỏng là **danh sách bundle
+   CỨNG** `main_air.ax:401-426` thiếu `std/os/win32.ax` ⇒ **`std/io.ax` viết lại được NGAY**;
+   (b) sửa `std/` **không đủ** — `bin/ax_runtime.dll` là artifact **C link UCRT** (`runtime/ax_print.c`),
+   nhưng bản runtime libc-free cho Windows **đã viết ~80% trong `bootstrap/runtime/panic.ax` và đang
+   bị gate ELF-only** ở `linker.ax:3162-3175`.
+   ⚠️ `linker.ax:731` **fall-through về `ucrtbase.dll`** ⇒ quên whitelist một tên = âm thầm thành
+   import libc. Đã lộ 2 nhóm phân loại nhầm: `std/process.ax:9,11` (phải kernel32) và
+   `std/net.ax:10-19` (phải **ws2_32.dll**, linker chưa có bucket).
+   ⛔ **`atof` KHÔNG được thay** bằng `std/string.ax:818` (không có số mũ, không làm tròn đúng) —
+   sẽ đổi âm thầm mọi float literal compiler sinh ra. Cần RFC.
+   Phán quyết: **11/16 gỡ được bằng frontend/std (A==B)**, 4 cái cần **B==C**, `ax_runtime.dll` là
+   phần dư riêng, `atof` cần RFC.
 4. 🆕 **QUY TẮC TEST MỚI (user, 2026-08-05) — xem CLAUDE.md §7.1.** Không phán quyết bằng exit code
    nữa; oracle phải `println("<chuỗi UTF-8>", <giá trị>)` và so **stdout tường minh**.
    ⚠️ **BỊ CHẶN BỞI P1**: `println(str, val)` hiện nuốt đối số thứ hai ⇒ **phải sửa P1 trước**, rồi
