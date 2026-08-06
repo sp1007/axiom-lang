@@ -318,6 +318,17 @@ pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string �
    sẽ đổi âm thầm mọi float literal compiler sinh ra. Cần RFC.
    Phán quyết: **11/16 gỡ được bằng frontend/std (A==B)**, 4 cái cần **B==C**, `ax_runtime.dll` là
    phần dư riêng, `atof` cần RFC.
+3b. 🆕 **NHIỄU CHẨN ĐOÁN — vi phạm §8 "diagnostics là TÍNH NĂNG SẢN PHẨM"** (đo 2026-08-06).
+   - `main_air.ax:489` in **`total_len=<số>` VÔ ĐIỀU KIỆN, KHÔNG có tiền tố `[Debug]`**, trên **mọi
+     lần biên dịch thành công**. Đây là dòng nhiễu duy nhất không gắn nhãn ⇒ xoá (hoặc gộp vào dòng
+     `[Debug]` ở `:488`, vốn không có `\n` nên hai lệnh này định gộp thành MỘT dòng — hiện đang tách).
+   - Cả khối `[Debug] Reading *.ax...` / `[Debug] Stage N...` cũng **vô điều kiện** ⇒ nên đưa sau cờ
+     verbose. Task lớn hơn, tách riêng.
+   - **THIẾU vị trí nguồn ở MỌI chẩn đoán** (không riêng E3033): §8 quy định
+     `--> file.ax:12:8` + **số dòng trong gutter**. Hiện E3030 và E3033 đều in gutter RỖNG (`   |`)
+     và không có dòng `-->`. Đã kiểm chứng cả hai ⇒ **thiếu sót toàn cục của hạ tầng diagnostic**,
+     không phải sót của một mã lỗi. Sửa ở nơi render diagnostic dùng chung.
+   Cả ba đều frontend ⇒ **A==B**.
 4. 🆕 **QUY TẮC TEST MỚI (user, 2026-08-05) — xem CLAUDE.md §7.1.** Không phán quyết bằng exit code
    nữa; oracle phải `println("<chuỗi UTF-8>", <giá trị>)` và so **stdout tường minh**.
    ⚠️ **BỊ CHẶN BỞI P1**: `println(str, val)` hiện nuốt đối số thứ hai ⇒ **phải sửa P1 trước**, rồi
