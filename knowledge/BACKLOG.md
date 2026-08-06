@@ -343,32 +343,33 @@ pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string �
    sẽ đổi âm thầm mọi float literal compiler sinh ra. Cần RFC.
    Phán quyết: **11/16 gỡ được bằng frontend/std (A==B)**, 4 cái cần **B==C**, `ax_runtime.dll` là
    phần dư riêng, `atof` cần RFC.
-3b. 🆕 **NHIỄU CHẨN ĐOÁN — vi phạm §8 "diagnostics là TÍNH NĂNG SẢN PHẨM"** (đo 2026-08-06).
-   - `main_air.ax:489` in **`total_len=<số>` VÔ ĐIỀU KIỆN, KHÔNG có tiền tố `[Debug]`**, trên **mọi
-     lần biên dịch thành công**. Đây là dòng nhiễu duy nhất không gắn nhãn ⇒ xoá (hoặc gộp vào dòng
-     `[Debug]` ở `:488`, vốn không có `\n` nên hai lệnh này định gộp thành MỘT dòng — hiện đang tách).
-   - Cả khối `[Debug] Reading *.ax...` / `[Debug] Stage N...` cũng **vô điều kiện** ⇒ nên đưa sau cờ
-     verbose. Task lớn hơn, tách riêng.
-   - 🔴 **LỖI PARSE là ca TỆ NHẤT — đo 2026-08-06, repro `bin/probe11/s1.ax`** (9 dòng nguồn,
-     dùng cú pháp struct literal sai `let c: TmpStruct = (a: 64, b:64)`):
-     ```
-       tokens[32928]: kind=67 offset=142042      <- dump token THÔ, kind là SỐ
-     error: unexpected token at offset 142042    <- offset BYTE vào buffer ĐÃ NỐI
-     error: expected newline at offset 142042
-     error: expected expression nud at offset 142042
-     ... (9 lỗi dây chuyền từ MỘT sai sót)
-     ```
-     Ba khuyết tật chồng nhau: (1) **offset 142042** là vị trí byte trong **nguồn đã nối stdlib**
-     (~142 KB) — file user chỉ 9 dòng, nên con số này **vô nghĩa với user**; không file/dòng/cột,
-     không trích đoạn nguồn; (2) **9 lỗi dây chuyền** từ một sai sót, không có recovery;
-     (3) **dump token thô** (`kind=67`, kind là số nguyên nội bộ) in ra trên đường lỗi NGƯỜI DÙNG.
-     `nud` cũng là thuật ngữ Pratt-parser nội bộ, không phải ngôn ngữ người dùng.
-     ⇒ Ưu tiên cao hơn hai mục dưới: đây là ấn tượng đầu tiên của mọi user gõ sai cú pháp.
-   - **THIẾU vị trí nguồn ở MỌI chẩn đoán** (không riêng E3033): §8 quy định
-     `--> file.ax:12:8` + **số dòng trong gutter**. Hiện E3030 và E3033 đều in gutter RỖNG (`   |`)
-     và không có dòng `-->`. Đã kiểm chứng cả hai ⇒ **thiếu sót toàn cục của hạ tầng diagnostic**,
-     không phải sót của một mã lỗi. Sửa ở nơi render diagnostic dùng chung.
-   Cả ba đều frontend ⇒ **A==B**.
+3b. ✅ **CHẨN ĐOÁN §8 — STAGE 0/1/2a/2b ĐÃ XONG** (2026-08-07, `0515e30`, `9f9b265`, `5916c1d`).
+   Mọi chẩn đoán nay có `--> file.ax:LINE` + gutter có số dòng + caret, phát từ **MỘT**
+   renderer `print_diag_location` (`print_helpers.ax`). Trước đó có **BA** renderer đã trôi lệch
+   (chỉ typecheck in trích đoạn; parser và ownership chỉ in offset). Cascade: 52 dòng → 3.
+   `total_len` + dump token + thuật ngữ `nud`/`INDENT` đã gỡ.
+   ⭐ **`strip_imports` nay BÔI TRẮNG dòng thành dấu cách thay vì XÓA** ⇒ **bảo toàn CẢ offset
+   byte LẪN số dòng** (mạnh hơn thiết kế ban đầu chỉ nhắm giữ số dòng). Đo: file 3 import,
+   lỗi dòng 7 ⇒ offset 141596 − region start 141506 = byte 90 = **đúng dòng 7, cột 3**.
+   ⚠️ **CÒN LẠI (stage 3+), đừng tưởng đã xong:**
+   - **KHÔNG in CỘT** — cố ý. `strip_package_prefixes` viết lại dòng tại chỗ (xóa `std.string.`
+     = 11 byte) nên cột sẽ **sai lặng lẽ**. `file.ax:12` đúng hơn `file.ax:12:8` sai.
+     ⭐ Investigator gợi ý hướng TỐT HƠN stage 3: **khừ hẳn `strip_package_prefixes`** bằng
+     resolver qualified-name (audit libc nói resolver đã đúng từ `a61b19e`) ⇒ xóa luôn bài toán
+     cột thay vì lách nó. **Cần định giá trước khi làm stage 3.**
+   - **Node mono hóa KHÔNG định vị được**: `ast.ax:265` cho clone `offset = len(old_src)` ⇒ rơi
+     ngoài mọi region (đo: 147025 vs buồn‑đệm hết ở 141593). Nay suy biến thành "không có vị trí"
+     thay vì đoán bừa. Sửa thật cần **provenance trên `Token`** (hiện 8 byte, chỉ dư 1 byte
+     `padding`) ⇒ **cần RFC**.
+   - **Cây module IMPORT có `srcmap == null`** ⇒ chẩn đoán trong đó vẫn in ghi chú byte offset.
+     Đường dẫn module **đã biết** ở `lazy_resolver_preload_module` ⇒ map 1 entry là đủ. **RẺ.**
+   - **Parser báo token NƠI MONG ĐỢI biểu thức, không phải toán tử thiếu toán hạng**: `let a = 1 +`
+     trỏ vào **dòng SAU** (`return`). Đúng về kỹ thuật, khó đọc. Có từ trước, nay **lộ ra**
+     vì số dòng đã thật.
+   - Khối `[Debug] Reading *.ax` / `[codegen]` vẫn **vô điều kiện**. Gốc sâu hơn:
+     `is_verbose_debug` (`print_helpers.ax:108-182`) lọc theo **CÁCH VIẾT** (whitelist ~19 chuỗi
+     `[D...`), không theo cờ verbose — **cùng lớp defect "khớp theo chính tả" với RFC 0037 và P4**.
+     Thay bằng cờ `--verbose` thật = đổi bề mặt CLI ⇒ **cần RFC**.
 4. 🆕 **QUY TẮC TEST MỚI (user, 2026-08-05) — xem CLAUDE.md §7.1.** Không phán quyết bằng exit code
    nữa; oracle phải `println("<chuỗi UTF-8>", <giá trị>)` và so **stdout tường minh**.
    ⚠️ **BỊ CHẶN BỞI P1**: `println(str, val)` hiện nuốt đối số thứ hai ⇒ **phải sửa P1 trước**, rồi
