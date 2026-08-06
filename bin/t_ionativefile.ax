@@ -1,0 +1,83 @@
+// Oracle for step 3 of knowledge/audit-libc-dependencies-2026-08-05.md:
+// std/io.ax rewritten off libc stdio onto native OS handles (CreateFileA/ReadFile/
+// WriteFile/CloseHandle on Windows, SYS_open/read/write/close on Linux).
+//
+// bin/t_nolibcstdio.ax already covers the happy path (create -> write -> open ->
+// read -> compare). This file pins the four behaviours the REWRITE made newly
+// fragile, each of which fails SILENTLY rather than loudly:
+//
+//   1. MISSING FILE MUST BE Err. fopen signalled failure with null; CreateFileA
+//      signals it with INVALID_HANDLE_VALUE = -1, and the Linux syscall with a
+//      negative errno (-ENOENT = -2, NOT -1) while fd 0 is a VALID result. A
+//      `handle == 0` / `handle == null` failure test therefore reports SUCCESS on
+//      a file that does not exist, and the program then reads garbage.
+//   2. A READ SPANNING MANY 4096-BYTE FILLS. ReadFile returns a BOOL and reports
+//      the count through an OUT-PARAMETER, where fread returned the count. Read
+//      those backwards and read_all's `n == 0` terminator either spins forever or
+//      truncates. 10000 bytes = 3 fills, and the content varies per byte so a
+//      dropped/duplicated/reordered chunk changes the string, not just its length.
+//   3. EMPTY FILE => Ok(""). This is the boundary where "0 bytes" must mean EOF
+//      and not an error.
+//   4. NON-ASCII UTF-8, BYTE-EXACT. Bytes >= 0x80 must survive the write/read
+//      round trip untouched (no CRT text-mode translation, no sign extension).
+//
+// Assertion is on STDOUT (CLAUDE.md §7.1), one line, no `|` (the harness field
+// separator).
+
+import std.io
+import std.string
+
+fn make_pattern(n: i64) -> str:
+    // Byte i is 'A' + (i % 26): varies across every 4096-byte buffer fill, so a
+    // chunking defect corrupts the CONTENT, not merely the length.
+    let buf = @alloc(n + 1) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        buf[i] = ('A' as u8) + (i % 26 as i64) as u8
+        i = i + 1 as i64
+    buf[n] = 0 as u8
+    return buf as str
+
+fn round_trip(path: str, payload: str) -> str:
+    let cr = std.io.create(path)
+    if cr.is_err():
+        return "<create failed>"
+    mut wf = cr.unwrap()
+    let wr = wf.write_all(payload)          // write_all closes the file itself
+    if wr.is_err():
+        return "<write failed>"
+    let orr = std.io.open(path)
+    if orr.is_err():
+        return "<open failed>"
+    let rf = orr.unwrap()
+    let rr = rf.read_all()                  // read_all closes the file itself
+    if rr.is_err():
+        return "<read failed>"
+    return rr.unwrap()
+
+fn main() -> i32:
+    // (1) a file that does not exist
+    let miss = std.io.open("bin/__t_ionativefile_absent__.tmp")
+    let miss_is_err = miss.is_err()
+
+    // (2) 10000 bytes = past the 4096 buffer, three fills
+    let big = make_pattern(10000 as i64)
+    let big_back = round_trip("bin/_t_ionativefile_big.tmp", big)
+    let big_len = std.string.len(big_back)
+    let big_ok = big_back == big and big_len == 10000
+
+    // (3) empty file
+    let empty_back = round_trip("bin/_t_ionativefile_empty.tmp", "")
+    let empty_ok = std.string.len(empty_back) == 0 as i64
+
+    // (4) non-ASCII UTF-8, byte-exact
+    let u = "Xin chào — ünïcødé ✓ 日本語"
+    let u_back = round_trip("bin/_t_ionativefile_utf8.tmp", u)
+    let u_ok = u_back == u and std.string.len(u_back) == std.string.len(u)
+
+    print("thiếu=", miss_is_err, " lớn=", big_ok, " dài=", big_len)
+    if miss_is_err and big_ok and empty_ok and u_ok:
+        println(" trống=", empty_ok, " utf8=", u_ok, " tệp: ", 42)
+        return 42
+    println(" trống=", empty_ok, " utf8=", u_ok, " tệp: ", 7)
+    return 7

@@ -1,10 +1,20 @@
 // AXIOM Standard Library — std.io
 //
-// Input/Output interfaces and File operations.
+// Input/Output interfaces and File operations, on NATIVE OS handles.
 //
-// These still call libc stdio (fopen/fread/fwrite/fclose/fflush). That is a
-// PENDING migration, not a design choice — see step 3 of
-// `knowledge/audit-libc-dependencies-2026-08-05.md`.
+// ZERO libc stdio: fopen/fclose/fread/fwrite/fflush are gone, replaced by
+// CreateFileA/ReadFile/WriteFile/CloseHandle on Windows and SYS_open/read/write/
+// close on Linux — step 3 of `knowledge/audit-libc-dependencies-2026-08-05.md`.
+//
+// ⚠️ This file is bundled into EVERY native build, including the compiler's own
+// (the hardcoded 8-file list in `main_air.ax::concatenate_stdlib`), and
+// `main_air.ax::read_file_content` reads every source file the compiler compiles
+// through `open`/`read_all` below. Breaking it breaks the compiler that would
+// build the fix.
+//
+// The platform split is `@compiler_intrinsic("is_windows")`, a COMPILE-TIME
+// constant (idiom: `std/runtime.ax:17,57,79,111`), so -O1 folds the dead side
+// away and -O0 merely leaves it unreachable.
 //
 // ⚠️ An older comment here blamed "a cross-module extern-C resolver issue with
 // win32.CreateFileA". That was measured to be FALSE and it misdirected a whole
@@ -17,19 +27,29 @@
 // splices a HARDCODED list of 8 files (`main_air.ax:401-426`) which omits
 // `std/os/win32.ax`, while `strip_imports` (`main_air.ax:225-254`) deletes every
 // `import std...` line — so a call to `std.os.win32.CreateFileA` from here would
-// lose its declaration on the native build path.
+// lose its declaration on the native build path. Hence the LOCAL extern decls
+// below, which is what every other bundled std module already does
+// (`std/runtime.ax:8-10`, `std/mem/alloc.ax:94-95`, `std/os.ax:124-130`);
+// duplicate identical extern decls across bundled files are normal here
+// (`WriteFile` is declared in all three of those files too).
 
 import std.result
 import std.string
 
-extern "C" fn fopen(path: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(f: ptr[void]) -> i32
-extern "C" fn fread(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
-extern "C" fn fwrite(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
-// `fflush` is the one flush that is NOT a no-op: `File.flush` below hands it a
-// real FILE* from fopen. (The ~80 `fflush(null)` calls the driver used to make
-// were deleted — console output never went through libc stdio at all.)
-extern "C" fn fflush(stream: ptr[void]) -> i32
+// Win32 file I/O (kernel32). ⚠️ `linker.ax::get_dll_for_symbol` is a hard
+// whitelist whose LAST line is `return "ucrtbase.dll"` — a name missing from the
+// whitelist does not fail to compile, it silently becomes a libc import that
+// ucrtbase does not export, i.e. an executable that fails to LAUNCH. All four
+// names below are whitelisted into kernel32 at `linker.ax:708-718` (verified).
+extern "C" fn CreateFileA(lpFileName: ptr[u8], dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ptr[void], dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ptr[void]) -> ptr[void]
+extern "C" fn ReadFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToRead: u32, lpNumberOfBytesRead: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
+extern "C" fn CloseHandle(hObject: ptr[void]) -> i32
+// Linux: lowered to an inline `syscall` instruction by AIR (a call whose callee
+// IDENT is named `syscall` becomes OP_SYSCALL, `air_builder.ax:2657-2660`), so
+// this declaration never becomes a libc import — `get_dll_for_symbol` maps the
+// name to "none" (`linker.ax:705`).
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
 
 // (fseek/ftell/rewind/fputs used to be declared here with zero call sites. They were
 // kept alive only because deleting any one of them made an UNRELATED program
@@ -48,7 +68,15 @@ pub interface Writer:
     fn write(mut self: Self, buf: ptr[u8], count: i64) -> Result[i64, str]
     fn flush(mut self: Self) -> Result[void, str]
 
-/// File handle. handle stores FILE* cast to i64.
+/// File handle. `handle` stores the NATIVE OS object as i64:
+///   Windows — the HANDLE returned by CreateFileA;
+///   Linux   — the file descriptor returned by SYS_open.
+///
+/// **-1 means "not backed by an OS object"** (that is what `stdin()`/`stdout()`/
+/// `stderr()` return). -1 is the only sentinel that is correct on BOTH platforms:
+/// it IS Win32's INVALID_HANDLE_VALUE, and it is never a valid Linux fd. It
+/// deliberately replaces the previous `handle == 0` convention, which collides
+/// with Linux fd 0 — a REAL descriptor (the process's stdin), not an absence.
 pub struct File:
     pub handle: i64
     pub path: str
@@ -64,50 +92,145 @@ fn io_str_to_c_str(s: str) -> ptr[u8]:
     ((buf as i64 + len) as ptr[u8]).* = 0 as u8
     return buf
 
+// A single OS transfer is capped at 1 GiB because the Win32 count is a u32 and
+// silently truncating an i64 into it would corrupt the transfer size. Capping is
+// safe for both directions: a SHORT read/write is legal for both APIs, and every
+// caller here already loops (`read_all`, `write_all`, `read_buf`).
+fn io_clamp_count(count: i64) -> i64:
+    if count > 1073741824 as i64:
+        return 1073741824 as i64
+    return count
+
 pub fn open(path: str) -> Result[File, str]:
     let cpath = io_str_to_c_str(path)
-    let rb = io_str_to_c_str("rb")
-    let h = fopen(cpath as ptr[void], rb)
-    @free(cpath)
-    @free(rb)
-    if h == null as ptr[void]:
-        return Err("could not open file")
-    return Ok(File(handle: h as i64, path: path, mode: 0 as i32))
+    if @compiler_intrinsic("is_windows"):
+        // GENERIC_READ=0x80000000, FILE_SHARE_READ|FILE_SHARE_WRITE=3,
+        // OPEN_EXISTING=3, FILE_ATTRIBUTE_NORMAL=0x80.
+        // Share mode 3 (not 0) reproduces what fopen did: the CRT opens with
+        // _SH_DENYNO, so a file another process holds open stayed readable. Using
+        // 0 here would turn "someone else has it open" into a spurious Err — and
+        // on this box Defender holds freshly written files open routinely.
+        let h = CreateFileA(cpath, 0x80000000 as u32, 3 as u32, null as ptr[void], 3 as u32, 0x80 as u32, null as ptr[void])
+        @free(cpath)
+        // ⚠️ CreateFileA does NOT signal failure the way fopen did. fopen returned
+        // null; CreateFileA returns INVALID_HANDLE_VALUE = -1. Testing for null
+        // would make open() of a MISSING file report success and then read garbage.
+        // 0 is rejected too: it is never a valid Win32 file handle, and rejecting
+        // it keeps the "-1 == unbacked" sentinel unambiguous.
+        let hw = h as i64
+        if hw == -1 as i64 or hw == 0 as i64:
+            return Err("could not open file")
+        return Ok(File(handle: hw, path: path, mode: 0 as i32))
+    else:
+        // SYS_open=2, O_RDONLY=0.
+        let fd = syscall(2 as u64, cpath as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        @free(cpath)
+        // ⚠️ The raw syscall returns a NEGATIVE ERRNO (-ENOENT = -2), not -1, and
+        // fd 0 is VALID. The test must be `< 0` and nothing else.
+        if fd < 0 as i64:
+            return Err("could not open file")
+        return Ok(File(handle: fd, path: path, mode: 0 as i32))
 
 pub fn create(path: str) -> Result[File, str]:
     let cpath = io_str_to_c_str(path)
-    let wb = io_str_to_c_str("wb")
-    let h = fopen(cpath as ptr[void], wb)
-    @free(cpath)
-    @free(wb)
-    if h == null as ptr[void]:
-        return Err("could not create file")
-    return Ok(File(handle: h as i64, path: path, mode: 1 as i32))
+    if @compiler_intrinsic("is_windows"):
+        // GENERIC_WRITE=0x40000000, share 3 (as in `open`), CREATE_ALWAYS=2
+        // (create-or-truncate, which is fopen's "wb"), FILE_ATTRIBUTE_NORMAL=0x80.
+        let h = CreateFileA(cpath, 0x40000000 as u32, 3 as u32, null as ptr[void], 2 as u32, 0x80 as u32, null as ptr[void])
+        @free(cpath)
+        let hw = h as i64
+        if hw == -1 as i64 or hw == 0 as i64:
+            return Err("could not create file")
+        return Ok(File(handle: hw, path: path, mode: 1 as i32))
+    else:
+        // SYS_open=2 with O_WRONLY|O_CREAT|O_TRUNC = 1|64|512 = 577, mode 0644=420.
+        let fd = syscall(2 as u64, cpath as u64, 577 as u64, 420 as u64, 0 as u64, 0 as u64, 0 as u64)
+        @free(cpath)
+        if fd < 0 as i64:
+            return Err("could not create file")
+        return Ok(File(handle: fd, path: path, mode: 1 as i32))
 
 pub fn close(mut self: File) -> Result[void, str]:
-    if self.handle == 0 as i64:
+    // -1 = not backed by an OS object (stdin/stdout/stderr) => nothing to close.
+    // 0 is ALSO refused: it is what a zero-initialized File carries, it is Win32's
+    // NULL handle, and on Linux it is the process's own stdin. Leaking one
+    // descriptor is strictly better than closing the process's stdin out from
+    // under it — and a real fd 0 only ever reaches here if the program had already
+    // closed its stdin before opening a file.
+    if self.handle == -1 as i64 or self.handle == 0 as i64:
         return Ok(void)
-    let res = fclose(self.handle as ptr[void])
-    if res != 0:
-        return Err("could not close file")
-    return Ok(void)
+    if @compiler_intrinsic("is_windows"):
+        let res = CloseHandle(self.handle as ptr[void])
+        if res == 0:
+            return Err("could not close file")
+        return Ok(void)
+    else:
+        // SYS_close=3.
+        let res = syscall(3 as u64, self.handle as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        if res < 0 as i64:
+            return Err("could not close file")
+        return Ok(void)
 
 pub fn read(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
-    let n = fread(buf as ptr[void], 1 as i64, count, self.handle as ptr[void])
-    if n < 0 as i64:
-        return Err("could not read from file")
-    return Ok(n)
+    if self.handle == -1 as i64:
+        return Err("stream is not backed by an OS handle")
+    if count <= 0 as i64:
+        return Ok(0 as i64)
+    let cnt = io_clamp_count(count)
+    if @compiler_intrinsic("is_windows"):
+        // ⚠️ ReadFile reports the byte count through an OUT-PARAMETER and returns a
+        // BOOL; fread returned the count directly. Reading the BOOL as the count
+        // would make `read_all`'s `n == 0` terminator either spin forever (BOOL 1
+        // every iteration) or truncate. `nread` staying 0 with a TRUE return is
+        // EOF, which is exactly the terminator `read_all` wants.
+        // (Measured: an address-taken local survives -O1 here — the out-parameter
+        // is not const-folded back to its initializer.)
+        mut nread := 0 as u32
+        let ok = ReadFile(self.handle as ptr[void], buf as ptr[void], cnt as u32, &nread as ptr[void], null as ptr[void])
+        if ok == 0:
+            return Err("could not read from file")
+        return Ok(nread as i64)
+    else:
+        // SYS_read=0. Returns the count directly, or a negative errno.
+        let n = syscall(0 as u64, self.handle as u64, buf as u64, cnt as u64, 0 as u64, 0 as u64, 0 as u64)
+        if n < 0 as i64:
+            return Err("could not read from file")
+        return Ok(n)
 
 pub fn write(mut self: File, buf: ptr[u8], count: i64) -> Result[i64, str]:
-    let n = fwrite(buf as ptr[void], 1 as i64, count, self.handle as ptr[void])
-    if n < 0 as i64:
-        return Err("could not write to file")
-    return Ok(n)
+    if self.handle == -1 as i64:
+        return Err("stream is not backed by an OS handle")
+    if count <= 0 as i64:
+        return Ok(0 as i64)
+    let cnt = io_clamp_count(count)
+    if @compiler_intrinsic("is_windows"):
+        // Same out-parameter contract as ReadFile above.
+        mut nwritten := 0 as u32
+        let ok = WriteFile(self.handle as ptr[void], buf as ptr[void], cnt as u32, &nwritten as ptr[void], null as ptr[void])
+        if ok == 0:
+            return Err("could not write to file")
+        return Ok(nwritten as i64)
+    else:
+        // SYS_write=1.
+        let n = syscall(1 as u64, self.handle as u64, buf as u64, cnt as u64, 0 as u64, 0 as u64, 0 as u64)
+        if n < 0 as i64:
+            return Err("could not write to file")
+        return Ok(n)
 
 pub fn flush(mut self: File) -> Result[void, str]:
-    fflush(self.handle as ptr[void])
+    // A no-op BY CONSTRUCTION, not by omission: WriteFile / SYS_write hand the
+    // bytes straight to the OS, so there is no user-space buffer left to flush.
+    // This is where the last `fflush` in std/ went. Kept in the API — and still
+    // Ok(void) — because `Writer.flush` is part of the interface contract and
+    // `bin/t_nolibcstdio.ax` pins that it returns Ok.
     return Ok(void)
 
+/// Read to end of file. UNCHANGED by the native-handle rewrite, deliberately:
+/// the `@memset` + `buf as str` pair is load-bearing, not incidental. `read` may
+/// return a SHORT count, and `ptr[u8] as str` measures the string with strlen, so
+/// the buffer must be NUL-filled before every fill for the chunk length to equal
+/// the byte count actually read. (Consequence, also unchanged: a file containing
+/// an embedded NUL byte reads back truncated at that byte.)
 pub fn read_all(self: File) -> Result[str, str]:
     let cap = 4096 as i64
     let buf = @alloc(cap + 1) as ptr[u8]
@@ -150,15 +273,20 @@ pub fn write_all(mut self: File, data: str) -> Result[void, str]:
     let _ = self.close()
     return Ok(void)
 
-/// Standard input/output/error. handle=0 means not backed by a real FILE*.
+/// Standard input/output/error. handle=-1 means NOT backed by an OS object, so
+/// `read`/`write` on these return Err and `close` is a no-op — unchanged in
+/// intent from the previous `handle=0`, but expressed with a sentinel that cannot
+/// be confused with Linux fd 0 (which IS stdin). They are deliberately NOT wired
+/// to the real std handles: `write_all` closes the file it writes, so a stdout()
+/// backed by the real handle would close the process's own stdout.
 pub fn stdin() -> File:
-    return File(handle: 0 as i64, path: "stdin", mode: 0 as i32)
+    return File(handle: -1 as i64, path: "stdin", mode: 0 as i32)
 
 pub fn stdout() -> File:
-    return File(handle: 0 as i64, path: "stdout", mode: 1 as i32)
+    return File(handle: -1 as i64, path: "stdout", mode: 1 as i32)
 
 pub fn stderr() -> File:
-    return File(handle: 0 as i64, path: "stderr", mode: 2 as i32)
+    return File(handle: -1 as i64, path: "stderr", mode: 2 as i32)
 
 /// Buffered Reader wrapper.
 pub struct BufReader[R]:

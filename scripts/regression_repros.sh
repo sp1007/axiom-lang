@@ -886,10 +886,26 @@ rows=(
   # through libc stdio (ax_puts_local -> print_raw -> the `print` builtin -> ax_print_str);
   # this row is what would catch anyone rerouting printing back onto a BUFFERED stream.
   # It also exercises the std.io read/write path that survived the removal of the dead
-  # fseek/ftell/rewind/fputs externs, and File.flush -- the ONE fflush that is not a no-op,
-  # since it gets a real FILE* from fopen, which is precisely why it was kept.
+  # fseek/ftell/rewind/fputs externs, and File.flush -- which as of step 3 is a no-op
+  # returning Ok (native writes are unbuffered), a contract this row pins.
   "t_nolibcstdio|out|io=21 same=true Kết quả: 42"
   "t_nolibcstdio|exit|42"
+  # Step 3: std/io.ax now runs on NATIVE OS handles (CreateFileA/ReadFile/WriteFile/
+  # CloseHandle | SYS_open/read/write/close), no libc stdio. Four failure modes the
+  # rewrite introduces, every one of them SILENT:
+  #   - failure sentinel: fopen said null, CreateFileA says INVALID_HANDLE_VALUE=-1 and
+  #     Linux says negative-errno (while fd 0 is VALID) -- get it wrong and open() of a
+  #     MISSING file returns Ok and the caller reads garbage;
+  #   - ReadFile/WriteFile report the count via an OUT-PARAMETER and return a BOOL, so
+  #     reading the return value as the count makes read_all spin or truncate (10000
+  #     bytes = 3 buffer fills, content varies per byte so a chunking defect corrupts
+  #     the string, not just its length);
+  #   - empty file must be Ok("") -- 0 bytes is EOF, not an error;
+  #   - non-ASCII UTF-8 must round-trip byte-exact.
+  # The compiler reads EVERY source file it compiles through this path, so a defect here
+  # is a defect in every build.
+  "t_ionativefile|out|thiếu=true lớn=true dài=10000 trống=true utf8=true tệp: 42"
+  "t_ionativefile|exit|42"
   # P6: typecheck's BUG#61 return-type recovery read NODE_FIELD_EXPR.payload as a SYMBOL
   # INDEX without the flag-2048 discriminator that says the payload IS a symbol. On a
   # plain non-generic method call the payload is the INTERNED METHOD NAME, so an in-struct

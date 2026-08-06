@@ -26,7 +26,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
   ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
   [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
-- **BASELINE = 697/697**, đo ở **cả default lẫn `-O0`**. Dưới 697 là RED. (672 → 677 RFC 0038, → 679 dọn libc 0-2, → 682 sửa P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b.)
+- **BASELINE = 699/699**, đo ở **cả default lẫn `-O0`**. Dưới 699 là RED. (672 → 677 RFC 0038, → 679 libc 0-2, → 682 P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b, → 699 libc bước 3.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
