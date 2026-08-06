@@ -324,6 +324,21 @@ pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string �
      `[Debug]` ở `:488`, vốn không có `\n` nên hai lệnh này định gộp thành MỘT dòng — hiện đang tách).
    - Cả khối `[Debug] Reading *.ax...` / `[Debug] Stage N...` cũng **vô điều kiện** ⇒ nên đưa sau cờ
      verbose. Task lớn hơn, tách riêng.
+   - 🔴 **LỖI PARSE là ca TỆ NHẤT — đo 2026-08-06, repro `bin/probe11/s1.ax`** (9 dòng nguồn,
+     dùng cú pháp struct literal sai `let c: TmpStruct = (a: 64, b:64)`):
+     ```
+       tokens[32928]: kind=67 offset=142042      <- dump token THÔ, kind là SỐ
+     error: unexpected token at offset 142042    <- offset BYTE vào buffer ĐÃ NỐI
+     error: expected newline at offset 142042
+     error: expected expression nud at offset 142042
+     ... (9 lỗi dây chuyền từ MỘT sai sót)
+     ```
+     Ba khuyết tật chồng nhau: (1) **offset 142042** là vị trí byte trong **nguồn đã nối stdlib**
+     (~142 KB) — file user chỉ 9 dòng, nên con số này **vô nghĩa với user**; không file/dòng/cột,
+     không trích đoạn nguồn; (2) **9 lỗi dây chuyền** từ một sai sót, không có recovery;
+     (3) **dump token thô** (`kind=67`, kind là số nguyên nội bộ) in ra trên đường lỗi NGƯỜI DÙNG.
+     `nud` cũng là thuật ngữ Pratt-parser nội bộ, không phải ngôn ngữ người dùng.
+     ⇒ Ưu tiên cao hơn hai mục dưới: đây là ấn tượng đầu tiên của mọi user gõ sai cú pháp.
    - **THIẾU vị trí nguồn ở MỌI chẩn đoán** (không riêng E3033): §8 quy định
      `--> file.ax:12:8` + **số dòng trong gutter**. Hiện E3030 và E3033 đều in gutter RỖNG (`   |`)
      và không có dòng `-->`. Đã kiểm chứng cả hai ⇒ **thiếu sót toàn cục của hạ tầng diagnostic**,
