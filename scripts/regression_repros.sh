@@ -917,6 +917,14 @@ rows=(
   # Diagnostic quality (CLAUDE.md §8). This row pins only the HALT; the text/shape of the
   # diagnostic is pinned by the `diagnoise-*` blocks near the end of this file.
   "t_diagnoise|reject|"
+  # Diagnostics stage 2b: every diagnostic must carry `--> file.ax:LINE`. These four rows
+  # pin only the HALT (a `reject` row cannot see WHICH diagnostic fired); the rendered
+  # location is pinned by the `diagloc-*` blocks near the end of this file. One fixture per
+  # PASS, because each pass used to be a separate copy of the rendering rule.
+  "t_diagloc_parse|reject|"
+  "t_diagloc_type|reject|"
+  "t_diagloc_own|reject|"
+  "t_diagloc_nostdlib|reject|"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
@@ -1192,6 +1200,70 @@ if [ -f "$REGTMP/diagnoise_ok.exe" ] && [ "$dn_noise" = "0" ]; then
   echo "PASS diagnoise-cleanbuild (no untagged output on success)"; pass=$((pass+1))
 else
   echo "FAIL diagnoise-cleanbuild (untagged lines: got '$dn_noise' want 0, exe present: $([ -f "$REGTMP/diagnoise_ok.exe" ] && echo yes || echo no))"; fail=$((fail+1)); failed="$failed diagnoise-cleanbuild"
+fi
+
+# --- diagnostics stage 2b: ONE renderer, and every diagnostic names its FILE and LINE ---
+# CLAUDE.md §8 requires `--> file.ax:12` plus a numbered gutter. Measured BEFORE this change,
+# on these very fixtures:
+#   parser     -> "error: struct literals use parentheses ... at offset 142319"   (no snippet)
+#   ownership  -> "error[E4002]: cannot assign to immutable variable at offset 142003"
+#   typecheck  -> a snippet with an EMPTY "   |" gutter and no `-->` line at all
+# 142319 is a byte offset into the ~142 KB CONCATENATED bundle, for a 19-line file. Three
+# renderers, already drifted -- only one of them printed a snippet, none printed a location.
+# They are now thin callers of print_helpers.ax::print_diag_location.
+#
+# One block per PASS, deliberately: each pass was a separate copy of the rule, so a single
+# combined check could pass while one copy silently regressed. Every expected `path:line` is
+# derived by hand in the fixture's own header comment, and the gutter line is matched in FULL
+# (anchored) so a regression cannot hide behind a looser pattern.
+
+# (1) PARSE error in a file that ALSO carries `import std...` lines -- the case stage 2a's
+#     length-preserving import blanking exists for. Line 18 of bin/t_diagloc_parse.ax is
+#     `    let p = Point{x: 1, y: 2}`.
+dlp_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_parse.ax -o "$REGTMP/dlp.exe" -O1 $AXEXTRA 2>&1 )
+dlp_hit=$( printf '%s\n' "$dlp_log" | grep -c -- '^ --> bin/t_diagloc_parse.ax:18$' )
+dlp_any=$( printf '%s\n' "$dlp_log" | grep -c -- '-->' )
+dlp_gut=$( printf '%s\n' "$dlp_log" | grep -c '^18 |     let p = Point{x: 1, y: 2}$' )
+if [ "$dlp_hit" = "1" ] && [ "$dlp_any" = "1" ] && [ "$dlp_gut" = "1" ]; then
+  echo "PASS diagloc-parse (--> bin/t_diagloc_parse.ax:18, exactly one location, numbered gutter)"; pass=$((pass+1))
+else
+  echo "FAIL diagloc-parse (exact --> line: got '$dlp_hit' want 1; total --> lines: got '$dlp_any' want 1; gutter: got '$dlp_gut' want 1)"; fail=$((fail+1)); failed="$failed diagloc-parse"
+fi
+
+# (2) TYPECHECK error (E3030). The caret span is typecheck-specific and must SURVIVE the
+#     move to the shared renderer -- so the caret line is asserted too, not just the header.
+dlt_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_type.ax -o "$REGTMP/dlt.exe" -O1 $AXEXTRA 2>&1 )
+dlt_hit=$( printf '%s\n' "$dlt_log" | grep -c -- '^ --> bin/t_diagloc_type.ax:11$' )
+dlt_gut=$( printf '%s\n' "$dlt_log" | grep -c '^11 |     let x: u8 = 300$' )
+dlt_car=$( printf '%s\n' "$dlt_log" | grep -c '\^\^\^ value does not fit in `u8`$' )
+if [ "$dlt_hit" = "1" ] && [ "$dlt_gut" = "1" ] && [ "$dlt_car" = "1" ]; then
+  echo "PASS diagloc-type (--> bin/t_diagloc_type.ax:11, gutter + caret intact)"; pass=$((pass+1))
+else
+  echo "FAIL diagloc-type (--> line: got '$dlt_hit' want 1; gutter: got '$dlt_gut' want 1; caret: got '$dlt_car' want 1)"; fail=$((fail+1)); failed="$failed diagloc-type"
+fi
+
+# (3) OWNERSHIP error (E4003/E4002 family). This was the THIRD copy and the one that had
+#     drifted furthest: a bare byte offset, no snippet. It now carries a location.
+dlo_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_own.ax -o "$REGTMP/dlo.exe" -O1 $AXEXTRA 2>&1 )
+dlo_hit=$( printf '%s\n' "$dlo_log" | grep -c -- '^ --> bin/t_diagloc_own.ax:10$' )
+dlo_gut=$( printf '%s\n' "$dlo_log" | grep -c '^10 |     x = 2$' )
+dlo_off=$( printf '%s\n' "$dlo_log" | grep -c 'immutable variable at offset' )
+if [ "$dlo_hit" = "1" ] && [ "$dlo_gut" = "1" ] && [ "$dlo_off" = "0" ]; then
+  echo "PASS diagloc-own (--> bin/t_diagloc_own.ax:10, snippet present, raw offset gone)"; pass=$((pass+1))
+else
+  echo "FAIL diagloc-own (--> line: got '$dlo_hit' want 1; gutter: got '$dlo_gut' want 1; leftover raw-offset lines: got '$dlo_off' want 0)"; fail=$((fail+1)); failed="$failed diagloc-own"
+fi
+
+# (4) The path where the driver bundles NOTHING (`--no-stdlib`): the map is a single region
+#     covering the whole buffer. Without that entry this path would fall back to a raw byte
+#     offset even though the offset already IS an offset into the user's own file.
+dln_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_nostdlib.ax -o "$REGTMP/dln.exe" --no-stdlib -O1 $AXEXTRA 2>&1 )
+dln_hit=$( printf '%s\n' "$dln_log" | grep -c -- '^ --> bin/t_diagloc_nostdlib.ax:7$' )
+dln_gut=$( printf '%s\n' "$dln_log" | grep -c '^7 |     let p = Point{a: 1}$' )
+if [ "$dln_hit" = "1" ] && [ "$dln_gut" = "1" ]; then
+  echo "PASS diagloc-nostdlib (--> bin/t_diagloc_nostdlib.ax:7 with --no-stdlib)"; pass=$((pass+1))
+else
+  echo "FAIL diagloc-nostdlib (--> line: got '$dln_hit' want 1; gutter: got '$dln_gut' want 1)"; fail=$((fail+1)); failed="$failed diagloc-nostdlib"
 fi
 
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---

@@ -633,6 +633,172 @@ pub fn extract_base_name(name: str) -> str:
     base_ptr[base_len] = 0 as u8
     return base_ptr as str
 
+
+// â”€â”€â”€ Diagnostic source locations (CLAUDE.md Â§8) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// The driver hands the frontend ONE concatenated buffer (std/*.ax bundled ahead of the
+// user's own file), so a raw byte offset into it â€” `at offset 142042` for a nine-line
+// program â€” is meaningless to the person who wrote the mistake. A SourceMap records the
+// half-open byte region each ORIGINAL file occupies inside that buffer, which is all that
+// is needed to recover `file.ax:LINE` exactly: strip_imports is length-preserving (it
+// blanks an `import std...` line to spaces and keeps its newline instead of deleting the
+// line), so both byte offsets and line counts survive preprocessing untouched.
+//
+// Regions are built ONCE by the driver (main_air.ax) where every boundary is already a
+// live local, and threaded to the passes through AstTree.srcmap â€” no global state
+// (CLAUDE.md Â§3). A null map, or an offset in no region at all, degrades to a byte offset
+// rather than guessing a file: a WRONG file name is worse than no file name.
+pub struct SourceRegion:
+    path: str
+    start: i64   // inclusive
+    end: i64     // EXCLUSIVE
+
+pub struct SourceMap:
+    data: ptr[SourceRegion]
+    len: i64
+    cap: i64
+
+// Fixed capacity by construction: the driver bundles 8 stdlib files, the user's file, and
+// at most 2 Linux runtime shims = 12 regions. Capacity 32 leaves headroom without a
+// growth path that would never be exercised (and so never be tested).
+pub fn new_source_map() -> ptr[SourceMap]:
+    let m = @alloc(@compiler_intrinsic("size_of")[SourceMap]()) as ptr[SourceMap]
+    m.data = @alloc(32 * @compiler_intrinsic("size_of")[SourceRegion]()) as ptr[SourceRegion]
+    m.len = 0 as i64
+    m.cap = 32 as i64
+    return m
+
+pub fn srcmap_add(mut self: ptr[SourceMap], path: str, start: i64, end: i64):
+    if self == null as ptr[SourceMap] or self.len >= self.cap:
+        return
+    if end <= start:
+        return
+    self.data[self.len] = SourceRegion(path: path, start: start, end: end)
+    self.len = self.len + 1 as i64
+
+// Index of the region containing `off`, or -1 when there is none. -1 is the honest answer
+// for three distinct situations, and all three must degrade the same way:
+//   * srcmap is null      â€” an imported module's tree, which the driver never mapped;
+//   * `--no-stdlib` gaps  â€” nothing was concatenated (the driver still maps the whole
+//                           buffer in that case, so this is belt-and-braces);
+//   * SYNTHETIC offsets   â€” ast.ax::clone_subtree_from appends a cloned token's text to
+//                           tree.src and gives the clone `offset = len(old_src)`, so a
+//                           monomorphized node's offset lands PAST every region and
+//                           genuinely corresponds to no file.
+pub fn srcmap_find(srcmap: ptr[SourceMap], off: i64) -> i64:
+    if srcmap == null as ptr[SourceMap]:
+        return -1 as i64
+    mut i := 0 as i64
+    while i < srcmap.len:
+        if off >= srcmap.data[i].start and off < srcmap.data[i].end:
+            return i
+        i = i + 1 as i64
+    return -1 as i64
+
+// THE single renderer for a diagnostic's location block (CLAUDE.md Â§8):
+//
+//     --> file.ax:12
+//       |
+//    12 | let x: i32 = "hello"
+//       |        ^^^ expected i32, found string
+//       |
+//
+// parser.ax, typecheck.ax and ownership.ax ALL render through this one function. Before
+// this there were THREE copies of the idea and they had already drifted: only the
+// typechecker's printed a source snippet, and none of them could print a file or a line.
+// "One rule, two copies" is this repository's most expensive recurring defect class (the
+// interface-return miscompile, the lower_int_lit/lower_float_lit divergence, the
+// resolve_method_overload arity split, P6) â€” do not add a fourth. Callers keep only what
+// is genuinely theirs: the `error[Exxxx]: ...` headline, and the caret SPAN (the
+// typechecker widens it from a leading unary `-` to the end of the literal).
+//
+// âš ï¸ LINE ONLY â€” the absence of a COLUMN is deliberate, not an oversight. The driver's
+// strip_package_prefixes rewrites lines IN PLACE before the lexer ever runs (deleting e.g.
+// `std.string.` = 11 bytes, and one byte per `::` â†’ `.`), so a column recovered from the
+// preprocessed buffer is shifted left by however much was stripped ahead of it on that
+// line, and would be silently wrong. A correct `file.ax:12` beats a wrong `file.ax:12:8`.
+// Recovering true columns requires replaying that rewrite in lockstep and is a separate
+// change; do NOT "helpfully" add a column here before that exists.
+pub fn print_diag_location(srcmap: ptr[SourceMap], src: str, off: i64, span_in: i64, caret_msg: str):
+    let srclen = std.string.len(src)
+    let ri = srcmap_find(srcmap, off)
+    if ri < 0 as i64 or off < 0 as i64 or off >= srclen:
+        // No mapped file (see srcmap_find). Report the raw offset â€” the same information
+        // every diagnostic carried before source maps existed â€” instead of naming a file
+        // that may not be the one the offset belongs to.
+        if std.string.len(caret_msg) > 0 as i64:
+            ax_printf_local("   = %s (at byte offset %d of the compilation unit)\n", get_str_ptr(caret_msg) as i64, off, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        else:
+            ax_printf_local("   = at byte offset %d of the compilation unit\n", off, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        return
+    let reg_start = srcmap.data[ri].start
+    mut reg_end := srcmap.data[ri].end
+    if reg_end > srclen:
+        reg_end = srclen
+    // ONE forward scan yields BOTH the 1-based line number and the start of that line.
+    // (lexer.ax::find_line_start scans BACKWARD for the line start alone; calling it here
+    // would add a second full pass over the region and still leave the line number to
+    // count. It stays where it is, serving the lexer's indentation logic â€” this is not a
+    // second copy of that rule, it is the one loop that has to run anyway.)
+    mut line := 1 as i64
+    mut ls := reg_start
+    mut i := reg_start
+    while i < off:
+        if src[i] as u8 == 10:
+            line = line + 1 as i64
+            ls = i + 1 as i64
+        i = i + 1 as i64
+    ax_printf_local(" --> %s:%d\n", get_str_ptr(srcmap.data[ri].path) as i64, line, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    // End of the offending line, clamped to the region so a snippet can never bleed into
+    // the next bundled file.
+    mut le := off
+    while le < reg_end and src[le] as u8 != 10:
+        le = le + 1 as i64
+    // Gutter width tracks the line number's own width so the `|` column stays aligned:
+    // `12 | ...` renders against a blank `   |`, exactly as CLAUDE.md Â§8 shows.
+    mut w := 1 as i64
+    mut nn := line
+    while nn >= 10 as i64:
+        w = w + 1 as i64
+        nn = nn / 10 as i64
+    let gut = @alloc(w + 3 as i64) as ptr[u8]
+    mut gi := 0 as i64
+    while gi < w + 1 as i64:
+        gut[gi] = ' ' as u8
+        gi = gi + 1 as i64
+    gut[w + 1 as i64] = '|' as u8
+    gut[w + 2 as i64] = 0 as u8
+    ax_printf_local("%s\n", gut as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    ax_printf_local("%d | ", line, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    let base = (src as ptr[u8]) as i64
+    print_raw_ptr((base + ls) as ptr[u8], le - ls)
+    print_raw("\n")
+    // Caret line: pad to the offending column, then one '^' per source byte of the span.
+    mut span := span_in
+    if span < 1 as i64:
+        span = 1 as i64
+    if off + span > le:
+        span = le - off
+    if span < 1 as i64:
+        span = 1 as i64
+    let pad = off - ls
+    let cbuf = @alloc(pad + span + 1 as i64) as ptr[u8]
+    mut ci := 0 as i64
+    while ci < pad:
+        cbuf[ci] = ' ' as u8
+        ci = ci + 1 as i64
+    mut cj := 0 as i64
+    while cj < span:
+        cbuf[pad + cj] = '^' as u8
+        cj = cj + 1 as i64
+    cbuf[pad + span] = 0 as u8
+    if std.string.len(caret_msg) > 0 as i64:
+        ax_printf_local("%s %s %s\n", gut as i64, cbuf as i64, get_str_ptr(caret_msg) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    else:
+        ax_printf_local("%s %s\n", gut as i64, cbuf as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    @free(cbuf)
+    ax_printf_local("%s\n", gut as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+    @free(gut)
+
 // bootstrap/stage1/token.ax
 // Defines the 82 TokenKind constants for AXIOM.
 
@@ -1574,6 +1740,13 @@ pub struct AstTree:
     // (its provenance is the caller's â€” possibly not heap-owned), so it is kept here
     // to guard the free.
     orig_src: str
+    // Diagnostics stage 2b: the driver's map from a byte offset in `src` back to the
+    // ORIGINAL file + line it came from (print_helpers.ax::SourceMap). Set ONCE by the
+    // driver right after the parser is created; NULL for every tree the driver does not
+    // build (imported-module trees), which print_diag_location degrades to a raw offset.
+    // Carried on the tree rather than in a global because both Parser and TypeChecker
+    // already hold `self.tree` â€” no new hidden state (CLAUDE.md Â§3).
+    srcmap: ptr[SourceMap]
 
 pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     mut nodes := new_node_vec()
@@ -1594,6 +1767,7 @@ pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     tree.src = src
     tree.orig_src = src
     tree.tokens = tokens
+    tree.srcmap = null as ptr[SourceMap]
     return tree
 
 pub fn add_node(mut self: ptr[AstTree], kind: u8, token_idx: u32) -> u32:
@@ -2079,10 +2253,17 @@ pub fn is_array_type_arg(self: ptr[Parser]) -> bool:
 //                          before an already-reported position cannot report twice even
 //                          when panic has been cleared in between.
 // The first error always prints (panic starts false, offsets are >= 0 > -1).
+//
+// Location rendering is NOT done here: it goes through the ONE renderer in
+// print_helpers.ax that typecheck.ax and ownership.ax also use, so `--> file.ax:LINE` +
+// snippet + caret can never drift between the three passes. The raw `at offset N` text
+// this used to print survives inside that renderer as the fallback for an offset that maps
+// to no file (an imported module's tree, or a synthetic monomorphization offset).
 pub fn errorf(mut self: ptr[Parser], tok: Token, msg: str):
     self.diags_count = self.diags_count + 1
     if not self.panic and tok.offset as i64 > self.last_err_offset:
-        ax_printf_local("error: %s at offset %d\n", (msg as ptr[u8]) as i64, tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error: %s\n", (msg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        print_diag_location(self.tree.srcmap, self.tree.src, tok.offset as i64, tok.len as i64, "")
         self.last_err_offset = tok.offset as i64
     self.panic = true
 
@@ -8807,11 +8988,19 @@ pub fn int_lit_type_display(t: u32) -> str:
 // Shared by BOTH RFC 0006 annotation rules (E3030 out-of-range integer literal, E3031
 // implicit float->int) so the rendered shape can never drift between them.
 //
-// A `file.ax:line:col` header is deliberately NOT printed: the frontend's `tree.src` is the
-// CONCATENATED compilation unit (the driver bundles std/*.ax ahead of the user's file), so
-// an absolute line number would name the wrong line of the wrong file. The snippet + caret
-// is the part of the house format that is accurate today; every other diagnostic in this
-// pass prints a byte offset for the same reason.
+// This function now owns ONLY the part that is genuinely typecheck-specific â€” computing
+// the caret SPAN from two AST nodes â€” and hands `(offset, span)` to the single renderer in
+// print_helpers.ax that parser.ax and ownership.ax also call. It therefore now prints a
+// `--> file.ax:LINE` header too.
+//
+// The header used to be omitted on purpose, and the reason was TRUE when it was written:
+// `tree.src` is the CONCATENATED compilation unit (the driver bundles std/*.ax ahead of
+// the user's file), so an absolute line number named the wrong line of the wrong file.
+// Two changes retired that: strip_imports became length-preserving (it blanks an
+// `import std...` line instead of deleting it, so offsets AND line counts survive), and
+// the driver now records which file owns each byte range (SourceMap). What is still NOT
+// recoverable is the COLUMN â€” strip_package_prefixes rewrites lines in place before the
+// lexer runs â€” which is why the header is `file.ax:12` and not `file.ax:12:8`.
 pub fn print_annotated_expr_snippet(self: ptr[TypeChecker], from: u32, lit: u32, msg: str):
     let ftok_idx = self.tree.nodes.data[from].token_idx
     let ltok_idx = self.tree.nodes.data[lit].token_idx
@@ -8819,41 +9008,13 @@ pub fn print_annotated_expr_snippet(self: ptr[TypeChecker], from: u32, lit: u32,
         return
     let ftok = self.tree.tokens.data[ftok_idx as i64]
     let ltok = self.tree.tokens.data[ltok_idx as i64]
-    let src = self.tree.src
-    let srclen = std.string.len(src)
     let off = ftok.offset as i64
-    if off < 0 as i64 or off >= srclen:
-        return
+    // `from` is the OUTERMOST node (the unary `-` when negated) and `lit` the inner
+    // literal, so the span covers `-128` rather than just `128`.
     mut span := (ltok.offset as i64 + ltok.len as i64) - off
     if span < 1 as i64:
         span = 1 as i64
-    // Line bounds around the literal.
-    mut ls := off
-    while ls > 0 as i64 and src[ls - 1] as u8 != 10:
-        ls = ls - 1
-    mut le := off
-    while le < srclen and src[le] as u8 != 10:
-        le = le + 1
-    if off + span > le:
-        span = le - off
-    let base = (src as ptr[u8]) as i64
-    let line_txt = alloc_str_from_raw((base + ls) as ptr[u8], le - ls)
-    ax_printf_local("   |\n   | %s\n", get_str_ptr(line_txt) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    safe_free_str(line_txt)
-    // Caret line: pad to the literal's column, then one '^' per source character.
-    let pad = off - ls
-    let cbuf = @alloc(pad + span + 1) as ptr[u8]
-    mut i := 0 as i64
-    while i < pad:
-        cbuf[i] = ' ' as u8
-        i = i + 1
-    mut j := 0 as i64
-    while j < span:
-        cbuf[pad + j] = '^' as u8
-        j = j + 1
-    cbuf[pad + span] = 0 as u8
-    ax_printf_local("   | %s %s\n   |\n", cbuf as i64, get_str_ptr(msg) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    @free(cbuf)
+    print_diag_location(self.tree.srcmap, self.tree.src, off, span, msg)
 
 // True iff `lhs` is a plain variable whose declaration carried an EXPLICIT type
 // annotation. Assignment has no annotation of its own, so this is what distinguishes
@@ -14304,7 +14465,8 @@ pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
                     let sym = self.symtable.symbols.data[sym_idx]
                     if (sym.flags & SYM_FLAG_MUT) == 0 as u16:
                         let tok = self.tree.tokens.data[node.token_idx]
-                        ax_printf_local("error[E4002]: cannot assign to immutable variable at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        ax_printf_local("error[E4002]: cannot assign to immutable variable\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                        print_diag_location(self.tree.srcmap, self.tree.src, tok.offset as i64, tok.len as i64, "declared without `mut`")
                         self.errors = self.errors + 1 as u32
 
             self.check_move(rhs_idx)
@@ -14316,7 +14478,8 @@ pub fn check_node(mut self: ptr[OwnershipChecker], node_idx: u32):
             let sym = self.symtable.symbols.data[sym_idx]
             if (sym.flags & SYM_FLAG_MOVED) != 0 as u16:
                 let tok = self.tree.tokens.data[node.token_idx]
-                ax_printf_local("error[E4001]: use of moved value at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                ax_printf_local("error[E4001]: use of moved value\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                print_diag_location(self.tree.srcmap, self.tree.src, tok.offset as i64, tok.len as i64, "value was moved out here")
                 self.errors = self.errors + 1 as u32
 
     elif kind == NODE_CALL_EXPR:
@@ -14428,7 +14591,8 @@ fn check_drop_copy(mut self: ptr[OwnershipChecker], stmt_idx: u32, rhs_idx: u32)
         return
     if self.type_has_drop(sym.type_id):
         let tok = self.tree.tokens.data[self.tree.nodes.data[stmt_idx as i64].token_idx]
-        ax_printf_local("error[E4003]: cannot copy a value whose type has a `drop` method (would double-drop) at offset %d\n", tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error[E4003]: cannot copy a value whose type has a `drop` method (would double-drop)\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        print_diag_location(self.tree.srcmap, self.tree.src, tok.offset as i64, tok.len as i64, "this copy would alias a `drop`-owning value")
         self.errors = self.errors + 1 as u32
 // bootstrap/stage1/escape.ax
 // EscapeAnalyser performs escape analysis using ConnectionGraph.
@@ -40617,7 +40781,24 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
 
 
 
-fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
+// Length of `s` after the SAME preprocessing concatenate_stdlib applies to every piece.
+// Used only to place a region boundary INSIDE the trailing block on the Linux path (where
+// the runtime shims were appended to the user's source before preprocessing).
+//
+// Exact because both passes are piece-local: strip_imports rewrites whole LINES in place,
+// and strip_package_prefixes replaces substrings that contain no newline â€” so for pieces
+// joined by "\n", preprocess(A + "\n" + B) == preprocess(A) + "\n" + preprocess(B), and no
+// pattern can straddle a join.
+fn preprocessed_len(s: str) -> i64:
+    let a = strip_imports(s)
+    let b = strip_package_prefixes(a)
+    return std.string.len(b)
+
+// `smap` (may be null) receives one region per BUNDLED stdlib file, in buffer order, so a
+// diagnostic can name `std/string.ax:412` instead of a byte offset into a ~142 KB bundle.
+// The trailing user block is mapped by the caller, which is the only place that knows
+// whether the Linux runtime shims were appended to it.
+fn concatenate_stdlib(src: str, fails: ptr[i64], smap: ptr[SourceMap]) -> str:
     ax_puts_local("[Debug] Reading result.ax...")
     let raw_res = read_required_file("std/result.ax", fails)
     ax_puts_local("[Debug] Reading alloc.ax...")
@@ -40729,6 +40910,20 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let off_src = off_coll + len_coll + 1 as i64
     @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
     new_buf[total_len] = 0 as u8
+
+    // Record the bundled regions in buffer order. Deliberately NOT the trailing user
+    // block: on the Linux target the driver appended bootstrap/runtime/{panic,syscall}.ax
+    // to the user's source BEFORE calling us, so only the driver can split that block â€”
+    // and mapping it here would name the user's file for a line of panic.ax, which is a
+    // wrong answer rather than a missing one.
+    srcmap_add(smap, "std/result.ax", 0 as i64, len_res)
+    srcmap_add(smap, "std/mem/alloc.ax", off_alloc, off_alloc + len_alloc)
+    srcmap_add(smap, "std/scheduler.ax", off_sched, off_sched + len_sched)
+    srcmap_add(smap, "std/runtime.ax", off_rt, off_rt + len_rt)
+    srcmap_add(smap, "std/os.ax", off_os, off_os + len_os)
+    srcmap_add(smap, "std/string.ax", off_str, off_str + len_str)
+    srcmap_add(smap, "std/io.ax", off_io, off_io + len_io)
+    srcmap_add(smap, "std/collections.ax", off_coll, off_coll + len_coll)
 
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
 
@@ -41235,14 +41430,25 @@ pub fn main() -> i32:
         return 0
 
     mut t_mark := time_now_ms()  // --time running marker (inert unless show_time)
+    // Diagnostics stage 2b (CLAUDE.md Â§8): map every byte of the buffer the frontend will
+    // see back to the file it came from, so a diagnostic can print `--> file.ax:LINE`.
+    // Built here because this is the only place where all the boundaries are known.
+    mut srcmap := new_source_map()
+    mut user_pp_len := 0 as i64      // preprocessed length of the USER's own source
+    mut lx_panic_pp := 0 as i64      // ... of bootstrap/runtime/panic.ax   (Linux only)
+    mut lx_syscall_pp := 0 as i64    // ... of bootstrap/runtime/syscall.ax (Linux only)
     if self_link and not no_stdlib:
         // RFC 0009 P3 Linux: bundle the freestanding runtime shims (syscall-based
         // ax_get_global_state_internal / ax_panic / ax_compiler_intrinsic) so the
         // program needs no libax_runtime.so â€” the ELF linker binds the raw C-ABI
         // names to these bundled `ax_`-mangled twins. Windows keeps ax_runtime.dll.
         if target_linux:
+            // Measure the user's own text BEFORE anything is appended to it â€” that is the
+            // only moment at which the user region's end can still be established.
+            user_pp_len = preprocessed_len(src)
             let raw_panic_rt = read_file_content("bootstrap/runtime/panic.ax")
             if std.string.len(raw_panic_rt) > 0:
+                lx_panic_pp = preprocessed_len(raw_panic_rt)
                 let src_nl = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl, raw_panic_rt)
                 @free(get_str_ptr(src_nl))
@@ -41251,6 +41457,7 @@ pub fn main() -> i32:
             // which the import graph does NOT pull in. Bundle it so those resolve on Linux.
             let raw_syscall_rt = read_file_content("bootstrap/runtime/syscall.ax")
             if std.string.len(raw_syscall_rt) > 0:
+                lx_syscall_pp = preprocessed_len(raw_syscall_rt)
                 let src_nl2 = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl2, raw_syscall_rt)
                 @free(get_str_ptr(src_nl2))
@@ -41262,11 +41469,36 @@ pub fn main() -> i32:
         // real cause (wrong working directory) was several screens above the
         // symptom the user actually met.
         mut stdlib_fails := 0 as i64
-        src = concatenate_stdlib(src, &stdlib_fails)
+        src = concatenate_stdlib(src, &stdlib_fails, srcmap)
         if stdlib_fails > 0 as i64:
             ax_printf_local("error: %d stdlib source file(s) could not be read; aborting before code generation\n", stdlib_fails, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             return 1
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
+
+    // Map the TRAILING block, which concatenate_stdlib deliberately left alone (only this
+    // scope knows whether the Linux shims were appended to the user's source).
+    let src_total = std.string.len(src)
+    if srcmap.len > 0 as i64:
+        // The user's text begins one '\n' past the last bundled stdlib region.
+        let off_user = srcmap.data[srcmap.len - 1 as i64].end + 1 as i64
+        if lx_panic_pp == 0 as i64 and lx_syscall_pp == 0 as i64:
+            // Common case: nothing was appended, so the block IS the user's file.
+            srcmap_add(srcmap, filename, off_user, src_total)
+        else:
+            mut cut := off_user + user_pp_len
+            srcmap_add(srcmap, filename, off_user, cut)
+            if lx_panic_pp > 0 as i64:
+                srcmap_add(srcmap, "bootstrap/runtime/panic.ax", cut + 1 as i64, cut + 1 as i64 + lx_panic_pp)
+                cut = cut + 1 as i64 + lx_panic_pp
+            if lx_syscall_pp > 0 as i64:
+                srcmap_add(srcmap, "bootstrap/runtime/syscall.ax", cut + 1 as i64, cut + 1 as i64 + lx_syscall_pp)
+                cut = cut + 1 as i64 + lx_syscall_pp
+    else:
+        // Concatenation was skipped entirely â€” `--no-stdlib`, or a subcommand that does
+        // not self-link (`dump-air`, `emit-c`). The whole buffer is then the user's file.
+        // Without this entry those paths would fall back to a raw byte offset even though
+        // the offset already IS a plain offset into the user's own file.
+        srcmap_add(srcmap, filename, 0 as i64, src_total)
 
     // RFC 0011 P3: for --staticlib, skip the whole pipeline when the source is
     // unchanged (its hash matches the manifest) and the .lib still exists.
@@ -41293,6 +41525,10 @@ pub fn main() -> i32:
     // 2. Parse
     mut pool := new_intern_pool()
     mut parser := new_parser(tokens, src, pool)
+    // Thread the source map onto the tree BEFORE parsing, so parse diagnostics can locate
+    // themselves too. Both Parser and TypeChecker reach it through `self.tree` â€” one owner,
+    // no globals (CLAUDE.md Â§3).
+    parser.tree.srcmap = srcmap
     parser.parse_program()
     // BUG#53 fix (CLAUDE.md Â§8): parse errors must HALT the pipeline. Previously the
     // driver ignored parser.diags_count, so a malformed parse (e.g. an inline `if COND:

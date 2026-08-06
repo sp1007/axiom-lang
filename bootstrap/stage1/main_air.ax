@@ -433,7 +433,24 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
 
 
 
-fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
+// Length of `s` after the SAME preprocessing concatenate_stdlib applies to every piece.
+// Used only to place a region boundary INSIDE the trailing block on the Linux path (where
+// the runtime shims were appended to the user's source before preprocessing).
+//
+// Exact because both passes are piece-local: strip_imports rewrites whole LINES in place,
+// and strip_package_prefixes replaces substrings that contain no newline — so for pieces
+// joined by "\n", preprocess(A + "\n" + B) == preprocess(A) + "\n" + preprocess(B), and no
+// pattern can straddle a join.
+fn preprocessed_len(s: str) -> i64:
+    let a = strip_imports(s)
+    let b = strip_package_prefixes(a)
+    return std.string.len(b)
+
+// `smap` (may be null) receives one region per BUNDLED stdlib file, in buffer order, so a
+// diagnostic can name `std/string.ax:412` instead of a byte offset into a ~142 KB bundle.
+// The trailing user block is mapped by the caller, which is the only place that knows
+// whether the Linux runtime shims were appended to it.
+fn concatenate_stdlib(src: str, fails: ptr[i64], smap: ptr[SourceMap]) -> str:
     ax_puts_local("[Debug] Reading result.ax...")
     let raw_res = read_required_file("std/result.ax", fails)
     ax_puts_local("[Debug] Reading alloc.ax...")
@@ -545,6 +562,20 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let off_src = off_coll + len_coll + 1 as i64
     @memcpy(((new_buf as i64) + off_src) as ptr[u8], clean_src as ptr[u8], len_src)
     new_buf[total_len] = 0 as u8
+
+    // Record the bundled regions in buffer order. Deliberately NOT the trailing user
+    // block: on the Linux target the driver appended bootstrap/runtime/{panic,syscall}.ax
+    // to the user's source BEFORE calling us, so only the driver can split that block —
+    // and mapping it here would name the user's file for a line of panic.ax, which is a
+    // wrong answer rather than a missing one.
+    srcmap_add(smap, "std/result.ax", 0 as i64, len_res)
+    srcmap_add(smap, "std/mem/alloc.ax", off_alloc, off_alloc + len_alloc)
+    srcmap_add(smap, "std/scheduler.ax", off_sched, off_sched + len_sched)
+    srcmap_add(smap, "std/runtime.ax", off_rt, off_rt + len_rt)
+    srcmap_add(smap, "std/os.ax", off_os, off_os + len_os)
+    srcmap_add(smap, "std/string.ax", off_str, off_str + len_str)
+    srcmap_add(smap, "std/io.ax", off_io, off_io + len_io)
+    srcmap_add(smap, "std/collections.ax", off_coll, off_coll + len_coll)
 
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
 
@@ -1051,14 +1082,25 @@ pub fn main() -> i32:
         return 0
 
     mut t_mark := time_now_ms()  // --time running marker (inert unless show_time)
+    // Diagnostics stage 2b (CLAUDE.md §8): map every byte of the buffer the frontend will
+    // see back to the file it came from, so a diagnostic can print `--> file.ax:LINE`.
+    // Built here because this is the only place where all the boundaries are known.
+    mut srcmap := new_source_map()
+    mut user_pp_len := 0 as i64      // preprocessed length of the USER's own source
+    mut lx_panic_pp := 0 as i64      // ... of bootstrap/runtime/panic.ax   (Linux only)
+    mut lx_syscall_pp := 0 as i64    // ... of bootstrap/runtime/syscall.ax (Linux only)
     if self_link and not no_stdlib:
         // RFC 0009 P3 Linux: bundle the freestanding runtime shims (syscall-based
         // ax_get_global_state_internal / ax_panic / ax_compiler_intrinsic) so the
         // program needs no libax_runtime.so — the ELF linker binds the raw C-ABI
         // names to these bundled `ax_`-mangled twins. Windows keeps ax_runtime.dll.
         if target_linux:
+            // Measure the user's own text BEFORE anything is appended to it — that is the
+            // only moment at which the user region's end can still be established.
+            user_pp_len = preprocessed_len(src)
             let raw_panic_rt = read_file_content("bootstrap/runtime/panic.ax")
             if std.string.len(raw_panic_rt) > 0:
+                lx_panic_pp = preprocessed_len(raw_panic_rt)
                 let src_nl = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl, raw_panic_rt)
                 @free(get_str_ptr(src_nl))
@@ -1067,6 +1109,7 @@ pub fn main() -> i32:
             // which the import graph does NOT pull in. Bundle it so those resolve on Linux.
             let raw_syscall_rt = read_file_content("bootstrap/runtime/syscall.ax")
             if std.string.len(raw_syscall_rt) > 0:
+                lx_syscall_pp = preprocessed_len(raw_syscall_rt)
                 let src_nl2 = std.string.concat(src, "\n")
                 src = std.string.concat(src_nl2, raw_syscall_rt)
                 @free(get_str_ptr(src_nl2))
@@ -1078,11 +1121,36 @@ pub fn main() -> i32:
         // real cause (wrong working directory) was several screens above the
         // symptom the user actually met.
         mut stdlib_fails := 0 as i64
-        src = concatenate_stdlib(src, &stdlib_fails)
+        src = concatenate_stdlib(src, &stdlib_fails, srcmap)
         if stdlib_fails > 0 as i64:
             ax_printf_local("error: %d stdlib source file(s) could not be read; aborting before code generation\n", stdlib_fails, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             return 1
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
+
+    // Map the TRAILING block, which concatenate_stdlib deliberately left alone (only this
+    // scope knows whether the Linux shims were appended to the user's source).
+    let src_total = std.string.len(src)
+    if srcmap.len > 0 as i64:
+        // The user's text begins one '\n' past the last bundled stdlib region.
+        let off_user = srcmap.data[srcmap.len - 1 as i64].end + 1 as i64
+        if lx_panic_pp == 0 as i64 and lx_syscall_pp == 0 as i64:
+            // Common case: nothing was appended, so the block IS the user's file.
+            srcmap_add(srcmap, filename, off_user, src_total)
+        else:
+            mut cut := off_user + user_pp_len
+            srcmap_add(srcmap, filename, off_user, cut)
+            if lx_panic_pp > 0 as i64:
+                srcmap_add(srcmap, "bootstrap/runtime/panic.ax", cut + 1 as i64, cut + 1 as i64 + lx_panic_pp)
+                cut = cut + 1 as i64 + lx_panic_pp
+            if lx_syscall_pp > 0 as i64:
+                srcmap_add(srcmap, "bootstrap/runtime/syscall.ax", cut + 1 as i64, cut + 1 as i64 + lx_syscall_pp)
+                cut = cut + 1 as i64 + lx_syscall_pp
+    else:
+        // Concatenation was skipped entirely — `--no-stdlib`, or a subcommand that does
+        // not self-link (`dump-air`, `emit-c`). The whole buffer is then the user's file.
+        // Without this entry those paths would fall back to a raw byte offset even though
+        // the offset already IS a plain offset into the user's own file.
+        srcmap_add(srcmap, filename, 0 as i64, src_total)
 
     // RFC 0011 P3: for --staticlib, skip the whole pipeline when the source is
     // unchanged (its hash matches the manifest) and the .lib still exists.
@@ -1109,6 +1177,10 @@ pub fn main() -> i32:
     // 2. Parse
     mut pool := new_intern_pool()
     mut parser := new_parser(tokens, src, pool)
+    // Thread the source map onto the tree BEFORE parsing, so parse diagnostics can locate
+    // themselves too. Both Parser and TypeChecker reach it through `self.tree` — one owner,
+    // no globals (CLAUDE.md §3).
+    parser.tree.srcmap = srcmap
     parser.parse_program()
     // BUG#53 fix (CLAUDE.md §8): parse errors must HALT the pipeline. Previously the
     // driver ignored parser.diags_count, so a malformed parse (e.g. an inline `if COND:

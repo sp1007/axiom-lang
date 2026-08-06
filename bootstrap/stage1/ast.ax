@@ -166,6 +166,13 @@ pub struct AstTree:
     // (its provenance is the caller's — possibly not heap-owned), so it is kept here
     // to guard the free.
     orig_src: str
+    // Diagnostics stage 2b: the driver's map from a byte offset in `src` back to the
+    // ORIGINAL file + line it came from (print_helpers.ax::SourceMap). Set ONCE by the
+    // driver right after the parser is created; NULL for every tree the driver does not
+    // build (imported-module trees), which print_diag_location degrades to a raw offset.
+    // Carried on the tree rather than in a global because both Parser and TypeChecker
+    // already hold `self.tree` — no new hidden state (CLAUDE.md §3).
+    srcmap: ptr[SourceMap]
 
 pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     mut nodes := new_node_vec()
@@ -186,6 +193,7 @@ pub fn new_ast_tree(src: str, tokens: TokenVec) -> ptr[AstTree]:
     tree.src = src
     tree.orig_src = src
     tree.tokens = tokens
+    tree.srcmap = null as ptr[SourceMap]
     return tree
 
 pub fn add_node(mut self: ptr[AstTree], kind: u8, token_idx: u32) -> u32:

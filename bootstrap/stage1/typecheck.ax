@@ -2247,11 +2247,19 @@ pub fn int_lit_type_display(t: u32) -> str:
 // Shared by BOTH RFC 0006 annotation rules (E3030 out-of-range integer literal, E3031
 // implicit float->int) so the rendered shape can never drift between them.
 //
-// A `file.ax:line:col` header is deliberately NOT printed: the frontend's `tree.src` is the
-// CONCATENATED compilation unit (the driver bundles std/*.ax ahead of the user's file), so
-// an absolute line number would name the wrong line of the wrong file. The snippet + caret
-// is the part of the house format that is accurate today; every other diagnostic in this
-// pass prints a byte offset for the same reason.
+// This function now owns ONLY the part that is genuinely typecheck-specific — computing
+// the caret SPAN from two AST nodes — and hands `(offset, span)` to the single renderer in
+// print_helpers.ax that parser.ax and ownership.ax also call. It therefore now prints a
+// `--> file.ax:LINE` header too.
+//
+// The header used to be omitted on purpose, and the reason was TRUE when it was written:
+// `tree.src` is the CONCATENATED compilation unit (the driver bundles std/*.ax ahead of
+// the user's file), so an absolute line number named the wrong line of the wrong file.
+// Two changes retired that: strip_imports became length-preserving (it blanks an
+// `import std...` line instead of deleting it, so offsets AND line counts survive), and
+// the driver now records which file owns each byte range (SourceMap). What is still NOT
+// recoverable is the COLUMN — strip_package_prefixes rewrites lines in place before the
+// lexer runs — which is why the header is `file.ax:12` and not `file.ax:12:8`.
 pub fn print_annotated_expr_snippet(self: ptr[TypeChecker], from: u32, lit: u32, msg: str):
     let ftok_idx = self.tree.nodes.data[from].token_idx
     let ltok_idx = self.tree.nodes.data[lit].token_idx
@@ -2259,41 +2267,13 @@ pub fn print_annotated_expr_snippet(self: ptr[TypeChecker], from: u32, lit: u32,
         return
     let ftok = self.tree.tokens.data[ftok_idx as i64]
     let ltok = self.tree.tokens.data[ltok_idx as i64]
-    let src = self.tree.src
-    let srclen = std.string.len(src)
     let off = ftok.offset as i64
-    if off < 0 as i64 or off >= srclen:
-        return
+    // `from` is the OUTERMOST node (the unary `-` when negated) and `lit` the inner
+    // literal, so the span covers `-128` rather than just `128`.
     mut span := (ltok.offset as i64 + ltok.len as i64) - off
     if span < 1 as i64:
         span = 1 as i64
-    // Line bounds around the literal.
-    mut ls := off
-    while ls > 0 as i64 and src[ls - 1] as u8 != 10:
-        ls = ls - 1
-    mut le := off
-    while le < srclen and src[le] as u8 != 10:
-        le = le + 1
-    if off + span > le:
-        span = le - off
-    let base = (src as ptr[u8]) as i64
-    let line_txt = alloc_str_from_raw((base + ls) as ptr[u8], le - ls)
-    ax_printf_local("   |\n   | %s\n", get_str_ptr(line_txt) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    safe_free_str(line_txt)
-    // Caret line: pad to the literal's column, then one '^' per source character.
-    let pad = off - ls
-    let cbuf = @alloc(pad + span + 1) as ptr[u8]
-    mut i := 0 as i64
-    while i < pad:
-        cbuf[i] = ' ' as u8
-        i = i + 1
-    mut j := 0 as i64
-    while j < span:
-        cbuf[pad + j] = '^' as u8
-        j = j + 1
-    cbuf[pad + span] = 0 as u8
-    ax_printf_local("   | %s %s\n   |\n", cbuf as i64, get_str_ptr(msg) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    @free(cbuf)
+    print_diag_location(self.tree.srcmap, self.tree.src, off, span, msg)
 
 // True iff `lhs` is a plain variable whose declaration carried an EXPLICIT type
 // annotation. Assignment has no annotation of its own, so this is what distinguishes

@@ -1,0 +1,19 @@
+// Diagnostics stage 2b fixture (CLAUDE.md §8): a PARSE error in a file that ALSO carries
+// `import std...` lines. The imports are the whole point -- the driver blanks each of them
+// to spaces and keeps the newline (stage 2a), so both the byte offset and the line count
+// survive preprocessing and the `-->` header can name THIS file with a line number that is
+// the user's own, not a line of the ~142 KB concatenated bundle.
+//
+// ONE mistake, on line 18: Rust/Go-style brace struct-literal syntax, which AXIOM spells
+// `Point(x: 1, y: 2)`. Chosen over a dangling-operator shape because the offending TOKEN is
+// on the offending LINE, so the asserted line number is the line a reader would point at.
+import std.string
+import std.io
+
+struct Point:
+    x: i64
+    y: i64
+
+fn main() -> i32:
+    let p = Point{x: 1, y: 2}
+    return 42

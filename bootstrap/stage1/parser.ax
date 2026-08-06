@@ -133,10 +133,17 @@ pub fn is_array_type_arg(self: ptr[Parser]) -> bool:
 //                          before an already-reported position cannot report twice even
 //                          when panic has been cleared in between.
 // The first error always prints (panic starts false, offsets are >= 0 > -1).
+//
+// Location rendering is NOT done here: it goes through the ONE renderer in
+// print_helpers.ax that typecheck.ax and ownership.ax also use, so `--> file.ax:LINE` +
+// snippet + caret can never drift between the three passes. The raw `at offset N` text
+// this used to print survives inside that renderer as the fallback for an offset that maps
+// to no file (an imported module's tree, or a synthetic monomorphization offset).
 pub fn errorf(mut self: ptr[Parser], tok: Token, msg: str):
     self.diags_count = self.diags_count + 1
     if not self.panic and tok.offset as i64 > self.last_err_offset:
-        ax_printf_local("error: %s at offset %d\n", (msg as ptr[u8]) as i64, tok.offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        ax_printf_local("error: %s\n", (msg as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        print_diag_location(self.tree.srcmap, self.tree.src, tok.offset as i64, tok.len as i64, "")
         self.last_err_offset = tok.offset as i64
     self.panic = true
 
