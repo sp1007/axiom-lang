@@ -1,0 +1,56 @@
+// Oracle for the libc-independence work, steps 0-2 of
+// knowledge/audit-libc-dependencies-2026-08-05.md.
+//
+// What it pins:
+//   1. CONSOLE OUTPUT still works after every `fflush(null)` in the driver was
+//      deleted. Those ~80 calls were no-ops: console output never went through
+//      libc stdio at all (print_helpers.ax::ax_puts_local -> print_raw -> the
+//      `print` builtin -> ax_print_str). If someone ever reroutes printing back
+//      through a BUFFERED libc stream, this line stops appearing.
+//   2. std.io File create/write/open/read STILL WORKS after the dead
+//      fseek/ftell/rewind/fputs externs were removed from std/io.ax. They had
+//      zero call sites, but "declared" is not "unused" until it is measured --
+//      so exercise the real read/write path that remains.
+//   3. File.flush is REACHABLE and returns Ok. This is the one fflush that is
+//      NOT a no-op (it gets a real FILE* from fopen), which is exactly why it
+//      was KEPT while the null-argument ones went. If a later step rewrites
+//      std/io.ax onto native handles (step 3), flush must keep this contract.
+//
+// Assertion is on STDOUT (CLAUDE.md §7.1), not on the exit code, and is kept to
+// ONE line because the harness captures stdout with command substitution.
+
+import std.io
+import std.string
+
+fn main() -> i32:
+    let path = "bin/_t_nolibcstdio.tmp"
+    let payload = "Kết quả ghi tệp"
+
+    mut ok_write := 0 as i64
+    let cr = std.io.create(path)
+    if cr.is_ok():
+        mut wf := cr.unwrap()
+        let fr = wf.flush()               // real FILE*, not the deleted fflush(null)
+        if fr.is_ok():
+            ok_write = ok_write + 1
+        let wr = wf.write_all(payload)    // write_all closes the file itself
+        if wr.is_ok():
+            ok_write = ok_write + 1
+
+    mut ok_read := 0 as i64
+    mut back := ""
+    let orr = std.io.open(path)
+    if orr.is_ok():
+        let rf = orr.unwrap()
+        let rr = rf.read_all()
+        if rr.is_ok():
+            back = rr.unwrap()
+            ok_read = 1
+
+    let same = back == payload
+    print("io=", ok_write, ok_read, " same=", same)
+    if ok_write == 2 and ok_read == 1 and same:
+        println(" Kết quả: ", 42)
+        return 42
+    println(" Kết quả: ", 7)
+    return 7

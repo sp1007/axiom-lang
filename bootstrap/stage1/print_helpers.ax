@@ -3,9 +3,21 @@
 
 import std.string
 
-extern "C" fn GetStdHandle(nStdHandle: u32) -> ptr[void]
-extern "C" fn WriteFile(hFile: ptr[void], lpBuffer: ptr[void], nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ptr[void], lpOverlapped: ptr[void]) -> i32
 extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+
+// libc-free process exit (audit-libc-dependencies-2026-08-05 step 2), shared by
+// every stage1 module that has to abort. Windows: ExitProcess (kernel32,
+// whitelisted linker.ax:708). Linux: SYS_EXIT = 60. The `is_windows` intrinsic
+// is a compile-time constant, so -O1 folds the dead side away; `syscall` maps to
+// "none" in the linker (linker.ax:705) so the Windows image emits no import for it.
+extern "C" fn ExitProcess(uExitCode: u32)
+extern "C" fn syscall(num: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64) -> i64
+
+pub fn ax_exit_process(code: i32):
+    if @compiler_intrinsic("is_windows"):
+        ExitProcess(code as u32)
+    else:
+        syscall(60 as u64, code as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
 
 pub struct AxiomString:
     pub ptr: ptr[u8]

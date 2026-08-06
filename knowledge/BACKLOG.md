@@ -11,13 +11,19 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-08-05, sau `2234451`)
-- **HEAD** = `2234451` — RFC 0038: `print`/`println` variadic, desugar ở **AIR** (không ở selector).
-  Driver `bin/axc_native.exe` = **A==B `99F795C212B3CFE2BF28DCB3CEF06CDA0CAF133F09EBC7D12F5400B13B3FF783`**
-  (2.308.096 byte). ⚠️ Mốc **B==C** gần nhất vẫn là `c3eae77` /
-  `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — RFC 0038 là
-  frontend-only nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ driver mới này**.
-- **BASELINE = 677/677**, đo ở **cả default lẫn `-O0`**. Dưới 677 là RED. (672 → 677 khi RFC 0038 thêm 5 hàng print.)
+## Trạng thái cây (cập nhật 2026-08-06 — dọn libc bước 0-2)
+- Driver `bin/axc_native.exe` = **A==B
+  `0585124E9B3B81B4878E609A6279AD4DAF7B18852524A4D660F968057F6FFF08`** (2.307.584 byte).
+  Mốc trước: RFC 0038 (`ca7a98d`) `99F795C2…` 2.308.096 byte.
+  ⚠️ Mốc **B==C** gần nhất vẫn là `c3eae77` /
+  `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — cả RFC 0038
+  lẫn dọn-libc đều frontend/std nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ
+  driver MỚI này**.
+- **libc: `ucrtbase.dll` 16 → 13 ký hiệu** (mất `clock`, `exit`, `fflush`).
+  `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
+  ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
+  [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
+- **BASELINE = 679/679**, đo ở **cả default lẫn `-O0`**. Dưới 679 là RED. (672 → 677 RFC 0038, → 679 khi dọn libc bước 0-2.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
@@ -252,6 +258,28 @@ f64, str, bytes}`. Frontend ⇒ không đổi gate.
 **chuỗi TÊN** đã phân giải (`x86_selector.ax:1730`→`:1737`), không theo **danh tính symbol** — đúng
 lớp defect "khớp theo cách VIẾT, không theo danh tính" đã ghi cho RFC 0037. Sửa đúng = đưa việc chọn
 symbol runtime ra khỏi selector ⇒ **chạm backend ⇒ B==C**. **Tách item riêng, không gộp vào P1.**
+
+**P6 🔴 MỞ, ƯU TIÊN CAO — XOÁ một khai báo `extern` CHẾT làm HỎNG biên dịch một chương trình
+KHÔNG LIÊN QUAN.** Phát hiện 2026-08-06 khi dọn libc bước 0; **deterministic, đã bisect xong.**
+Repro (compiler nào cũng dính, kể cả binary đã commit — vì `concatenate_stdlib` đọc `std/*.ax`
+**từ đĩa lúc biên dịch**, nên đổi `std/io.ax` là đủ, không cần dựng lại compiler):
+1. xoá **bất kỳ MỘT** dòng trong bốn dòng `extern "C" fn {fseek,ftell,rewind,fputs}` ở `std/io.ax`;
+2. `./bin/axc_native.exe build bin/t_ifaceconsumer.ax -o x.exe -O1`
+⇒ `error: operator '+' is not defined for Option/Result operands (missing .unwrap()?)` +
+`error: type 'Option' does not implement 'add' ...`.
+Biểu thức bị tố là `a.run(8) + b.run(20)` — **hai toán hạng đều là `i64`** trả về từ dispatch
+interface, **cả chương trình không có Option/Vec nào**.
+⭐ **Dấu vân tay quyết định:** *tên kiểu báo lỗi thay đổi theo SỐ LƯỢNG khai báo bị xoá* — xoá 1 ⇒
+`Option`, xoá cả 4 ⇒ `Vec`. Đó là chữ ký của việc **đọc kiểu qua một CHỈ SỐ trôi theo bảng symbol**,
+không phải kiểu gắn với biểu thức. **THÊM** một extern thì vô hại; **chỉ XOÁ mới kích hoạt** ⇒ không
+phải "nhiễu do đổi số dòng" (xoá một dòng COMMENT cũng vô hại — đã đo).
+Không phải phụ thuộc sử dụng: **không file bundled nào dùng** fseek/ftell/rewind/fputs (đã grep đủ 8
+file trong `main_air.ax:401-426`).
+Hiện đang **fail-safe** (lỗi biên dịch, không phải miscompile) — nhưng cùng LỚP với các defect
+"đọc qua chỉ số/tên không ổn định" đã đẻ ra miscompile ở repo này. Nghi vấn: phân giải **kiểu TRẢ VỀ
+của lời gọi dispatch** trong typecheck.
+⛔ Vì P6, **bốn extern chết ở `std/io.ax` CỐ Ý GIỮ LẠI** (có comment cảnh báo tại chỗ). Khi P6 được
+sửa, **xoá bốn dòng đó chính là regression test của P6**.
 
 **P5 — KHÔNG phải bug compiler: UTF-8 in ra sai là do CODEPAGE console.** Đã đo: exe phát **đúng
 byte UTF-8** (`4b e1 ba bf 74 …` = "Kết quả…"), và render đúng trong cả Git Bash lẫn PowerShell khi

@@ -6,8 +6,8 @@ import std.io
 import std.string
 import std.collections
 
-extern "C" fn exit(code: i32)
-extern "C" fn fflush(stream: ptr[void]) -> i32
+// Process exit goes through print_helpers.ax::ax_exit_process (ExitProcess/SYS_EXIT),
+// not libc `exit` — see knowledge/audit-libc-dependencies-2026-08-05.md step 2.
 extern "C" fn puts(s: str) -> i32
 extern "C" fn ax_i64_to_str(val: i64) -> str
 
@@ -27,7 +27,6 @@ fn lsp_send_message(msg: str):
     let r2 = out.write_all(msg)
     
     @free(get_str_ptr(header))
-    fflush(null as ptr[void])
 
 fn lsp_parse_content_length(header: str) -> i64:
     let prefix = "Content-Length:"
@@ -181,7 +180,7 @@ pub fn lsp_start_server():
             @free(get_str_ptr(req_id))
             @free(get_str_ptr(method))
             @free(get_str_ptr(msg_str))
-            exit(0 as i32)
+            ax_exit_process(0 as i32)
         
         elif method == "textDocument/didOpen":
             let uri = lsp_json_get_field(msg_str, "uri")

@@ -881,6 +881,15 @@ rows=(
   # desugar multiplies exposure (a dropped argument becomes a real call).
   "t_printbadtype|reject|"
   "t_printchar8|reject|"
+  # libc-independence steps 0-2 (knowledge/audit-libc-dependencies-2026-08-05.md).
+  # Deleting ~80 `fflush(null)` calls is only safe BECAUSE console output never went
+  # through libc stdio (ax_puts_local -> print_raw -> the `print` builtin -> ax_print_str);
+  # this row is what would catch anyone rerouting printing back onto a BUFFERED stream.
+  # It also exercises the std.io read/write path that survived the removal of the dead
+  # fseek/ftell/rewind/fputs externs, and File.flush -- the ONE fflush that is not a no-op,
+  # since it gets a real FILE* from fopen, which is precisely why it was kept.
+  "t_nolibcstdio|out|io=21 same=true Kết quả: 42"
+  "t_nolibcstdio|exit|42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

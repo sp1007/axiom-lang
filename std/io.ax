@@ -1,8 +1,23 @@
 // AXIOM Standard Library — std.io
 //
 // Input/Output interfaces and File operations.
-// Uses libc fopen/fread/fwrite/fclose for portability across bootstrap stages.
-// This avoids the cross-module extern-C resolver issue with win32.CreateFileA.
+//
+// These still call libc stdio (fopen/fread/fwrite/fclose/fflush). That is a
+// PENDING migration, not a design choice — see step 3 of
+// `knowledge/audit-libc-dependencies-2026-08-05.md`.
+//
+// ⚠️ An older comment here blamed "a cross-module extern-C resolver issue with
+// win32.CreateFileA". That was measured to be FALSE and it misdirected a whole
+// investigation. The resolver and the mangler are correct: `main_air.ax:1875`
+// exports extern decls regardless of `pub` (since `a61b19e`, two weeks BEFORE
+// that comment was written), `x86_regs.ax:254-256` emits the bare C name for a
+// cross-module extern call, and `linker.ax:710` already whitelists
+// CreateFileA/ReadFile/CloseHandle into kernel32.
+// The REAL limitation lives on the driver's BUNDLING path: `concatenate_stdlib`
+// splices a HARDCODED list of 8 files (`main_air.ax:401-426`) which omits
+// `std/os/win32.ax`, while `strip_imports` (`main_air.ax:225-254`) deletes every
+// `import std...` line — so a call to `std.os.win32.CreateFileA` from here would
+// lose its declaration on the native build path.
 
 import std.result
 import std.string
@@ -11,10 +26,28 @@ extern "C" fn fopen(path: ptr[void], mode: ptr[u8]) -> ptr[void]
 extern "C" fn fclose(f: ptr[void]) -> i32
 extern "C" fn fread(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
 extern "C" fn fwrite(buf: ptr[void], size: i64, count: i64, f: ptr[void]) -> i64
+// `fflush` is the one flush that is NOT a no-op: `File.flush` below hands it a
+// real FILE* from fopen. (The ~80 `fflush(null)` calls the driver used to make
+// were deleted — console output never went through libc stdio at all.)
+extern "C" fn fflush(stream: ptr[void]) -> i32
+
+// ⛔ DEAD, BUT DELIBERATELY KEPT — do not "clean these up" without reading this.
+// fseek/ftell/rewind/fputs have ZERO call sites (in this file and in every other
+// file the driver bundles). Deleting them is nevertheless NOT currently safe:
+// removing ANY ONE of these four declarations makes `bin/t_ifaceconsumer.ax` fail
+// to compile with "operator '+' is not defined for Option/Result operands",
+// pointing at `a.run(8) + b.run(20)` — an expression whose operands are plain i64
+// returns from interface dispatch, with no Option anywhere in the program.
+// The reported type NAME tracks how many declarations were removed (remove one ->
+// 'Option', remove all four -> 'Vec'), which is the signature of a type read
+// through an index that shifts with the symbol table rather than one bound to the
+// expression. Adding an extern is harmless; only removal perturbs it.
+// This is a latent compiler defect, not a property of these four symbols — see
+// knowledge/BACKLOG.md "P6". Delete these four lines only once P6 is fixed, and
+// use that deletion as its regression test.
 extern "C" fn fseek(f: ptr[void], offset: i64, whence: i32) -> i32
 extern "C" fn ftell(f: ptr[void]) -> i64
 extern "C" fn rewind(f: ptr[void]) -> void
-extern "C" fn fflush(stream: ptr[void]) -> i32
 extern "C" fn fputs(s: ptr[u8], f: ptr[void]) -> i32
 
 /// A readable byte stream.

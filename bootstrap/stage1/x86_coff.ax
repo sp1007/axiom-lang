@@ -591,7 +591,6 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
         if verbose:
             ax_printf_local("[dfe] no entry and no exports — analysis declined, nothing pruned\n",
                 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
         @free(reach as ptr[u8])
         return null as ptr[bool]
 
@@ -605,7 +604,6 @@ fn dfe_compute(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool],
             hi = hi + 1
         ax_printf_local("[dfe] reachable %d / %d functions (roots: entry + %d export + %d abi + %d extern-shadow)\n",
             reach_funcs, total_funcs, root_exports, root_abi, root_extern, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
     return reach
 
 // Bytes, matched back by NAME rather than by position: the emission loop is
@@ -643,7 +641,6 @@ fn dfe_report_bytes(mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternP
 
     ax_printf_local("[dfe] text bytes: live %d, dead %d (of %d)\n",
         reach_bytes, dead_bytes, reach_bytes + dead_bytes, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
 
 pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format_ptr: ptr[u8], self_link: bool, dfe_rep: bool, dfe_on: bool) -> bool:
     let is_elf64 = (format_ptr[0] == 'e' as u8)
@@ -794,7 +791,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
                 ax_printf_local("[codegen] func %d / %d | bytes=%d\n",
                     func_done_count, mod.funcs.len, all_code.len as i64,
                     0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-                fflush(null as ptr[void])
 
             let mach_insts = select_all(fn_ptr, abi, table, symbols, pool)
             let intervals = compute_liveness(mach_insts.data, mach_insts.len)
@@ -907,7 +903,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
         if dfe_prune:
             ax_printf_local("[dfe] pruned %d functions\n",
                 dfe_pruned, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
     if dfe_reach != null as ptr[bool]:
         @free(dfe_reach as ptr[u8])
 
@@ -1121,7 +1116,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     ax_printf_local("[codegen] all funcs done: %d bytes code, building reloc table...\n",
         all_code.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
 
     mut coff_relocs := new_coff_reloc_vec()
     mut elf_relocs := new_relocation_vec()
@@ -1222,7 +1216,6 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 
     ax_printf_local("[codegen] reloc table done: %d relocs, %d syms, writing object...\n",
         total_relocs, coff_syms.len as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     @free(coff_sym_map as ptr[u8])
     @free(elf_sym_map as ptr[u8])
 

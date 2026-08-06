@@ -37,22 +37,45 @@ import bootstrap.stage1.fmt
 import bootstrap.stage1.lsp
 
 // extern "C" fn printf(fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
-extern "C" fn puts(s: ptr[u8]) -> i32
 extern "C" fn system(command: ptr[void]) -> i32
 // extern "C" fn snprintf(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
-extern "C" fn remove(filename: ptr[void]) -> i32
-extern "C" fn fflush(stream: ptr[void]) -> i32
-// --time: CLOCKS_PER_SEC=1000 on Windows, so clock() ~ wall-clock ms since start.
-extern "C" fn clock() -> i64
+
+// --time monotonic clock, libc-free (audit-libc-dependencies-2026-08-05 step 2).
+// Windows: QueryPerformanceCounter/Frequency (kernel32, whitelisted linker.ax:716).
+// Linux:   clock_gettime(CLOCK_MONOTONIC=1) = syscall 228.
+// This replaces libc `clock()`, which additionally MIS-reported on Linux: there
+// CLOCKS_PER_SEC is 1000000 and clock() measures CPU (not wall) time, so the
+// "ms" the driver printed were microseconds of CPU time.
+extern "C" fn QueryPerformanceCounter(lpPerformanceCount: ptr[i64]) -> i32
+extern "C" fn QueryPerformanceFrequency(lpFrequency: ptr[i64]) -> i32
+
+struct DriverTimespec:
+    tv_sec: i64
+    tv_nsec: i64
+
+fn time_now_ms() -> i64:
+    if @compiler_intrinsic("is_windows"):
+        mut counter := 0 as i64
+        mut freq := 0 as i64
+        QueryPerformanceCounter(&counter)
+        QueryPerformanceFrequency(&freq)
+        if freq == 0 as i64:
+            return 0 as i64
+        // Split to avoid overflow: whole seconds * 1000 + fractional ticks * 1000 / freq.
+        return counter / freq * 1000 as i64 + (counter % freq) * 1000 as i64 / freq
+    else:
+        mut ts := DriverTimespec(tv_sec: 0 as i64, tv_nsec: 0 as i64)
+        let pts = &ts
+        syscall(228 as u64, 1 as u64, pts as u64, 0 as u64, 0 as u64, 0 as u64, 0 as u64)
+        return ts.tv_sec * 1000 as i64 + ts.tv_nsec / 1000000 as i64
 
 // --time helper: print "[time] <label>: <ms>" and return the current tick to reset
 // the caller's running marker. `on` gates the whole thing so it is inert without --time.
 fn time_phase(on: bool, label: str, prev: i64) -> i64:
     if not on:
         return prev
-    let now = clock()
+    let now = time_now_ms()
     ax_printf_local("[time] %s: %d ms\n", get_str_ptr(label) as i64, (now - prev) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     return now
 extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
 
@@ -225,7 +248,6 @@ fn match_prefix(s: str, i: i64, prefix: str) -> bool:
 fn strip_imports(s: str) -> str:
     let s_len = std.string.len(s)
     ax_printf_local("[Debug strip_imports] Entering, len=%d\n", s_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     let s_ptr = get_str_ptr(s)
     let out_buf = @alloc(s_len + 1 as i64) as ptr[u8]
     mut out_idx := 0 as i64
@@ -255,10 +277,8 @@ fn strip_imports(s: str) -> str:
             
     out_buf[out_idx] = 0 as u8
     ax_puts_local("[Debug strip_imports] Finished loop")
-    fflush(null as ptr[void])
     let res = out_buf as str
     ax_puts_local("[Debug strip_imports] Cast finished")
-    fflush(null as ptr[void])
     return res
 
 fn strip_package_prefixes(s: str) -> str:
@@ -397,32 +417,24 @@ fn get_freestanding_args(mut out_argc: ptr[i32]) -> ptr[str]:
 
 fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     ax_puts_local("[Debug] Reading result.ax...")
-    fflush(null as ptr[void])
     let raw_res = read_required_file("std/result.ax", fails)
     ax_puts_local("[Debug] Reading alloc.ax...")
-    fflush(null as ptr[void])
     let raw_alloc = read_required_file("std/mem/alloc.ax", fails)
     ax_puts_local("[Debug] Reading scheduler.ax...")
-    fflush(null as ptr[void])
     let raw_sched = read_required_file("std/scheduler.ax", fails)
     ax_puts_local("[Debug] Reading runtime.ax...")
-    fflush(null as ptr[void])
     let raw_rt = read_required_file("std/runtime.ax", fails)
     ax_puts_local("[Debug] Reading os.ax...")
-    fflush(null as ptr[void])
     let raw_os = read_required_file("std/os.ax", fails)
     ax_puts_local("[Debug] Reading string.ax...")
-    fflush(null as ptr[void])
     let raw_str = read_required_file("std/string.ax", fails)
     ax_puts_local("[Debug] Reading io.ax...")
-    fflush(null as ptr[void])
     let raw_io = read_required_file("std/io.ax", fails)
     // BUG#61b: std/collections.ax (Vec/HashMap/HashSet) was NOT in this bundle, so
     // `import std.collections` was silently dropped on the native build path and
     // Vec methods dispatched into garbage at runtime. It only needs std.result
     // (bundled above) + builtins, so bundle it like the rest.
     ax_puts_local("[Debug] Reading collections.ax...")
-    fflush(null as ptr[void])
     let raw_coll = read_required_file("std/collections.ax", fails)
 
     ax_puts_local("[Debug] Stripping imports from result.ax...")
@@ -430,47 +442,38 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let res_src = strip_package_prefixes(res_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from alloc.ax...")
-    fflush(null as ptr[void])
     let alloc_src_raw = strip_imports(raw_alloc)
     let alloc_src = strip_package_prefixes(alloc_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from scheduler.ax...")
-    fflush(null as ptr[void])
     let sched_src_raw = strip_imports(raw_sched)
     let sched_src = strip_package_prefixes(sched_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from runtime.ax...")
-    fflush(null as ptr[void])
     let rt_src_raw = strip_imports(raw_rt)
     let rt_src = strip_package_prefixes(rt_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from os.ax...")
-    fflush(null as ptr[void])
     let os_src_raw = strip_imports(raw_os)
     let os_src = strip_package_prefixes(os_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from string.ax...")
-    fflush(null as ptr[void])
     let str_src_raw = strip_imports(raw_str)
     let str_src = strip_package_prefixes(str_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from io.ax...")
-    fflush(null as ptr[void])
     let io_src_raw = strip_imports(raw_io)
     let io_src = strip_package_prefixes(io_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from collections.ax...")
-    fflush(null as ptr[void])
     let coll_src_raw = strip_imports(raw_coll)
     let coll_src = strip_package_prefixes(coll_src_raw)
 
     ax_puts_local("[Debug] Stripping imports from src...")
-    fflush(null as ptr[void])
     let clean_src_raw = strip_imports(src)
     let clean_src = strip_package_prefixes(clean_src_raw)
     
     ax_puts_local("[Debug] Concatenating buffers...")
-    fflush(null as ptr[void])
     let len_src = std.string.len(clean_src)
     let len_res = std.string.len(res_src)
     let len_alloc = std.string.len(alloc_src)
@@ -484,7 +487,6 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let total_len = len_res + 1 as i64 + len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_str + 1 as i64 + len_io + 1 as i64 + len_coll + 1 as i64 + len_src
     ax_printf_local("[Debug] len_res=%d, len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_str=%d, len_io=%d, len_src=%d, ", len_res, len_alloc, len_sched, len_rt, len_os, len_str, len_io, len_src)
     ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
 
     @memcpy(new_buf, res_src as ptr[u8], len_res)
@@ -525,7 +527,6 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
 
     ax_puts_local("[Debug] Cleaning up...")
-    fflush(null as ptr[void])
     // Commented out to prevent double-free crashes under compiler's CTGC system
     // if std.string.len(raw_res) > 0 as i64:
     //     @free(raw_res as ptr[u8])
@@ -576,7 +577,6 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
         
     let result_str = new_buf as str
     ax_puts_local("[Debug] Concatenation finished successfully!")
-    fflush(null as ptr[void])
     
     let success_w = write_file_content("scratch/self_linked_concatenated.ax", result_str)
     if not success_w:
@@ -836,7 +836,6 @@ pub fn main() -> i32:
         ax_puts_local("  build <file.ax> [-o <out.exe>] [-O0|-O1|-O2|-O3] [--target <wasm32|wasm32-unknown-unknown>]")
         ax_puts_local("  fmt <file.ax>")
         ax_puts_local("  lsp")
-        fflush(null as ptr[void])
         return 1
 
     mut is_dump_air := false
@@ -1013,7 +1012,6 @@ pub fn main() -> i32:
         // read file" was flatly wrong.
         ax_puts_local("error: no source to compile (missing or empty):")
         ax_puts_local(filename)
-        fflush(null as ptr[void])
         return 1
 
     if is_fmt:
@@ -1030,7 +1028,7 @@ pub fn main() -> i32:
         @free(get_str_ptr(formatted))
         return 0
 
-    mut t_mark := clock()  // --time running marker (inert unless show_time)
+    mut t_mark := time_now_ms()  // --time running marker (inert unless show_time)
     if self_link and not no_stdlib:
         // RFC 0009 P3 Linux: bundle the freestanding runtime shims (syscall-based
         // ax_get_global_state_internal / ax_panic / ax_compiler_intrinsic) so the
@@ -1061,7 +1059,6 @@ pub fn main() -> i32:
         src = concatenate_stdlib(src, &stdlib_fails)
         if stdlib_fails > 0 as i64:
             ax_printf_local("error: %d stdlib source file(s) could not be read; aborting before code generation\n", stdlib_fails, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-            fflush(null as ptr[void])
             return 1
         t_mark = time_phase(show_time, "concat-stdlib", t_mark)
 
@@ -1080,14 +1077,12 @@ pub fn main() -> i32:
 
     if not is_dump_air:
         ax_puts_local("[Debug] Stage 1: Starting compilation...")
-        fflush(null as ptr[void])
     // 1. Lex
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
     t_mark = time_phase(show_time, "lex", t_mark)
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Lexing.")
-        fflush(null as ptr[void])
 
     // 2. Parse
     mut pool := new_intern_pool()
@@ -1099,12 +1094,10 @@ pub fn main() -> i32:
     // corrupt symbols ("Unresolved external symbol ''") instead of a clean error.
     if parser.diags_count > 0 as i64:
         ax_printf_local("error: %d parse error(s); aborting before code generation\n", parser.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         return 1
     t_mark = time_phase(show_time, "parse", t_mark)
     if not is_dump_air:
         ax_puts_local("[Debug] Finished Parsing.")
-        fflush(null as ptr[void])
 
     // RFC 0008: lambda-lift closures to top-level functions before resolution, so
     // they resolve/typecheck/lower as ordinary functions (reusing fn-ptr lowering).
@@ -1114,7 +1107,6 @@ pub fn main() -> i32:
     let lift_errors = lift_closures(parser.tree, parser.pool)
     if lift_errors > 0 as i64:
         ax_printf_local("error: %d closure capture error(s); aborting before code generation\n", lift_errors, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         return 1
 
     // RFC 0011 P4 (increment 3c/3d): auto-(re)build the `.lib` of each imported LIBRARY
@@ -1128,7 +1120,6 @@ pub fn main() -> i32:
     // 3. Resolve
     if not is_dump_air:
         ax_puts_local("[Debug] Creating symbol table...")
-        fflush(null as ptr[void])
     mut symtable := new_symbol_table(parser.pool)
     // RFC 0035 P2: when this compilation IS a library, its own public functions carry the
     // unit's name into their emitted symbols. Scoped to --staticlib deliberately: that is
@@ -1141,12 +1132,10 @@ pub fn main() -> i32:
         symtable.unit_qualifier = module_qualifier(filename)
     if not is_dump_air:
         ax_puts_local("[Debug] Creating type table...")
-        fflush(null as ptr[void])
     mut typetable := new_type_table()
     
     if not is_dump_air:
         ax_puts_local("[Debug] Creating lazy resolver...")
-        fflush(null as ptr[void])
     let lazy = new_lazy_resolver(symtable, parser.pool as ptr[void])
     lazy.typetable = typetable as ptr[void]
     lazy.auto_lib = auto_lib // RFC 0011 P4 inc3c: enable import→.lib resolution (opt-in)
@@ -1157,32 +1146,25 @@ pub fn main() -> i32:
         let prelude_name_id = parser.pool.intern_string(prelude_name)
         let prelude_path = "std/result.ax"
         ax_puts_local("[Debug] Registering std.result import...")
-        fflush(null as ptr[void])
         lazy.lazy_resolver_register_import(prelude_name_id, prelude_path, 0 as u32)
         ax_puts_local("[Debug] Preloading std.result module...")
-        fflush(null as ptr[void])
         lazy.lazy_resolver_preload_module(prelude_name_id)
     
     if not is_dump_air:
         ax_puts_local("[Debug] Creating name resolver...")
-        fflush(null as ptr[void])
     mut resolver := new_name_resolver(parser.tree, parser.pool, symtable)
     if not is_dump_air:
         ax_puts_local("[Debug] Resolver created. Pre-defining top levels...")
-        fflush(null as ptr[void])
     resolver.pre_define_top_levels()
     if not is_dump_air:
         ax_puts_local("[Debug] Pre-defining finished. Resolving root...")
-        fflush(null as ptr[void])
     resolver.resolve_node(0 as u32)
     if not is_dump_air:
         ax_puts_local("[Debug] Resolving finished.")
-        fflush(null as ptr[void])
     parser.pool = resolver.intern
     if not is_dump_air:
         t_mark = time_phase(show_time, "resolve", t_mark)
         ax_puts_local("[Debug] Finished Resolving.")
-        fflush(null as ptr[void])
 
     // 4. Typecheck
     mut checker := new_type_checker(parser.tree, parser.pool, resolver.symtable, typetable)
@@ -1195,38 +1177,31 @@ pub fn main() -> i32:
     // or jump to a garbage address with no compile-time signal.
     if checker.diags_count > 0 as i64:
         ax_printf_local("error: %d type error(s); aborting before code generation\n", checker.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fflush(null as ptr[void])
         return 1
     if not is_dump_air:
         t_mark = time_phase(show_time, "typecheck", t_mark)
         ax_puts_local("[Debug] Finished Typechecking.")
-        fflush(null as ptr[void])
 
     if not is_dump_air:
         ax_puts_local("[Debug] Running Ownership Checker...")
-        fflush(null as ptr[void])
         mut ownership_chk := new_ownership_checker(parser.tree, parser.pool, resolver.symtable, typetable)
         ownership_chk.check()
 
         ax_puts_local("[Debug] Running Escape Analyser...")
-        fflush(null as ptr[void])
         mut escape_an := new_escape_analyser(parser.tree, parser.pool, resolver.symtable, typetable, checker.node_types, checker.node_types_cap)
         escape_an.run()
 
         ax_puts_local("[Debug] Running CTGC Injector...")
-        fflush(null as ptr[void])
         mut ctgc_inj := new_ctgc_injector(parser.tree, parser.pool, resolver.symtable, typetable)
         ctgc_inj.free_enabled = ctgc_free
         ctgc_inj.report_only = ctgc_report
         ctgc_inj.run()
 
         ax_puts_local("[Debug] Running Alias Reuse Optimizer...")
-        fflush(null as ptr[void])
         mut alias_opt := new_alias_reuse_optimizer(parser.tree, parser.pool, resolver.symtable, typetable)
         alias_opt.run()
 
         ax_puts_local("[Debug] Running AIR Builder...")
-        fflush(null as ptr[void])
 
     // 6. Build AIR
     checker.ensure_capacity(parser.tree.nodes.len)
@@ -1269,19 +1244,16 @@ pub fn main() -> i32:
     if not is_dump_air:
         t_mark = time_phase(show_time, "air-build", t_mark)
         ax_puts_local("[Debug] Stage 2: Finished building AIR module.")
-        fflush(null as ptr[void])
 
     if optimize:
         if not is_dump_air:
             ax_puts_local("[Debug] Stage 2.1: Running SSA optimizer...")
-            fflush(null as ptr[void])
         mut optimizer := new_ssa_optimizer()
         optimizer.level = opt_level
         optimizer.run(&(air_builder.module), typetable)
         if not is_dump_air:
             t_mark = time_phase(show_time, "ssa-opt", t_mark)
             ax_puts_local("[Debug] Stage 2.2: Finished SSA optimizer.")
-            fflush(null as ptr[void])
 
     // 7. Handle output phase
     if is_dump_air:
@@ -1501,20 +1473,16 @@ pub fn main() -> i32:
             // Root cause (an OOB/indexed write in hash-container mono) is tracked in
             // knowledge/bug-3hashmap-mono-teardown-crash.md for a future ASAN session;
             // the std/mem/alloc.ax AX_CANARY infra (disabled) is committed for it.
-            fflush(null as ptr[void])
             return 0
         else:
             // Generate C code first
             ax_puts_local("[Debug] Stage 2.3: Starting C code generation...")
-            fflush(null as ptr[void])
             mut cgen := new_c_generator(air_builder.module, parser.tree, air_builder.pool, resolver.symtable, typetable)
             let gen_success = cgen.generate("axiom_temp.c")
             if not gen_success:
                 ax_puts_local("error: C code generation failed")
-                fflush(null as ptr[void])
                 return 1
             ax_puts_local("[Debug] Stage 2.4: Finished C code generation successfully.")
-            fflush(null as ptr[void])
 
             mut opt_str := "-O1"
             if optimize:
@@ -1539,7 +1507,6 @@ pub fn main() -> i32:
 
             if link_status != 0:
                 ax_puts_local("error: C compilation failed")
-                fflush(null as ptr[void])
                 return link_status
 
     // Free resources
@@ -1809,25 +1776,20 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
 
     mut src := read_file_content(actual_path)
     ax_printf_local("[Debug] read_file_content len=%d\n", src.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     @free(get_str_ptr(actual_path))
 
     // 1. Lex
     ax_printf_local("[Debug] Lexing...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mut lexer := new_lexer(src)
     let tokens = lexer.tokenize()
     ax_printf_local("[Debug] Lexing finished, tokens len=%d\n", tokens.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
 
     // 2. Parse
     ax_printf_local("[Debug] Parsing...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     let parser_ptr = new_parser(tokens, src, intern)
     parser_ptr.parse_program()
     let mod_tree = parser_ptr.tree
     ax_printf_local("[Debug] Parsing finished, nodes count=%d\n", mod_tree.nodes.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mod.ast_tree = mod_tree
 
     // Save scope stack and reset to global scope (0)
@@ -1839,19 +1801,15 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
 
     // 3. Resolve
     ax_printf_local("[Debug] Resolving...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mut mod_resolver := new_name_resolver(mod_tree, intern, st)
     mod_resolver.resolve()
     ax_printf_local("[Debug] Resolving finished\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
 
     // 4. Typecheck
     ax_printf_local("[Debug] Typechecking...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mut mod_checker := new_type_checker(mod_tree, intern, st, tt as ptr[TypeTable])
     mod_checker.run_type_checker()
     ax_printf_local("[Debug] Typechecking finished\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-    fflush(null as ptr[void])
     mod_checker.ensure_capacity(mod_tree.nodes.len)
     mod.node_types = mod_checker.node_types as ptr[void]
 
