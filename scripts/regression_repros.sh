@@ -914,6 +914,9 @@ rows=(
   # The E-code itself is pinned by the `structlitinfer-ecode` block near the end of this file
   # (a `reject` row can only observe "no exe", not WHICH diagnostic fired).
   "t_structlitinfer_noctx|reject|"
+  # Diagnostic quality (CLAUDE.md §8). This row pins only the HALT; the text/shape of the
+  # diagnostic is pinned by the `diagnoise-*` blocks near the end of this file.
+  "t_diagnoise|reject|"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
@@ -1144,6 +1147,51 @@ if [ "$sli_n" = "1" ]; then
   echo "PASS structlitinfer-ecode (one error[E3034])"; pass=$((pass+1))
 else
   echo "FAIL structlitinfer-ecode (error[E3034] count: got '$sli_n' want 1)"; fail=$((fail+1)); failed="$failed structlitinfer-ecode"
+fi
+
+# --- diagnostics are a PRODUCT FEATURE (CLAUDE.md §8): no internals, no cascade, no noise ---
+# Measured 2026-08-06 on bin/t_diagnoise.ax (3 lines, ONE missing operand): the compiler
+# printed an untagged `total_len=141271` line on the SUCCESS path, then 2 errors for 1
+# mistake, one of them naming the Pratt-parser internal `nud`. The sibling shape
+# `let v = [1, 2, 3` printed 8 errors PLUS 43 raw `tokens[N]: kind=<int> offset=<int>`
+# dump lines = 52 lines of output for 3 lines of source.
+#
+# Three independent properties, because each regressed for a DIFFERENT reason:
+dn_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagnoise.ax -o "$REGTMP/diagnoise.exe" -O1 $AXEXTRA 2>&1 )
+
+# (1) No parser internals in user-facing text. `tokens[` is the raw token dump; `nud` is
+#     Pratt vocabulary (parse_nud/parse_led) that must never name a user-visible concept.
+dn_int=$( printf '%s\n' "$dn_log" | grep -cE 'tokens\[|nud' )
+if [ "$dn_int" = "0" ]; then
+  echo "PASS diagnoise-internals (no tokens[/nud leaked)"; pass=$((pass+1))
+else
+  echo "FAIL diagnoise-internals (leaked internals lines: got '$dn_int' want 0)"; fail=$((fail+1)); failed="$failed diagnoise-internals"
+fi
+
+# (2) One mistake, one error. DISAMBIGUATION: the driver's halt line
+#     "error: N parse error(s); aborting before code generation" also begins with `error`,
+#     so it is counted separately and subtracted, rather than matched by a pattern tied to
+#     today's " at offset N" suffix (stages 2a/2b will replace that with `--> file:line:col`
+#     and such a pattern would then silently match nothing and "pass").
+dn_all=$( printf '%s\n' "$dn_log" | grep -c '^error' )
+dn_sum=$( printf '%s\n' "$dn_log" | grep -c 'parse error(s); aborting' )
+dn_real=$(( dn_all - dn_sum ))
+if [ "$dn_real" = "1" ] && [ "$dn_sum" = "1" ]; then
+  echo "PASS diagnoise-cascade (1 mistake -> 1 error + 1 halt summary)"; pass=$((pass+1))
+else
+  echo "FAIL diagnoise-cascade (per-site errors: got '$dn_real' want 1; summary lines '$dn_sum' want 1)"; fail=$((fail+1)); failed="$failed diagnoise-cascade"
+fi
+
+# (3) A SUCCESSFUL build emits nothing that is not explicitly tagged. Everything the driver
+#     prints on the happy path must carry `[Debug]` or `[codegen]`; anything else is noise
+#     that escaped is_verbose_debug()'s prefix filter (which is exactly how `total_len=` and
+#     the `  tokens[...]` dump both leaked -- neither starts with `[`).
+dn_ok_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_p6count.ax -o "$REGTMP/diagnoise_ok.exe" -O1 $AXEXTRA 2>&1 )
+dn_noise=$( printf '%s\n' "$dn_ok_log" | grep -vE '^\[Debug\]|^\[codegen\]' | grep -c '[^[:space:]]' )
+if [ -f "$REGTMP/diagnoise_ok.exe" ] && [ "$dn_noise" = "0" ]; then
+  echo "PASS diagnoise-cleanbuild (no untagged output on success)"; pass=$((pass+1))
+else
+  echo "FAIL diagnoise-cleanbuild (untagged lines: got '$dn_noise' want 0, exe present: $([ -f "$REGTMP/diagnoise_ok.exe" ] && echo yes || echo no))"; fail=$((fail+1)); failed="$failed diagnoise-cleanbuild"
 fi
 
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---

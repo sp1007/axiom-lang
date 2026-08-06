@@ -485,8 +485,12 @@ fn concatenate_stdlib(src: str, fails: ptr[i64]) -> str:
     let len_coll = std.string.len(coll_src)
 
     let total_len = len_res + 1 as i64 + len_alloc + 1 as i64 + len_sched + 1 as i64 + len_rt + 1 as i64 + len_os + 1 as i64 + len_str + 1 as i64 + len_io + 1 as i64 + len_coll + 1 as i64 + len_src
+    // CLAUDE.md §8: user-facing output carries no untagged debug noise. The `[Debug] `
+    // prefix above is what routes a line through is_verbose_debug()'s silencer; the
+    // former companion `total_len=%d` line started with 't', escaped that filter, and so
+    // printed on EVERY successful compile. Deleted rather than merged -- the line above
+    // is already silenced, so merging would only have hidden the same value.
     ax_printf_local("[Debug] len_res=%d, len_alloc=%d, len_sched=%d, len_rt=%d, len_os=%d, len_str=%d, len_io=%d, len_src=%d, ", len_res, len_alloc, len_sched, len_rt, len_os, len_str, len_io, len_src)
-    ax_printf_local("total_len=%d\n", total_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     let new_buf = @alloc(total_len + 1 as i64) as ptr[u8]
 
     @memcpy(new_buf, res_src as ptr[u8], len_res)
