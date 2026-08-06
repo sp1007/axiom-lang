@@ -266,9 +266,27 @@ fn strip_imports(s: str) -> str:
                 skip_line = true
                 
         if skip_line:
+            // BLANK the line to spaces and KEEP its newline, rather than deleting it.
+            // Deleting used to shift every later byte AND drop a line, so a diagnostic's
+            // offset could not be mapped back to a line of the user's own file: the line
+            // number came out low by exactly the number of `import std` lines above it
+            // (measured: a 3-import file reported line 7 for line 10). Space-filling is
+            // length-preserving, so offsets AND line numbers now both survive intact --
+            // which is what lets a later stage print `--> file.ax:12:8` (CLAUDE.md §8).
+            //
+            // Safe because a whitespace-only line is indent-NEUTRAL, not an INDENT: it
+            // lexes to a single TK_NEWLINE (lexer.ax:534,543-547), and process_indentation
+            // resolves depth via find_next_content_offset (lexer.ax:571-582), which skips
+            // NEWLINE tokens and measures the next CONTENT line. Blank lines are already
+            // pervasive in the bundled source, so this produces nothing the lexer has not
+            // been handling all along.
             while i < s_len and s_ptr[i] != 10 as u8:
+                out_buf[out_idx] = 32 as u8
+                out_idx = out_idx + 1 as i64
                 i = i + 1 as i64
             if i < s_len and s_ptr[i] == 10 as u8:
+                out_buf[out_idx] = 10 as u8
+                out_idx = out_idx + 1 as i64
                 i = i + 1 as i64
         else:
             out_buf[out_idx] = s_ptr[i]
