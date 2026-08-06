@@ -292,6 +292,23 @@ pub fn parse_nud(mut self: ptr[Parser]) -> u32:
             self.append_child(node, operand)
         return node
     if tok.kind == TK_L_PAREN:
+        // RFC 0039: annotation-inferred struct literal `(field: expr, ...)`. Tuples are
+        // POSITIONAL (`(1, 2)`), so an `ident :` immediately after `(` can never begin a
+        // tuple element nor a grouped expression -- one token of lookahead past the
+        // identifier decides it, and `(a)` (no `:`) is untouched. This spelling was a hard
+        // parse error before, so the form is purely additive.
+        //
+        // The parser CANNOT know the struct type here, so it emits the EXACT node shape a
+        // named-argument call produces (`T(field: expr, ...)`) with a NODE_STRUCT_LIT
+        // PLACEHOLDER in the callee slot. typecheck fills that slot from the annotated
+        // binding's struct symbol and then runs the ordinary constructor path unchanged
+        // (RFC 0039 section 3) -- there is deliberately no second field-checking path.
+        // NODE_STRUCT_LIT is otherwise never constructed by the parser, so the placeholder
+        // is unambiguous; the resolver's default branch leaves it alone (no children).
+        if self.peek_at(1 as i64).kind == TK_IDENT and self.peek_at(2 as i64).kind == TK_COLON:
+            self.consume() // '('
+            let placeholder = self.tree.add_node(NODE_STRUCT_LIT, self.token_idx(tok))
+            return self.parse_call_args(placeholder, tok)
         self.consume() // '('
         let inner = self.parse_expr_with_prec(BP_NONE)
         // RFC 0022: a `,` here promotes the group to a TUPLE literal. `(e)` (no

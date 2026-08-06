@@ -11,11 +11,13 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-08-06 — sửa P6)
-- **Driver `bin/axc_native.exe` = A==B
-  `A58F762AACDB79C1164481FFED09AD2DD4B0A357B662A4C08420C06BABB5FE97`** (2.307.584 byte).
-  **ĐÃ PROMOTE**, đã **tự** kiểm chứng 682/682 ở cả hai mức (không chỉ theo báo cáo agent).
-  Mốc trước: dọn libc `0585124E…`; RFC 0038 (`ca7a98d`) `99F795C2…` 2.308.096 byte.
+## Trạng thái cây (cập nhật 2026-08-07 — RFC 0039)
+- 🆕 **RFC 0039 (struct literal suy diễn từ annotation) — A==B
+  `84A13E958B59D2A1022C860C8E4637E81716BA65A66BFDDFD096034E4DB3FF68`** (2.313.728 byte).
+  `let c: TmpStruct = (a: 64, b: 64)` nay hợp lệ; `error[E3034]` khi không có ngữ cảnh suy diễn.
+  Tự kiểm chứng **685/685** ở cả hai mức + control tuple/biểu thức ngoặc.
+- Mốc trước: sửa P6 `A58F762A…` (2.307.584 byte), tự kiểm chứng 682/682;
+  dọn libc `0585124E…`; RFC 0038 (`ca7a98d`) `99F795C2…` 2.308.096 byte.
   ⚠️ Mốc **B==C** gần nhất vẫn là `c3eae77` /
   `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — cả RFC 0038
   lẫn dọn-libc đều frontend/std nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ
@@ -24,7 +26,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
   ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
   [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
-- **BASELINE = 682/682**, đo ở **cả default lẫn `-O0`**. Dưới 682 là RED. (672 → 677 RFC 0038, → 679 khi dọn libc bước 0-2, → 682 khi sửa P6.)
+- **BASELINE = 685/685**, đo ở **cả default lẫn `-O0`**. Dưới 685 là RED. (672 → 677 RFC 0038, → 679 dọn libc 0-2, → 682 sửa P6, → 685 RFC 0039.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.

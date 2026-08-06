@@ -904,6 +904,16 @@ rows=(
   "t_p6methodname|out|Kết quả P6: 46"
   "t_p6methodnamectl|out|Kết quả P6 control: 46"
   "t_p6count|exit|46"
+  # RFC 0039: an ANNOTATED `let`/`mut` supplies the expected type, so a parenthesized
+  # named-field list is a literal of that type. Checked by VALUE, including `b: 64` (int
+  # literal into an f64 field — the coercion that was itself a miscompile until 2026-07-31),
+  # a field used as a `for` bound, bare-vs-named equivalence, and the two shapes a bad
+  # `(`-lookahead would swallow: a positional tuple and a plain parenthesized expression.
+  "t_structlitinfer|out|Cấu trúc suy diễn từ chú thích: a=64 b=64.000000 mut=7/2.500000 fp=1 loops=64 same=1 tuple=3 group=7"
+  # ...and with NO expected type there is nothing to infer: reject (E3034), never guess.
+  # The E-code itself is pinned by the `structlitinfer-ecode` block near the end of this file
+  # (a `reject` row can only observe "no exe", not WHICH diagnostic fired).
+  "t_structlitinfer_noctx|reject|"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
@@ -1121,6 +1131,20 @@ for d in "t_structoverloaddfe:42" "t_structoverload:42"; do
     fi
   done
 done
+
+# --- RFC 0039: the rejection must be E3034, and exactly ONE diagnostic ---------------
+# The `t_structlitinfer_noctx` reject row above can only observe "no exe was produced",
+# which any compiler crash would also satisfy. Pin the actual contract: the named E-code
+# (so the diagnostic cannot silently drift into a generic parse error again — the form used
+# to detonate into 9 cascading "unexpected token at offset <byte-into-concatenated-stdlib>"
+# lines, CLAUDE.md §8) and the fact that ONE mistake yields ONE error.
+sli_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_structlitinfer_noctx.ax -o "$REGTMP/sli_noctx.exe" -O1 $AXEXTRA 2>&1 )
+sli_n=$( printf '%s' "$sli_log" | grep -c 'error\[E3034\]' )
+if [ "$sli_n" = "1" ]; then
+  echo "PASS structlitinfer-ecode (one error[E3034])"; pass=$((pass+1))
+else
+  echo "FAIL structlitinfer-ecode (error[E3034] count: got '$sli_n' want 1)"; fail=$((fail+1)); failed="$failed structlitinfer-ecode"
+fi
 
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---
 # Three properties, and the third is the one that actually bit: a build that cannot

@@ -1,6 +1,19 @@
 # RFC 0039 — Annotation-inferred struct literals
 
-- **Status:** Proposed
+- **Status:** Implemented (2026-08-07) — phase 1 as specified in §2.2
+  - Parser: `parser.ax:295-311` (prefix `(` + `ident` + `:` ⇒ `NODE_STRUCT_LIT` placeholder in
+    the callee slot, then the ordinary named-argument call-args parser).
+  - Typecheck: `typecheck.ax:4277-4306` fills the placeholder from the annotated binding's
+    `SYM_STRUCT`; `typecheck.ax:5012-5028` reports **`error[E3034]`** when it was never filled.
+  - The placeholder is bound by **symbol identity**, not spelling: the annotation's payload is
+    only a symbol index when the resolver actually resolved it, so the symbol's `name_id` is
+    checked against the annotation's text before binding. This is a direct application of the
+    lesson from P6 (`74eab1d`), where an unguarded payload read landed on an unrelated symbol.
+  - Gate: **A == B = `84A13E958B59D2A1022C860C8E4637E81716BA65A66BFDDFD096034E4DB3FF68`**,
+    regression **685/685** at default and `-O0`.
+  - Oracles: `bin/t_structlitinfer.ax` (value-checked, with tuple and grouped-expression
+    controls) and `bin/t_structlitinfer_noctx.ax`, plus a `structlitinfer-ecode` block that
+    pins **exactly one** E3034 so a cascade cannot creep back in.
 - **Author:** AXIOM compiler team
 - **Created:** 2026-08-06
 - **Affects:** parser, typecheck (frontend only — no IR, ABI, backend or linker change)

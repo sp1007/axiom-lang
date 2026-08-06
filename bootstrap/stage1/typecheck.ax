@@ -4274,7 +4274,37 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             exp_type = self.infer_node(type_node, TYPE_UNKNOWN)
             if sym_idx != 0 as u32:
                 self.symtable.symbols.data[sym_idx].type_id = exp_type
-                
+
+        // RFC 0039 section 2.2 (phase 1): an ANNOTATED `let`/`mut` is the one context that
+        // supplies an expected type, so it is the one place the parser's inferred-struct-
+        // literal placeholder is filled in. `let c: T = (a: 1, b: 2)` arrives here as an
+        // ordinary named-argument CALL whose callee is a NODE_STRUCT_LIT placeholder; bind
+        // that slot to the annotation's SYM_STRUCT and fall through, so the field checks,
+        // the coercions and air_builder's lower_struct_constructor_call are the SAME code
+        // `T(a: 1, b: 2)` already goes through. A parallel checker for the bare form would
+        // be the "one rule, two copies" defect class that produced the interface-return
+        // miscompile and the lower_int_lit/lower_float_lit divergence.
+        //
+        // The binding is by symbol IDENTITY, not by spelling: the annotation's payload is
+        // only a symbol index when the resolver actually resolved it (else it is a stale
+        // intern id that would index an UNRELATED symbol), so the symbol's name_id must
+        // equal the annotation's spelling. A mismatch leaves the placeholder in place and
+        // the call site below reports E3034 -- reject, never mis-target.
+        if type_node != 0 as u32 and init_expr != 0 as u32:
+            if self.tree.nodes.data[init_expr].kind == NODE_CALL_EXPR and self.tree.nodes.data[type_node].kind == NODE_TYPE_EXPR:
+                let ph = self.tree.nodes.data[init_expr].first_child
+                if ph != 0 as u32 and self.tree.nodes.data[ph].kind == NODE_STRUCT_LIT:
+                    let tsym = self.tree.nodes.data[type_node].payload
+                    if tsym != 0 as u32 and (tsym as i64) < self.symtable.symbols.len:
+                        if self.symtable.symbols.data[tsym as i64].kind == SYM_STRUCT:
+                            let tspell = self.node_text(type_node)
+                            if tspell != "":
+                                let tname_id = self.intern.intern_string(tspell)
+                                if self.symtable.symbols.data[tsym as i64].name_id == tname_id:
+                                    self.tree.nodes.data[ph].kind = NODE_IDENT
+                                    self.tree.nodes.data[ph].payload = tsym
+                            safe_free_str(tspell)
+
         if init_expr != 0 as u32:
             let inferred := self.infer_node(init_expr, exp_type)
             // BUG#53 (m5): an explicit `let x: T = <literal>` whose literal is a
@@ -4979,6 +5009,23 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     
     elif kind == NODE_CALL_EXPR:
         let callee = self.tree.nodes.data[node_idx].first_child
+        // RFC 0039 section 2.3 (E3034): the parser's inferred-struct-literal PLACEHOLDER
+        // reached the general call path, which means nothing filled it in -- this literal
+        // sits where no expected type is supplied (phase 1 fills it only from an annotated
+        // `let`/`mut`: argument, `return`, field-init, array-element and assignment
+        // positions are deliberately out of scope). There is no type to infer, so reject
+        // rather than construct something arbitrary. The placeholder's `payload` doubles as
+        // the "already reported" mark, because infer_node may visit one node more than once
+        // and CLAUDE.md section 8 forbids a cascade from a single mistake.
+        if callee != 0 as u32 and self.tree.nodes.data[callee].kind == NODE_STRUCT_LIT:
+            if self.tree.nodes.data[callee].payload == 0 as u32:
+                ax_printf_local("error[E3034]: cannot infer the struct type of this literal\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.print_annotated_expr_snippet(callee, callee, "no expected type here")
+                ax_printf_local("   = help: name the type, as in `T(field: value, ...)`, or annotate the binding: `let x: T = (field: value, ...)`\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                self.diags_count = self.diags_count + 1 as i64
+                self.tree.nodes.data[callee].payload = 1 as u32
+            self.set_node_type(node_idx, TYPE_UNKNOWN)
+            return TYPE_UNKNOWN
         if callee != 0 as u32:
             mut callee_node = self.tree.nodes.data[callee]
             mut is_generic_call := false

@@ -1,0 +1,65 @@
+// RFC 0039 — annotation-inferred struct literal. An ANNOTATED `let`/`mut` supplies the
+// expected type, so the type name need not be repeated on the literal:
+//
+//     let c: TmpStruct = (a: 64, b: 64)      instead of  TmpStruct(a: 64, b: 64)
+//
+// The bare form is rewritten in typecheck into the SAME constructor call the named form
+// produces (RFC 0039 §3), so this oracle checks the properties that would break if the
+// implementation had forked into a second checking path:
+//   * `b: 64` — an INT literal into an `f64` field. That coercion lives in
+//     air_builder.coerce_field_value → coerce_to_float_target and was itself a miscompile
+//     until 2026-07-31 (`let a: f64 = 3` printed 0.0), so it is checked by VALUE, not by
+//     "it compiled".
+//   * `c.a` used as a `for` bound — the field must read back as a real i64, not an address.
+//   * bare vs named equivalence — the two spellings must produce identical field values.
+//   * controls: a positional TUPLE `(1, 2)` and a plain parenthesized expression `(3 + 4)`
+//     must still parse as before. The parser distinguishes the struct form by `ident :`
+//     after `(`, so these are exactly the shapes a bad lookahead would swallow.
+//
+// CLAUDE.md §7.1: judged on STDOUT (one line, non-ASCII), never on the exit code.
+struct TmpStruct:
+    a: i64
+    b: f64
+
+fn main() -> i32:
+    let c: TmpStruct = (a: 64, b: 64)
+    mut d: TmpStruct := (a: 7, b: 2.5)
+    let e = TmpStruct(a: 64, b: 64)
+
+    // int literal -> f64 field, read back as a float
+    mut fp := 0
+    if c.b == 64.0:
+        fp = 1
+
+    // field read back through a `for` bound
+    mut loops := 0
+    for i in 0..c.a:
+        loops = loops + 1
+
+    // bare form == named form
+    mut same := 0
+    if c.a == e.a and c.b == e.b:
+        same = 1
+
+    // controls: positional tuple + plain parenthesized expression
+    let t = (1, 2)
+    let g = (3 + 4)
+
+    print("Cấu trúc suy diễn từ chú thích: a=")
+    print(c.a)
+    print(" b=")
+    print(c.b)
+    print(" mut=")
+    print(d.a)
+    print("/")
+    print(d.b)
+    print(" fp=")
+    print(fp)
+    print(" loops=")
+    print(loops)
+    print(" same=")
+    print(same)
+    print(" tuple=")
+    print(t._f0 + t._f1)
+    println(" group=", g)
+    return 0
