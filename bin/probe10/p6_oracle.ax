@@ -1,0 +1,16 @@
+// P6 ORACLE — typecheck.ax:5765 reads NODE_FIELD_EXPR.payload (an INTERN id) as a
+// SYMBOL index when the flag-2048 "payload is a symbol" guard is absent.
+// `actor` is an identifier already interned by std/scheduler.ax, so intern("actor")
+// indexes a real, unrelated stdlib symbol; that symbol's FUNC return type (an
+// Option/Vec/HashSet/...) is then imposed on this i64-returning method call.
+// MUST print exactly: Kết quả P6: 46
+struct Logger:
+    factor: i64
+    fn actor(self: Logger, n: i64) -> i64:
+        return n * self.factor
+
+fn main() -> i64:
+    let a: Logger = Logger(factor: 2)
+    let x = a.actor(8)
+    println("Kết quả P6: ", x + 30)
+    return 0

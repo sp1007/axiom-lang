@@ -11,10 +11,11 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-08-06 — dọn libc bước 0-2)
-- Driver `bin/axc_native.exe` = **A==B
-  `0585124E9B3B81B4878E609A6279AD4DAF7B18852524A4D660F968057F6FFF08`** (2.307.584 byte).
-  Mốc trước: RFC 0038 (`ca7a98d`) `99F795C2…` 2.308.096 byte.
+## Trạng thái cây (cập nhật 2026-08-06 — sửa P6)
+- **Driver `bin/axc_native.exe` = A==B
+  `A58F762AACDB79C1164481FFED09AD2DD4B0A357B662A4C08420C06BABB5FE97`** (2.307.584 byte).
+  **ĐÃ PROMOTE**, đã **tự** kiểm chứng 682/682 ở cả hai mức (không chỉ theo báo cáo agent).
+  Mốc trước: dọn libc `0585124E…`; RFC 0038 (`ca7a98d`) `99F795C2…` 2.308.096 byte.
   ⚠️ Mốc **B==C** gần nhất vẫn là `c3eae77` /
   `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — cả RFC 0038
   lẫn dọn-libc đều frontend/std nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ
@@ -23,7 +24,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
   ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
   [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
-- **BASELINE = 679/679**, đo ở **cả default lẫn `-O0`**. Dưới 679 là RED. (672 → 677 RFC 0038, → 679 khi dọn libc bước 0-2.)
+- **BASELINE = 682/682**, đo ở **cả default lẫn `-O0`**. Dưới 682 là RED. (672 → 677 RFC 0038, → 679 khi dọn libc bước 0-2, → 682 khi sửa P6.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
@@ -259,7 +260,29 @@ f64, str, bytes}`. Frontend ⇒ không đổi gate.
 lớp defect "khớp theo cách VIẾT, không theo danh tính" đã ghi cho RFC 0037. Sửa đúng = đưa việc chọn
 symbol runtime ra khỏi selector ⇒ **chạm backend ⇒ B==C**. **Tách item riêng, không gộp vào P1.**
 
-**P6 🔴 MỞ, ƯU TIÊN CAO — XOÁ một khai báo `extern` CHẾT làm HỎNG biên dịch một chương trình
+**P6 ✅ ĐÃ SỬA 2026-08-06** (A==B `A58F762AACDB79C1164481FFED09AD2DD4B0A357B662A4C08420C06BABB5FE97`,
+regression **682/682 ở CẢ default lẫn `-O0`**). Gốc **KHÔNG** nằm ở dispatch interface như nghi ban
+đầu: `typecheck.ax` (khối phục hồi BUG#61) đọc `NODE_FIELD_EXPR.payload` **như CHỈ SỐ SYMBOL** mà
+không kiểm cờ phân biệt **2048**. Với method call thường, payload là **ID INTERN CỦA TÊN**, nên
+`intern("count")` tra vào bảng symbol và **kiểu trả về của một symbol stdlib xa lạ** (Option/Result/
+Vec) bị đóng dấu lên lời gọi trả `i64` ⇒ `c + 30` bị từ chối. Sửa bằng **một** accessor
+`callee_symbol` (bản cài đặt DUY NHẤT của luật cờ-2048; site `:5470` cũng đi qua nó) **+ kiểm
+`kind == SYM_FUNC`**.
+⭐ Kiểm SYM_FUNC **không phải thừa**: nếu thiếu, callee `NODE_IDENT` là **VARIANT** (`Ok`/`Err`/
+`Some`) rơi vào `pre_infer_func_signature(cdecl)` trên node khai báo VARIANT, đóng dấu chữ ký FUNC
+**0 tham số** lên symbol variant ⇒ **từ chối oan** `'Ok' expects 0 argument(s), found 1`. Đo bằng
+bản dựng có instrument: `std/result.ax` dính 3 lần (symkind=5, nodekind=42) và bị **reject với 7
+lỗi**; `scratch/stage2_preprocessed.ax` **134 lỗi**. Cả hai nay biên dịch được.
+Breakage audit **1649 file**, before/after: **0 reject mới**, 6 accept mới (3 file kể trên +
+`std/collections_test.ax` + 2 oracle mới).
+Bốn extern chết `fseek`/`ftell`/`rewind`/`fputs` ở `std/io.ax` **ĐÃ XOÁ**; `bin/t_ifaceconsumer.ax`
+vẫn exit 46. Oracle: `bin/t_p6methodname.ax` (+ control `bin/t_p6methodnamectl.ax`),
+`bin/t_p6count.ax`.
+⚠️ Câu **"THÊM một extern thì vô hại; chỉ XOÁ mới kích hoạt"** trong bản ghi gốc dưới đây là **SAI**
+(ảo giác lấy mẫu trên một ánh xạ tuỳ tiện) — thêm extern cũng làm hỏng ở Δ=+2,+5,+6.
+
+Bản ghi gốc (giữ lại vì dấu vân tay chẩn đoán vẫn đáng học):
+**XOÁ một khai báo `extern` CHẾT làm HỎNG biên dịch một chương trình
 KHÔNG LIÊN QUAN.** Phát hiện 2026-08-06 khi dọn libc bước 0; **deterministic, đã bisect xong.**
 Repro (compiler nào cũng dính, kể cả binary đã commit — vì `concatenate_stdlib` đọc `std/*.ax`
 **từ đĩa lúc biên dịch**, nên đổi `std/io.ax` là đủ, không cần dựng lại compiler):
@@ -271,15 +294,15 @@ Biểu thức bị tố là `a.run(8) + b.run(20)` — **hai toán hạng đều
 interface, **cả chương trình không có Option/Vec nào**.
 ⭐ **Dấu vân tay quyết định:** *tên kiểu báo lỗi thay đổi theo SỐ LƯỢNG khai báo bị xoá* — xoá 1 ⇒
 `Option`, xoá cả 4 ⇒ `Vec`. Đó là chữ ký của việc **đọc kiểu qua một CHỈ SỐ trôi theo bảng symbol**,
-không phải kiểu gắn với biểu thức. **THÊM** một extern thì vô hại; **chỉ XOÁ mới kích hoạt** ⇒ không
+không phải kiểu gắn với biểu thức. (Câu tiếp theo của bản ghi gốc — *"THÊM một extern thì vô hại;
+chỉ XOÁ mới kích hoạt"* — đã bị **BÁC BỎ**, xem phần đã-sửa ở trên.) Không
 phải "nhiễu do đổi số dòng" (xoá một dòng COMMENT cũng vô hại — đã đo).
 Không phải phụ thuộc sử dụng: **không file bundled nào dùng** fseek/ftell/rewind/fputs (đã grep đủ 8
 file trong `main_air.ax:401-426`).
 Hiện đang **fail-safe** (lỗi biên dịch, không phải miscompile) — nhưng cùng LỚP với các defect
-"đọc qua chỉ số/tên không ổn định" đã đẻ ra miscompile ở repo này. Nghi vấn: phân giải **kiểu TRẢ VỀ
-của lời gọi dispatch** trong typecheck.
-⛔ Vì P6, **bốn extern chết ở `std/io.ax` CỐ Ý GIỮ LẠI** (có comment cảnh báo tại chỗ). Khi P6 được
-sửa, **xoá bốn dòng đó chính là regression test của P6**.
+"đọc qua chỉ số/tên không ổn định" đã đẻ ra miscompile ở repo này. Nghi vấn *(SAI — không phải
+dispatch, xem phần đã-sửa)*: phân giải **kiểu TRẢ VỀ của lời gọi dispatch** trong typecheck.
+✅ Bốn extern chết ở `std/io.ax` **đã được xoá** cùng bản sửa, đúng như dự kiến làm regression test.
 
 **P5 — KHÔNG phải bug compiler: UTF-8 in ra sai là do CODEPAGE console.** Đã đo: exe phát **đúng
 byte UTF-8** (`4b e1 ba bf 74 …` = "Kết quả…"), và render đúng trong cả Git Bash lẫn PowerShell khi

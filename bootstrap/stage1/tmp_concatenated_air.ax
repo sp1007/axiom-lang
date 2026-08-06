@@ -8428,6 +8428,36 @@ pub fn check_iface_conformance(mut self: ptr[TypeChecker], target_type: u32, src
             safe_free_str(smn)
             self.diags_count = self.diags_count + 1 as i64
 
+// SINGLE implementation of the rule "when may a callee node's `payload` be read as a
+// SYMBOL INDEX?". The payload of a NODE_FIELD_EXPR is OVERLOADED: the parser stores the
+// INTERNED FIELD NAME there (parser.ax ~521), and generic instantiation later OVERWRITES
+// it with the monomorphised callee's SYMBOL INDEX, setting node flag 2048 as the
+// discriminator (see ~5452 below). A NODE_IDENT's payload is always a symbol index (the
+// resolver writes it). Anything else has no callee symbol.
+//
+// Reading a field-expr payload as a symbol WITHOUT testing flag 2048 indexes the symbol
+// table with an intern id and then believes a completely unrelated symbol's signature.
+// That was P6: a plain in-struct `b.count(8)` had intern("count") read as a symbol at
+// ~5766, and that stdlib symbol's Option/Result/Vec return type was stamped onto an
+// i64-returning call, so `c + 30` was rejected with "operator '+' is not defined for
+// Option/Result operands". The reported type even changed with the bundled stdlib's
+// symbol layout â€” the fingerprint of an index that drifts.
+//
+// Returns 0 ("no callee symbol") whenever the payload must not be read as a symbol, or
+// when it is out of range, so every caller gets the bounds check too â€” one rule, one copy.
+pub fn callee_symbol(self: ptr[TypeChecker], callee: u32) -> u32:
+    if (callee as i64) >= self.tree.nodes.len:
+        return 0 as u32
+    let cn = self.tree.nodes.data[callee]
+    mut pay := 0 as u32
+    if cn.kind == NODE_IDENT:
+        pay = cn.payload
+    elif cn.kind == NODE_FIELD_EXPR and (cn.flags & 2048 as u16) != 0 as u16:
+        pay = cn.payload
+    if pay == 0 as u32 or (pay as i64) >= self.symtable.symbols.len:
+        return 0 as u32
+    return pay
+
 pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32) -> u32:
     let field_name = self.intern.get(field_name_id)
     mut unwrapped_rec := rec_type
@@ -11960,9 +11990,16 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // silently corrupting a FLOAT (or other non-int-repr) return (int matched the
             // default by coincidence, hiding this until now). Prefer the instance's own
             // signature type. See [[bug-generic-fn-float-return-default-int]].
+            // The flag-2048 test here means "this callee IS a monomorphised instance"
+            // (that is what makes the instance signature preferable to infer_node's
+            // template signature); the separate question "is `payload` a symbol index at
+            // all" is answered ONLY by callee_symbol, so the discriminator rule has a
+            // single implementation. Do NOT drop this gate in favour of callee_symbol
+            // alone: a plain NODE_IDENT callee also has a symbol payload, but overload
+            // resolution may have typed the call from a DIFFERENT symbol.
             if (self.tree.nodes.data[callee].flags & 2048 as u16) != 0 as u16:
-                let inst_pay = self.tree.nodes.data[callee].payload
-                if inst_pay != 0 as u32 and (inst_pay as i64) < self.symtable.symbols.len:
+                let inst_pay = self.callee_symbol(callee)
+                if inst_pay != 0 as u32:
                     let inst_tid = self.symtable.symbols.data[inst_pay as i64].type_id
                     if inst_tid != 0 as u32 and (inst_tid as i64) < self.types.entries.len and self.types.entries.data[inst_tid].kind == TYPE_KIND_FUNC:
                         callee_type = inst_tid
@@ -12255,9 +12292,31 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
             // (NODE_FIELD_EXPR callee) â€” instantiation stamps callee.payload with the
             // monomorphised function/method symbol in both cases, so e.g.
             // Vec[T].get(i) (a generic method returning Option[T]) is recovered too.
+            //
+            // P6 (2026-08-06): this block used to read `callee.payload` DIRECTLY. For a
+            // NODE_FIELD_EXPR callee that is not an instantiation, the payload is the
+            // INTERNED METHOD NAME, not a symbol index â€” so a plain non-generic in-struct
+            // method call (`b.count(8)`) indexed the symbol table with intern("count") and
+            // adopted an unrelated stdlib symbol's Option/Result/Vec return type as the
+            // type of an i64 call. Measured blast radius on the untouched tree: 23 of the
+            // first 297 stdlib-interned lowercase identifiers (7.7%) were poisoned method
+            // names, including `count`, `alloc`, `actor`, `data_size`. Go through
+            // callee_symbol, the single implementation of the flag-2048 discriminator, and
+            // additionally require the symbol to actually BE a function before believing
+            // its signature (same shape as the SYM_VARIANT / SYM_FUNC kind checks at
+            // ~364/~538/~726/~788).
+            //
+            // The SYM_FUNC test is NOT belt-and-braces â€” it was measured to be load-bearing
+            // on its own. Without it, a NODE_IDENT callee naming a VARIANT (`Ok`, `Err`,
+            // `Some`) reached `pre_infer_func_signature(cdecl)` on the VARIANT's decl node,
+            // which stamped a 0-parameter FUNC signature onto the variant symbol; the arity
+            // check above then rejected perfectly valid code with "'Ok' expects 0
+            // argument(s), found 1". Traced with an instrumented build: std/result.ax hit
+            // it 3x (symkind=5=SYM_VARIANT, nodekind=42=NODE_IDENT) and was REJECTED with
+            // 7 such errors; scratch/stage2_preprocessed.ax with 134. Both compile now.
             if result_type == TYPE_UNKNOWN and (self.tree.nodes.data[callee].kind == NODE_IDENT or self.tree.nodes.data[callee].kind == NODE_FIELD_EXPR):
-                let csym = self.tree.nodes.data[callee].payload
-                if csym != 0 as u32 and (csym as i64) < self.symtable.symbols.len:
+                let csym = self.callee_symbol(callee)
+                if csym != 0 as u32 and self.symtable.symbols.data[csym as i64].kind == SYM_FUNC:
                     mut cft = self.symtable.symbols.data[csym].type_id
                     if cft == TYPE_UNKNOWN:
                         let cdecl = self.symtable.symbols.data[csym].decl_node

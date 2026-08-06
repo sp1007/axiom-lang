@@ -1,0 +1,17 @@
+// Accept-then-miscompile probe: user struct whose FIELD NAMES coincide with Vec's
+// (data/len/cap) but in a DIFFERENT declaration order, returned from an in-struct
+// method whose name makes typecheck mis-type the call as `Vec`.
+struct Buf:
+    len: i64
+    data: i64
+    cap: i64
+
+struct Logger:
+    factor: i64
+    fn AX_STRATEGY_ONE_FOR_ONE(self: Logger, n: i64) -> Buf:
+        return Buf(len: 42 as i64, data: 7 as i64, cap: 9 as i64)
+
+fn main() -> i64:
+    let a: Logger = Logger(factor: 2)
+    let p = a.AX_STRATEGY_ONE_FOR_ONE(1)
+    return p.len

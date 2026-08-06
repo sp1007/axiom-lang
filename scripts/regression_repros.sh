@@ -890,6 +890,20 @@ rows=(
   # since it gets a real FILE* from fopen, which is precisely why it was kept.
   "t_nolibcstdio|out|io=21 same=true Kết quả: 42"
   "t_nolibcstdio|exit|42"
+  # P6: typecheck's BUG#61 return-type recovery read NODE_FIELD_EXPR.payload as a SYMBOL
+  # INDEX without the flag-2048 discriminator that says the payload IS a symbol. On a
+  # plain non-generic method call the payload is the INTERNED METHOD NAME, so an in-struct
+  # scalar-returning method whose name the stdlib had already interned (`count`, `actor`,
+  # `alloc`, ...) adopted an ALIEN symbol's Option/Result/Vec return type and the program
+  # was rejected: "operator '+' is not defined for Option/Result operands". 23 of the first
+  # 297 stdlib-interned lowercase identifiers (7.7%) were unusable as method names, and
+  # WHICH ones re-rolled with every stdlib edit -- deleting four dead externs from
+  # std/io.ax used to break bin/t_ifaceconsumer.ax, which is why that deletion shipped with
+  # this fix. t_p6methodnamectl is the CALIBRATION (same program, non-colliding name): it
+  # passed before the fix, so if both fail, suspect the harness, not the typing rule.
+  "t_p6methodname|out|Kết quả P6: 46"
+  "t_p6methodnamectl|out|Kết quả P6 control: 46"
+  "t_p6count|exit|46"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

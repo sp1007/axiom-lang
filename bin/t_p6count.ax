@@ -1,0 +1,17 @@
+// P6, in the most natural spelling a user would actually write: an in-struct method
+// named `count`. Same defect as bin/t_p6methodname.ax (an interned method NAME read as a
+// SYMBOL INDEX); kept as a second row because the poisoned set is decided by the bundled
+// stdlib's symbol layout, so a future stdlib edit re-rolls WHICH names are affected and
+// two independent names are much harder to lose at once than one.
+// Measured before the fix: 23 of the first 297 stdlib-interned lowercase identifiers
+// (7.7%) were unusable as in-struct scalar method names, including count/alloc/actor/
+// child_count/data_size. Expected: exit 46.
+struct Bag:
+    n: i64
+    fn count(self: Bag, k: i64) -> i64:
+        return self.n * k
+
+fn main() -> i64:
+    let b: Bag = Bag(n: 2)
+    let c = b.count(8)
+    return c + 30

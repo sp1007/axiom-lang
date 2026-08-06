@@ -1,0 +1,14 @@
+// P6, most natural user-facing spelling: an in-struct method named `count`.
+// `count` is an identifier already interned by the bundled stdlib, so
+// typecheck.ax:5766 (`csym = FIELD_EXPR.payload`, an INTERN id read as a SYMBOL
+// index) lands on an unrelated stdlib function and imposes ITS aggregate return
+// type on this i64-returning call.  Expected: 46.
+struct Bag:
+    n: i64
+    fn count(self: Bag, k: i64) -> i64:
+        return self.n * k
+
+fn main() -> i64:
+    let b: Bag = Bag(n: 2)
+    let c = b.count(8)
+    return c + 30

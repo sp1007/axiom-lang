@@ -1,0 +1,20 @@
+// interface, but only ONE logger and one call, no +
+interface Sink:
+    fn emit(self: Self, n: i64) -> i64
+
+struct Doubler:
+    factor: i64
+    fn emit(self: Doubler, n: i64) -> i64:
+        return n * self.factor
+
+struct Logger:
+    sink: Sink
+    fn run(self: Logger, n: i64) -> i64:
+        return self.sink.emit(n)
+
+fn make_logger(s: Sink) -> Logger:
+    return Logger(sink: s)
+
+fn main() -> i64:
+    let a: Logger = make_logger(Doubler(factor: 2))
+    return a.run(23) + a.run(0)

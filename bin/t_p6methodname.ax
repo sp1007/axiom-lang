@@ -1,0 +1,24 @@
+// P6 ORACLE — an in-struct, non-generic, SCALAR-returning method whose name collides
+// with an identifier the bundled stdlib has already interned.
+//
+// typecheck.ax's BUG#61 recovery used to read NODE_FIELD_EXPR.payload as a SYMBOL INDEX
+// without the flag-2048 discriminator that says "this payload is a symbol". For a plain
+// method call the payload is the INTERNED METHOD NAME, so intern("actor") indexed the
+// symbol table and an unrelated stdlib symbol's aggregate return type (Option/Result/
+// Vec/...) was imposed on this i64-returning call — `x + 30` was then rejected with
+// "operator '+' is not defined for Option/Result operands". The reported type name even
+// drifted with the stdlib's symbol layout, which is what identified the root cause.
+//
+// Calibration: bin/t_p6methodnamectl.ax is this same program with a non-colliding method
+// name; it passed before the fix. If BOTH ever fail, suspect the harness, not this rule.
+// MUST print exactly: Kết quả P6: 46
+struct Logger:
+    factor: i64
+    fn actor(self: Logger, n: i64) -> i64:
+        return n * self.factor
+
+fn main() -> i64:
+    let a: Logger = Logger(factor: 2)
+    let x = a.actor(8)
+    println("Kết quả P6: ", x + 30)
+    return 0
