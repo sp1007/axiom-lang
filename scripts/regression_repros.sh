@@ -1282,6 +1282,23 @@ else
   echo "FAIL diagloc-nostdlib (--> line: got '$dln_hit' want 1; gutter: got '$dln_gut' want 1)"; fail=$((fail+1)); failed="$failed diagloc-nostdlib"
 fi
 
+# (5) A diagnostic raised while checking an IMPORTED MODULE must name THAT module's file.
+#     Imported modules are lexed and parsed on their own buffer -- never spliced into the
+#     concatenated unit -- so their AstTree kept `srcmap == null` and every diagnostic
+#     inside one degraded to "at byte offset N of the compilation unit", even though the
+#     module's path was known at the point it was loaded. The fix hands the module tree a
+#     one-region map; the price is that the path string is no longer freed after the read,
+#     because srcmap_add stores it BY REFERENCE.
+dlm_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_mod.ax -o "$REGTMP/dlm.exe" -O1 $AXEXTRA 2>&1 )
+dlm_hit=$( printf '%s\n' "$dlm_log" | grep -c -- '^ --> bin/t_diagloc_modlib.ax:8$' )
+dlm_gut=$( printf '%s\n' "$dlm_log" | grep -c '^8 |     let bad: u8 = 300$' )
+dlm_off=$( printf '%s\n' "$dlm_log" | grep -c 'of the compilation unit' )
+if [ "$dlm_hit" = "1" ] && [ "$dlm_gut" = "1" ] && [ "$dlm_off" = "0" ]; then
+  echo "PASS diagloc-module (--> bin/t_diagloc_modlib.ax:8, raw byte-offset fallback gone)"; pass=$((pass+1))
+else
+  echo "FAIL diagloc-module (--> line: got '$dlm_hit' want 1; gutter: got '$dlm_gut' want 1; byte-offset fallbacks: got '$dlm_off' want 0)"; fail=$((fail+1)); failed="$failed diagloc-module"
+fi
+
 # --- unreadable inputs must HALT the build (BUG#53's rule, applied to INPUT) ---
 # Three properties, and the third is the one that actually bit: a build that cannot
 # read its stdlib used to report eight anonymous `open failed` lines and then emit a
