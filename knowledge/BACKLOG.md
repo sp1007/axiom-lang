@@ -39,13 +39,45 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   "REMAINING QUEUE" của nó **đã lỗi thời**: bug #2, bug #3 và task 0 đều đã ship sau đó.
 
 ## ⛔ CẦN USER QUYẾT (không tự quyết — hạng D1)
-1. **fib không phán quyết được bằng gate M6 như đang viết.** Layout spread của fib 17,2% (AXIOM) /
-   13,7% (floor) > toàn bộ biên gate 15%; mẫu số của tỉ số **tự nó bimodal** theo parity của dịch
-   16 byte. Tăng n không cứu. ⇒ **phát biểu lại gate** (so phân phối, hoặc ghim MỘT layout tham
-   chiếu cho cả hai phía) **hoặc loại fib khỏi gate**. Chi tiết: handoff 07-30c.
-   *(mục 2 — `let x: u8 = 300` — ĐÃ ĐƯỢC QUYẾT 2026-07-30, xem ngay dưới)*
+*(Trống. Cả 7 mục treo đã được user quyết 2026-08-07 — xem ngay dưới. Đừng hỏi lại.)*
 
 ## ✅ ĐÃ QUYẾT (D1) — không hỏi lại
+
+### Chốt 2026-08-07 (7 quyết định, user chọn trực tiếp)
+1. **Gate M6 ⇒ SO PHÂN PHỐI: median trên N layout + LUÔN in spread cạnh con số.** Giữ fib trong
+   gate. Ngưỡng phán quyết đọc trên median, không trên một lượt đo đơn lẻ. Hạ tầng đã có
+   (`scripts/perf_layout_dist.ps1`, `scripts/perf_m6_gate.ps1`); giá phải trả là N lần build mỗi
+   lần đo — chấp nhận. ⛔ **KHÔNG** ghim một layout tham chiếu (sẽ che chính hiệu ứng bimodal vừa
+   đo được), **KHÔNG** loại fib (mất phủ sóng đệ quy/tail-call, đúng chỗ 1f trả lãi −14%).
+   Thay thế mục "fib không phán quyết được" ở handoff 07-30c.
+2. **`atof` ⇒ VIẾT PARSER FLOAT ĐÚNG CHUẨN BẰNG AXIOM.** RFC + hiện thực strtod đúng IEEE-754
+   (số mũ, round-to-nearest-even, subnormal), kèm **test đối chiếu bit-exact với `atof`** trên
+   corpus literal trước khi chuyển. Đây là con đường tới "AXIOM độc lập libc" thật.
+   ⛔ **KHÔNG** dùng `std/string.ax:818` (thiếu số mũ, làm tròn sai ⇒ đổi ngữ nghĩa im lặng mọi
+   float literal — §3 cấm). ⛔ **KHÔNG** giữ `atof` vĩnh viễn (một import kéo cả UCRT vào mọi binary).
+3. **Rank 2/3 (RFC 0037) ⇒ KHOÁ VÀO DANH TÍNH, KHÔNG VÀO CÁCH VIẾT.** Monomorphizer đánh dấu
+   tường minh symbol nào **THỰC SỰ là một instantiation** (cờ/bảng); rank 2/3 chỉ chấp nhận symbol
+   mang dấu đó. Đóng `h1_rank2_eq` + `h2_axstd_prefix` **và** xoá cả lớp defect "khớp theo chính
+   tả" (cùng lớp với P4). Chạm monomorphizer ⇒ đo A==B cẩn thận.
+   ⛔ **KHÔNG** hạn chế rank 2 theo prefix `_AX_std_` (đã đo: làm hỏng method instantiated của
+   struct generic — mangle đặt prefix TRƯỚC dấu chấm). ⛔ **KHÔNG** cấm user đặt tên chứa `__`/`_AX_`
+   (lấy không gian tên của user để bù khuyết tật nội bộ = đổi chỗ nợ, không trả nợ).
+4. **Debug output ⇒ CỜ `--verbose` THẬT, MẶC ĐỊNH IM LẶNG.** Cần RFC (đổi bề mặt CLI). Mọi output
+   debug đi qua **một** cổng có cấp độ; mặc định compiler chỉ in chẩn đoán. Xoá luôn whitelist
+   ~19 chuỗi `[D...` của `is_verbose_debug` (`print_helpers.ax:108-182`).
+   ⛔ **KHÔNG** dùng env var `AXIOM_DEBUG` (kém khám phá được + trạng thái ngầm, §19).
+5. **`str.len` ⇒ GIỮ NGHĨA SỐ BYTE, O(1)**, ghi RÕ vào spec; **bổ sung hàm đếm ký tự riêng**
+   (`chars()` / `char_count()`). Tiền lệ Rust/Go; không đổi call site nào trong self-image.
+   ⛔ **KHÔNG** đổi `len` thành số ký tự (đổi ngữ nghĩa hàm stdlib compiler đang dùng + `len` thành O(n)).
+6. **P5 console ⇒ `SetConsoleOutputCP(65001)` lúc khởi động runtime, CHỈ KHI stdout LÀ CONSOLE.**
+   Byte ra pipe/file **không đổi** ⇒ giữ tính tất định và không ảnh hưởng harness regression.
+   Thêm 1 import **kernel32** (không phải libc). ⛔ **KHÔNG** đặt vô điều kiện (runtime magic, §11).
+7. **Provenance cho node mono hoá ⇒ LÀM RFC NGAY.** Mở rộng `Token` (hiện 8 byte, dư 1 byte
+   `padding`) hoặc bảng phụ offset→origin, để node clone giữ được nguồn gốc và lỗi trong code
+   generic in đúng chỗ. RFC phải kèm **số đo** chi phí bộ nhớ + tốc độ biên dịch (Token là cấu
+   trúc nóng nhất của lexer). Thay thế hiện trạng `ast.ax:265` (`offset = len(old_src)` ⇒ rơi
+   ngoài mọi region ⇒ suy biến thành "không có vị trí").
+
 - **`let x: u8 = 300` ⇒ REJECT `error[E3030]`** (user chốt 2026-07-30, option 2). Literal nguyên
   ngoài dải của kiểu **được chú thích tường minh** là lỗi biên dịch tại 8 vị trí (let/assign vào
   binding có chú thích/gán field struct/đối số/đối số dạng `f[u8](..)`/field init/phần tử mảng
