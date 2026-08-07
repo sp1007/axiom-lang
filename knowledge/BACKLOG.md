@@ -313,6 +313,37 @@ byte UTF-8** (`4b e1 ba bf 74 …` = "Kết quả…"), và render đúng trong 
 `SetConsoleOutputCP(65001)` lúc khởi động runtime **chỉ khi stdout là console** (không đổi byte ra
 pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string — không có.**
 
+## 🔴 PHÁT HIỆN 2026-08-07 — PHẦN LỚN `std/` KHÔNG DÙNG ĐƯỢC trên đường build native
+Đo trực tiếp (không suy đoán). Có **HAI danh sách CỨNG phải khớp nhau, và chúng KHÔNG khớp**:
+- `concatenate_stdlib` (`main_air.ax`) nối **8 file**: result, mem/alloc, scheduler, runtime, os,
+  string, io, collections.
+- `strip_package_prefixes` viết lại **8 tiền tố**: `std.mem.alloc.`, `std.scheduler.`,
+  `std.os.win32.`, `std.os.linux_sys.`, `std.os.`, `std.string.`, `std.io.`, `std.net.`
+- `strip_imports` **xoá mọi dòng `import std`** ⇒ module không nằm trong danh sách bundle thì
+  **không bao giờ được nạp**.
+
+Ma trận đo được:
+| module | trong bundle? | tiền tố được rewrite? | gọi `std.X.f()` | gọi trần `f()` |
+|---|---|---|---|---|
+| `std.string` | ✅ | ✅ | ✅ **chạy** (`std.string.len("chào")` = 5) | ✅ |
+| `std.collections` | ✅ | ❌ | ❌ `undefined name 'std'` | ✅ **chạy** |
+| `std.math` (và sort/json/fmt/time/process/thread/crypto/log/sync/iter) | ❌ | ❌ | ❌ **KHÔNG DÙNG ĐƯỢC** | ❌ |
+| `std.net` | ❌ | ✅ | ❌ (rewrite rồi nhưng chẳng có gì để gọi) | ❌ |
+
+⇒ **`std/math.ax` hiện thực `sqrt/pow/sin/cos` thuần AXIOM (không cần libm) nhưng user KHÔNG GỌI
+ĐƯỢC.** Cùng cảnh: `sort, json, fmt, time, process, thread, crypto, log, sync, iter`.
+✅ Chẩn đoán **tốt, không im lặng**: `error: unresolved call to 'sqrt' on undefined namespace 'std'
+-- module not imported or not bundled on this build`.
+⚠️ **ĐÍNH CHÍNH audit libc:** mục "`std/process.ax` + `std/net.ax` bị phân loại nhầm DLL ⇒ import
+từ `ucrtbase` không export" là **KHÔNG TỚI ĐƯỢC** — hai module đó **không dùng được** trên đường
+native ngay từ đầu. Vẫn nên sửa whitelist, nhưng **không phải bug user gặp**; hạ ưu tiên.
+⇒ Đây đúng lớp defect **"hai bản sao của một sự thật"** đắt nhất repo này. Sửa đúng = **một nguồn
+sự thật** (danh sách module + tiền tố sinh ra từ cùng một chỗ), hoặc bỏ hẳn
+`strip_package_prefixes` bằng resolver qualified-name (xem §3b — cũng xoá luôn bài toán CỘT của
+chẩn đoán). **Cần định giá trước khi làm.**
+📌 Ghi chú phụ: `std.string.len("chào")` = **5** ⇒ trả **SỐ BYTE**, không phải số ký tự. Hợp lý cho
+`str.len`, nhưng cần ghi rõ trong spec vì AXIOM tuyên bố "UTF-8 mặc định".
+
 ## 🔜 TASK MỞ (tự làm được, theo thứ tự giá trị)
 0. ✅ **XONG (`6febd02`)** — int → f64 ở các vị trí typecheck không lan hint. Xem bug #1 ở trên.
    ⚠️ Còn **nợ thật sự** từ `b8ac125`: bảy vị trí f32→f64 (đối số method, gán phần tử mảng, biểu
