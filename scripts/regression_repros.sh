@@ -906,6 +906,18 @@ rows=(
   # is a defect in every build.
   "t_ionativefile|out|thiếu=true lớn=true dài=10000 trống=true utf8=true tệp: 42"
   "t_ionativefile|exit|42"
+  # Step 4: the compiler's own BINARY file I/O (linker.ax, x86_coff.ax, x86_elf64.ax,
+  # main_air.ax) moved off its private fopen/fread/fwrite/fclose/fseek/ftell/rewind
+  # externs onto std.io. The trap: `read_all` is NUL-terminated-STRING based, so it
+  # stops at the first zero byte -- and object files, archives and executables are FULL
+  # of zero bytes, which would truncate them with NO error reported (a silently corrupt
+  # link). This row pins what a length-only check would miss: a buffer with EMBEDDED NUL
+  # bytes round-trips with both LENGTH and CONTENT intact, through the typed File API
+  # (write_bytes/read_all_bytes) and the ptr[void] stream tokens the backends use, and
+  # the two interoperate. The stronger oracle is the fixpoint itself -- the compiler
+  # reads its own .obj through this path and writes its own .exe through it.
+  "t_iobinary|out|Nhị phân có byte NUL: đọc=300 lệch=0 luồng=302 lệch2=0"
+  "t_iobinary|exit|42"
   # P6: typecheck's BUG#61 return-type recovery read NODE_FIELD_EXPR.payload as a SYMBOL
   # INDEX without the flag-2048 discriminator that says the payload IS a symbol. On a
   # plain non-generic method call the payload is the INTERNED METHOD NAME, so an in-struct
@@ -1330,6 +1342,37 @@ if [ "$ihalt_ok" = "1" ]; then
   echo "PASS input-halt (exit=$ihalt_rc, names the file, no exe emitted)"; pass=$((pass+1))
 else
   fail=$((fail+1)); failed="$failed input-halt"
+fi
+
+# --- emit-c: the C backend writes through std.io, not libc stdio (libc step 5) ---
+# cgen.ax's ~40 `fputs(..., self.file)` calls became std.io stream writes. Nothing
+# else in this suite exercises the C backend at all, and the fixpoint does not:
+# the compiler builds itself through the NATIVE backend, so a broken cgen is
+# completely invisible to A == B.
+# The CR check is deliberate. `fopen(path, "w")` opened the file in Windows TEXT
+# mode, so every '\n' cgen wrote came out as CRLF -- the C backend's output was
+# byte-different between Windows and Linux for the same input. std.io writes
+# exactly the bytes it is given, so the output is now LF on every platform. That
+# is the intended behaviour (CLAUDE.md: deterministic, reproducible output; LF-only
+# C source is valid everywhere and was verified to compile), and reverting to a
+# platform-dependent translation would be the regression.
+cgen_ok=1
+printf 'fn main() -> i64:
+    return 7
+' > "$REGTMP/cgensmoke.ax"
+rm -f "$REGTMP/cgensmoke.c"
+timeout "$TIMEOUT" "$AXC" emit-c "$REGTMP/cgensmoke.ax" -o "$REGTMP/cgensmoke.c" > /dev/null 2>&1
+if [ ! -s "$REGTMP/cgensmoke.c" ]; then
+  echo "FAIL emit-c (no C file written)"; cgen_ok=0
+elif ! grep -q 'ax_main' "$REGTMP/cgensmoke.c"; then
+  echo "FAIL emit-c (C file carries no ax_main)"; cgen_ok=0
+elif grep -q $'\r' "$REGTMP/cgensmoke.c"; then
+  echo "FAIL emit-c (CR bytes present -- output is platform-dependent again)"; cgen_ok=0
+fi
+if [ "$cgen_ok" = "1" ]; then
+  echo "PASS emit-c (C emitted through std.io, LF-only)"; pass=$((pass+1))
+else
+  fail=$((fail+1)); failed="$failed emit-c"
 fi
 
 echo "=== regression: $pass passed, $fail failed ==="

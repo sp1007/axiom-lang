@@ -2,6 +2,7 @@
 // Assembly Text Emitter for NASM, FASM, and WinAsm/MASM in self-hosted AXIOM.
 
 import std.string
+import std.io
 
 pub fn to_byte_reg(reg: u8) -> str:
     let hw = reg_hw_reg(reg)
@@ -557,8 +558,8 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
     if format == "winasm":
         ax_fprintf_local(file, "%s ENDP\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
+// (`fopen`/`fclose` externs removed -- the .asm text goes out through std.io's
+// raw stream tokens. audit-libc-dependencies step 5.)
 
 fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
     let len = std.string.len(s)
@@ -568,9 +569,7 @@ fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format: str) -> bool:
-    let output_asm_file_nt = x86_str_to_null_terminated(output_asm_file)
-    let file = fopen(output_asm_file_nt as ptr[void], get_str_ptr("wb"))
-    @free(output_asm_file_nt)
+    let file = std.io.stream_create(output_asm_file)
     if file == null as ptr[void]:
         return false
 
@@ -762,5 +761,5 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: ptr[Sym
     if format == "winasm":
         ax_fprintf_local(file, "END\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-    fclose(file)
+    std.io.stream_close(file)
     return true

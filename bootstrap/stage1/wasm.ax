@@ -2,10 +2,10 @@
 // SSA AIR to WebAssembly Text (WAT) Code Generator.
 
 import std.string
+import std.io
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (`fopen/fclose/fputs` externs removed -- the generated .wat file goes out
+// through std.io's raw stream tokens. audit-libc-dependencies step 5.)
 // extern "C" fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 // extern "C" fn ax_snprintf_local(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 
@@ -101,14 +101,12 @@ fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
-    let filename_nt = wasm_str_to_null_terminated(out_filename)
-    self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
-    @free(filename_nt)
+    self.file = std.io.stream_create(out_filename)
     if self.file == null as ptr[void]:
         return false
 
-    fputs(get_str_ptr("(module\n"), self.file)
-    fputs(get_str_ptr("  (memory (export \"memory\") 1)\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("(module\n"), self.file)
+    std.io.stream_puts(get_str_ptr("  (memory (export \"memory\") 1)\n\n"), self.file)
 
     // 1. Declare all external functions as imports
     mut f_idx := 0 as i64
@@ -128,7 +126,7 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
                 let r_type = map_wasm_type(self.typetable, f.ret_type)
                 ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
-            fputs(get_str_ptr("))\n"), self.file)
+            std.io.stream_puts(get_str_ptr("))\n"), self.file)
             @free(callee as ptr[u8])
         f_idx = f_idx + 1
     
@@ -147,11 +145,11 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
         f_idx = f_idx + 1
     
     if not has_malloc:
-        fputs(get_str_ptr("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n"), self.file)
+        std.io.stream_puts(get_str_ptr("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n"), self.file)
     if not has_free:
-        fputs(get_str_ptr("  (import \"env\" \"free\" (func $free (param i32)))\n"), self.file)
+        std.io.stream_puts(get_str_ptr("  (import \"env\" \"free\" (func $free (param i32)))\n"), self.file)
     
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
 
     // 2. Compile functions
     f_idx = 0
@@ -161,8 +159,8 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
             self.compile_func(f)
         f_idx = f_idx + 1
     
-    fputs(get_str_ptr(")\n"), self.file)
-    fclose(self.file)
+    std.io.stream_puts(get_str_ptr(")\n"), self.file)
+    std.io.stream_close(self.file)
     return true
 
 pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
@@ -180,8 +178,8 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
         let r_type = map_wasm_type(self.typetable, f.ret_type)
         ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs(get_str_ptr("\n"), self.file)
-    fputs(get_str_ptr("    (local $state i32)\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (local $state i32)\n"), self.file)
 
     // Declare SSA registers
     mut max_reg := 0 as u32
@@ -258,15 +256,15 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
             r = r + 1
 
     if f.blocks.len == 0 as i64:
-        fputs(get_str_ptr("    return\n  )\n\n"), self.file)
+        std.io.stream_puts(get_str_ptr("    return\n  )\n\n"), self.file)
         if max_reg > 0 as u32:
             @free(self.reg_types as ptr[u8])
             self.reg_types = null as ptr[u32]
         return
 
-    fputs(get_str_ptr("    (local.set $state (i32.const 0))\n\n"), self.file)
-    fputs(get_str_ptr("    (block $outer\n"), self.file)
-    fputs(get_str_ptr("      (loop $loop\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (local.set $state (i32.const 0))\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (block $outer\n"), self.file)
+    std.io.stream_puts(get_str_ptr("      (loop $loop\n"), self.file)
 
     // Open all blocks hierarchically (N down to 0)
     mut bi := f.blocks.len - 1
@@ -276,13 +274,13 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
         bi = bi - 1
     
     // Emit br_table dispatcher
-    fputs(get_str_ptr("          (br_table"), self.file)
+    std.io.stream_puts(get_str_ptr("          (br_table"), self.file)
     bi = 0
     while bi < f.blocks.len:
         let bb = f.blocks.data[bi]
         ax_fprintf_local(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         bi = bi + 1
-    fputs(get_str_ptr(" $b_0 (local.get $state))\n"), self.file)
+    std.io.stream_puts(get_str_ptr(" $b_0 (local.get $state))\n"), self.file)
 
     // Close each block and emit its instructions
     bi = 0
@@ -299,14 +297,14 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
             inst_offset = inst_offset + 1
         bi = bi + 1
     
-    fputs(get_str_ptr("      )\n"), self.file)
-    fputs(get_str_ptr("    )\n"), self.file)
+    std.io.stream_puts(get_str_ptr("      )\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    )\n"), self.file)
 
     if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
         let r_type = map_wasm_type(self.typetable, f.ret_type)
         ax_fprintf_local(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs(get_str_ptr("  )\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("  )\n\n"), self.file)
 
     if max_reg > 0 as u32:
         @free(self.reg_types as ptr[u8])
@@ -441,9 +439,9 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if t == "i64":
-            fputs(get_str_ptr("        (i64.const -1)\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        (i64.const -1)\n"), self.file)
         else:
-            fputs(get_str_ptr("        (i32.const -1)\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        (i32.const -1)\n"), self.file)
         ax_fprintf_local(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
@@ -453,11 +451,11 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
             if entry.size != 0 as u32:
                 size = entry.size
         ax_fprintf_local(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (call $malloc)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (call $malloc)\n"), self.file)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_FREE or op == OP_DESTROY:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (call $free)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (call $free)\n"), self.file)
     elif op == OP_LOAD:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -472,7 +470,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
                 t = map_wasm_type(self.typetable, val_type)
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
-            fputs(get_str_ptr("        i32.add\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
         else:
             // Dereference store: *dest = src1
@@ -491,14 +489,14 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.mul\n"), self.file)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.mul\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_GET_FIELD:
         let offset = inst.src2 * 8 as u32
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -506,7 +504,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         let offset = inst.src2 * 8 as u32
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         mut t := "i32"
         if inst.dest > 0 as u32 and self.reg_types != null as ptr[u32]:
@@ -516,7 +514,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
     elif op == OP_INDEX:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -556,31 +554,31 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if src_t == "i64" and dst_t == "i32":
-            fputs(get_str_ptr("        i32.wrap_i64\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        i32.wrap_i64\n"), self.file)
         elif src_t == "i32" and dst_t == "i64":
             if op == OP_ZEXT:
-                fputs(get_str_ptr("        i64.extend_i32_u\n"), self.file)
+                std.io.stream_puts(get_str_ptr("        i64.extend_i32_u\n"), self.file)
             else:
-                fputs(get_str_ptr("        i64.extend_i32_s\n"), self.file)
+                std.io.stream_puts(get_str_ptr("        i64.extend_i32_s\n"), self.file)
         
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_JUMP:
         ax_fprintf_local(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (br $loop)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_BRANCH:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (if\n"), self.file)
-        fputs(get_str_ptr("          (then\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (if\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          (then\n"), self.file)
         ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("          )\n"), self.file)
-        fputs(get_str_ptr("          (else\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          (else\n"), self.file)
         ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("          )\n"), self.file)
-        fputs(get_str_ptr("        )\n"), self.file)
-        fputs(get_str_ptr("        (br $loop)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_RETURN:
         if inst.src1 != 0 as u32:
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        return\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        return\n"), self.file)
     else:
-        fputs(get_str_ptr("        nop\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        nop\n"), self.file)

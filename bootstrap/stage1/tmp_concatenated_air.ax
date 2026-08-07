@@ -6,7 +6,12 @@ import std.collections
 // Natively implemented safe formatting and console output functions.
 
 
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (The `fputs` extern that used to be here is gone. `print_to_file` /
+// `ax_fprintf_local` below are the C backend's text formatter -- their `stream`
+// is cgen's `FILE*`-shaped field, which is now a std.io stream token, so the
+// bytes go out through WriteFile / SYS_write. audit-libc-dependencies step 5.
+// This is NOT the console path: console output has always gone through
+// ax_puts_local -> print_raw -> the `print` builtin -> ax_print_str.)
 
 // libc-free process exit (audit-libc-dependencies-2026-08-05 step 2), shared by
 // every stage1 module that has to abort. Windows: ExitProcess (kernel32,
@@ -343,7 +348,7 @@ fn print_to_file(stream: ptr[void], s: str):
     let buf = @alloc(s_len + 1) as ptr[u8]
     @memcpy(buf, s_ptr, s_len)
     buf[s_len] = 0 as u8
-    fputs(buf, stream)
+    std.io.stream_puts(buf, stream)
     @free(buf)
 
 fn print_i64_to_file(stream: ptr[void], val: i64):
@@ -382,7 +387,7 @@ fn print_i64_to_file(stream: ptr[void], val: i64):
         
     buf[len] = 0 as u8
     
-    fputs(buf, stream)
+    std.io.stream_puts(buf, stream)
     @free(buf)
 
 pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
@@ -446,7 +451,7 @@ pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, 
                     
                     if val_ptr_raw != 0:
                         let c_ptr = val_ptr_raw as ptr[u8]
-                        fputs(c_ptr, stream)
+                        std.io.stream_puts(c_ptr, stream)
                     arg_idx = arg_idx + 1
                     i = i + 1
                 start = i + 1
@@ -24586,10 +24591,11 @@ pub fn run(mut self: SsaOptimizer, mut m: ptr[AirModule], table: ptr[TypeTable])
 // SSA AIR to C11 Code Generator.
 
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
-// extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// (`fopen/fclose/fputs` externs removed -- the generated .c file goes out through
+// std.io's raw stream tokens. knowledge/audit-libc-dependencies step 5.
+// âš ï¸ The `"fopen"`/`"fputs"`/... STRING LITERALS further down are a different
+// thing entirely: `is_stdlib_func` lists the C names a USER program may call on
+// the C backend, and they must stay.)
 
 fn normalize_struct_cast(t_name: str) -> str:
     let len = std.string.len(t_name)
@@ -24983,9 +24989,7 @@ fn str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
-    let filename_nt = str_to_null_terminated(out_filename)
-    self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
-    @free(filename_nt)
+    self.file = std.io.stream_create(out_filename)
     if self.file == null as ptr[void]:
         return false
 
@@ -25003,23 +25007,23 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 main_has_args = true
         fn_idx = fn_idx + 1 as i64
 
-    fputs(get_str_ptr("// Generated automatically by AXIOM AirCGen Stage 1\n"), self.file)
-    fputs(get_str_ptr("#define AXIOM_SUMLAYOUT_POINTER\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Generated automatically by AXIOM AirCGen Stage 1\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define AXIOM_SUMLAYOUT_POINTER\n"), self.file)
     if has_main:
-        fputs(get_str_ptr("#define AX_EMIT_MAIN\n"), self.file)
+        std.io.stream_puts(get_str_ptr("#define AX_EMIT_MAIN\n"), self.file)
         if main_has_args:
-            fputs(get_str_ptr("#define AX_MAIN_WITH_ARGS\n"), self.file)
-    fputs(get_str_ptr("#include \"ax_runtime.h\"\n"), self.file)
-    fputs(get_str_ptr("#include \"ax_stdlib.h\"\n\n"), self.file)
-    fputs(get_str_ptr("extern ax_i64 syscall(ax_u64 num, ...);\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Result_ok(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Result_err(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    (void*)((ax_u64)_ptr | 1ULL); \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Option_some(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Option_none() ((void*)0)\n\n"), self.file)
-    fputs(get_str_ptr("#define r_0 0\n\n"), self.file)
+            std.io.stream_puts(get_str_ptr("#define AX_MAIN_WITH_ARGS\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#include \"ax_runtime.h\"\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#include \"ax_stdlib.h\"\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("extern ax_i64 syscall(ax_u64 num, ...);\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Result_ok(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Result_err(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    (void*)((ax_u64)_ptr | 1ULL); \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Option_some(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Option_none() ((void*)0)\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define r_0 0\n\n"), self.file)
 
     // 1. Forward declare all structs
-    fputs(get_str_ptr("// Forward Declarations\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Forward Declarations\n"), self.file)
     mut i := 0 as i64
     while i < self.typetable.entries.len:
         let entry = self.typetable.entries.data[i]
@@ -25057,10 +25061,10 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             if not already_declared:
                 ax_fprintf_local(self.file, "typedef struct %s %s;\n", (get_str_ptr(name)) as i64, (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         i = i + 1
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
  
     // 2. Define structures
-    fputs(get_str_ptr("// Struct Definitions\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Struct Definitions\n"), self.file)
     i = 0 as i64
     while i < self.typetable.entries.len:
         let entry = self.typetable.entries.data[i]
@@ -25118,11 +25122,11 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                     let field_type = self.get_c_type(field.type_id)
                     ax_fprintf_local(self.file, "    %s f_%d;\n", (field_type as ptr[u8]) as i64, f_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     f_idx = f_idx + 1 as i64
-                fputs(get_str_ptr("};\n\n"), self.file)
+                std.io.stream_puts(get_str_ptr("};\n\n"), self.file)
         i = i + 1
 
     // 3. Function prototypes
-    fputs(get_str_ptr("// Function Prototypes\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Function Prototypes\n"), self.file)
     
     // Emit prototypes for all user-defined extern functions (like syscall) from the symbol table
     mut sym_idx_proto := 0 as i64
@@ -25140,16 +25144,16 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                             let ret_type = self.get_c_type(fi.ret)
                             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(original_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                             if fi.params.len == 0 as i64:
-                                fputs(get_str_ptr("void"), self.file)
+                                std.io.stream_puts(get_str_ptr("void"), self.file)
                             else:
                                 mut p_idx := 0 as i64
                                 while p_idx < fi.params.len:
                                     if p_idx > 0:
-                                        fputs(get_str_ptr(", "), self.file)
+                                        std.io.stream_puts(get_str_ptr(", "), self.file)
                                     let param_type = self.get_c_type(fi.params.data[p_idx])
                                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                     p_idx = p_idx + 1 as i64
-                            fputs(get_str_ptr(");\n"), self.file)
+                            std.io.stream_puts(get_str_ptr(");\n"), self.file)
                             @free(get_str_ptr(ret_type))
         sym_idx_proto = sym_idx_proto + 1 as i64
 
@@ -25175,24 +25179,24 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             let ret_type = self.get_c_type(f.ret_type)
             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(mangled_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if f.params.len == 0 as i64:
-                fputs(get_str_ptr("void"), self.file)
+                std.io.stream_puts(get_str_ptr("void"), self.file)
             else:
                 mut p_idx := 0 as i64
                 while p_idx < f.params.len:
                     if p_idx > 0:
-                        fputs(get_str_ptr(", "), self.file)
+                        std.io.stream_puts(get_str_ptr(", "), self.file)
                     mut param_type := self.get_c_type(f.params.data[p_idx])
                     if original_name == "main" and p_idx == 1 as i64:
                         param_type = "ax_u8**"
                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     p_idx = p_idx + 1 as i64
-            fputs(get_str_ptr(");\n"), self.file)
+            std.io.stream_puts(get_str_ptr(");\n"), self.file)
             @free(get_str_ptr(mangled_name))
             f_idx = f_idx + 1 as i64
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
 
     // 4. Function definitions
-    fputs(get_str_ptr("// Function Definitions\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Function Definitions\n"), self.file)
     f_idx = 0
     while f_idx < self.module.funcs.len:
         let f = self.module.funcs.data[f_idx]
@@ -25210,18 +25214,18 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             
             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(mangled_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if f.params.len == 0 as i64:
-                fputs(get_str_ptr("void"), self.file)
+                std.io.stream_puts(get_str_ptr("void"), self.file)
             else:
                 mut p_idx := 0 as i64
                 while p_idx < f.params.len:
                     if p_idx > 0:
-                        fputs(get_str_ptr(", "), self.file)
+                        std.io.stream_puts(get_str_ptr(", "), self.file)
                     mut param_type := self.get_c_type(f.params.data[p_idx])
                     if original_name == "main" and p_idx == 1 as i64:
                         param_type = "ax_u8**"
                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     p_idx = p_idx + 1 as i64
-            fputs(get_str_ptr(") {\n"), self.file)
+            std.io.stream_puts(get_str_ptr(") {\n"), self.file)
             @free(get_str_ptr(mangled_name))
 
             // Declare all SSA registers
@@ -25405,11 +25409,11 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 @free(self.reg_types as ptr[u8])
                 self.reg_types = null as ptr[u32]
 
-            fputs(get_str_ptr("}\n\n"), self.file)
+            std.io.stream_puts(get_str_ptr("}\n\n"), self.file)
             f_idx = f_idx + 1 as i64
 
     if has_main:
-        fputs(get_str_ptr("\n/* Entry point wrapper */\n"), self.file)
+        std.io.stream_puts(get_str_ptr("\n/* Entry point wrapper */\n"), self.file)
         if main_has_args:
             ax_fprintf_local(self.file, "ax_i32 ax_main(ax_i32 argc, ax_u8** argv) {\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if main_param_count == 1 as i64:
@@ -25419,7 +25423,7 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
         else:
             ax_fprintf_local(self.file, "ax_i32 ax_main(void) {\n    ax_main_usr();\n    return 0;\n}\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-    fclose(self.file)
+    std.io.stream_close(self.file)
     return true
 
 fn cgen_escape_string(s: str) -> str:
@@ -25927,7 +25931,7 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 let t_name = self.get_c_type(f.ret_type)
                 ax_fprintf_local(self.file, "    return (%s){0};\n", (get_str_ptr(t_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fputs(get_str_ptr("    return;\n"), self.file)
+                std.io.stream_puts(get_str_ptr("    return;\n"), self.file)
 
     elif op == OP_FUNC_ADDR:
         // Function pointer value: r_dest = &<mangled function name>.
@@ -26159,12 +26163,12 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 else:
                     ax_fprintf_local(self.file, "    r_%d = ((void*(*)(", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fputs(get_str_ptr("    ((void(*)("), self.file)
+                std.io.stream_puts(get_str_ptr("    ((void(*)("), self.file)
 
             mut p_i := 0 as u32
             while p_i < arg_count:
                 if p_i > 0 as u32:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 
                 mut p_type_name := "void*"
                 if has_fi and p_i < fi_params_len as u32:
@@ -26184,7 +26188,7 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                             if p_type_name == "void":
                                 p_type_name = "void*"
                 
-                fputs(get_str_ptr(p_type_name), self.file)
+                std.io.stream_puts(get_str_ptr(p_type_name), self.file)
                 if p_type_name != "void*" and p_type_name != "void" and p_type_name != "ax_string" and not std.string.ends_with(p_type_name, "*"):
                     @free(get_str_ptr(p_type_name))
                 p_i = p_i + 1 as u32
@@ -26195,14 +26199,14 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
             mut p_i := 0 as i64
             while p_i < mapped_param_count:
                 if p_i > 0:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 ax_fprintf_local(self.file, "p_%d", p_i, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 p_i = p_i + 1
         else:
             mut i := 0 as i64
             while i < arg_count as i64:
                 if i > 0:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 mut arg_reg := 0 as u32
                 if f.extras.data != null as ptr[u32] and arg_start as i64 + 1 + i < f.extras.len:
                     arg_reg = f.extras.data[arg_start as i64 + 1 + i]
@@ -26243,8 +26247,8 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                         ax_fprintf_local(self.file, "r_%d", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 i = i + 1
         if is_assert:
-            fputs(get_str_ptr(", AX_STR(\"assertion failed\")"), self.file)
-        fputs(get_str_ptr(");\n"), self.file)
+            std.io.stream_puts(get_str_ptr(", AX_STR(\"assertion failed\")"), self.file)
+        std.io.stream_puts(get_str_ptr(");\n"), self.file)
 
         if builtin_params != null as ptr[u32]:
             @free(builtin_params as ptr[u8])
@@ -26254,9 +26258,8 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
 // SSA AIR to WebAssembly Text (WAT) Code Generator.
 
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (`fopen/fclose/fputs` externs removed -- the generated .wat file goes out
+// through std.io's raw stream tokens. audit-libc-dependencies step 5.)
 // extern "C" fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
 // extern "C" fn ax_snprintf_local(buf: ptr[void], size: i64, format: ptr[u8], a1: ptr[void], a2: ptr[void]) -> i32
 
@@ -26352,14 +26355,12 @@ fn wasm_str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
-    let filename_nt = wasm_str_to_null_terminated(out_filename)
-    self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
-    @free(filename_nt)
+    self.file = std.io.stream_create(out_filename)
     if self.file == null as ptr[void]:
         return false
 
-    fputs(get_str_ptr("(module\n"), self.file)
-    fputs(get_str_ptr("  (memory (export \"memory\") 1)\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("(module\n"), self.file)
+    std.io.stream_puts(get_str_ptr("  (memory (export \"memory\") 1)\n\n"), self.file)
 
     // 1. Declare all external functions as imports
     mut f_idx := 0 as i64
@@ -26379,7 +26380,7 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
                 let r_type = map_wasm_type(self.typetable, f.ret_type)
                 ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             
-            fputs(get_str_ptr("))\n"), self.file)
+            std.io.stream_puts(get_str_ptr("))\n"), self.file)
             @free(callee as ptr[u8])
         f_idx = f_idx + 1
     
@@ -26398,11 +26399,11 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
         f_idx = f_idx + 1
     
     if not has_malloc:
-        fputs(get_str_ptr("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n"), self.file)
+        std.io.stream_puts(get_str_ptr("  (import \"env\" \"malloc\" (func $malloc (param i32) (result i32)))\n"), self.file)
     if not has_free:
-        fputs(get_str_ptr("  (import \"env\" \"free\" (func $free (param i32)))\n"), self.file)
+        std.io.stream_puts(get_str_ptr("  (import \"env\" \"free\" (func $free (param i32)))\n"), self.file)
     
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
 
     // 2. Compile functions
     f_idx = 0
@@ -26412,8 +26413,8 @@ pub fn generate(mut self: ptr[WasmGenerator], out_filename: str) -> bool:
             self.compile_func(f)
         f_idx = f_idx + 1
     
-    fputs(get_str_ptr(")\n"), self.file)
-    fclose(self.file)
+    std.io.stream_puts(get_str_ptr(")\n"), self.file)
+    std.io.stream_close(self.file)
     return true
 
 pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
@@ -26431,8 +26432,8 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
         let r_type = map_wasm_type(self.typetable, f.ret_type)
         ax_fprintf_local(self.file, " (result %s)", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs(get_str_ptr("\n"), self.file)
-    fputs(get_str_ptr("    (local $state i32)\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (local $state i32)\n"), self.file)
 
     // Declare SSA registers
     mut max_reg := 0 as u32
@@ -26509,15 +26510,15 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
             r = r + 1
 
     if f.blocks.len == 0 as i64:
-        fputs(get_str_ptr("    return\n  )\n\n"), self.file)
+        std.io.stream_puts(get_str_ptr("    return\n  )\n\n"), self.file)
         if max_reg > 0 as u32:
             @free(self.reg_types as ptr[u8])
             self.reg_types = null as ptr[u32]
         return
 
-    fputs(get_str_ptr("    (local.set $state (i32.const 0))\n\n"), self.file)
-    fputs(get_str_ptr("    (block $outer\n"), self.file)
-    fputs(get_str_ptr("      (loop $loop\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (local.set $state (i32.const 0))\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    (block $outer\n"), self.file)
+    std.io.stream_puts(get_str_ptr("      (loop $loop\n"), self.file)
 
     // Open all blocks hierarchically (N down to 0)
     mut bi := f.blocks.len - 1
@@ -26527,13 +26528,13 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
         bi = bi - 1
     
     // Emit br_table dispatcher
-    fputs(get_str_ptr("          (br_table"), self.file)
+    std.io.stream_puts(get_str_ptr("          (br_table"), self.file)
     bi = 0
     while bi < f.blocks.len:
         let bb = f.blocks.data[bi]
         ax_fprintf_local(self.file, " $b_%d", bb.id as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         bi = bi + 1
-    fputs(get_str_ptr(" $b_0 (local.get $state))\n"), self.file)
+    std.io.stream_puts(get_str_ptr(" $b_0 (local.get $state))\n"), self.file)
 
     // Close each block and emit its instructions
     bi = 0
@@ -26550,14 +26551,14 @@ pub fn compile_func(mut self: ptr[WasmGenerator], f: AirFunc):
             inst_offset = inst_offset + 1
         bi = bi + 1
     
-    fputs(get_str_ptr("      )\n"), self.file)
-    fputs(get_str_ptr("    )\n"), self.file)
+    std.io.stream_puts(get_str_ptr("      )\n"), self.file)
+    std.io.stream_puts(get_str_ptr("    )\n"), self.file)
 
     if f.ret_type != 0 as u32 and f.ret_type != 14 as u32:
         let r_type = map_wasm_type(self.typetable, f.ret_type)
         ax_fprintf_local(self.file, "    (%s.const 0)\n", (r_type as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     
-    fputs(get_str_ptr("  )\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("  )\n\n"), self.file)
 
     if max_reg > 0 as u32:
         @free(self.reg_types as ptr[u8])
@@ -26692,9 +26693,9 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if t == "i64":
-            fputs(get_str_ptr("        (i64.const -1)\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        (i64.const -1)\n"), self.file)
         else:
-            fputs(get_str_ptr("        (i32.const -1)\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        (i32.const -1)\n"), self.file)
         ax_fprintf_local(self.file, "        %s.xor\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_ALLOC or op == OP_ARENA_ALLOC:
@@ -26704,11 +26705,11 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
             if entry.size != 0 as u32:
                 size = entry.size
         ax_fprintf_local(self.file, "        (i32.const %d)\n", size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (call $malloc)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (call $malloc)\n"), self.file)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_FREE or op == OP_DESTROY:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (call $free)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (call $free)\n"), self.file)
     elif op == OP_LOAD:
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -26723,7 +26724,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
                 t = map_wasm_type(self.typetable, val_type)
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // address base
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // index or offset
-            fputs(get_str_ptr("        i32.add\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64) // value
         else:
             // Dereference store: *dest = src1
@@ -26742,14 +26743,14 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", elem_size as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.mul\n"), self.file)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.mul\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_GET_FIELD:
         let offset = inst.src2 * 8 as u32
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -26757,7 +26758,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         let offset = inst.src2 * 8 as u32
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (i32.const %d)\n", offset as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         mut t := "i32"
         if inst.dest > 0 as u32 and self.reg_types != null as ptr[u32]:
@@ -26767,7 +26768,7 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
     elif op == OP_INDEX:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        i32.add\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        i32.add\n"), self.file)
         let t = map_wasm_type(self.typetable, inst.type_id as u32)
         ax_fprintf_local(self.file, "        %s.load\n", (t as ptr[u8]) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -26807,34 +26808,34 @@ pub fn lower_inst(mut self: ptr[WasmGenerator], f: AirFunc, inst: AirInst):
         
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         if src_t == "i64" and dst_t == "i32":
-            fputs(get_str_ptr("        i32.wrap_i64\n"), self.file)
+            std.io.stream_puts(get_str_ptr("        i32.wrap_i64\n"), self.file)
         elif src_t == "i32" and dst_t == "i64":
             if op == OP_ZEXT:
-                fputs(get_str_ptr("        i64.extend_i32_u\n"), self.file)
+                std.io.stream_puts(get_str_ptr("        i64.extend_i32_u\n"), self.file)
             else:
-                fputs(get_str_ptr("        i64.extend_i32_s\n"), self.file)
+                std.io.stream_puts(get_str_ptr("        i64.extend_i32_s\n"), self.file)
         
         ax_fprintf_local(self.file, "        (local.set $r%d)\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     elif op == OP_JUMP:
         ax_fprintf_local(self.file, "        (local.set $state (i32.const %d))\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (br $loop)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_BRANCH:
         ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        (if\n"), self.file)
-        fputs(get_str_ptr("          (then\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (if\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          (then\n"), self.file)
         ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.src2 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("          )\n"), self.file)
-        fputs(get_str_ptr("          (else\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          (else\n"), self.file)
         ax_fprintf_local(self.file, "            (local.set $state (i32.const %d))\n", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("          )\n"), self.file)
-        fputs(get_str_ptr("        )\n"), self.file)
-        fputs(get_str_ptr("        (br $loop)\n"), self.file)
+        std.io.stream_puts(get_str_ptr("          )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        )\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        (br $loop)\n"), self.file)
     elif op == OP_RETURN:
         if inst.src1 != 0 as u32:
             ax_fprintf_local(self.file, "        (local.get $r%d)\n", inst.src1 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
-        fputs(get_str_ptr("        return\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        return\n"), self.file)
     else:
-        fputs(get_str_ptr("        nop\n"), self.file)
+        std.io.stream_puts(get_str_ptr("        nop\n"), self.file)
 // bootstrap/stage1/x86_regs.ax
 // Physical register file and classifications for x86-64 in self-hosted AXIOM.
 
@@ -32809,8 +32810,8 @@ pub fn emit_function(file: ptr[void], fn_name: str, insts: ptr[MachInst], insts_
     if format == "winasm":
         ax_fprintf_local(file, "%s ENDP\n", (get_str_ptr(fn_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
+// (`fopen`/`fclose` externs removed -- the .asm text goes out through std.io's
+// raw stream tokens. audit-libc-dependencies step 5.)
 
 fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
     let len = std.string.len(s)
@@ -32820,9 +32821,7 @@ fn x86_str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: ptr[SymbolTable], pool: ptr[InternPool], table: ptr[TypeTable], format: str) -> bool:
-    let output_asm_file_nt = x86_str_to_null_terminated(output_asm_file)
-    let file = fopen(output_asm_file_nt as ptr[void], get_str_ptr("wb"))
-    @free(output_asm_file_nt)
+    let file = std.io.stream_create(output_asm_file)
     if file == null as ptr[void]:
         return false
 
@@ -33014,7 +33013,7 @@ pub fn compile_native_asm(output_asm_file: str, mod: AirModule, symbols: ptr[Sym
     if format == "winasm":
         ax_fprintf_local(file, "END\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-    fclose(file)
+    std.io.stream_close(file)
     return true
 // bootstrap/stage1/x86_modrm.ax
 // ModRM and SIB byte encoding schemas for x86-64 in self-hosted AXIOM.
@@ -34790,9 +34789,8 @@ pub fn emit_function_binary(mut e: ptr[MachEmitter], fn_name: str, insts: ptr[Ma
 // ELF64 Object File Writer for x86-64 Linux targets in self-hosted AXIOM.
 
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn fclose(stream: ptr[void]) -> i32
+// (`fopen/fwrite/fclose` externs removed -- the ELF object is written through
+// std.io's raw stream tokens. knowledge/audit-libc-dependencies step 4.)
 
 pub const ELF_CLASS64:    u8 = 2
 pub const ELF_DATA2LSB:   u8 = 1
@@ -35136,20 +35134,18 @@ pub fn elf64_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[Byt
     mut out_bytes := new_byte_vec()
     elf64_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
-    let filename_nt = x86_str_to_null_terminated(filename)
-    let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
-    @free(filename_nt)
+    let file = std.io.stream_create(filename)
     if file == null as ptr[void]:
         if out_bytes.data != null as ptr[u8]:
             @free(out_bytes.data)
         return false
-        
-    fwrite(out_bytes.data as ptr[void], 1, out_bytes.len, file)
-    fclose(file)
-    
+
+    let written = std.io.stream_write(file, out_bytes.data, out_bytes.len)
+    std.io.stream_close(file)
+
     if out_bytes.data != null as ptr[u8]:
         @free(out_bytes.data)
-    return true
+    return written == out_bytes.len
 // bootstrap/stage1/x86_coff.ax
 // PE/COFF Object File Writer for x86-64 Windows targets in self-hosted AXIOM.
 
@@ -35219,9 +35215,10 @@ pub fn push_coff_symbol(mut self: ptr[COFFSymbolVec], s: COFFSymbol) -> i32:
     self.len = self.len + 1
     return idx
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn fclose(stream: ptr[void]) -> i32
+// (The `fopen/fwrite/fclose` externs that used to sit here are gone -- the object
+// file is written through std.io's raw stream tokens instead. See
+// knowledge/audit-libc-dependencies step 4. This is the writer that produces the
+// compiler's OWN object file, so A == B byte-identical is the proof it is right.)
 
 pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
     // 1. Build string table
@@ -35417,20 +35414,20 @@ pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[Byte
     mut out_bytes := new_byte_vec()
     coff_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
-    let filename_nt = x86_str_to_null_terminated(filename)
-    let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
-    @free(filename_nt)
+    let file = std.io.stream_create(filename)
     if file == null as ptr[void]:
         if out_bytes.data != null as ptr[u8]:
             @free(out_bytes.data)
         return false
-        
-    fwrite(out_bytes.data as ptr[void], 1, out_bytes.len, file)
-    fclose(file)
-    
+
+    let written = std.io.stream_write(file, out_bytes.data, out_bytes.len)
+    std.io.stream_close(file)
+
     if out_bytes.data != null as ptr[u8]:
         @free(out_bytes.data)
-    return true
+    // A short write used to be discarded, leaving a truncated .obj that the
+    // linker then parsed as a mangled COFF far from the real cause.
+    return written == out_bytes.len
 
 pub struct CompiledFuncInfo:
     pub name: str
@@ -36412,12 +36409,20 @@ pub fn compile_native_binary(output_obj_file: str, mod: AirModule, symbols: ptr[
 // Custom self-hosted ELF64 & PE/COFF relocations resolver and segment merger.
 
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
-extern "C" fn ftell(stream: ptr[void]) -> i64
-extern "C" fn rewind(stream: ptr[void])
+// (This file used to declare its own `fopen/fread/fclose/fseek/ftell/rewind`
+// externs -- six of the compiler's thirteen libc imports. They are gone: every
+// file here is now read through `std.io.open` + `read_all_bytes` and written
+// through the `std.io` stream tokens. See knowledge/audit-libc-dependencies
+// step 4.
+//
+// The seek/tell/rewind trio was only ever used to obtain a file SIZE before
+// slurping the whole file -- there is no random access anywhere in the linker --
+// so `read_all_bytes` (which grows its buffer until `read` returns 0) replaces
+// all three without std.io needing a seek primitive at all.
+//
+// âš ï¸ `read_all` (the `str` one) must NEVER be used for these files: it measures
+// each chunk with strlen, so an object file would be truncated at its first NUL
+// byte and the link would be silently corrupt.)
 
 pub fn x86_slice_to_str(data: ptr[u8], len: i64) -> str:
     let buf = @alloc(len + 1) as ptr[u8]
@@ -37904,18 +37909,18 @@ pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool],
 // is written verbatim as the `__axiom_iface` member (RFC 0011 P4); empty falls back to
 // the exported-symbol list (increment-1 behavior).
 pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface_text: str) -> bool:
-    let path_nt = x86_str_to_null_terminated(obj_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(obj_path)
+    if not ro.is_ok():
         ax_puts_local("error: staticlib could not open object file")
         return false
-    fseek(f, 0, 2)
-    let osize = ftell(f)
-    rewind(f)
-    let obuf = @alloc(osize) as ptr[u8]
-    fread(obuf as ptr[void], 1, osize, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut osize := 0 as i64
+    // read_all_bytes closes the file and returns null (never a short buffer) on
+    // a read error; an empty file legitimately returns a non-null 0-length one.
+    let obuf = rf.read_all_bytes(&osize)
+    if obuf == null as ptr[u8]:
+        ax_puts_local("error: staticlib could not read object file")
+        return false
 
     // Collect defined symbol names (the archive's exports).
     let obj = linker_parse_coff(obuf, osize)
@@ -38013,14 +38018,17 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
     if iface.data != null as ptr[u8]:
         @free(iface.data)
 
-    let out_nt = x86_str_to_null_terminated(out_path)
-    let of = fopen(out_nt as ptr[void], get_str_ptr("wb"))
-    @free(out_nt)
+    let of = std.io.stream_create(out_path)
     if of == null as ptr[void]:
         ax_puts_local("error: staticlib could not write output file")
         return false
-    fwrite(ar.data as ptr[void], 1, ar.len, of)
-    fclose(of)
+    let ar_written = std.io.stream_write(of, ar.data, ar.len)
+    std.io.stream_close(of)
+    // The old `fwrite` return was discarded, so a short write produced a
+    // truncated .lib that reported success. It is now a named failure.
+    if ar_written != ar.len:
+        ax_puts_local("error: staticlib output file was written short")
+        return false
 
     // Staleness manifest: hash of the SOURCE (passed in) so an unchanged source
     // reuses the .lib (RFC 0011 Â§3.4). Falls back to the object hash if 0.
@@ -38032,9 +38040,7 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
             h = ((h << 5 as u64) + h) + obuf[hi] as u64
             hi = hi + 1
     let man_path = std.string.concat(out_path, ".manifest")
-    let man_nt = x86_str_to_null_terminated(man_path)
-    let mf = fopen(man_nt as ptr[void], get_str_ptr("wb"))
-    @free(man_nt)
+    let mf = std.io.stream_create(man_path)
     if mf != null as ptr[void]:
         mut man := new_byte_vec()
         let hdr = "AXLIB1\n"
@@ -38045,8 +38051,8 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
             hj = hj + 1
         push_u32_le(&man, (h & 0xFFFFFFFF as u64) as u32)
         push_u32_le(&man, ((h >> 32 as u64) & 0xFFFFFFFF as u64) as u32)
-        fwrite(man.data as ptr[void], 1, man.len, mf)
-        fclose(mf)
+        std.io.stream_write(mf, man.data, man.len)
+        std.io.stream_close(mf)
         if man.data != null as ptr[u8]:
             @free(man.data)
 
@@ -38060,18 +38066,16 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
 // later increments replace the printing with in-memory interface reconstruction. Returns
 // false if the file is unreadable, not an archive, or carries no interface member.
 pub fn axiom_read_lib_iface(lib_path: str) -> bool:
-    let path_nt = x86_str_to_null_terminated(lib_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(lib_path)
+    if not ro.is_ok():
         ax_puts_local("error: iface could not open .lib")
         return false
-    fseek(f, 0, 2)
-    let size = ftell(f)
-    rewind(f)
-    let buf = @alloc(size) as ptr[u8]
-    fread(buf as ptr[void], 1, size, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut size := 0 as i64
+    let buf = rf.read_all_bytes(&size)
+    if buf == null as ptr[u8]:
+        ax_puts_local("error: iface could not read .lib")
+        return false
     if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
         ax_puts_local("error: not a COFF !<arch> library")
         @free(buf)
@@ -38229,17 +38233,14 @@ fn iface_line_tokens(p: ptr[u8], start: i64, end: i64) -> LinkerStrVec:
 
 // Read the raw `__axiom_iface` payload of a .lib as a heap string ("" if absent).
 pub fn read_lib_iface_bytes(lib_path: str) -> str:
-    let path_nt = x86_str_to_null_terminated(lib_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(lib_path)
+    if not ro.is_ok():
         return ""
-    fseek(f, 0, 2)
-    let size = ftell(f)
-    rewind(f)
-    let buf = @alloc(size) as ptr[u8]
-    fread(buf as ptr[void], 1, size, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut size := 0 as i64
+    let buf = rf.read_all_bytes(&size)
+    if buf == null as ptr[u8]:
+        return ""
     if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
         @free(buf)
         return ""
@@ -38361,28 +38362,29 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut i := 0 as i64
     while i < self.input_files.len:
         let path = self.input_files.data[i]
-        let path_nt = x86_str_to_null_terminated(path)
-        let file = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-        @free(path_nt)
-        if file == null as ptr[void]:
+        let ro = std.io.open(path)
+        if not ro.is_ok():
             ax_puts_local("error: Linker could not open input file: ")
             ax_puts_local(path)
             return false
-            
-        fseek(file, 0, 2)
-        let size = ftell(file)
-        rewind(file)
-        
+
+        let rfile = ro.unwrap()
+        mut size := 0 as i64
+        // âš ï¸ BINARY read. `read_all` would stop at the first NUL byte of the
+        // object file and hand back a truncated buffer with no error, which
+        // parses as a mangled COFF -- a silently corrupt link.
+        let buffer = rfile.read_all_bytes(&size)
+        if buffer == null as ptr[u8]:
+            ax_puts_local("error: Linker could not read input file: ")
+            ax_puts_local(path)
+            return false
+
         if size <= 4:
             ax_puts_local("error: Input file too small: ")
             ax_puts_local(path)
-            fclose(file)
+            @free(buffer)
             return false
-            
-        let buffer = @alloc(size) as ptr[u8]
-        fread(buffer as ptr[void], 1, size, file)
-        fclose(file)
-        
+
         mut obj := null as ptr[ParsedObject]
         if buffer[0] == '!' as u8 and buffer[1] == '<' as u8:
             // RFC 0011 P2: COFF !<arch> static library â€” pull all member objects.
@@ -39652,13 +39654,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         entry_rva = 0 as u32
         
     // 4. Emit Executable
-    let output_path_nt = x86_str_to_null_terminated(self.output_path)
-    let file = fopen(output_path_nt as ptr[void], get_str_ptr("wb"))
-    @free(output_path_nt)
+    let file = std.io.stream_create(self.output_path)
     if file == null as ptr[void]:
         ax_puts_local("error: Linker could not write output file")
         return false
-        
+    // The old fwrite calls discarded their return, so a short write emitted a
+    // TRUNCATED executable and reported success. Accumulate what actually
+    // reached the OS and compare against what was handed over.
+    mut want_bytes := 0 as i64
+    mut got_bytes := 0 as i64
+
     if format == "coff":
         // Align code to FileAlignment (0x200)
         let orig_code_len = merged_code.len
@@ -39713,12 +39718,15 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut pe_headers := new_byte_vec()
         linker_build_pe_headers(&pe_headers, code_raw_size, idata_raw_size, entry_rva, idata_rva as u32, idata_raw_size, iat_rva, iat_size, export_rva, export_virt_size, edata_raw_size, edata_file_off, is_dll, idata_virt_size)
 
-        fwrite(pe_headers.data as ptr[void], 1, pe_headers.len, file)
-        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        want_bytes = want_bytes + pe_headers.len + merged_code.len
+        got_bytes = got_bytes + std.io.stream_write(file, pe_headers.data, pe_headers.len)
+        got_bytes = got_bytes + std.io.stream_write(file, merged_code.data, merged_code.len)
         if idata_buf.len > 0:
-            fwrite(idata_buf.data as ptr[void], 1, idata_buf.len, file)
+            want_bytes = want_bytes + idata_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, idata_buf.data, idata_buf.len)
         if edata_buf.len > 0:
-            fwrite(edata_buf.data as ptr[void], 1, edata_buf.len, file)
+            want_bytes = want_bytes + edata_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, edata_buf.data, edata_buf.len)
 
         @free(pe_headers.data)
         if edata_buf.data != null as ptr[u8]:
@@ -39738,18 +39746,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             
         linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size, elf_bss_extent as u32, self.is_shared)
 
-        fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
-        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        want_bytes = want_bytes + elf_headers.len + merged_code.len
+        got_bytes = got_bytes + std.io.stream_write(file, elf_headers.data, elf_headers.len)
+        got_bytes = got_bytes + std.io.stream_write(file, merged_code.data, merged_code.len)
         if dyn_buf.len > 0:
-            fwrite(dyn_buf.data as ptr[void], 1, dyn_buf.len, file)
+            want_bytes = want_bytes + dyn_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, dyn_buf.data, dyn_buf.len)
         // RFC 0017 ELF globals: writable data region (offsets registered pre-relocation).
         if elf_data_buf.len > 0:
-            fwrite(elf_data_buf.data as ptr[void], 1, elf_data_buf.len, file)
+            want_bytes = want_bytes + elf_data_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, elf_data_buf.data, elf_data_buf.len)
 
         @free(elf_headers.data)
-        
-    fclose(file)
-    
+
+    std.io.stream_close(file)
+    if got_bytes != want_bytes:
+        ax_puts_local("error: Linker output file was written short")
+        return false
+
     // Free structures
     if merged_code.data != null as ptr[u8]:
         @free(merged_code.data)
@@ -40425,7 +40439,8 @@ fn time_phase(on: bool, label: str, prev: i64) -> i64:
     let now = time_now_ms()
     ax_printf_local("[time] %s: %d ms\n", get_str_ptr(label) as i64, (now - prev) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     return now
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (A duplicate `fputs` extern used to sit here with no call site in this file.
+// Removed with the rest of the libc stdio -- audit-libc-dependencies step 5.)
 
 
 fn print_inst(mut inst: AirInst, call_count_ptr: ptr[u32]):
@@ -41045,14 +41060,18 @@ fn lib_manifest_hash(src: str) -> u64:
 
 // Read the u64 hash from a lib manifest ("AXLIB1\n" + 8 bytes LE). 0 if absent/invalid.
 fn read_lib_manifest_hash(path: str) -> u64:
-    let nt = str_to_null_terminated(path)
-    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
-    @free(nt)
-    if f == null as ptr[void]:
+    // âš ï¸ BINARY: the manifest is "AXLIB1\n" followed by 8 RAW bytes of hash, so
+    // it very often CONTAINS a NUL byte. `read_all` would truncate it there and
+    // silently report a hash of 0, i.e. "stale", rebuilding every library
+    // forever. read_all_bytes carries the length out of band instead.
+    let ro = std.io.open(path)
+    if not ro.is_ok():
         return 0 as u64
-    let bufm = @alloc(16) as ptr[u8]
-    let got = fread(bufm as ptr[void], 1, 15, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut got := 0 as i64
+    let bufm = rf.read_all_bytes(&got)
+    if bufm == null as ptr[u8]:
+        return 0 as u64
     if got < 15 as i64:
         @free(bufm)
         return 0 as u64
@@ -41069,12 +41088,11 @@ fn read_lib_manifest_hash(path: str) -> u64:
     return h
 
 fn file_exists(path: str) -> bool:
-    let nt = str_to_null_terminated(path)
-    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
-    @free(nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(path)
+    if not ro.is_ok():
         return false
-    fclose(f)
+    mut f := ro.unwrap()
+    let _ = f.close()
     return true
 
 // RFC 0011 P4 (increment 3e): strip a trailing `.lib`/`.dll` from an output name, so one

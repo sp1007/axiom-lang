@@ -2,13 +2,22 @@
 // Custom self-hosted ELF64 & PE/COFF relocations resolver and segment merger.
 
 import std.string
+import std.io
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fread(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fseek(stream: ptr[void], offset: i64, origin: i32) -> i32
-extern "C" fn ftell(stream: ptr[void]) -> i64
-extern "C" fn rewind(stream: ptr[void])
+// (This file used to declare its own `fopen/fread/fclose/fseek/ftell/rewind`
+// externs -- six of the compiler's thirteen libc imports. They are gone: every
+// file here is now read through `std.io.open` + `read_all_bytes` and written
+// through the `std.io` stream tokens. See knowledge/audit-libc-dependencies
+// step 4.
+//
+// The seek/tell/rewind trio was only ever used to obtain a file SIZE before
+// slurping the whole file -- there is no random access anywhere in the linker --
+// so `read_all_bytes` (which grows its buffer until `read` returns 0) replaces
+// all three without std.io needing a seek primitive at all.
+//
+// ⚠️ `read_all` (the `str` one) must NEVER be used for these files: it measures
+// each chunk with strlen, so an object file would be truncated at its first NUL
+// byte and the link would be silently corrupt.)
 
 pub fn x86_slice_to_str(data: ptr[u8], len: i64) -> str:
     let buf = @alloc(len + 1) as ptr[u8]
@@ -1495,18 +1504,18 @@ pub fn build_dll_wrapper_text(symtable: ptr[SymbolTable], pool: ptr[InternPool],
 // is written verbatim as the `__axiom_iface` member (RFC 0011 P4); empty falls back to
 // the exported-symbol list (increment-1 behavior).
 pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface_text: str) -> bool:
-    let path_nt = x86_str_to_null_terminated(obj_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(obj_path)
+    if not ro.is_ok():
         ax_puts_local("error: staticlib could not open object file")
         return false
-    fseek(f, 0, 2)
-    let osize = ftell(f)
-    rewind(f)
-    let obuf = @alloc(osize) as ptr[u8]
-    fread(obuf as ptr[void], 1, osize, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut osize := 0 as i64
+    // read_all_bytes closes the file and returns null (never a short buffer) on
+    // a read error; an empty file legitimately returns a non-null 0-length one.
+    let obuf = rf.read_all_bytes(&osize)
+    if obuf == null as ptr[u8]:
+        ax_puts_local("error: staticlib could not read object file")
+        return false
 
     // Collect defined symbol names (the archive's exports).
     let obj = linker_parse_coff(obuf, osize)
@@ -1604,14 +1613,17 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
     if iface.data != null as ptr[u8]:
         @free(iface.data)
 
-    let out_nt = x86_str_to_null_terminated(out_path)
-    let of = fopen(out_nt as ptr[void], get_str_ptr("wb"))
-    @free(out_nt)
+    let of = std.io.stream_create(out_path)
     if of == null as ptr[void]:
         ax_puts_local("error: staticlib could not write output file")
         return false
-    fwrite(ar.data as ptr[void], 1, ar.len, of)
-    fclose(of)
+    let ar_written = std.io.stream_write(of, ar.data, ar.len)
+    std.io.stream_close(of)
+    // The old `fwrite` return was discarded, so a short write produced a
+    // truncated .lib that reported success. It is now a named failure.
+    if ar_written != ar.len:
+        ax_puts_local("error: staticlib output file was written short")
+        return false
 
     // Staleness manifest: hash of the SOURCE (passed in) so an unchanged source
     // reuses the .lib (RFC 0011 §3.4). Falls back to the object hash if 0.
@@ -1623,9 +1635,7 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
             h = ((h << 5 as u64) + h) + obuf[hi] as u64
             hi = hi + 1
     let man_path = std.string.concat(out_path, ".manifest")
-    let man_nt = x86_str_to_null_terminated(man_path)
-    let mf = fopen(man_nt as ptr[void], get_str_ptr("wb"))
-    @free(man_nt)
+    let mf = std.io.stream_create(man_path)
     if mf != null as ptr[void]:
         mut man := new_byte_vec()
         let hdr = "AXLIB1\n"
@@ -1636,8 +1646,8 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
             hj = hj + 1
         push_u32_le(&man, (h & 0xFFFFFFFF as u64) as u32)
         push_u32_le(&man, ((h >> 32 as u64) & 0xFFFFFFFF as u64) as u32)
-        fwrite(man.data as ptr[void], 1, man.len, mf)
-        fclose(mf)
+        std.io.stream_write(mf, man.data, man.len)
+        std.io.stream_close(mf)
         if man.data != null as ptr[u8]:
             @free(man.data)
 
@@ -1651,18 +1661,16 @@ pub fn axiom_write_static_lib(obj_path: str, out_path: str, src_hash: u64, iface
 // later increments replace the printing with in-memory interface reconstruction. Returns
 // false if the file is unreadable, not an archive, or carries no interface member.
 pub fn axiom_read_lib_iface(lib_path: str) -> bool:
-    let path_nt = x86_str_to_null_terminated(lib_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(lib_path)
+    if not ro.is_ok():
         ax_puts_local("error: iface could not open .lib")
         return false
-    fseek(f, 0, 2)
-    let size = ftell(f)
-    rewind(f)
-    let buf = @alloc(size) as ptr[u8]
-    fread(buf as ptr[void], 1, size, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut size := 0 as i64
+    let buf = rf.read_all_bytes(&size)
+    if buf == null as ptr[u8]:
+        ax_puts_local("error: iface could not read .lib")
+        return false
     if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
         ax_puts_local("error: not a COFF !<arch> library")
         @free(buf)
@@ -1820,17 +1828,14 @@ fn iface_line_tokens(p: ptr[u8], start: i64, end: i64) -> LinkerStrVec:
 
 // Read the raw `__axiom_iface` payload of a .lib as a heap string ("" if absent).
 pub fn read_lib_iface_bytes(lib_path: str) -> str:
-    let path_nt = x86_str_to_null_terminated(lib_path)
-    let f = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-    @free(path_nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(lib_path)
+    if not ro.is_ok():
         return ""
-    fseek(f, 0, 2)
-    let size = ftell(f)
-    rewind(f)
-    let buf = @alloc(size) as ptr[u8]
-    fread(buf as ptr[void], 1, size, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut size := 0 as i64
+    let buf = rf.read_all_bytes(&size)
+    if buf == null as ptr[u8]:
+        return ""
     if size < 8 or buf[0] != '!' as u8 or buf[1] != '<' as u8:
         @free(buf)
         return ""
@@ -1952,28 +1957,29 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
     mut i := 0 as i64
     while i < self.input_files.len:
         let path = self.input_files.data[i]
-        let path_nt = x86_str_to_null_terminated(path)
-        let file = fopen(path_nt as ptr[void], get_str_ptr("rb"))
-        @free(path_nt)
-        if file == null as ptr[void]:
+        let ro = std.io.open(path)
+        if not ro.is_ok():
             ax_puts_local("error: Linker could not open input file: ")
             ax_puts_local(path)
             return false
-            
-        fseek(file, 0, 2)
-        let size = ftell(file)
-        rewind(file)
-        
+
+        let rfile = ro.unwrap()
+        mut size := 0 as i64
+        // ⚠️ BINARY read. `read_all` would stop at the first NUL byte of the
+        // object file and hand back a truncated buffer with no error, which
+        // parses as a mangled COFF -- a silently corrupt link.
+        let buffer = rfile.read_all_bytes(&size)
+        if buffer == null as ptr[u8]:
+            ax_puts_local("error: Linker could not read input file: ")
+            ax_puts_local(path)
+            return false
+
         if size <= 4:
             ax_puts_local("error: Input file too small: ")
             ax_puts_local(path)
-            fclose(file)
+            @free(buffer)
             return false
-            
-        let buffer = @alloc(size) as ptr[u8]
-        fread(buffer as ptr[void], 1, size, file)
-        fclose(file)
-        
+
         mut obj := null as ptr[ParsedObject]
         if buffer[0] == '!' as u8 and buffer[1] == '<' as u8:
             // RFC 0011 P2: COFF !<arch> static library — pull all member objects.
@@ -3243,13 +3249,16 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         entry_rva = 0 as u32
         
     // 4. Emit Executable
-    let output_path_nt = x86_str_to_null_terminated(self.output_path)
-    let file = fopen(output_path_nt as ptr[void], get_str_ptr("wb"))
-    @free(output_path_nt)
+    let file = std.io.stream_create(self.output_path)
     if file == null as ptr[void]:
         ax_puts_local("error: Linker could not write output file")
         return false
-        
+    // The old fwrite calls discarded their return, so a short write emitted a
+    // TRUNCATED executable and reported success. Accumulate what actually
+    // reached the OS and compare against what was handed over.
+    mut want_bytes := 0 as i64
+    mut got_bytes := 0 as i64
+
     if format == "coff":
         // Align code to FileAlignment (0x200)
         let orig_code_len = merged_code.len
@@ -3304,12 +3313,15 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
         mut pe_headers := new_byte_vec()
         linker_build_pe_headers(&pe_headers, code_raw_size, idata_raw_size, entry_rva, idata_rva as u32, idata_raw_size, iat_rva, iat_size, export_rva, export_virt_size, edata_raw_size, edata_file_off, is_dll, idata_virt_size)
 
-        fwrite(pe_headers.data as ptr[void], 1, pe_headers.len, file)
-        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        want_bytes = want_bytes + pe_headers.len + merged_code.len
+        got_bytes = got_bytes + std.io.stream_write(file, pe_headers.data, pe_headers.len)
+        got_bytes = got_bytes + std.io.stream_write(file, merged_code.data, merged_code.len)
         if idata_buf.len > 0:
-            fwrite(idata_buf.data as ptr[void], 1, idata_buf.len, file)
+            want_bytes = want_bytes + idata_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, idata_buf.data, idata_buf.len)
         if edata_buf.len > 0:
-            fwrite(edata_buf.data as ptr[void], 1, edata_buf.len, file)
+            want_bytes = want_bytes + edata_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, edata_buf.data, edata_buf.len)
 
         @free(pe_headers.data)
         if edata_buf.data != null as ptr[u8]:
@@ -3329,18 +3341,24 @@ pub fn axiom_linker_link(self: ptr[AxiomLinker]) -> bool:
             
         linker_build_elf_headers(&elf_headers, (merged_code.len + dyn_buf.len + elf_data_buf.len) as u32, entry_va, dynamic_offset, dynamic_size, elf_bss_extent as u32, self.is_shared)
 
-        fwrite(elf_headers.data as ptr[void], 1, elf_headers.len, file)
-        fwrite(merged_code.data as ptr[void], 1, merged_code.len, file)
+        want_bytes = want_bytes + elf_headers.len + merged_code.len
+        got_bytes = got_bytes + std.io.stream_write(file, elf_headers.data, elf_headers.len)
+        got_bytes = got_bytes + std.io.stream_write(file, merged_code.data, merged_code.len)
         if dyn_buf.len > 0:
-            fwrite(dyn_buf.data as ptr[void], 1, dyn_buf.len, file)
+            want_bytes = want_bytes + dyn_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, dyn_buf.data, dyn_buf.len)
         // RFC 0017 ELF globals: writable data region (offsets registered pre-relocation).
         if elf_data_buf.len > 0:
-            fwrite(elf_data_buf.data as ptr[void], 1, elf_data_buf.len, file)
+            want_bytes = want_bytes + elf_data_buf.len
+            got_bytes = got_bytes + std.io.stream_write(file, elf_data_buf.data, elf_data_buf.len)
 
         @free(elf_headers.data)
-        
-    fclose(file)
-    
+
+    std.io.stream_close(file)
+    if got_bytes != want_bytes:
+        ax_puts_local("error: Linker output file was written short")
+        return false
+
     // Free structures
     if merged_code.data != null as ptr[u8]:
         @free(merged_code.data)

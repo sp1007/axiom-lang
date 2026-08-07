@@ -77,7 +77,8 @@ fn time_phase(on: bool, label: str, prev: i64) -> i64:
     let now = time_now_ms()
     ax_printf_local("[time] %s: %d ms\n", get_str_ptr(label) as i64, (now - prev) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     return now
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (A duplicate `fputs` extern used to sit here with no call site in this file.
+// Removed with the rest of the libc stdio -- audit-libc-dependencies step 5.)
 
 
 fn print_inst(mut inst: AirInst, call_count_ptr: ptr[u32]):
@@ -697,14 +698,18 @@ fn lib_manifest_hash(src: str) -> u64:
 
 // Read the u64 hash from a lib manifest ("AXLIB1\n" + 8 bytes LE). 0 if absent/invalid.
 fn read_lib_manifest_hash(path: str) -> u64:
-    let nt = str_to_null_terminated(path)
-    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
-    @free(nt)
-    if f == null as ptr[void]:
+    // ⚠️ BINARY: the manifest is "AXLIB1\n" followed by 8 RAW bytes of hash, so
+    // it very often CONTAINS a NUL byte. `read_all` would truncate it there and
+    // silently report a hash of 0, i.e. "stale", rebuilding every library
+    // forever. read_all_bytes carries the length out of band instead.
+    let ro = std.io.open(path)
+    if not ro.is_ok():
         return 0 as u64
-    let bufm = @alloc(16) as ptr[u8]
-    let got = fread(bufm as ptr[void], 1, 15, f)
-    fclose(f)
+    let rf = ro.unwrap()
+    mut got := 0 as i64
+    let bufm = rf.read_all_bytes(&got)
+    if bufm == null as ptr[u8]:
+        return 0 as u64
     if got < 15 as i64:
         @free(bufm)
         return 0 as u64
@@ -721,12 +726,11 @@ fn read_lib_manifest_hash(path: str) -> u64:
     return h
 
 fn file_exists(path: str) -> bool:
-    let nt = str_to_null_terminated(path)
-    let f = fopen(nt as ptr[void], get_str_ptr("rb"))
-    @free(nt)
-    if f == null as ptr[void]:
+    let ro = std.io.open(path)
+    if not ro.is_ok():
         return false
-    fclose(f)
+    mut f := ro.unwrap()
+    let _ = f.close()
     return true
 
 // RFC 0011 P4 (increment 3e): strip a trailing `.lib`/`.dll` from an output name, so one

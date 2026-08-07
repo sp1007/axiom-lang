@@ -22,11 +22,11 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   `52D1ABD4AE9E6EF11216AD3B8318D1592C1C03F383D49F5464B6ABF0A6C9478B` (2.297.856 byte) — cả RFC 0038
   lẫn dọn-libc đều frontend/std nên chỉ cần A==B; **thay đổi backend kế tiếp phải dựng lại B==C từ
   driver MỚI này**.
-- **libc: `ucrtbase.dll` 16 → 13 ký hiệu** (mất `clock`, `exit`, `fflush`).
+- **libc: compiler `ucrtbase.dll` 16 → 5** (`atof memcpy memset strlen system`); chương trình user = **3** (sàn).
   `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
   ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
   [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
-- **BASELINE = 700/700**, đo ở **cả default lẫn `-O0`**. Dưới 700 là RED. (672 → 677 RFC 0038, → 679 libc 0-2, → 682 P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b, → 699 libc bước 3, → 700 srcmap module import.)
+- **BASELINE = 703/703**, đo ở **cả default lẫn `-O0`**. Dưới 703 là RED. (672 → 677 RFC 0038, → 679 libc 0-2, → 682 P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b, → 699 libc 3, → 700 srcmap module, → 703 libc 4+5.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.

@@ -99,8 +99,8 @@ io.ax, collections.ax` ⇒ đụng vào là **đổi binary compiler**, phải l
 | 2 | `exit` → `ExitProcess`/`syscall(60)`; `clock` → `QueryPerformanceCounter` | A==B | thấp |
 | 3 | **Viết lại `std/io.ax`** sang handle native (CreateFileA/ReadFile/WriteFile/CloseHandle ‖ syscall 2/0/1/3), tách nền bằng `@compiler_intrinsic("is_windows")` (idiom sẵn có `std/runtime.ax:17,57,79,111`) | A==B | **trung-cao** — `main_air.ax:163 read_file_content` đọc TOÀN BỘ input compiler qua đây |
 | 3b | *(biến thể kiến trúc của 3)* thêm `std/os/win32.ax` vào `concatenate_stdlib`, cho extern `pub`, `std/io.ax` gọi `std.os.win32.*` | A==B | trung |
-| 4 | Chuyển `linker.ax:1499-1662`, `x86_coff.ax:270-278`, `x86_elf64.ax:353-361` sang `std.io`; bỏ 7 extern stdio của chúng | A==B | trung |
-| 5 | Bỏ `fputs` ở `cgen.ax:6-8`, `wasm.ax:6-8`, `x86_asm_emitter.ax:560-561`, `print_helpers.ax:8` | A==B | thấp |
+| 4 | ✅ **XONG 2026-08-07** — `linker.ax` (7 chỗ, không phải 4: còn `:1824`, `:1956`, `:3247` và **`main_air.ax:701,725`**), `x86_coff.ax`, `x86_elf64.ax` sang `std.io`. Thêm `read_all_bytes` (out-param độ dài, KHÔNG dùng `read_all` vì nó cắt ở byte NUL) + `write_bytes` + token `stream_*`. 13 → **8** | A==B | trung |
+| 5 | ✅ **XONG 2026-08-07** — `cgen.ax`, `wasm.ax`, `x86_asm_emitter.ax`, `print_helpers.ax`, `main_air.ax:80`. 8 → **5** (`atof memcpy memset strlen system`) | A==B | thấp |
 | 6 | Sửa whitelist: thêm `CreateProcessA`/`GetExitCodeProcess` vào kernel32, thêm bucket `ws2_32.dll`; rồi `system` → `CreateProcessA` | **B==C** | trung |
 | 7 | **`memcpy`/`memset`** → `rep movsb`/`rep stosb` inline hoặc twin AXIOM (`x86_regs.ax:233`). **Đây là ký hiệu libc CUỐI CÙNG trên Linux** | **B==C** | **cao** — mọi phép copy aggregate của compiler |
 | 8 | **`strlen`** → thay callee ma thuật `-21` bằng vòng quét inline/twin | **B==C** | cao |

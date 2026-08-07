@@ -2,6 +2,7 @@
 // PE/COFF Object File Writer for x86-64 Windows targets in self-hosted AXIOM.
 
 import std.string
+import std.io
 
 pub const IMAGE_REL_AMD64_ADDR64: u16 = 1
 pub const IMAGE_REL_AMD64_REL32:  u16 = 4
@@ -68,9 +69,10 @@ pub fn push_coff_symbol(mut self: ptr[COFFSymbolVec], s: COFFSymbol) -> i32:
     self.len = self.len + 1
     return idx
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fwrite(buffer: ptr[void], size: i64, count: i64, stream: ptr[void]) -> i64
-extern "C" fn fclose(stream: ptr[void]) -> i32
+// (The `fopen/fwrite/fclose` externs that used to sit here are gone -- the object
+// file is written through std.io's raw stream tokens instead. See
+// knowledge/audit-libc-dependencies step 4. This is the writer that produces the
+// compiler's OWN object file, so A == B byte-identical is the proof it is right.)
 
 pub fn coff_serialize(code: ptr[ByteVec], rdata: ptr[ByteVec], data: ptr[ByteVec], bss_size: i64, relocs: ptr[COFFRelocVec], symbols: ptr[COFFSymbolVec], out_bytes: ptr[ByteVec]):
     // 1. Build string table
@@ -266,20 +268,20 @@ pub fn coff_write_object_file(filename: str, code: ptr[ByteVec], rdata: ptr[Byte
     mut out_bytes := new_byte_vec()
     coff_serialize(code, rdata, data, bss_size, relocs, symbols, &out_bytes)
     
-    let filename_nt = x86_str_to_null_terminated(filename)
-    let file = fopen(filename_nt as ptr[void], get_str_ptr("wb"))
-    @free(filename_nt)
+    let file = std.io.stream_create(filename)
     if file == null as ptr[void]:
         if out_bytes.data != null as ptr[u8]:
             @free(out_bytes.data)
         return false
-        
-    fwrite(out_bytes.data as ptr[void], 1, out_bytes.len, file)
-    fclose(file)
-    
+
+    let written = std.io.stream_write(file, out_bytes.data, out_bytes.len)
+    std.io.stream_close(file)
+
     if out_bytes.data != null as ptr[u8]:
         @free(out_bytes.data)
-    return true
+    // A short write used to be discarded, leaving a truncated .obj that the
+    // linker then parsed as a mangled COFF far from the real cause.
+    return written == out_bytes.len
 
 pub struct CompiledFuncInfo:
     pub name: str

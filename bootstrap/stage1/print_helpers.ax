@@ -2,8 +2,14 @@
 // Natively implemented safe formatting and console output functions.
 
 import std.string
+import std.io
 
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
+// (The `fputs` extern that used to be here is gone. `print_to_file` /
+// `ax_fprintf_local` below are the C backend's text formatter -- their `stream`
+// is cgen's `FILE*`-shaped field, which is now a std.io stream token, so the
+// bytes go out through WriteFile / SYS_write. audit-libc-dependencies step 5.
+// This is NOT the console path: console output has always gone through
+// ax_puts_local -> print_raw -> the `print` builtin -> ax_print_str.)
 
 // libc-free process exit (audit-libc-dependencies-2026-08-05 step 2), shared by
 // every stage1 module that has to abort. Windows: ExitProcess (kernel32,
@@ -340,7 +346,7 @@ fn print_to_file(stream: ptr[void], s: str):
     let buf = @alloc(s_len + 1) as ptr[u8]
     @memcpy(buf, s_ptr, s_len)
     buf[s_len] = 0 as u8
-    fputs(buf, stream)
+    std.io.stream_puts(buf, stream)
     @free(buf)
 
 fn print_i64_to_file(stream: ptr[void], val: i64):
@@ -379,7 +385,7 @@ fn print_i64_to_file(stream: ptr[void], val: i64):
         
     buf[len] = 0 as u8
     
-    fputs(buf, stream)
+    std.io.stream_puts(buf, stream)
     @free(buf)
 
 pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32:
@@ -443,7 +449,7 @@ pub fn ax_fprintf_local(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, 
                     
                     if val_ptr_raw != 0:
                         let c_ptr = val_ptr_raw as ptr[u8]
-                        fputs(c_ptr, stream)
+                        std.io.stream_puts(c_ptr, stream)
                     arg_idx = arg_idx + 1
                     i = i + 1
                 start = i + 1

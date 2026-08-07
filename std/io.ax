@@ -273,6 +273,138 @@ pub fn write_all(mut self: File, data: str) -> Result[void, str]:
     let _ = self.close()
     return Ok(void)
 
+/// Read to end of file as RAW BYTES — the BINARY counterpart of `read_all`.
+///
+/// ⚠️ `read_all` is deliberately NOT usable for binary data: it rebuilds each
+/// chunk with `buf as str`, which measures the chunk with strlen, so a file
+/// containing an embedded NUL byte comes back TRUNCATED at that byte. Object
+/// files, archives and executables are full of NUL bytes, so reading one through
+/// `read_all` yields a short buffer with no error reported — a silently corrupt
+/// link. This function never inspects the bytes; the length is carried out of
+/// band through `out_len`.
+///
+/// Returns the buffer (caller frees with `@free`) and writes the byte count to
+/// `out_len[0]`, or `null` on failure. **An EMPTY file returns a non-null buffer
+/// with `out_len[0] == 0`** — check the POINTER for failure and the LENGTH for
+/// emptiness; conflating them would turn a 0-byte object file into "unreadable".
+/// Closes the file, exactly as `read_all` does.
+///
+/// The length is an out-parameter rather than a `Result[SomeStruct, str]` on
+/// purpose: this code is bundled into the compiler's own image and used by the
+/// linker that relinks it, so it deliberately introduces no new struct type and
+/// no new generic instantiation on the self-hosting path. `read` already uses the
+/// same address-taken-local idiom for ReadFile's out-parameter.
+pub fn read_all_bytes(self: File, out_len: ptr[i64]) -> ptr[u8]:
+    out_len[0] = 0 as i64
+    mut cap := 65536 as i64
+    mut buf := @alloc(cap) as ptr[u8]
+    mut total := 0 as i64
+    mut reader := self
+    mut looping := true
+    while looping:
+        // Grow BEFORE reading, so `cap - total` handed to `read` is never 0 —
+        // a 0-count read returns Ok(0), which is this loop's EOF terminator, and
+        // a full buffer would therefore be mistaken for end of file.
+        if total >= cap:
+            let ncap = cap * 2 as i64
+            let nbuf = @alloc(ncap) as ptr[u8]
+            @memcpy(nbuf, buf, total)
+            @free(buf)
+            buf = nbuf
+            cap = ncap
+        let r = reader.read((buf as i64 + total) as ptr[u8], cap - total)
+        if r.is_ok():
+            let n = r.unwrap()
+            if n == 0 as i64:
+                looping = false
+            else:
+                total = total + n
+        else:
+            @free(buf)
+            let _ = reader.close()
+            return null as ptr[u8]
+    let _ = reader.close()
+    out_len[0] = total
+    return buf
+
+/// Write exactly `len` raw bytes, looping over short writes. `true` iff all of
+/// them reached the OS.
+///
+/// ⚠️ Unlike `write_all`, this does **NOT** close the file. A binary writer emits
+/// several buffers into one file (the PE writer emits headers, code, .idata and
+/// .edata separately), so closing after each one would be wrong; the caller owns
+/// the handle and must `close` it.
+pub fn write_bytes(mut self: File, data: ptr[u8], len: i64) -> bool:
+    mut done := 0 as i64
+    while done < len:
+        let r = self.write((data as i64 + done) as ptr[u8], len - done)
+        if r.is_ok():
+            let n = r.unwrap()
+            if n == 0 as i64:
+                return false
+            done = done + n
+        else:
+            return false
+    return true
+
+// ── Raw stream tokens ───────────────────────────────────────────────────────
+// The same OS objects as `File`, handed out as an opaque `ptr[void]` token, for
+// callers shaped like C stdio. The AXIOM compiler's own backends (cgen, wasm,
+// the asm emitter, the COFF/ELF object writers, the linker) model an output
+// stream as a `FILE*` field and call it from ~90 places; the token form lets them
+// stop importing libc stdio without changing a single struct field or signature.
+// New AXIOM code should use `File` and the methods above instead.
+//
+// The token is the OS handle **biased by +1**, so that 0 (== null) means "no
+// stream" on BOTH platforms. The bias is not cosmetic: on Linux fd 0 is a valid
+// descriptor, so an unbiased token would make a legitimately opened file
+// indistinguishable from failure at every `== null` call site.
+/// Create-or-truncate for writing. ⚠️ There is NO text mode: the bytes handed to
+/// `stream_write`/`stream_puts` reach the file unchanged. `fopen(path, "w")` used
+/// to translate '\n' to CRLF on Windows, so the C and WAT backends emitted
+/// different bytes on Windows than on Linux for the same input; they are now
+/// LF-only everywhere, which is the reproducible-output behaviour CLAUDE.md asks
+/// for. Adding a translating mode here would be exactly the hidden runtime
+/// behaviour §11 forbids.
+pub fn stream_create(path: str) -> ptr[void]:
+    let r = create(path)
+    if r.is_ok():
+        let f = r.unwrap()
+        return (f.handle + 1 as i64) as ptr[void]
+    return null as ptr[void]
+
+pub fn stream_write(stream: ptr[void], data: ptr[u8], len: i64) -> i64:
+    if stream == null as ptr[void]:
+        return 0 as i64
+    mut f := File(handle: (stream as i64) - 1 as i64, path: "", mode: 1 as i32)
+    if f.write_bytes(data, len):
+        return len
+    return 0 as i64
+
+/// NUL-terminated write. The argument order mirrors C's `fputs(s, stream)` on
+/// purpose: it made the ~90 compiler call sites a pure identifier rename, and a
+/// 90-site argument reshuffle is a typo surface, not an improvement.
+pub fn stream_puts(s: ptr[u8], stream: ptr[void]) -> i32:
+    if stream == null as ptr[void]:
+        return -1
+    mut n := 0 as i64
+    while s[n] != 0 as u8:
+        n = n + 1
+    if n == 0 as i64:
+        return 0
+    if stream_write(stream, s, n) == n:
+        return 0
+    return -1
+
+pub fn stream_close(stream: ptr[void]) -> i32:
+    if stream == null as ptr[void]:
+        return -1
+    mut f := File(handle: (stream as i64) - 1 as i64, path: "", mode: 1 as i32)
+    let r = f.close()
+    if r.is_ok():
+        return 0
+    return -1
+
 /// Standard input/output/error. handle=-1 means NOT backed by an OS object, so
 /// `read`/`write` on these return Err and `close` is a no-op — unchanged in
 /// intent from the previous `handle=0`, but expressed with a sentinel that cannot

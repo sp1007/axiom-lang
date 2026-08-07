@@ -2,11 +2,13 @@
 // SSA AIR to C11 Code Generator.
 
 import std.string
+import std.io
 
-extern "C" fn fopen(filename: ptr[void], mode: ptr[u8]) -> ptr[void]
-extern "C" fn fclose(stream: ptr[void]) -> i32
-extern "C" fn fputs(s: ptr[u8], stream: ptr[void]) -> i32
-// extern "C" fn fprintf(stream: ptr[void], fmt: str, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64) -> i32
+// (`fopen/fclose/fputs` externs removed -- the generated .c file goes out through
+// std.io's raw stream tokens. knowledge/audit-libc-dependencies step 5.
+// ⚠️ The `"fopen"`/`"fputs"`/... STRING LITERALS further down are a different
+// thing entirely: `is_stdlib_func` lists the C names a USER program may call on
+// the C backend, and they must stay.)
 
 fn normalize_struct_cast(t_name: str) -> str:
     let len = std.string.len(t_name)
@@ -400,9 +402,7 @@ fn str_to_null_terminated(s: str) -> ptr[u8]:
     return buf
 
 pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
-    let filename_nt = str_to_null_terminated(out_filename)
-    self.file = fopen(filename_nt as ptr[void], get_str_ptr("w"))
-    @free(filename_nt)
+    self.file = std.io.stream_create(out_filename)
     if self.file == null as ptr[void]:
         return false
 
@@ -420,23 +420,23 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 main_has_args = true
         fn_idx = fn_idx + 1 as i64
 
-    fputs(get_str_ptr("// Generated automatically by AXIOM AirCGen Stage 1\n"), self.file)
-    fputs(get_str_ptr("#define AXIOM_SUMLAYOUT_POINTER\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Generated automatically by AXIOM AirCGen Stage 1\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define AXIOM_SUMLAYOUT_POINTER\n"), self.file)
     if has_main:
-        fputs(get_str_ptr("#define AX_EMIT_MAIN\n"), self.file)
+        std.io.stream_puts(get_str_ptr("#define AX_EMIT_MAIN\n"), self.file)
         if main_has_args:
-            fputs(get_str_ptr("#define AX_MAIN_WITH_ARGS\n"), self.file)
-    fputs(get_str_ptr("#include \"ax_runtime.h\"\n"), self.file)
-    fputs(get_str_ptr("#include \"ax_stdlib.h\"\n\n"), self.file)
-    fputs(get_str_ptr("extern ax_i64 syscall(ax_u64 num, ...);\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Result_ok(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Result_err(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    (void*)((ax_u64)_ptr | 1ULL); \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Option_some(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
-    fputs(get_str_ptr("#define ax_Option_none() ((void*)0)\n\n"), self.file)
-    fputs(get_str_ptr("#define r_0 0\n\n"), self.file)
+            std.io.stream_puts(get_str_ptr("#define AX_MAIN_WITH_ARGS\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#include \"ax_runtime.h\"\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#include \"ax_stdlib.h\"\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("extern ax_i64 syscall(ax_u64 num, ...);\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Result_ok(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Result_err(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    (void*)((ax_u64)_ptr | 1ULL); \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Option_some(v) ({ \\\n    void* _ptr = ax_alloc(sizeof(v)); \\\n    *(__typeof__(v)*)_ptr = (v); \\\n    _ptr; \\\n})\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define ax_Option_none() ((void*)0)\n\n"), self.file)
+    std.io.stream_puts(get_str_ptr("#define r_0 0\n\n"), self.file)
 
     // 1. Forward declare all structs
-    fputs(get_str_ptr("// Forward Declarations\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Forward Declarations\n"), self.file)
     mut i := 0 as i64
     while i < self.typetable.entries.len:
         let entry = self.typetable.entries.data[i]
@@ -474,10 +474,10 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             if not already_declared:
                 ax_fprintf_local(self.file, "typedef struct %s %s;\n", (get_str_ptr(name)) as i64, (get_str_ptr(name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         i = i + 1
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
  
     // 2. Define structures
-    fputs(get_str_ptr("// Struct Definitions\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Struct Definitions\n"), self.file)
     i = 0 as i64
     while i < self.typetable.entries.len:
         let entry = self.typetable.entries.data[i]
@@ -535,11 +535,11 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                     let field_type = self.get_c_type(field.type_id)
                     ax_fprintf_local(self.file, "    %s f_%d;\n", (field_type as ptr[u8]) as i64, f_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     f_idx = f_idx + 1 as i64
-                fputs(get_str_ptr("};\n\n"), self.file)
+                std.io.stream_puts(get_str_ptr("};\n\n"), self.file)
         i = i + 1
 
     // 3. Function prototypes
-    fputs(get_str_ptr("// Function Prototypes\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Function Prototypes\n"), self.file)
     
     // Emit prototypes for all user-defined extern functions (like syscall) from the symbol table
     mut sym_idx_proto := 0 as i64
@@ -557,16 +557,16 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                             let ret_type = self.get_c_type(fi.ret)
                             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(original_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                             if fi.params.len == 0 as i64:
-                                fputs(get_str_ptr("void"), self.file)
+                                std.io.stream_puts(get_str_ptr("void"), self.file)
                             else:
                                 mut p_idx := 0 as i64
                                 while p_idx < fi.params.len:
                                     if p_idx > 0:
-                                        fputs(get_str_ptr(", "), self.file)
+                                        std.io.stream_puts(get_str_ptr(", "), self.file)
                                     let param_type = self.get_c_type(fi.params.data[p_idx])
                                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                                     p_idx = p_idx + 1 as i64
-                            fputs(get_str_ptr(");\n"), self.file)
+                            std.io.stream_puts(get_str_ptr(");\n"), self.file)
                             @free(get_str_ptr(ret_type))
         sym_idx_proto = sym_idx_proto + 1 as i64
 
@@ -592,24 +592,24 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             let ret_type = self.get_c_type(f.ret_type)
             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(mangled_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if f.params.len == 0 as i64:
-                fputs(get_str_ptr("void"), self.file)
+                std.io.stream_puts(get_str_ptr("void"), self.file)
             else:
                 mut p_idx := 0 as i64
                 while p_idx < f.params.len:
                     if p_idx > 0:
-                        fputs(get_str_ptr(", "), self.file)
+                        std.io.stream_puts(get_str_ptr(", "), self.file)
                     mut param_type := self.get_c_type(f.params.data[p_idx])
                     if original_name == "main" and p_idx == 1 as i64:
                         param_type = "ax_u8**"
                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     p_idx = p_idx + 1 as i64
-            fputs(get_str_ptr(");\n"), self.file)
+            std.io.stream_puts(get_str_ptr(");\n"), self.file)
             @free(get_str_ptr(mangled_name))
             f_idx = f_idx + 1 as i64
-    fputs(get_str_ptr("\n"), self.file)
+    std.io.stream_puts(get_str_ptr("\n"), self.file)
 
     // 4. Function definitions
-    fputs(get_str_ptr("// Function Definitions\n"), self.file)
+    std.io.stream_puts(get_str_ptr("// Function Definitions\n"), self.file)
     f_idx = 0
     while f_idx < self.module.funcs.len:
         let f = self.module.funcs.data[f_idx]
@@ -627,18 +627,18 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
             
             ax_fprintf_local(self.file, "%s %s(", (get_str_ptr(ret_type)) as i64, (get_str_ptr(mangled_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if f.params.len == 0 as i64:
-                fputs(get_str_ptr("void"), self.file)
+                std.io.stream_puts(get_str_ptr("void"), self.file)
             else:
                 mut p_idx := 0 as i64
                 while p_idx < f.params.len:
                     if p_idx > 0:
-                        fputs(get_str_ptr(", "), self.file)
+                        std.io.stream_puts(get_str_ptr(", "), self.file)
                     mut param_type := self.get_c_type(f.params.data[p_idx])
                     if original_name == "main" and p_idx == 1 as i64:
                         param_type = "ax_u8**"
                     ax_fprintf_local(self.file, "%s p_%d", (get_str_ptr(param_type)) as i64, p_idx, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                     p_idx = p_idx + 1 as i64
-            fputs(get_str_ptr(") {\n"), self.file)
+            std.io.stream_puts(get_str_ptr(") {\n"), self.file)
             @free(get_str_ptr(mangled_name))
 
             // Declare all SSA registers
@@ -822,11 +822,11 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
                 @free(self.reg_types as ptr[u8])
                 self.reg_types = null as ptr[u32]
 
-            fputs(get_str_ptr("}\n\n"), self.file)
+            std.io.stream_puts(get_str_ptr("}\n\n"), self.file)
             f_idx = f_idx + 1 as i64
 
     if has_main:
-        fputs(get_str_ptr("\n/* Entry point wrapper */\n"), self.file)
+        std.io.stream_puts(get_str_ptr("\n/* Entry point wrapper */\n"), self.file)
         if main_has_args:
             ax_fprintf_local(self.file, "ax_i32 ax_main(ax_i32 argc, ax_u8** argv) {\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             if main_param_count == 1 as i64:
@@ -836,7 +836,7 @@ pub fn generate(mut self: ptr[CGenerator], out_filename: str) -> bool:
         else:
             ax_fprintf_local(self.file, "ax_i32 ax_main(void) {\n    ax_main_usr();\n    return 0;\n}\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
 
-    fclose(self.file)
+    std.io.stream_close(self.file)
     return true
 
 fn cgen_escape_string(s: str) -> str:
@@ -1344,7 +1344,7 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 let t_name = self.get_c_type(f.ret_type)
                 ax_fprintf_local(self.file, "    return (%s){0};\n", (get_str_ptr(t_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fputs(get_str_ptr("    return;\n"), self.file)
+                std.io.stream_puts(get_str_ptr("    return;\n"), self.file)
 
     elif op == OP_FUNC_ADDR:
         // Function pointer value: r_dest = &<mangled function name>.
@@ -1576,12 +1576,12 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                 else:
                     ax_fprintf_local(self.file, "    r_%d = ((void*(*)(", inst.dest as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
             else:
-                fputs(get_str_ptr("    ((void(*)("), self.file)
+                std.io.stream_puts(get_str_ptr("    ((void(*)("), self.file)
 
             mut p_i := 0 as u32
             while p_i < arg_count:
                 if p_i > 0 as u32:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 
                 mut p_type_name := "void*"
                 if has_fi and p_i < fi_params_len as u32:
@@ -1601,7 +1601,7 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                             if p_type_name == "void":
                                 p_type_name = "void*"
                 
-                fputs(get_str_ptr(p_type_name), self.file)
+                std.io.stream_puts(get_str_ptr(p_type_name), self.file)
                 if p_type_name != "void*" and p_type_name != "void" and p_type_name != "ax_string" and not std.string.ends_with(p_type_name, "*"):
                     @free(get_str_ptr(p_type_name))
                 p_i = p_i + 1 as u32
@@ -1612,14 +1612,14 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
             mut p_i := 0 as i64
             while p_i < mapped_param_count:
                 if p_i > 0:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 ax_fprintf_local(self.file, "p_%d", p_i, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 p_i = p_i + 1
         else:
             mut i := 0 as i64
             while i < arg_count as i64:
                 if i > 0:
-                    fputs(get_str_ptr(", "), self.file)
+                    std.io.stream_puts(get_str_ptr(", "), self.file)
                 mut arg_reg := 0 as u32
                 if f.extras.data != null as ptr[u32] and arg_start as i64 + 1 + i < f.extras.len:
                     arg_reg = f.extras.data[arg_start as i64 + 1 + i]
@@ -1660,8 +1660,8 @@ pub fn translate_inst(mut self: ptr[CGenerator], f: AirFunc, inst: AirInst):
                         ax_fprintf_local(self.file, "r_%d", arg_reg as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                 i = i + 1
         if is_assert:
-            fputs(get_str_ptr(", AX_STR(\"assertion failed\")"), self.file)
-        fputs(get_str_ptr(");\n"), self.file)
+            std.io.stream_puts(get_str_ptr(", AX_STR(\"assertion failed\")"), self.file)
+        std.io.stream_puts(get_str_ptr(");\n"), self.file)
 
         if builtin_params != null as ptr[u32]:
             @free(builtin_params as ptr[u8])

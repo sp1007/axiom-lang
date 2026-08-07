@@ -1,0 +1,108 @@
+// Oracle for libc-independence step 4: the BINARY file path of std.io.
+//
+// Step 4 moved the compiler's own object-file I/O (linker.ax, x86_coff.ax,
+// x86_elf64.ax, main_air.ax) off its private `fopen/fread/fwrite/fclose/fseek/
+// ftell/rewind` externs and onto std.io. The trap that makes this dangerous is
+// that `std.io.read_all` is NUL-TERMINATED-STRING based (`@memset` + `buf as
+// str`), so it stops at the first zero byte -- and object files, archives and
+// executables are FULL of zero bytes. Reading one through `read_all` truncates
+// it and reports success: a silently corrupt link, which is exactly the
+// accept-then-miscompile class this project keeps hitting.
+//
+// So this pins the property a length-only check would miss: a buffer with
+// EMBEDDED NUL BYTES survives a write/read round trip with both its LENGTH and
+// its CONTENT intact, through both new paths --
+//   1. `write_bytes` + `read_all_bytes` (the typed File API), and
+//   2. `stream_create`/`stream_write`/`stream_puts`/`stream_close` (the
+//      `ptr[void]` token API the C-shaped backends use).
+// It also pins that the two APIs interoperate: bytes written through the token
+// API are read back through the typed one.
+//
+// Assertion is on STDOUT (CLAUDE.md §7.1), one line, no `|` characters.
+
+import std.io
+import std.string
+
+fn main() -> i32:
+    let n = 300 as i64
+    let src = @alloc(n) as ptr[u8]
+    mut i := 0 as i64
+    while i < n:
+        src[i] = ((i * 7 as i64) % 251 as i64) as u8
+        i = i + 1
+    // Explicit NUL bytes at the front, in the middle and at the very end. The
+    // front one is what would truncate a `read_all`-based reader to nothing.
+    src[3] = 0 as u8
+    src[4] = 0 as u8
+    src[150] = 0 as u8
+    src[299] = 0 as u8
+
+    // ---- path 1: File.write_bytes -> File.read_all_bytes -------------------
+    let p1 = "bin/_t_iobinary_a.tmp"
+    mut wrote1 := false
+    let c1 = std.io.create(p1)
+    if c1.is_ok():
+        mut f1 := c1.unwrap()
+        wrote1 = f1.write_bytes(src, n)
+        let _ = f1.close()
+
+    mut got1 := 0 as i64
+    mut bad1 := 0 as i64
+    let o1 = std.io.open(p1)
+    if o1.is_ok():
+        let rf1 = o1.unwrap()
+        let b1 = rf1.read_all_bytes(&got1)
+        if b1 == null as ptr[u8]:
+            bad1 = 0 as i64 - 1 as i64
+        else:
+            mut k := 0 as i64
+            while k < n and k < got1:
+                if b1[k] != src[k]:
+                    bad1 = bad1 + 1
+                k = k + 1
+            @free(b1)
+    else:
+        bad1 = 0 as i64 - 2 as i64
+    if not wrote1:
+        bad1 = 0 as i64 - 3 as i64
+
+    // ---- path 2: stream token write -> File.read_all_bytes -----------------
+    // The trailing "XY" goes through stream_puts, so the file is n + 2 bytes:
+    // that proves the two token writers append rather than restart the file.
+    let p2 = "bin/_t_iobinary_b.tmp"
+    mut swrote := 0 as i64
+    let s = std.io.stream_create(p2)
+    if s != null as ptr[void]:
+        swrote = std.io.stream_write(s, src, n)
+        std.io.stream_puts("XY" as ptr[u8], s)
+        std.io.stream_close(s)
+
+    mut got2 := 0 as i64
+    mut bad2 := 0 as i64
+    let o2 = std.io.open(p2)
+    if o2.is_ok():
+        let rf2 = o2.unwrap()
+        let b2 = rf2.read_all_bytes(&got2)
+        if b2 == null as ptr[u8]:
+            bad2 = 0 as i64 - 1 as i64
+        else:
+            mut k2 := 0 as i64
+            while k2 < n and k2 < got2:
+                if b2[k2] != src[k2]:
+                    bad2 = bad2 + 1
+                k2 = k2 + 1
+            if got2 == n + 2 as i64:
+                if b2[n] != 'X' as u8:
+                    bad2 = bad2 + 1
+                if b2[n + 1 as i64] != 'Y' as u8:
+                    bad2 = bad2 + 1
+            @free(b2)
+    else:
+        bad2 = 0 as i64 - 2 as i64
+    if swrote != n:
+        bad2 = 0 as i64 - 3 as i64
+
+    println("Nhị phân có byte NUL: đọc=", got1, " lệch=", bad1, " luồng=", got2, " lệch2=", bad2)
+    if got1 == n and bad1 == 0 and got2 == n + 2 as i64 and bad2 == 0:
+        return 42
+    return 7
