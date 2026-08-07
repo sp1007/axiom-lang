@@ -5242,6 +5242,42 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // class, BUG#53/#68/#88). The compiler's own source has no surviving
                     // `std.X.Y` field-exprs post-strip, so this never trips self-build.
                     if sym_idx == 0 as u32 and rec_node != 0 as u32:
+                        // B4 (same accept-then-miscompile class): the receiver IS a module
+                        // that loaded successfully, but the member does not exist —
+                        // `m.no_such_member()`. The check below cannot see this case: it
+                        // asks whether the chain's ROOT identifier is bound, and here it is
+                        // bound, to the module itself. So the call sailed through to
+                        // air_builder, which lowered the unresolved callee to a garbage
+                        // register and emitted `call *reg` — accepted, linked, SEGV at run
+                        // time, no diagnostic at all. Detect it from the receiver directly:
+                        //   - a FIELD_EXPR receiver carries flag 2048 == "payload is a
+                        //     symbol index" (`std.math` in `std.math.f()`);
+                        //   - an IDENT receiver's payload is a symbol index only when it
+                        //     actually bound, which is exactly what the name_id comparison
+                        //     below establishes (an unbound ident keeps its raw name_id as
+                        //     payload and would index an unrelated symbol).
+                        mut recv_mod_sym := 0 as u32
+                        let rnode = self.tree.nodes.data[rec_node]
+                        if rnode.kind == NODE_FIELD_EXPR and (rnode.flags & 2048 as u16) != 0 as u16:
+                            if rnode.payload != 0 as u32 and (rnode.payload as i64) < self.symtable.symbols.len:
+                                if self.symtable.symbols.data[rnode.payload].kind == SYM_MODULE:
+                                    recv_mod_sym = rnode.payload
+                        elif rnode.kind == NODE_IDENT:
+                            if rnode.payload != 0 as u32 and (rnode.payload as i64) < self.symtable.symbols.len:
+                                let rsym = self.symtable.symbols.data[rnode.payload]
+                                if rsym.kind == SYM_MODULE:
+                                    let rspell = self.node_text(rec_node)
+                                    if rspell != "":
+                                        if rsym.name_id == self.intern.intern_string(rspell):
+                                            recv_mod_sym = rnode.payload
+                        if recv_mod_sym != 0 as u32:
+                            let mod_name_s = self.intern.get(self.symtable.symbols.data[recv_mod_sym].name_id)
+                            let mem_name_s = self.intern.get(field_name_id)
+                            ax_printf_local("error: module '%s' has no member '%s'\n", get_str_ptr(mod_name_s) as i64, get_str_ptr(mem_name_s) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            self.print_annotated_expr_snippet(callee, callee, "not exported by this module")
+                            safe_free_str(mod_name_s)
+                            safe_free_str(mem_name_s)
+                            self.diags_count = self.diags_count + 1 as i64
                         mut lroot := rec_node
                         mut lk := self.tree.nodes.data[lroot].kind
                         while lk == NODE_FIELD_EXPR:
@@ -5250,7 +5286,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 break
                             lroot = nc
                             lk = self.tree.nodes.data[lroot].kind
-                        if lroot != 0 as u32 and self.tree.nodes.data[lroot].kind == NODE_IDENT:
+                        // `recv_mod_sym == 0` keeps the two rules mutually exclusive: an
+                        // unresolved member of a KNOWN module is reported once, above, with
+                        // the module's real name — not a second time as an "undefined
+                        // namespace", which it is not.
+                        if recv_mod_sym == 0 as u32 and lroot != 0 as u32 and self.tree.nodes.data[lroot].kind == NODE_IDENT:
                             let root_spell = self.node_text(lroot)
                             if root_spell != "":
                                 // Decide if the root ident is BOUND. `symtable.resolve`

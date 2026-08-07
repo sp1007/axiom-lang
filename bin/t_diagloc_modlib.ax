@@ -1,9 +1,15 @@
 // Fixture (not a standalone test): the IMPORTED half of the imported-module
 // diagnostic-location oracle. Compiled on its own it is expected to be rejected --
 // the E3030 below is deliberate. bin/t_diagloc_mod.ax imports it, and the harness
-// block asserts that the diagnostic names THIS file and line 8, proving an imported
+// block asserts that the diagnostic names THIS file and the line the `let` is on
+// (currently 12 — if you add or remove a line above it, update the harness block too),
+// proving an imported
 // module's tree carries a source map. Before that fix it printed only
 // "at byte offset N of the compilation unit".
+//
+// Since B5 (an imported module's own diagnostics halt the importing build), the IMPORTER
+// bin/t_diagloc_mod.ax is rejected too, where it used to produce an executable. The
+// harness block is unaffected — it asserts on the rendered diagnostic, not on an exe.
 pub fn helper() -> i64:
     let bad: u8 = 300
     return bad as i64

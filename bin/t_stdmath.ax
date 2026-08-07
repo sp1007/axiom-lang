@@ -1,0 +1,15 @@
+// Stage 1 of the stdlib-reachability plan: a std module that is NOT bundled into the
+// compilation unit must still be reachable through the resolver's lazy module loader.
+//
+// Before this, the driver's strip_imports blanked EVERY line beginning `import std`,
+// while only 8 std files were ever bundled -- so this file's `import std.math` was
+// destroyed, the module was never loaded, and the qualified call failed with
+// `undefined name 'std'`. std/math.ax implements sqrt/pow/sin/cos in pure AXIOM (no
+// libm, no extern) and not one line of it was reachable from any program.
+//
+// sqrt(16) + pow(2,3) = 4 + 8 = 12, printed as f64.
+import std.math
+
+fn main() -> i64:
+    println("căn bậc hai cộng luỹ thừa: ", std.math.sqrt(16.0) + std.math.pow(2.0, 3.0))
+    return 0

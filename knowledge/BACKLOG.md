@@ -11,8 +11,12 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-08-07 — RFC 0039)
-- 🆕 **RFC 0039 (struct literal suy diễn từ annotation) — A==B
+## Trạng thái cây (cập nhật 2026-08-07 — stdlib reachability stage 1)
+- 🆕 **Stage 1 stdlib-reachability + B2/B4/B5 — A==B
+  `9C6726C11F366ACA5BA3970F72D0C0502C7495506F82AEBBCEF33A6C14C326E2`** (2.329.600 byte).
+  `import std.math` + `std.math.sqrt(16.0)` chạy end-to-end. Regression **709/709 ở CẢ
+  default lẫn `-O0`** ⇒ **BASELINE MỚI = 709**. Chi tiết ở §"HƯỚNG ĐÃ ĐỊNH GIÁ" bên dưới.
+- Mốc trước: **RFC 0039 (struct literal suy diễn từ annotation) — A==B
   `84A13E958B59D2A1022C860C8E4637E81716BA65A66BFDDFD096034E4DB3FF68`** (2.313.728 byte).
   `let c: TmpStruct = (a: 64, b: 64)` nay hợp lệ; `error[E3034]` khi không có ngữ cảnh suy diễn.
   Tự kiểm chứng **685/685** ở cả hai mức + control tuple/biểu thức ngoặc.
@@ -26,7 +30,7 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   `QueryPerformanceCounter`/`Frequency` thêm vào **kernel32** (không phải libc).
   ⚠️ Đo bằng **parse bảng import PE**, KHÔNG bằng `strings` — xem
   [audit-libc-dependencies](audit-libc-dependencies-2026-08-05.md).
-- **BASELINE = 703/703**, đo ở **cả default lẫn `-O0`**. Dưới 703 là RED. (672 → 677 RFC 0038, → 679 libc 0-2, → 682 P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b, → 699 libc 3, → 700 srcmap module, → 703 libc 4+5.)
+- **BASELINE = 709/709**, đo ở **cả default lẫn `-O0`**. Dưới 709 là RED. (672 → 677 RFC 0038, → 679 libc 0-2, → 682 P6, → 685 RFC 0039, → 689 chẩn đoán 0-1, → 697 chẩn đoán 2b, → 699 libc 3, → 700 srcmap module, → 703 libc 4+5, → 709 stage 1 stdlib reachability.)
   (611 → 649 → 662 → 672: +32 hàng ở `b8ac125`, +7 ở `f6ac69e`, +13 ở `a538983`, +10 khi đóng
   hole C — gồm một khối `-no-dfe` riêng, vì DFE che đúng cái defect đó.)
 - `bin/axc_pre1f.exe` = compiler tham chiếu tiền-1f, giữ để định giá ghép cặp.
@@ -340,10 +344,18 @@ lexer chỉ thấy `len(...)`. Chứng minh: `std.string.no_such_fn` báo lỗi 
 hỏng (B1 ở trên).
 
 ## 🧭 HƯỚNG ĐÃ ĐỊNH GIÁ — option C, làm 4 stage, mỗi stage A==B
-**Stage 1 (nhỏ, có giá trị NGAY):** `strip_imports` (`main_air.ax:266`) chỉ bôi trắng khi tên module
-**đúng bằng** một trong 8 tên BUNDLED, thay vì mọi dòng bắt đầu `import std`. Dùng **một** helper
-`bundled_module_names()` mà `concatenate_stdlib` cũng dùng ⇒ hết "hai danh sách".
-⇒ `import std.math` + `std.math.sqrt(x)` **chạy được ngay**, không cần máy móc mới.
+**Stage 1 ✅ XONG 2026-08-07** (A==B `9C6726C1…`, 709/709 ở cả hai mức, breakage audit 870 file).
+`strip_imports` nay bôi trắng **chỉ khi tên module đúng bằng** một mục trong **MỘT bảng duy nhất**
+`preprocessed_module_name()` (11 mục: 8 bundled + `std.os.win32`/`std.os.linux_sys`/`std.net` —
+ba tên chỉ bị `strip_package_prefixes` viết lại, không bundled, nhưng import của chúng vẫn phải bôi
+trắng vì call site đã mất tiền tố). `concatenate_stdlib` đọc đường dẫn qua `bundled_module_path(i)`
+suy ra **từ chính bảng đó** ⇒ hết "hai danh sách".
+⇒ `import std.math` + `std.math.sqrt(16.0)` **chạy end-to-end** (`bin/t_stdmath.ax` = 12.000000).
+✅ **B2 rơi ra miễn phí** (so khớp CHÍNH XÁC ⇒ có biên phân cách theo cấu trúc); **B4** và **B5**
+đã sửa cùng stage (xem §BUG PHỤ).
+⚠️ **Hệ quả đã đo:** `import std.{sync,thread,process,iter,cli}` nay **tới được loader ⇒ compiler
+SEGV** (B3/B6) thay vì bị nuốt im lặng như trước. Không file nào trong corpus dính (audit 0
+collateral), nhưng đây là **bug tiếp theo phải sửa** — crash không chẩn đoán là tệ hơn cả im lặng.
 **Stage 2:** đăng ký 8 tên bundled thành `SYM_MODULE` có cờ *bundled*; `lazy_resolver_resolve_field`
 tra cứu **scope toàn cục của unit hiện tại** thay vì nạp file ⇒ `std.collections.new_vec` chạy, và
 `std.string.len` bind **cùng một symbol** với `len` trần ⇒ **delta codegen = 0**.
@@ -357,31 +369,49 @@ và **không sửa gì về cấu trúc**.
 không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian biên dịch**, không phải kích thước.
 
 ## 🐞 BUG PHỤ tìm được cùng lúc (mỗi cái filable riêng)
-- **B2** `import stdthing` bị xoá oan — `match_prefix(s,i,"import std")` (`main_air.ax:266`) **không
-  có biên phân cách** ⇒ mọi module tên bắt đầu bằng `std` bị nuốt. Đổi thành `xstdthing` thì hết.
-- **B3 🔴 CRASH** — module user `import std.string`/`std.collections` ⇒ **compiler SEGV 139**,
-  deterministic 4/4 ở cả -O0/-O1, trong lúc typecheck module được nạp. Không crash dưới
-  `--no-stdlib` ⇒ do **trùng lặp bundled-vs-loaded**. **Chưa localize được dòng.**
-- **B4 🔴 accept-then-miscompile (họ BUG#53)** — `mod.no_such_member()` trên module **đã nạp thành
-  công**: **nhận, sinh exe, SEGV lúc chạy, KHÔNG chẩn đoán**. (Namespace *chưa* import thì có báo.)
-- **B5** module nạp lazy có **lỗi parse KHÔNG dừng pipeline** — `main_air.ax:1892` bỏ qua
-  `parser_ptr.diags_count`, `:1921` bỏ qua `mod_checker.diags_count`, khác hẳn đường chính
-  (`:1193`/`:1276`) ⇒ exe vẫn được sinh với 8 lỗi.
-- **B6 🔴 CRASH** — `@compiler_intrinsic("is_windows")` trong module nạp lazy ⇒ **SEGV 139**.
-  Chặn `sync`/`thread`/`process` trên đường loader. Repro tối giản 5 dòng.
-⇒ **B4 + B5 phải sửa CÙNG stage 1**, vì stage 1 mở đường module cho `std` ⇒ phơi lỗ này ra mọi user.
+- **B2 ✅ ĐÃ SỬA (stage 1)** `import stdthing` bị xoá oan — `match_prefix(s,i,"import std")` **không
+  có biên phân cách**. Rơi ra miễn phí khi đổi sang so khớp **chính xác** với bảng module.
+  Oracle `bin/t_stdprefixmod.ax` (+ fixture `std_util.ax` ở gốc repo): reject trước, 42 sau.
+- **B3 🔴🔴 CRASH — nay ĐÃ TỚI ĐƯỢC sau stage 1, ưu tiên tăng** — module user
+  `import std.string`/`std.collections` ⇒ **compiler SEGV 139**, deterministic 4/4 ở cả -O0/-O1,
+  trong lúc typecheck module được nạp. Không crash dưới `--no-stdlib` ⇒ do **trùng lặp
+  bundled-vs-loaded**. **Chưa localize được dòng.** Đo 2026-08-07: `import std.iter` và
+  `import std.cli` (hai module import `std.collections`) làm compiler SEGV.
+- **B4 ✅ ĐÃ SỬA (stage 1)** — `mod.no_such_member()` trên module **đã nạp thành công**: nhận, sinh
+  exe, SEGV lúc chạy, KHÔNG chẩn đoán. Nay `error: module 'X' has no member 'Y'` + `--> file:line`
+  + caret. ⭐ Kiểm BUG#93 cũ (`typecheck.ax`) **không thấy** hình dạng này: nó hỏi "gốc chuỗi có
+  **chưa** bind không", mà ở đây gốc **đã** bind — vào chính module. Luật mới đọc **receiver**:
+  FIELD_EXPR có cờ 2048, hoặc IDENT có payload là symbol thật (so `name_id`). Hai luật loại trừ
+  nhau (`recv_mod_sym == 0`) nên không bao giờ in hai lỗi cho một chỗ.
+  Oracle `bin/t_modnomember.ax` (dạng IDENT, 139 trước) + `bin/t_stdmathnomember.ax` (dạng
+  FIELD_EXPR); đối chứng dương `bin/t_modcollide.ax` = 101.
+- **B5 ✅ ĐÃ SỬA (stage 1)** — module nạp lazy có lỗi parse/typecheck KHÔNG dừng pipeline.
+  Nay `LazyResolver.load_errors` cộng dồn `parser_ptr.diags_count` + `mod_checker.diags_count`,
+  driver chặn ngay trước cổng `checker.diags_count`. Bonus: srcmap của module được gắn **TRƯỚC**
+  `parse_program` ⇒ lỗi parse trong module in `--> std/foo.ax:4` thay vì "byte offset N".
+  Oracle `bin/t_modparseerr.ax` (in 42 trước, reject sau).
+- **B6 🔴🔴 CRASH — nay ĐÃ TỚI ĐƯỢC sau stage 1, ưu tiên tăng** —
+  `@compiler_intrinsic("is_windows")` trong module nạp lazy ⇒ **SEGV 139**.
+  Đo 2026-08-07: `import std.{sync,thread,process}` **làm compiler SEGV** (trước stage 1 thì dòng
+  import bị nuốt nên nhận im lặng). **Đây là item ưu tiên cao nhất kế tiếp của hướng này.**
 
 ## 📋 SỨC KHOẺ 12 module (đo, không đoán)
-| module | parse | nạp qua loader |
-|---|---|---|
-| `math`, `sort` | ✅ | ✅ **chạy end-to-end** (`sqrt(16.0)`=4.0) |
-| `sync`, `thread`, `process` | ✅ | ❌ compiler **SEGV** (B6) |
-| `net, iter, json, fmt, time, crypto, log` | ❌ **không parse nổi** (7-16 lỗi) | — |
-⇒ **7/12 là ASPIRATIONAL**, chưa từng biên dịch được. Chỉ `math` + `sort` dùng được ngay sau stage 1.
+Đo lại **sau stage 1** (bằng `import std.X` thật, không phải suy đoán):
+| module | trạng thái sau stage 1 |
+|---|---|
+| `math`, `sort` | ✅ **chạy end-to-end** (`sqrt(16)+pow(2,3)` = 12.000000, cả -O0 lẫn -O1) |
+| `sync`, `thread`, `process`, `iter`, `cli` | 🔴 **compiler SEGV** (B6 / B3) — nay tới được |
+| `json, fmt, time, crypto, log` | ❌ reject sạch (lỗi parse của module, nay CHÍ TỬ nhờ B5) |
+| `net` | vẫn nằm trong bảng bôi trắng ⇒ không đổi (không có gì để gọi) |
+⇒ **Chỉ `math` + `sort` dùng được**, đúng như định giá trước khi làm — stage 1 gỡ **rào cấu trúc**,
+không phải là lời hứa 12 module chạy được.
 ✅ Xác nhận `std/math.ax` là code THẬT: 0 import, 0 extern, 45+ `pub fn`;
 `sqrt(16)+pow(2,10)+sin(.5)+cos(.5)+ln(3)` = **1030.455620** đúng.
 
 ## 🔴 PHÁT HIỆN 2026-08-07 — PHẦN LỚN `std/` KHÔNG DÙNG ĐƯỢC trên đường build native
+✅ **Nửa `strip_imports` của vấn đề này ĐÃ ĐÓNG ở stage 1** (một bảng module duy nhất). Phần còn
+lại — `strip_package_prefixes` viết lại văn bản, và B1 làm hỏng hằng chuỗi — là stage 2/3.
+Bản ghi gốc giữ nguyên vì ma trận đo được vẫn là bằng chứng:
 Đo trực tiếp (không suy đoán). Có **HAI danh sách CỨNG phải khớp nhau, và chúng KHÔNG khớp**:
 - `concatenate_stdlib` (`main_air.ax`) nối **8 file**: result, mem/alloc, scheduler, runtime, os,
   string, io, collections.

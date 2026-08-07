@@ -4656,6 +4656,13 @@ pub struct LazyResolver:
     // (register from its interface, link the archive) instead of the module source.
     // Opt-in (`--auto-lib`) â€” see main_air ensure_import_libs; default keeps source path.
     pub auto_lib: bool
+    // B5 (BUG#53 class): diagnostics raised while LOADING an imported module â€” its parse
+    // and typecheck passes run on their own Parser/TypeChecker, so their diags_count is
+    // invisible to the driver's own gates. ax_driver_load_module adds them here and the
+    // driver halts on a non-zero total, exactly as it does for parser.diags_count and
+    // checker.diags_count on the main path. Before this, a module with 8 parse errors
+    // still produced an executable.
+    pub load_errors: i64
 
 pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[LazyResolver]:
     let lr = @alloc(@compiler_intrinsic("size_of")[LazyResolver]()) as ptr[LazyResolver]
@@ -4664,6 +4671,7 @@ pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[L
     lr.typetable = null as ptr[void]
     lr.intern = intern
     lr.auto_lib = false
+    lr.load_errors = 0 as i64
     return lr
 
 pub struct AstTreePtrVec:
@@ -11988,6 +11996,42 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // class, BUG#53/#68/#88). The compiler's own source has no surviving
                     // `std.X.Y` field-exprs post-strip, so this never trips self-build.
                     if sym_idx == 0 as u32 and rec_node != 0 as u32:
+                        // B4 (same accept-then-miscompile class): the receiver IS a module
+                        // that loaded successfully, but the member does not exist â€”
+                        // `m.no_such_member()`. The check below cannot see this case: it
+                        // asks whether the chain's ROOT identifier is bound, and here it is
+                        // bound, to the module itself. So the call sailed through to
+                        // air_builder, which lowered the unresolved callee to a garbage
+                        // register and emitted `call *reg` â€” accepted, linked, SEGV at run
+                        // time, no diagnostic at all. Detect it from the receiver directly:
+                        //   - a FIELD_EXPR receiver carries flag 2048 == "payload is a
+                        //     symbol index" (`std.math` in `std.math.f()`);
+                        //   - an IDENT receiver's payload is a symbol index only when it
+                        //     actually bound, which is exactly what the name_id comparison
+                        //     below establishes (an unbound ident keeps its raw name_id as
+                        //     payload and would index an unrelated symbol).
+                        mut recv_mod_sym := 0 as u32
+                        let rnode = self.tree.nodes.data[rec_node]
+                        if rnode.kind == NODE_FIELD_EXPR and (rnode.flags & 2048 as u16) != 0 as u16:
+                            if rnode.payload != 0 as u32 and (rnode.payload as i64) < self.symtable.symbols.len:
+                                if self.symtable.symbols.data[rnode.payload].kind == SYM_MODULE:
+                                    recv_mod_sym = rnode.payload
+                        elif rnode.kind == NODE_IDENT:
+                            if rnode.payload != 0 as u32 and (rnode.payload as i64) < self.symtable.symbols.len:
+                                let rsym = self.symtable.symbols.data[rnode.payload]
+                                if rsym.kind == SYM_MODULE:
+                                    let rspell = self.node_text(rec_node)
+                                    if rspell != "":
+                                        if rsym.name_id == self.intern.intern_string(rspell):
+                                            recv_mod_sym = rnode.payload
+                        if recv_mod_sym != 0 as u32:
+                            let mod_name_s = self.intern.get(self.symtable.symbols.data[recv_mod_sym].name_id)
+                            let mem_name_s = self.intern.get(field_name_id)
+                            ax_printf_local("error: module '%s' has no member '%s'\n", get_str_ptr(mod_name_s) as i64, get_str_ptr(mem_name_s) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+                            self.print_annotated_expr_snippet(callee, callee, "not exported by this module")
+                            safe_free_str(mod_name_s)
+                            safe_free_str(mem_name_s)
+                            self.diags_count = self.diags_count + 1 as i64
                         mut lroot := rec_node
                         mut lk := self.tree.nodes.data[lroot].kind
                         while lk == NODE_FIELD_EXPR:
@@ -11996,7 +12040,11 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                                 break
                             lroot = nc
                             lk = self.tree.nodes.data[lroot].kind
-                        if lroot != 0 as u32 and self.tree.nodes.data[lroot].kind == NODE_IDENT:
+                        // `recv_mod_sym == 0` keeps the two rules mutually exclusive: an
+                        // unresolved member of a KNOWN module is reported once, above, with
+                        // the module's real name â€” not a second time as an "undefined
+                        // namespace", which it is not.
+                        if recv_mod_sym == 0 as u32 and lroot != 0 as u32 and self.tree.nodes.data[lroot].kind == NODE_IDENT:
                             let root_spell = self.node_text(lroot)
                             if root_spell != "":
                                 // Decide if the root ident is BOUND. `symtable.resolve`
@@ -40608,6 +40656,92 @@ fn match_prefix(s: str, i: i64, prefix: str) -> bool:
         j = j + 1 as i64
     return true
 
+// THE single source of truth for the std modules this driver handles TEXTUALLY.
+// Entries 0 .. bundled_module_count()-1 are exactly the files concatenate_stdlib splices
+// into the compilation unit, in exactly this order. The remaining entries are not bundled
+// but ARE rewritten away by strip_package_prefixes, so their `import` line must be blanked
+// too â€” otherwise the resolver would load a module whose call sites no longer name it.
+//
+// strip_imports and concatenate_stdlib BOTH drive off this one table. They used to hold
+// two independent lists: strip_imports blanked EVERY line beginning `import std`, while
+// only these 8 files were ever bundled. So `import std.math` was destroyed and std/math.ax
+// could never be loaded by anything â€” its pure-AXIOM sqrt/pow/sin/cos were unreachable
+// from every program, and the user got `undefined name 'std'`. "One rule, two copies" is
+// this repository's most expensive recurring defect class (the interface-return
+// miscompile, lower_int_lit/lower_float_lit, the resolve_method_overload arity split, P6):
+// do not re-split this list.
+//
+// BUG#26: the two `std.os.*` names are assembled with concat because a literal spelling
+// would itself be rewritten by strip_package_prefixes (both contain its `std.os.` pattern)
+// when this driver preprocesses its OWN source to build the next stage â€” the table would
+// then read "win32"/"linux_sys" and stop matching. Every other name is safe verbatim:
+// each rewrite pattern ends in `.`, and no entry does.
+fn preprocessed_module_count() -> i64:
+    return 11 as i64
+
+fn bundled_module_count() -> i64:
+    return 8 as i64
+
+fn preprocessed_module_name(i: i64) -> str:
+    if i == 0 as i64:
+        return "std.result"
+    if i == 1 as i64:
+        return "std.mem.alloc"
+    if i == 2 as i64:
+        return "std.scheduler"
+    if i == 3 as i64:
+        return "std.runtime"
+    if i == 4 as i64:
+        return "std.os"
+    if i == 5 as i64:
+        return "std.string"
+    if i == 6 as i64:
+        return "std.io"
+    if i == 7 as i64:
+        return "std.collections"
+    if i == 8 as i64:
+        return std.string.concat("std.os", ".win32")
+    if i == 9 as i64:
+        return std.string.concat("std.os", ".linux_sys")
+    return "std.net"
+
+// Source path of bundled module `i`, derived from its NAME exactly the way the module
+// loader derives one (ax_driver_load_module: dots become directory separators, plus
+// `.ax`). Deriving it is what keeps the bundle and the strip list provably identical â€”
+// a second hand-written list of paths here is what let them drift in the first place.
+// The result is deliberately not freed: srcmap_add stores the path BY REFERENCE.
+fn bundled_module_path(i: i64) -> str:
+    let rel = std.string.replace(preprocessed_module_name(i), ".", "/")
+    return std.string.concat(rel, ".ax")
+
+fn is_module_name_byte(c: u8) -> bool:
+    if c >= 'a' as u8 and c <= 'z' as u8:
+        return true
+    if c >= 'A' as u8 and c <= 'Z' as u8:
+        return true
+    if c >= '0' as u8 and c <= '9' as u8:
+        return true
+    if c == '_' as u8:
+        return true
+    if c == '.' as u8:
+        return true
+    return false
+
+// True iff s[start..end) spells EXACTLY one of the textually-handled module names.
+// Exact, never a prefix test: the old `match_prefix(s, i, "import std")` had no separator
+// boundary, so `import stdthing` was blanked too and the user's own module vanished behind
+// `undefined name 'stdthing'` (B2).
+fn slice_is_preprocessed_module(s: str, start: i64, end: i64) -> bool:
+    let n = end - start
+    mut k := 0 as i64
+    while k < preprocessed_module_count():
+        let name = preprocessed_module_name(k)
+        if std.string.len(name) == n:
+            if match_prefix(s, start, name):
+                return true
+        k = k + 1 as i64
+    return false
+
 fn strip_imports(s: str) -> str:
     let s_len = std.string.len(s)
     ax_printf_local("[Debug strip_imports] Entering, len=%d\n", s_len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
@@ -40625,9 +40759,21 @@ fn strip_imports(s: str) -> str:
             
         mut skip_line := false
         if is_line_start:
-            if match_prefix(s, i, "import std"):
-                skip_line = true
-                
+            // Blank an import ONLY when the module named is one this driver already
+            // handles textually (see preprocessed_module_name). Anything else â€” a user
+            // module, or a std module that is merely not bundled, like std.math â€” must
+            // survive so the resolver's lazy module loader can serve it.
+            if match_prefix(s, i, "import "):
+                mut ns := i + 7 as i64
+                while ns < s_len and s_ptr[ns] == 32 as u8:
+                    ns = ns + 1 as i64
+                mut ne := ns
+                while ne < s_len and is_module_name_byte(s_ptr[ne]):
+                    ne = ne + 1 as i64
+                if ne > ns:
+                    if slice_is_preprocessed_module(s, ns, ne):
+                        skip_line = true
+
         if skip_line:
             // BLANK the line to spaces and KEEP its newline, rather than deleting it.
             // Deleting used to shift every later byte AND drop a line, so a diagnostic's
@@ -40814,26 +40960,38 @@ fn preprocessed_len(s: str) -> i64:
 // The trailing user block is mapped by the caller, which is the only place that knows
 // whether the Linux runtime shims were appended to it.
 fn concatenate_stdlib(src: str, fails: ptr[i64], smap: ptr[SourceMap]) -> str:
+    // Paths come from bundled_module_path (the ONE module table) rather than from
+    // literals here, so "what is bundled" and "what strip_imports blanks" cannot drift.
+    // The index is the module's position in that table.
+    let path_res = bundled_module_path(0 as i64)
+    let path_alloc = bundled_module_path(1 as i64)
+    let path_sched = bundled_module_path(2 as i64)
+    let path_rt = bundled_module_path(3 as i64)
+    let path_os = bundled_module_path(4 as i64)
+    let path_str = bundled_module_path(5 as i64)
+    let path_io = bundled_module_path(6 as i64)
+    let path_coll = bundled_module_path(7 as i64)
+
     ax_puts_local("[Debug] Reading result.ax...")
-    let raw_res = read_required_file("std/result.ax", fails)
+    let raw_res = read_required_file(path_res, fails)
     ax_puts_local("[Debug] Reading alloc.ax...")
-    let raw_alloc = read_required_file("std/mem/alloc.ax", fails)
+    let raw_alloc = read_required_file(path_alloc, fails)
     ax_puts_local("[Debug] Reading scheduler.ax...")
-    let raw_sched = read_required_file("std/scheduler.ax", fails)
+    let raw_sched = read_required_file(path_sched, fails)
     ax_puts_local("[Debug] Reading runtime.ax...")
-    let raw_rt = read_required_file("std/runtime.ax", fails)
+    let raw_rt = read_required_file(path_rt, fails)
     ax_puts_local("[Debug] Reading os.ax...")
-    let raw_os = read_required_file("std/os.ax", fails)
+    let raw_os = read_required_file(path_os, fails)
     ax_puts_local("[Debug] Reading string.ax...")
-    let raw_str = read_required_file("std/string.ax", fails)
+    let raw_str = read_required_file(path_str, fails)
     ax_puts_local("[Debug] Reading io.ax...")
-    let raw_io = read_required_file("std/io.ax", fails)
+    let raw_io = read_required_file(path_io, fails)
     // BUG#61b: std/collections.ax (Vec/HashMap/HashSet) was NOT in this bundle, so
     // `import std.collections` was silently dropped on the native build path and
     // Vec methods dispatched into garbage at runtime. It only needs std.result
     // (bundled above) + builtins, so bundle it like the rest.
     ax_puts_local("[Debug] Reading collections.ax...")
-    let raw_coll = read_required_file("std/collections.ax", fails)
+    let raw_coll = read_required_file(path_coll, fails)
 
     ax_puts_local("[Debug] Stripping imports from result.ax...")
     let res_src_raw = strip_imports(raw_res)
@@ -40931,14 +41089,14 @@ fn concatenate_stdlib(src: str, fails: ptr[i64], smap: ptr[SourceMap]) -> str:
     // to the user's source BEFORE calling us, so only the driver can split that block â€”
     // and mapping it here would name the user's file for a line of panic.ax, which is a
     // wrong answer rather than a missing one.
-    srcmap_add(smap, "std/result.ax", 0 as i64, len_res)
-    srcmap_add(smap, "std/mem/alloc.ax", off_alloc, off_alloc + len_alloc)
-    srcmap_add(smap, "std/scheduler.ax", off_sched, off_sched + len_sched)
-    srcmap_add(smap, "std/runtime.ax", off_rt, off_rt + len_rt)
-    srcmap_add(smap, "std/os.ax", off_os, off_os + len_os)
-    srcmap_add(smap, "std/string.ax", off_str, off_str + len_str)
-    srcmap_add(smap, "std/io.ax", off_io, off_io + len_io)
-    srcmap_add(smap, "std/collections.ax", off_coll, off_coll + len_coll)
+    srcmap_add(smap, path_res, 0 as i64, len_res)
+    srcmap_add(smap, path_alloc, off_alloc, off_alloc + len_alloc)
+    srcmap_add(smap, path_sched, off_sched, off_sched + len_sched)
+    srcmap_add(smap, path_rt, off_rt, off_rt + len_rt)
+    srcmap_add(smap, path_os, off_os, off_os + len_os)
+    srcmap_add(smap, path_str, off_str, off_str + len_str)
+    srcmap_add(smap, path_io, off_io, off_io + len_io)
+    srcmap_add(smap, path_coll, off_coll, off_coll + len_coll)
 
     let _ = write_file_content("scratch/stage2_preprocessed.ax", new_buf as str)
 
@@ -41635,6 +41793,15 @@ pub fn main() -> i32:
     // pipeline instead of flowing into codegen, where the untyped call fell back
     // to `getfld` + an INDIRECT CALL through the field's scalar value â€” a segfault
     // or jump to a garbage address with no compile-time signal.
+    // B5: same rule applied to the modules this compilation IMPORTED. Their parse and
+    // typecheck run inside ax_driver_load_module on their own Parser/TypeChecker, so their
+    // diagnostics never reached the two gates above; a module with 8 parse errors still
+    // produced an executable. Checked after typecheck because a module can be loaded
+    // lazily at either phase (resolve_field runs during resolution, but a later phase may
+    // be the first to touch a member).
+    if lazy.load_errors > 0 as i64:
+        ax_printf_local("error: %d error(s) in imported module(s); aborting before code generation\n", lazy.load_errors, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        return 1
     if checker.diags_count > 0 as i64:
         ax_printf_local("error: %d type error(s); aborting before code generation\n", checker.diags_count, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
         return 1
@@ -42251,16 +42418,31 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     // 2. Parse
     ax_printf_local("[Debug] Parsing...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     let parser_ptr = new_parser(tokens, src, intern)
-    parser_ptr.parse_program()
-    let mod_tree = parser_ptr.tree
     // An imported module is lexed and parsed on its OWN buffer -- it is never spliced into
     // the concatenated unit -- so an offset here is already a plain offset into this file
     // and one region covering the whole buffer maps it exactly. Without this the tree kept
     // `srcmap == null` and every diagnostic raised inside an imported module degraded to a
     // bare byte offset, even though the path was known right here all along.
+    // Threaded on BEFORE parse_program (as the main path does at the top-level parser), so
+    // PARSE diagnostics locate themselves too -- they are now fatal (see below), and a
+    // fatal diagnostic that cannot name its file is the worst of both worlds.
     let mod_map = new_source_map()
     srcmap_add(mod_map, actual_path, 0 as i64, std.string.len(src))
+    parser_ptr.tree.srcmap = mod_map
+    parser_ptr.parse_program()
+    let mod_tree = parser_ptr.tree
     mod_tree.srcmap = mod_map
+    // B5 (BUG#53 class): the main path halts on parser.diags_count (main_air:1193); this
+    // path ignored its own parser's count entirely, so a module with parse errors printed
+    // them and then handed a half-built AST to the rest of the pipeline -- which still
+    // produced an executable. Record them on the LazyResolver; the driver gates on the
+    // total before code generation. Counted rather than returned so the load still
+    // completes: the errors are reported once, here, instead of cascading into a second
+    // wave of "undefined name" noise at every use site.
+    let lazy_err = st.lazy_resolver as ptr[LazyResolver]
+    if parser_ptr.diags_count > 0 as i64:
+        ax_printf_local("error: %d parse error(s) in imported module '%s'\n", parser_ptr.diags_count, get_str_ptr(mod_name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        lazy_err.load_errors = lazy_err.load_errors + parser_ptr.diags_count
     ax_printf_local("[Debug] Parsing finished, nodes count=%d\n", mod_tree.nodes.len, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     mod.ast_tree = mod_tree
 
@@ -42281,6 +42463,11 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     ax_printf_local("[Debug] Typechecking...\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     mut mod_checker := new_type_checker(mod_tree, intern, st, tt as ptr[TypeTable])
     mod_checker.run_type_checker()
+    // B5, second half: the main path halts on checker.diags_count (main_air:1276) for
+    // exactly the accept-then-miscompile reason quoted there. Same rule, same gate.
+    if mod_checker.diags_count > 0 as i64:
+        ax_printf_local("error: %d type error(s) in imported module '%s'\n", mod_checker.diags_count, get_str_ptr(mod_name) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
+        lazy_err.load_errors = lazy_err.load_errors + mod_checker.diags_count
     ax_printf_local("[Debug] Typechecking finished\n", 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
     mod_checker.ensure_capacity(mod_tree.nodes.len)
     mod.node_types = mod_checker.node_types as ptr[void]

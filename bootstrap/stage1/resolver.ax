@@ -376,6 +376,13 @@ pub struct LazyResolver:
     // (register from its interface, link the archive) instead of the module source.
     // Opt-in (`--auto-lib`) — see main_air ensure_import_libs; default keeps source path.
     pub auto_lib: bool
+    // B5 (BUG#53 class): diagnostics raised while LOADING an imported module — its parse
+    // and typecheck passes run on their own Parser/TypeChecker, so their diags_count is
+    // invisible to the driver's own gates. ax_driver_load_module adds them here and the
+    // driver halts on a non-zero total, exactly as it does for parser.diags_count and
+    // checker.diags_count on the main path. Before this, a module with 8 parse errors
+    // still produced an executable.
+    pub load_errors: i64
 
 pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[LazyResolver]:
     let lr = @alloc(@compiler_intrinsic("size_of")[LazyResolver]()) as ptr[LazyResolver]
@@ -384,6 +391,7 @@ pub fn new_lazy_resolver(symtable: ptr[SymbolTable], intern: ptr[void]) -> ptr[L
     lr.typetable = null as ptr[void]
     lr.intern = intern
     lr.auto_lib = false
+    lr.load_errors = 0 as i64
     return lr
 
 pub struct AstTreePtrVec:

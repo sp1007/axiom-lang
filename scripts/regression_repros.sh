@@ -953,6 +953,28 @@ rows=(
   "t_diagloc_type|reject|"
   "t_diagloc_own|reject|"
   "t_diagloc_nostdlib|reject|"
+  # Stage 1 of stdlib reachability: the driver used to blank EVERY line beginning
+  # `import std` while bundling only 8 std files, so `import std.math` was destroyed and
+  # the lazy module loader never saw it -- std/math.ax (pure-AXIOM sqrt/pow/sin/cos, no
+  # libm) was unreachable from every program. Calibration on the pre-fix driver:
+  # t_stdmath and t_stdprefixmod were REJECTED, t_modparseerr printed 42 with a module
+  # full of parse errors, and t_modnomember SEGFAULTED (139) with no diagnostic.
+  "t_stdmath|out|căn bậc hai cộng luỹ thừa: 12.000000"
+  # ...while the BUNDLED modules keep behaving exactly as before -- the shape a botched
+  # strip would break. 15 before AND after the fix.
+  "t_stdbundlectl|out|đối chứng module bundled: 15"
+  # B2: the import test had no separator boundary, so a user module merely NAMED like
+  # `std_util` was blanked too and reported as an undefined name.
+  "t_stdprefixmod|out|module tên bắt đầu bằng std: 42"
+  # B5: a module loaded on the import path runs its own Parser/TypeChecker, whose
+  # diags_count the driver ignored -- errors printed, executable produced anyway.
+  "t_modparseerr|reject|"
+  # B4: an unknown member of a module that loaded FINE (BUG#53 class). The IDENT-receiver
+  # shape here is the one the pre-existing BUG#93 check could not see, because the chain's
+  # root identifier IS bound -- to the module. bin/t_modcollide.ax is the positive control.
+  "t_modnomember|reject|"
+  # ...and the FIELD_EXPR-receiver shape of the same rule, on a lazily loaded std module.
+  "t_stdmathnomember|reject|"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose
@@ -1302,8 +1324,8 @@ fi
 #     one-region map; the price is that the path string is no longer freed after the read,
 #     because srcmap_add stores it BY REFERENCE.
 dlm_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_diagloc_mod.ax -o "$REGTMP/dlm.exe" -O1 $AXEXTRA 2>&1 )
-dlm_hit=$( printf '%s\n' "$dlm_log" | grep -c -- '^ --> bin/t_diagloc_modlib.ax:8$' )
-dlm_gut=$( printf '%s\n' "$dlm_log" | grep -c '^8 |     let bad: u8 = 300$' )
+dlm_hit=$( printf '%s\n' "$dlm_log" | grep -c -- '^ --> bin/t_diagloc_modlib.ax:14$' )
+dlm_gut=$( printf '%s\n' "$dlm_log" | grep -c '^14 |     let bad: u8 = 300$' )
 dlm_off=$( printf '%s\n' "$dlm_log" | grep -c 'of the compilation unit' )
 if [ "$dlm_hit" = "1" ] && [ "$dlm_gut" = "1" ] && [ "$dlm_off" = "0" ]; then
   echo "PASS diagloc-module (--> bin/t_diagloc_modlib.ax:8, raw byte-offset fallback gone)"; pass=$((pass+1))

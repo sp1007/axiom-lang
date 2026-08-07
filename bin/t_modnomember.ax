@@ -1,0 +1,13 @@
+// B4 (accept-then-miscompile, BUG#53 family): calling a member a SUCCESSFULLY LOADED
+// module does not export was accepted with no diagnostic at all -- air_builder lowered the
+// unresolved callee to a garbage register, emitted `call *reg`, and the linked program
+// SEGFAULTed. The pre-existing BUG#93 check could not see this shape: it asks whether the
+// receiver chain's ROOT identifier is unbound, and here it is bound -- to the module.
+//
+// lib_a.ax (repo root) exports `close` and nothing else; bin/t_modcollide.ax is the
+// positive control that calls it and returns 101.
+import lib_a
+
+fn main() -> i64:
+    println("không được biên dịch tới đây: ", lib_a.no_such_member(1))
+    return 0

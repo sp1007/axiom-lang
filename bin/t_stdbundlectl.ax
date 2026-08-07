@@ -1,0 +1,17 @@
+// CONTROL for t_stdmath: the BUNDLED std modules must keep behaving exactly as before.
+// A botched strip_imports breaks this file in one of two ways -- either it stops blanking
+// `import std.string` / `import std.collections` (so the resolver tries to LOAD a module
+// whose symbols are already spliced into this same unit), or it keeps blanking too much.
+// Three shapes are pinned at once:
+//   * a bare name from a bundled module   -- len("chào") = 5 BYTES (UTF-8), not 4 chars
+//   * a bundled generic container         -- new_vec[i64]()
+//   * a qualified name whose prefix is textually rewritten -- std.string.len("abc") = 3
+// 5 + 7 + 3 = 15.
+import std.string
+import std.collections
+
+fn main() -> i64:
+    mut v := new_vec[i64]()
+    v.push(7)
+    println("đối chứng module bundled: ", len("chào") + v.data[0] + std.string.len("abc"))
+    return 0
