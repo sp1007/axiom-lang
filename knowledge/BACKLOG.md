@@ -313,6 +313,74 @@ byte UTF-8** (`4b e1 ba bf 74 …` = "Kết quả…"), và render đúng trong 
 `SetConsoleOutputCP(65001)` lúc khởi động runtime **chỉ khi stdout là console** (không đổi byte ra
 pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string — không có.**
 
+## 🔴🔴 B1 — `strip_package_prefixes` LÀM HỎNG **HẰNG CHUỖI** (đo 2026-08-07, TỰ KIỂM CHỨNG)
+```axiom
+println("literal: std.string.len")   // in ra:  literal: len      ⛔
+println("also: std.io.open")         // in ra:  also: open        ⛔
+```
+`main_air.ax` `strip_package_prefixes` là **replace văn bản trên TOÀN BỘ nguồn**, không phân biệt
+code với **chuỗi**. Mọi chương trình user chứa `std.string.` / `std.io.` / `std.os.` … trong một
+literal đều bị **sửa âm thầm, không cảnh báo**. Đây là **thay đổi ngữ nghĩa im lặng** — §3 cấm.
+Nạn nhân sống trong chính compiler: `cgen.ax:773,777` so `fn_name == "std.string.len"`,
+`resolver.ax:807-818` `intern_string("std.string.len")` — trong image self-host chúng thành `"len"`.
+(Hiện *chưa* vỡ vì các nhánh đó liệt kê cả `"len"`, nhưng đó là **may**, không phải thiết kế.)
+
+## ⭐ RESOLVER ĐÃ ĐỦ SỨC — `strip_package_prefixes` là thứ THỪA, không phải thứ cần thiết
+Bằng chứng quyết định: `--no-stdlib` **bỏ qua cả `strip_imports` lẫn `strip_package_prefixes`**
+(`main_air.ax:1096,1128`), và dưới nó:
+`import std.math` + `std.math.sqrt(16.0)` ⇒ **build sạch, chạy ra `4.000000`** (cả -O0 lẫn -O1);
+control âm: `std.math.no_such_thing(...)` ⇒ lỗi đúng, exit 1.
+⇒ Chuỗi resolver + lazy loader **đã hoàn chỉnh và đang chạy**: `resolver.ax:785-800` →
+`:824-888` → `main_air.ax:1817 ax_driver_load_module` (`replace(mod_name,".","/")` ở `:1823`).
+❌ **Bác bỏ tiền lệ trong audit libc**: `std/net.ax` gọi `std.os.linux_sys.syscall(...)` **KHÔNG**
+phải bằng chứng resolver — tiền tố đó nằm trong danh sách rewrite, và **`std/net.ax` không parse
+nổi** (10 lỗi parse) nên chưa từng được biên dịch.
+⚠️ `std.string.len` "chạy được" **KHÔNG PHẢI** do resolver — nó bị **xoá 11 byte khỏi text** nên
+lexer chỉ thấy `len(...)`. Chứng minh: `std.string.no_such_fn` báo lỗi **tên trần**, và literal bị
+hỏng (B1 ở trên).
+
+## 🧭 HƯỚNG ĐÃ ĐỊNH GIÁ — option C, làm 4 stage, mỗi stage A==B
+**Stage 1 (nhỏ, có giá trị NGAY):** `strip_imports` (`main_air.ax:266`) chỉ bôi trắng khi tên module
+**đúng bằng** một trong 8 tên BUNDLED, thay vì mọi dòng bắt đầu `import std`. Dùng **một** helper
+`bundled_module_names()` mà `concatenate_stdlib` cũng dùng ⇒ hết "hai danh sách".
+⇒ `import std.math` + `std.math.sqrt(x)` **chạy được ngay**, không cần máy móc mới.
+**Stage 2:** đăng ký 8 tên bundled thành `SYM_MODULE` có cờ *bundled*; `lazy_resolver_resolve_field`
+tra cứu **scope toàn cục của unit hiện tại** thay vì nạp file ⇒ `std.collections.new_vec` chạy, và
+`std.string.len` bind **cùng một symbol** với `len` trần ⇒ **delta codegen = 0**.
+**Stage 3:** **XOÁ HẲN `strip_package_prefixes`** ⇒ hết B1, và **mở khoá CỘT trong chẩn đoán** (§3b).
+**Stage 4 (tuỳ chọn):** module scoping thật cho symbol spliced, dùng `Symbol.decl_node` → offset →
+`srcmap_find` (hạ tầng đã có từ stage 2b chẩn đoán).
+⛔ **KHÔNG làm option B** (nhồi thêm module vào bundle): chỉ 2/12 module thêm được an toàn
+(`math`, `sort`), trả **+0,15 s mỗi lần biên dịch VĨNH VIỄN** cho mọi user kể cả người không dùng,
+và **không sửa gì về cấu trúc**.
+📏 Đo được (bác bỏ lo ngại của tôi): DFE **bật mặc định** (`main_air.ax:928`) ⇒ bundle thêm module
+không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian biên dịch**, không phải kích thước.
+
+## 🐞 BUG PHỤ tìm được cùng lúc (mỗi cái filable riêng)
+- **B2** `import stdthing` bị xoá oan — `match_prefix(s,i,"import std")` (`main_air.ax:266`) **không
+  có biên phân cách** ⇒ mọi module tên bắt đầu bằng `std` bị nuốt. Đổi thành `xstdthing` thì hết.
+- **B3 🔴 CRASH** — module user `import std.string`/`std.collections` ⇒ **compiler SEGV 139**,
+  deterministic 4/4 ở cả -O0/-O1, trong lúc typecheck module được nạp. Không crash dưới
+  `--no-stdlib` ⇒ do **trùng lặp bundled-vs-loaded**. **Chưa localize được dòng.**
+- **B4 🔴 accept-then-miscompile (họ BUG#53)** — `mod.no_such_member()` trên module **đã nạp thành
+  công**: **nhận, sinh exe, SEGV lúc chạy, KHÔNG chẩn đoán**. (Namespace *chưa* import thì có báo.)
+- **B5** module nạp lazy có **lỗi parse KHÔNG dừng pipeline** — `main_air.ax:1892` bỏ qua
+  `parser_ptr.diags_count`, `:1921` bỏ qua `mod_checker.diags_count`, khác hẳn đường chính
+  (`:1193`/`:1276`) ⇒ exe vẫn được sinh với 8 lỗi.
+- **B6 🔴 CRASH** — `@compiler_intrinsic("is_windows")` trong module nạp lazy ⇒ **SEGV 139**.
+  Chặn `sync`/`thread`/`process` trên đường loader. Repro tối giản 5 dòng.
+⇒ **B4 + B5 phải sửa CÙNG stage 1**, vì stage 1 mở đường module cho `std` ⇒ phơi lỗ này ra mọi user.
+
+## 📋 SỨC KHOẺ 12 module (đo, không đoán)
+| module | parse | nạp qua loader |
+|---|---|---|
+| `math`, `sort` | ✅ | ✅ **chạy end-to-end** (`sqrt(16.0)`=4.0) |
+| `sync`, `thread`, `process` | ✅ | ❌ compiler **SEGV** (B6) |
+| `net, iter, json, fmt, time, crypto, log` | ❌ **không parse nổi** (7-16 lỗi) | — |
+⇒ **7/12 là ASPIRATIONAL**, chưa từng biên dịch được. Chỉ `math` + `sort` dùng được ngay sau stage 1.
+✅ Xác nhận `std/math.ax` là code THẬT: 0 import, 0 extern, 45+ `pub fn`;
+`sqrt(16)+pow(2,10)+sin(.5)+cos(.5)+ln(3)` = **1030.455620** đúng.
+
 ## 🔴 PHÁT HIỆN 2026-08-07 — PHẦN LỚN `std/` KHÔNG DÙNG ĐƯỢC trên đường build native
 Đo trực tiếp (không suy đoán). Có **HAI danh sách CỨNG phải khớp nhau, và chúng KHÔNG khớp**:
 - `concatenate_stdlib` (`main_air.ax`) nối **8 file**: result, mem/alloc, scheduler, runtime, os,
