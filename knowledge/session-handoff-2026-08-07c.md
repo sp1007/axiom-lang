@@ -7,32 +7,22 @@ metadata:
 
 # Handoff 2026-08-07c — ĐỌC MỤC "⚠️ VIỆC DỞ DANG" TRƯỚC
 
-## ⚠️ VIỆC DỞ DANG (quan trọng nhất)
-**Stage 1 stdlib-reachability đã gate xong nhưng CHƯA COMMIT.**
-- Candidate: `bin/axc_fpA.exe` == `bin/axc_fpB.exe`, **2.329.600 byte**,
-  A==B `9C6726C11F366ACA5BA3970F72D0C0502C7495506F82AEBBCEF33A6C14C326E2`.
-- `bin/axc_native.exe` (2.322.944 byte, mốc `3f54ed5`) **CHƯA promote** — vẫn là escape hatch.
-- ⚠️ **Agent báo 709/709 nhưng lần tự chạy của tôi ra 708/1** — `diagloc-module` FAIL.
-  Nguyên nhân: agent sửa comment trong `bin/t_diagloc_modlib.ax` ⇒ **đẩy dòng lỗi từ 8 sang 12**,
-  còn khối assert trong harness vẫn ghi 8; agent khẳng định khối đó "vẫn pass" mà **không kiểm**.
-  Bản thân chẩn đoán ĐÚNG — chỉ có con số dòng trong assert là cũ. Đã sửa assert về **dòng 14**
-  (comment của tôi lại đẩy thêm 2 dòng nữa) và sửa cả câu "line 8" tự mâu thuẫn trong fixture.
-  ⇒ **Bài học lặp lại lần thứ 3 hôm nay: LUÔN tự chạy lại suite, đừng chuyển tiếp con số của agent.**
-  ⇒ Sau khi sửa: **709/709 ở mức default (tự chạy)**. Lượt `-O0` đang chạy khi phiên dừng —
-  **phải chạy lại và xác nhận trước khi promote**.
-- **Cây làm việc đang BẨN**: `main_air.ax`, `resolver.ax`, `typecheck.ax`,
-  `scripts/regression_repros.sh` + 7 file `bin/t_*.ax` mới + `std_util.ax` ở gốc repo.
+## ✅ TRẠNG THÁI: SẠCH, ĐÃ COMMIT HẾT, GREEN — không có việc dở dang
+Stage 1 stdlib-reachability **đã gate, đã promote, đã commit** (`7faee73`).
+`git status` sạch (chỉ còn `.claude/settings.json` untracked — file của user, KHÔNG đụng vào).
 
-### Việc cần làm ngay khi vào phiên mới
-1. Chạy lại `AXC=bin/axc_fpB.exe bash scripts/regression_repros.sh` ở **cả** default và
-   `AXEXTRA=-O0`. Kỳ vọng **709/709**. Nếu đúng ⇒ `cp bin/axc_fpB.exe bin/axc_native.exe` rồi commit.
-2. Nếu KHÔNG đạt 709 ⇒ **đừng promote**, chẩn đoán trước.
+⚠️ **Bài học lặp lại lần thứ 3 trong ngày — ghi lại vì nó suýt lọt:** agent báo **709/709**,
+lần **tự chạy** của tôi ra **708/1** (`diagloc-module` FAIL). Agent đã sửa comment trong
+`bin/t_diagloc_modlib.ax` ⇒ **đẩy dòng lỗi từ 8 sang 12**, nhưng khối assert vẫn ghi 8, và agent
+khẳng định khối đó "vẫn pass" mà **không hề kiểm**. Chẩn đoán bản thân nó ĐÚNG; chỉ số dòng trong
+assert là cũ. Đã sửa assert về **dòng 14** và sửa câu "line 8" tự mâu thuẫn trong fixture.
+⇒ **LUÔN tự chạy lại suite. Đừng chuyển tiếp con số của agent.**
 
-## Trạng thái đã commit (HEAD `4c92d57`)
+## Trạng thái đã commit (HEAD `7faee73`)
 | | |
 |---|---|
-| Driver `bin/axc_native.exe` | A==B `35D66F1A…`, 2.322.944 byte |
-| Baseline đã commit | **703/703** (cả default lẫn `-O0`) |
+| Driver `bin/axc_native.exe` | A==B `9C6726C11F366ACA5BA3970F72D0C0502C7495506F82AEBBCEF33A6C14C326E2`, **2.329.600 byte** |
+| Baseline | **709/709** (cả default lẫn `-O0`, **tự chạy lại**) |
 | Mốc **B==C** gần nhất | `c3eae77` / `52D1ABD4…` — **backend kế tiếp phải dựng lại B==C từ driver MỚI** |
 | libc — compiler | `ucrtbase` **5**: atof memcpy memset strlen system |
 | libc — chương trình user | **3**: memcpy memset strlen (sàn) |
