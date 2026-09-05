@@ -75,6 +75,36 @@ ai đó từng đụng phải và **né tại chỗ** thay vì sửa hợp đồ
 Sửa ở call site (đừng free một alias) là rẻ nhất; đổi `replace` thành luôn-copy chạm hợp đồng stdlib
 nóng khắp self-image ⇒ phải đo A==B.
 
+#### ⭐⭐ B3b-2: hợp đồng aliasing NÀY ĐÃ ĐƯỢC VIẾT RA GIẤY — và vẫn bị vi phạm (đo 2026-09-05)
+`main_air.ax:869-873`, ngay trên `module_qualifier`, ghi **chính xác** cái bẫy:
+
+> *"Written as one explicit mapping loop rather than a chain of `std.string.replace` calls:
+> `replace` returns its INPUT unchanged when there is no match, so freeing each intermediate is a
+> use-after-free on exactly the inputs that need no substitution — which is most module names, and
+> **which segfaulted the resolver on the first attempt here**."*
+
+Nghĩa là tác giả đã: **đụng phải bug → mô tả đúng cơ chế → né tại chỗ** (viết vòng lặp tường minh cho
+`module_qualifier`; comment bỏ **hai** dòng free ở `resolver.ax:803` và `:809`; chuỗi `r0…r8` ở
+`main_air.ax:411-419` **không free trung gian nào**) — **nhưng `main_air.ax:1957` vẫn free.**
+
+⇒ **Đây là lần thứ TƯ trong một ngày của cùng một meta-pattern** (sau bản canh `typecheck.ax:1985` của
+B3/B6, dòng "bị chặn bởi P1" đã cũ, và `is_verbose_debug`). Đúng câu đã ghi trong
+[[lesson-exit-code-8bit-masking]]: **một sự thật ghi trong comment chỉ bảo vệ ĐÚNG DÒNG nó nằm trên;
+chỉ một CHECK mới bảo vệ mọi dòng.**
+
+**Blast radius đã đo: 24 lời gọi `std.string.replace`** trong compiler + std.
+
+**Hai đường sửa — cần chọn có chủ ý, không trôi:**
+- **(a) Sửa tại call site** (đừng free một alias) — tối thiểu, đóng bug sống, **không đổi hợp đồng**.
+  ✅ Làm cái này TRƯỚC (§14.5 "implement minimally first").
+- **(b) Cho `replace` LUÔN trả bản sao mới** — đóng **cả lớp** defect và làm mọi workaround "đừng
+  free" trở nên thừa. Nhưng đổi một hợp đồng stdlib **nóng, 24 call site**, dùng khắp self-image
+  ⇒ **bắt buộc đo A==B + suite 711**, và phải soát chỗ nào đang *dựa vào* việc không cấp phát.
+  ⚠️ Có chi phí cấp phát thật; §10 cấm tối ưu sớm nhưng đây là **đúng đắn**, không phải tối ưu.
+
+Khuyến nghị: (a) ngay, rồi cân nhắc (b) như một thay đổi riêng có đo đạc — **đừng gộp hai cái vào một
+commit**, vì (b) mà hỏng thì sẽ trông y hệt (a) hỏng.
+
 ### B3b-3 — cổng B5 kiểm quá muộn
 `main_air.ax:2033-2035` ghi `parser_ptr.diags_count` rồi **cố ý đi tiếp** (comment `:2029`) vào
 resolve/typecheck/export-walk trên **AST dựng dở**. Đo: `import std.iter` báo `23 parse error(s)` rồi
