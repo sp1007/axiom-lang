@@ -8,7 +8,7 @@ metadata:
 # Handoff 2026-09-05b (phiên tạm dừng theo yêu cầu user)
 
 ## ⛔ ĐỌC TRƯỚC: cây làm việc KHÔNG sạch, và phần chưa commit là CHƯA ĐƯỢC KIỂM
-HEAD = **`23ef7cf`** trên `main`. Cây còn **thay đổi chưa commit của B3b** + fixture untracked.
+HEAD = **`49f4dbe`** trên `main`. Cây còn **thay đổi chưa commit của B3b** + fixture untracked.
 **Không có gì trong đó đã qua gate.**
 
 | | |
@@ -54,13 +54,14 @@ HỮU** theo cách `:2704` đã làm, cần một handle cây gốc trên `AirMo
 5. Repro đối chiếu: `./bin/axc_native.exe build bin/probe_b3b_dotted.ax -o /tmp/pb3b.exe`
    ⇒ **trước khi sửa**: exit 1, `undefined name 'aparam'` ×2 (tự chạy lại 2026-09-05, vẫn đúng).
 
-## ✅ ĐÃ SHIP PHIÊN NÀY (4 commit trên `main`)
+## ✅ ĐÃ SHIP PHIÊN NÀY (5 commit trên `main`)
 | commit | nội dung |
 |---|---|
 | `e2b1ad6` | `BACKLOG.md` 59 KB → 41 KB: tách 3 mục sự thật ra file topic, để lại con trỏ |
 | `ccf5402` | tách nốt probe8 ⇒ **35,7 KB (−39%)**; con trỏ nay **gọi tên từng lỗ còn sống** |
 | `4699856` | **đo trước** hiệu chuẩn cho reject-guard + **đính chính đề xuất của chính lesson đó** |
-| `23ef7cf` | chẩn đoán "not bundled on this build" là **SAI** với 3 module đã bundled |
+| `7638bb8` | chẩn đoán "not bundled on this build" là **SAI** với 3 module đã bundled |
+| `49f4dbe` | handoff này + con trỏ `BACKLOG.md` |
 
 ### ⭐ Phát hiện đáng giá nhất phiên này (không phải bản vá)
 1. **107 hàng `reject` mù với việc compiler SẬP.** Đã **đo trước** để gỡ thế chặn: chạy cả 107 qua một
@@ -92,7 +93,7 @@ HỮU** theo cách `:2704` đã làm, cần một handle cây gốc trên `AirMo
 ## 🧾 Việc dọn dẹp còn treo cho phiên sau
 - Nhánh **`wip/b3b-current-tree` (`f71f40c`)** là **local, chưa push**. Nó **UNVERIFIED** — đừng
   merge; dùng làm lưới an toàn nếu cây làm việc bị mất.
-- ⭐ **Bài học tự rút:** commit `23ef7cf` lần đầu **vô tình nuốt 3 file fixture** vì implementer đã
+- ⭐ **Bài học tự rút:** commit `7638bb8` (bản đầu `23ef7cf`) **vô tình nuốt 3 file fixture** vì implementer đã
   `git add` sẵn chúng và `git commit` commit **TOÀN BỘ index**. Đã sửa (soft-reset + `restore --staged`).
   ⇒ **Sau khi một agent chạy xong, luôn `git status` TRƯỚC khi commit bất cứ thứ gì "chỉ là docs".**
 - File untracked cố ý giữ: `bin/probe_b3b_dotted.ax`, `bin/probe_b3*.ax`, `bin/probe_b6*.ax`,
