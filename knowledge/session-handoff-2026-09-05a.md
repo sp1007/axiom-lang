@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-09-05a
-description: Resume point — B3/B6 + B3b-3 shipped (cc4a2cf, baseline 713); B3b mechanism refuted and the stage order re-priced; B3b-2 in flight
+description: Resume point — B3/B6 + B3b-3 + B3b-2 shipped (153cbf0, baseline 714); B3b mechanism refuted and the stage order re-priced; B3b proper in flight
 metadata:
   type: project
 ---
@@ -8,13 +8,13 @@ metadata:
 # Handoff 2026-09-05a
 
 ## ✅ TRẠNG THÁI: SẠCH, ĐÃ COMMIT + PUSH, GREEN
-HEAD = **`cc4a2cf`** `fix(loader): a module with parse errors stops the build instead of crashing it`.
-Đã push lên `main`. **Một implementer đang chạy nền cho B3b-2** (UAF loader) — chưa commit gì.
+HEAD = **`153cbf0`** `fix(loader): stop freeing an alias of the module name`. Đã push lên `main`.
+**Một implementer đang chạy nền cho B3b THẬT** (chỉ số node xuyên cây) — chưa commit gì.
 
 | | |
 |---|---|
-| Driver `bin/axc_native.exe` | A==B **`E44344648837F413CB631C3CC1C3D8137C0F8D9B8B6EE35614DBF180C7284744`**, **2.329.600 byte** (đã `ls -l`) |
-| Baseline | **713/713** ở **CẢ** default **LẪN `-O0`** — **tự chạy lại, không lấy số của agent** |
+| Driver `bin/axc_native.exe` | A==B **`29DB6D68A6BDD7EE07542577C0344970F99AFAD1B0B640A7811211707C4D37DB`**, **2.330.112 byte** (đã `ls -l`) |
+| Baseline | **714/714** ở **CẢ** default **LẪN `-O0`** — **tự chạy lại, không lấy số của agent** |
 | Mốc **B==C** gần nhất | vẫn `c3eae77` / `52D1ABD4…` ⇒ **thay đổi backend kế tiếp phải dựng lại B==C từ driver MỚI này** |
 
 ## Đã ship phiên này
@@ -49,11 +49,12 @@ Ba phép đo: `--no-stdlib` (không hề trùng lặp) **vẫn hỏng**; trùng 
 
 **Thứ tự đúng (rủi ro thấp trước):**
 1. ✅ **B3b-3** — xong (`cc4a2cf`).
-2. 🔄 **B3b-2** — UAF loader, **đang chạy nền**. **HAI** chỗ free alias: `main_air.ax:1951` (tệ hơn —
-   free rồi truyền `mod_name` vào `register_module_from_lib`) **và** `:1957`, cộng chỗ thứ ba mới
-   thêm ở `cc4a2cf`. Làm **route (a)** (sửa call site); ⛔ **KHÔNG** đụng `replace` (route (b) chạm
-   24 call site, phải tách commit + đo A==B riêng).
-3. **B3b thật** — chỉ số xuyên cây: đưa qua `typecheck.ax:3793 sym_decl_tree` + kiểm biên §9.
+2. ✅ **B3b-2** — xong (`153cbf0`, A==B `29DB6D68…`, 714/714). Sửa **HAI** chỗ free alias bằng cờ
+   `rel_path_owned`; ⛔ **KHÔNG** đụng `replace` (route (b) chạm 24 call site — vẫn để mở, phải tách
+   commit + đo A==B riêng). CÒN MỞ: `resolver.ax:803/809` cùng bẫy (cần guard riêng); nhánh `.lib`
+   không free `mod_name` (rò rỉ nhỏ, có từ trước, **cố ý không đụng** vì không chạy được đường đó).
+3. 🔄 **B3b thật — ĐANG CHẠY NỀN.** Chỉ số xuyên cây: đưa qua `typecheck.ax:3793 sym_decl_tree` +
+   `:3824 pre_infer_symbol_signature` + kiểm biên §9.
    Site cần audit: `typecheck.ax:5416-5427` (**không kiểm biên**), `:1206-1216`, `mono.ax:418-437`,
    `mono.ax:473-529`, `air_builder.ax:769/:2096` (không kiểm) vs `:2705/:4005` (có kiểm).
    Repro: `b3bpkg/moda.ax` + `b3bpkg/modb.ax` + `bin/probe_b3b_dotted.ax` (untracked, đã bank).
