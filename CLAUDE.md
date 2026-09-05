@@ -303,10 +303,12 @@ regression-tests UTF-8 literal handling end to end.
 - run every oracle at **`-O0` and `-O1`**; a defect that diverges by optimization level is common
   in this codebase and only shows up if both are run.
 
-⚠️ **Prerequisite:** this rule needs `println("...", value)` to actually print the value.
-That is currently broken (every argument after the first is silently dropped — see
-`knowledge/BACKLOG.md` "P1"). Fix P1 first, then migrate oracles incrementally; do NOT
-big-bang-rewrite the existing `exit|` rows.
+✅ **Prerequisite MET (2026-09-05).** This rule needs `println("...", value)` to actually print the
+value. That was broken when the rule was written (every argument after the first was silently
+dropped — "P1"), but **P1 was closed by RFC 0038**; `println` is variadic and prints every argument.
+Verified end-to-end, not assumed: the oracles `bin/t_b3lazyintrinsic.ax` and `bin/t_b3stdsync.ax`
+run through the suite at **both** default and `-O0` and print `...: 42`.
+⇒ Migrate oracles incrementally; do NOT big-bang-rewrite the existing `exit|` rows.
 
 ---
 

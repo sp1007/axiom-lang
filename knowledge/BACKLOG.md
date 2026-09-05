@@ -538,8 +538,13 @@ chẩn đoán). **Cần định giá trước khi làm.**
      Thay bằng cờ `--verbose` thật = đổi bề mặt CLI ⇒ **cần RFC**.
 4. 🆕 **QUY TẮC TEST MỚI (user, 2026-08-05) — xem CLAUDE.md §7.1.** Không phán quyết bằng exit code
    nữa; oracle phải `println("<chuỗi UTF-8>", <giá trị>)` và so **stdout tường minh**.
-   ⚠️ **BỊ CHẶN BỞI P1**: `println(str, val)` hiện nuốt đối số thứ hai ⇒ **phải sửa P1 trước**, rồi
-   mới di trú oracle. 672 hàng baseline hiện đa số là `exit|` — di trú dần, không big-bang.
+   ✅ **HẾT BỊ CHẶN (xác nhận 2026-09-05)** — P1 đã đóng bằng RFC 0038 (xem §`print`/`println` ở trên),
+   nên `println("...", val)` **in đúng giá trị**. Bằng chứng end-to-end: hai oracle mới
+   `t_b3lazyintrinsic` / `t_b3stdsync` chạy qua suite ở **cả** default lẫn `-O0` và in
+   `... : 42`. ⇒ **Di trú oracle sang §7.1 nay THỰC HIỆN ĐƯỢC**; 711 hàng baseline vẫn đa số là
+   `exit|` — di trú **dần**, không big-bang.
+   ⚠️ Dòng "bị chặn bởi P1" cũ đã đứng sai suốt từ khi RFC 0038 ship — đúng cái bẫy CLAUDE.md §24
+   mô tả: **một TODO ghi giữa phiên thường bị một commit SAU đó đóng, mà không ai quay lại gạch đi.**
 
 ## ✅ ĐÃ XONG gần đây (giao thức đo M6)
 - **arrwalk có bản đọc phân phối** — đã xong ở commit `3ef26f0` (cùng ngày, template `hot()` trong
