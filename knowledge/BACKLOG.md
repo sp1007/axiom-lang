@@ -100,60 +100,12 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
   [question-out-of-range-narrow-int-literal](question-out-of-range-narrow-int-literal.md).
   Commit `abfe985` (E3030 gốc) + `f6ac69e` (phủ đối số method cho cả ba luật).
 
-## 🐞 BUG — probe4 tìm ra 2026-07-30, ĐÃ TỰ XÁC MINH LẠI (không chỉ theo báo cáo agent)
-**CẢ BỐN ĐỀU ĐÃ ĐÓNG 2026-07-31** — #1/#2/#3 được sửa, #4 **giải thể** (phát biểu sai, xem dưới).
-Giữ nguyên bản ghi vì mỗi mục đều dạy một bài học chẩn đoán khác nhau, và ba mục đầu là
-**accept-then-miscompile** (lớp BUG#53) đều có ma trận đối chứng trong
-`bin/probe4/`. Repro chạy bằng `sh bin/probe4/run.sh <file.ax>`.
-⚠️ Driver cần subcommand `build`: `bin/axc_native.exe build f.ax -o out.exe -O0`. **Thiếu `build`
-thì nó exit 0 mà KHÔNG sinh file** — đừng đọc đó là build thành công (tôi đã mắc đúng bẫy này).
-
-1. ✅ **ĐÃ SỬA 2026-07-31 (`6febd02`)** — luật nằm ở **tầng lowering** (`coerce_int_to_float`, nay là
-   `coerce_to_float_target`), gọi ở MỌI value site, **không** phải mở rộng hint ở typecheck: hint chỉ
-   retype được LITERAL, còn int-**biến** → f64 thì storage đã dựng theo bề rộng của chính nó. Làm cả
-   hai nơi sẽ tái dựng đúng hình dạng "hai bản sao một cơ chế" đã đẻ ra cả họ bug này. Chẩn đoán ban
-   đầu (mở rộng `typecheck.ax:5208`) **SAI**, và implementer đã nói ra thay vì làm theo. Mô tả gốc:
-   **`OP_ICONST` mang `type_id` FLOAT** — `let a: f64 = 3` ra **0.0**. Xác minh: `probe4/h1.ax`
-   -O0 exit **1** (đúng phải 42). Root: `air_builder.ax:572-589` `lower_int_lit` phát `OP_ICONST` với
-   type_id 9/10, còn sibling `lower_float_lit` (`:591`, emit `:601-614`) làm đúng — **bản sao int
-   chưa từng được mở rộng**. Breadth CỰC RỘNG: `let`/assign/param/field-init/array-elem/`return`/
-   `3 as f64`/`c + 3`/`3 / 2.0`/`c > 2`. -O0 và -O1 **phân kỳ** (họ aliasing `R10 ≡ XMM10`) ⇒ oracle
-   phải chạy CẢ HAI. ⚠️ `knowledge/bugs.md:1015-1019` khẳng định *"`let x: f64 = 3` → OK"* — **câu đó
-   SAI và chưa từng được kiểm** — nay đã đúng. Oracle: `bin/t_intlitfloatctx.ax`, `bin/probe7/{p1,p2}.ax`.
-2. ✅ **ĐÃ SỬA 2026-07-31** — dynamic dispatch bỏ hết coercion cho đối số (`i.c32(1.5)` → 0.0):
-   [bug-iface-dispatch-arg-coercion](bug-iface-dispatch-arg-coercion.md), RFC 0029 §9, oracle
-   `bin/t_ifacefloatarg.ax` (hiệu chuẩn **30** trước → **42** sau). ⚠ Chẩn đoán “sửa ở typecheck, gate
-   A==B” **SAI PHA**: coercion đối số của method call nằm ở `air_builder.coerce_float_arg` (đọc kiểu
-   tham số từ **SYMBOL callee**), dispatch không có symbol ⇒ phải publish signature của interface cho
-   backend. Gate thực tế **A==B==C**. ⚠ `probe4/f1.ax` nay ra **110** chứ không phải 42 — vì chạm một
-   defect **KHÁC, có từ trước**: f32 **RETURN** qua dispatch đọc thanh ghi cũ khi lời gọi dispatch trước
-   đó cũng trả f32 và có đối số (`bin/probe5/r6e.ax` = **101** trên CẢ compiler cũ lẫn mới).
-3. ✅ **ĐÃ SỬA 2026-07-31 (`e6c507c`, mở rộng sang đối số method ở `f6ac69e`)** — nay là
-   `error[E3031]`, dùng chung `check_annotated_target` với E3030/E3032. ⚠️ Đính chính bản ghi cũ: ở
-   **đối số method**, ca float→int KHÔNG phải hình dạng "bit IEEE thô" như `let`: literal f64 đi vào
-   XMM còn tham số i64 đọc từ **thanh ghi nguyên CHƯA KHỞI TẠO** ⇒ giá trị không cả deterministic
-   theo call context (RFC 0006 §6.2). Mô tả gốc: **`let a: i64 = 3.0` được NHẬN, cho ra bit pattern
-   IEEE thô** — `probe4/g13.ax` exit **3** (i64 giữ
-   `0x4008000000000000`). **Spec ĐÃ chốt hướng này**: `knowledge/bugs.md:1015` — *"float → int: CẤM
-   ngầm, phải `as`"* ⇒ **REJECT + chẩn đoán**, KHÔNG cần user quyết (khác ca `u8 = 300` ở §CẦN USER
-   QUYẾT, ca đó chưa có phán quyết). Frontend ⇒ A==B.
-4. ❌ **GIẢI THỂ (DISSOLVED) — cách phát biểu ban đầu SAI HOÀN TOÀN. Đừng đi săn bug thanh ghi float
-   không tồn tại.** Sự thật (`3741afc` chép lại, fix ở **`a281992`**): phân giải tên method khớp một
-   tên trần với **SUBSTRING chặn bởi `_`** của tên method khác ⇒ **chọn NHẦM HÀM**. `p32_r32` kết
-   thúc bằng `_r32`, nên **cả hai** slot vtable nhận địa chỉ `p32_r32`; `i.r32()` gọi một hàm 2 tham
-   số qua call site 1 đối số và trả về một tham số đọc từ thứ mà lời gọi trước để lại trong XMM1.
-   **Thanh ghi cũ là HỆ QUẢ, không phải nguyên nhân.** Chốt bằng disassembly: `mov $0x2a` không hề
-   xuất hiện trong image ⇒ `S.r32` chưa bao giờ được sinh. Root cause có trước công việc dispatch
-   **hai tháng** (`ec5667d`) — đó chính là lý do repro fail y hệt nhau ở CẢ hai phía của `5359a39`.
-   Bug này **type-agnostic** (i64/f32/f64/str/bytes), **không riêng dispatch** (gọi tĩnh cũng sai),
-   với dạng nặng hơn là **nhầm KIỂU** (-O0 và -O1 bất đồng) và **nhầm ARITY**.
-   ✅ Tự đo lại 2026-07-31: `r6e` = **42**, `probe4/f1.ax` = **42** (trước 110), cả `-O0` lẫn default.
-   Mô tả gốc (SAI, giữ làm bản ghi): **f32 RETURN qua dynamic
-   dispatch đọc thanh ghi CŨ** khi lời gọi dispatch **ngay trước** cũng trả **f32** *và có đối số*:
-   lời gọi thứ hai trả về giá trị của lời gọi thứ nhất. Repro `bin/probe5/r6e.ax` = **101** (đúng phải 42)
-   trên **CẢ** `axc_native` cũ lẫn compiler mới ⇒ đã quy trách nhiệm rõ, không đổ cho fix #2. Thu hẹp sẵn:
-   hai lời gọi f32 **không đối số** liên tiếp thì ĐÚNG (`r6f.ax` = 42); riêng **vị trí slot** không phải nguyên
-   nhân (`r6c.ax` = 42, slot 5). Đây là lý do `probe4/f1.ax` dừng ở **110** thay vì 42.
+## ✅ probe4 (2026-07-30) — **CẢ BỐN ĐÃ ĐÓNG 2026-07-31** → `knowledge/probe4-closed-bugs-2026-07-31.md`
+#1 `OP_ICONST` mang type_id float (`6febd02`, sửa ở **tầng lowering** chứ không phải hint typecheck) ·
+#2 dispatch bỏ coercion đối số (RFC 0029 §9, gate thực tế **A==B==C**) · #3 `let a: i64 = 3.0` nay
+`error[E3031]` · #4 **GIẢI THỂ** — ⛔ **đừng đi săn "bug thanh ghi float"**, nguyên nhân thật là khớp
+**substring chặn bởi `_`** khi phân giải tên method (`a281992`); thanh ghi cũ chỉ là **hệ quả**.
+⚠️ Bẫy driver ghi ở đó vẫn sống: **thiếu subcommand `build` thì driver exit 0 mà KHÔNG sinh file.**
 
 ## 🐞🐞 BUG MỞ — quét sau `a281992` (probe8, 2026-07-31). **KHÔNG phải quét sạch: 3 lỗ SỐNG.**
 Tất cả đều đo được, có control đối chứng, ở `bin/probe8/` (runner `run8.sh`, ma trận `matrix8.sh`).
@@ -236,125 +188,13 @@ cả 10 đều nằm ở chỉ số ≥ 822 — đúng dải mà một chunk **b
 **Union chỉ có thể BÁO THỪA reject, không bao giờ giấu mất một reject thật** ⇒ kết luận audit vẫn
 đứng vững. Lần sau: chunk < 10 phút, và **vứt** output của lượt bị giết thay vì gộp.
 
-## 🐞🐞🐞 `print`/`println` (user báo 2026-08-05) — **P1/P2/P3 ĐÃ SỬA, P4 CÒN MỞ, P5 không phải bug**
-✅ **P1+P2+P3 đóng bằng RFC 0038** (`air_builder.ax:2500-2595` desugar + `typecheck.ax:2599-2692`
-`error[E3033]`). Gate **A==B = `99F795C212B3CFE2BF28DCB3CEF06CDA0CAF133F09EBC7D12F5400B13B3FF783`**,
-regression **677/677 ở CẢ default lẫn `-O0`** (672 cũ + 5 hàng mới) ⇒ **BASELINE MỚI = 677**.
-Driver `bin/axc_native.exe` = **2.308.096 byte** (mốc A==B này).
-Tự kiểm chứng độc lập (không chỉ theo báo cáo agent): `Kết quả tính toán thử nghiệm: 15` exit 15;
-byte `4b e1 ba bf …` = UTF-8 đúng; `println()` trần hết segfault; `error[E3033]: cannot print a value
-of type \`Point\``.
-⚠️ Hai điều implementer làm KHÁC brief, đều có lý do đo được: (a) dòng UTF-8 gộp vào **một** dòng
-output vì harness so bằng command substitution (chỉ strip newline CUỐI) ⇒ hai dòng thì `want` không
-khớp được; (b) **E3033 bỏ qua `TYPE_KIND_GENERIC`** — thân template chưa instantiate (`fn dump[T](v: T)`)
-sẽ bị false-positive, bản mono hoá mang kiểu cụ thể và VẪN bị kiểm.
-⚠️ Ghi nhận chưa xử lý: `cgen.ax:1527-1541` cùng hình dạng 1-đối-số, được desugar AIR sửa cho **miễn
-phí**, nhưng bảng phân loại kiểu của nó **HẸP HƠN** selector x86 (`i8/i16/u8/u16/isize/usize` không
-ánh xạ sang `_i64`). Có từ trước, backend-local ⇒ item riêng.
-
-Bản ghi gốc (giữ nguyên vì mỗi mục dạy một bài học chẩn đoán):
-Repro ở `bin/probe9/` (chạy **từ REPO ROOT**: `./bin/axc_native.exe build bin/probe9/pn1.ax -o
-bin/probe9/pn1.exe -O0` — chạy từ `/tmp` sẽ fail "cannot open source file" vì driver phân giải
-đường dẫn stdlib theo cwd).
-
-**P1 — MỌI đối số sau đối số ĐẦU bị NUỐT IM LẶNG.** `println("val: ", s)` in `val: ` rồi hết.
-Lớp accept-then-miscompile (họ BUG#53). Gốc: `x86_selector.ax:1737-1776` chỉ đọc
-`extras.data[arg_start+1]` (đối số ĐẦU), đổi target thành hàm runtime **1 tham số**
-(`ax_println_{str,i64,f64,bool}`, sym_imm −10..−17), nhưng **không sửa `arg_count`** ⇒ đối số 2..N
-vẫn được nạp vào RDX/R8/… nơi không ai đọc. **AIR vẫn giữ đủ đối số** (dump `pn1.ax`: extras[0]=2,
-extras[1]=%3, extras[2]=%2) ⇒ mất mát xảy ra **CHỈ ở selector**. `resolver.ax:484-485` đăng ký
-`print`/`println` là `SYM_BUILTIN_TYPE` **không có kiểm arity ở bất cứ đâu**; `typecheck.ax` không
-hề chứa chuỗi `"print"`/`"println"`.
-⇒ **Hướng đã chốt: desugar ở `air_builder`, KHÔNG ở selector** (§4 CLAUDE.md — selector không được
-tự chế N lời gọi từ 1). Điểm chèn **`lower_call_expr`, `air_builder.ax:1881`, ngay sau `:2498`
-trước `:2500`**; tiền lệ cùng hình dạng: desugar builtin `assert` ở `:2481-2498`.
-⚠️ **Lower HẾT đối số TRƯỚC rồi mới phát N lời gọi** — viết thẳng `print(a); print(b)` sẽ đổi thứ tự
-đan xen tác dụng phụ (mất tính chất "đánh giá hết trước khi in" của printf). `temp_count < 2` ⇒ AIR
-**byte-identical** với hôm nay.
-⚠️ Ba bẫy: (1) `print_sym` phải **tra cứu** (`name_id == intern("print") and kind ==
-SYM_BUILTIN_TYPE`), **không** suy ra bằng `println_sym - 1`; (2) guard theo `SYM_BUILTIN_TYPE` chứ
-không theo tên, để hàm `println` do user định nghĩa không bị desugar; (3) chuỗi rỗng tổng hợp phải
-intern **kèm dấu nháy** `"\"\""` — `lower_string_lit` (`:669-682`) intern **nguyên văn token có
-`"`), backend strip bằng `unescape_string_literal` (`print_helpers.ax:24-37`). (Đường `assert` ở
-`:2494` intern **không** nháy — đừng chép mù, nó sống sót chỉ vì `unescape` no-op khi ký tự đầu
-không phải `"`.)
-✅ **Blast radius = 0**: quét đủ 1202 file `*.ax` — **không có** call site ≥2 đối số nào trong
-`bootstrap/stage1/`, `std/`, `stdlib/`, `tests/`. Compiler chỉ dùng `print_helpers.ax:75,80`
-(**1 đối số, `str`**) và **không bao giờ** dùng `println()` trần ⇒ self-image không đổi ⇒ **gate
-A==B**. Chỉ `examples/bigfloat128.ax:124` (chính file user sửa) là call site thật.
-📄 **Cần RFC** (§13 — đổi hợp đồng bề mặt ngôn ngữ của builtin; chưa RFC nào phủ `print`): arity ≥ 0;
-đánh giá trái→phải **trước mọi output**; chỉ lời gọi CUỐI của `println` phát newline; `println()` ≡
-`println("")`; **không** chèn dấu phân cách. Ghi chú: `std/fmt.ax:47,52` **đã khai báo**
-`pub fn print(args: ...)` variadic ⇒ desugar là *thực thi* chữ ký stdlib, không phải nới luật.
-
-**P2 — `println()` KHÔNG đối số ⇒ SEGFAULT 139** (`bin/probe9/pn3.ax`). `x86_selector.ax:1770-1776`
-chọn `ax_println_str` mà không có đối số ⇒ runtime deref rác trong RCX. (Bản ghi cũ của tôi nói
-"`println()` đã chạy được" — **SAI**, đã đo lại.)
-
-**P3 — lỗ KIỂU, độc lập arity, CÓ TỪ TRƯỚC.** `x86_selector.ax:1742` phân loại 1..8/15/16=int,
-11=bool, 9/10=float, **còn lại ⇒ `str`** (deref như con trỏ chuỗi):
-`char8` (id 13) ⇒ **SEGFAULT**; struct / `ptr[T]` / `void` ⇒ **dòng trắng, exit 0** (accept-then-
-miscompile); `u32`/rune ⇒ in số chứ không in ký tự. Desugar **nhân bội phơi nhiễm** (đối số 2 hôm
-nay bị nuốt vô hại, sau desugar thành lời gọi thật) ⇒ nên ship **kèm** chẩn đoán frontend
-`error[Exxxx]: cannot print a value of type T`, cho phép đúng `{i8..u64, isize, usize, bool, f32,
-f64, str, bytes}`. Frontend ⇒ không đổi gate.
-
-**P4 — hàm `println` DO USER ĐỊNH NGHĨA bị cướp** (`bin/probe9/pn8.ax`: khai báo
-`fn println(a: str, b: i64) -> i32`, gọi ra in `x` và trả **1** thay vì 7). Selector khớp theo
-**chuỗi TÊN** đã phân giải (`x86_selector.ax:1730`→`:1737`), không theo **danh tính symbol** — đúng
-lớp defect "khớp theo cách VIẾT, không theo danh tính" đã ghi cho RFC 0037. Sửa đúng = đưa việc chọn
-symbol runtime ra khỏi selector ⇒ **chạm backend ⇒ B==C**. **Tách item riêng, không gộp vào P1.**
-
-**P6 ✅ ĐÃ SỬA 2026-08-06** (A==B `A58F762AACDB79C1164481FFED09AD2DD4B0A357B662A4C08420C06BABB5FE97`,
-regression **682/682 ở CẢ default lẫn `-O0`**). Gốc **KHÔNG** nằm ở dispatch interface như nghi ban
-đầu: `typecheck.ax` (khối phục hồi BUG#61) đọc `NODE_FIELD_EXPR.payload` **như CHỈ SỐ SYMBOL** mà
-không kiểm cờ phân biệt **2048**. Với method call thường, payload là **ID INTERN CỦA TÊN**, nên
-`intern("count")` tra vào bảng symbol và **kiểu trả về của một symbol stdlib xa lạ** (Option/Result/
-Vec) bị đóng dấu lên lời gọi trả `i64` ⇒ `c + 30` bị từ chối. Sửa bằng **một** accessor
-`callee_symbol` (bản cài đặt DUY NHẤT của luật cờ-2048; site `:5470` cũng đi qua nó) **+ kiểm
-`kind == SYM_FUNC`**.
-⭐ Kiểm SYM_FUNC **không phải thừa**: nếu thiếu, callee `NODE_IDENT` là **VARIANT** (`Ok`/`Err`/
-`Some`) rơi vào `pre_infer_func_signature(cdecl)` trên node khai báo VARIANT, đóng dấu chữ ký FUNC
-**0 tham số** lên symbol variant ⇒ **từ chối oan** `'Ok' expects 0 argument(s), found 1`. Đo bằng
-bản dựng có instrument: `std/result.ax` dính 3 lần (symkind=5, nodekind=42) và bị **reject với 7
-lỗi**; `scratch/stage2_preprocessed.ax` **134 lỗi**. Cả hai nay biên dịch được.
-Breakage audit **1649 file**, before/after: **0 reject mới**, 6 accept mới (3 file kể trên +
-`std/collections_test.ax` + 2 oracle mới).
-Bốn extern chết `fseek`/`ftell`/`rewind`/`fputs` ở `std/io.ax` **ĐÃ XOÁ**; `bin/t_ifaceconsumer.ax`
-vẫn exit 46. Oracle: `bin/t_p6methodname.ax` (+ control `bin/t_p6methodnamectl.ax`),
-`bin/t_p6count.ax`.
-⚠️ Câu **"THÊM một extern thì vô hại; chỉ XOÁ mới kích hoạt"** trong bản ghi gốc dưới đây là **SAI**
-(ảo giác lấy mẫu trên một ánh xạ tuỳ tiện) — thêm extern cũng làm hỏng ở Δ=+2,+5,+6.
-
-Bản ghi gốc (giữ lại vì dấu vân tay chẩn đoán vẫn đáng học):
-**XOÁ một khai báo `extern` CHẾT làm HỎNG biên dịch một chương trình
-KHÔNG LIÊN QUAN.** Phát hiện 2026-08-06 khi dọn libc bước 0; **deterministic, đã bisect xong.**
-Repro (compiler nào cũng dính, kể cả binary đã commit — vì `concatenate_stdlib` đọc `std/*.ax`
-**từ đĩa lúc biên dịch**, nên đổi `std/io.ax` là đủ, không cần dựng lại compiler):
-1. xoá **bất kỳ MỘT** dòng trong bốn dòng `extern "C" fn {fseek,ftell,rewind,fputs}` ở `std/io.ax`;
-2. `./bin/axc_native.exe build bin/t_ifaceconsumer.ax -o x.exe -O1`
-⇒ `error: operator '+' is not defined for Option/Result operands (missing .unwrap()?)` +
-`error: type 'Option' does not implement 'add' ...`.
-Biểu thức bị tố là `a.run(8) + b.run(20)` — **hai toán hạng đều là `i64`** trả về từ dispatch
-interface, **cả chương trình không có Option/Vec nào**.
-⭐ **Dấu vân tay quyết định:** *tên kiểu báo lỗi thay đổi theo SỐ LƯỢNG khai báo bị xoá* — xoá 1 ⇒
-`Option`, xoá cả 4 ⇒ `Vec`. Đó là chữ ký của việc **đọc kiểu qua một CHỈ SỐ trôi theo bảng symbol**,
-không phải kiểu gắn với biểu thức. (Câu tiếp theo của bản ghi gốc — *"THÊM một extern thì vô hại;
-chỉ XOÁ mới kích hoạt"* — đã bị **BÁC BỎ**, xem phần đã-sửa ở trên.) Không
-phải "nhiễu do đổi số dòng" (xoá một dòng COMMENT cũng vô hại — đã đo).
-Không phải phụ thuộc sử dụng: **không file bundled nào dùng** fseek/ftell/rewind/fputs (đã grep đủ 8
-file trong `main_air.ax:401-426`).
-Hiện đang **fail-safe** (lỗi biên dịch, không phải miscompile) — nhưng cùng LỚP với các defect
-"đọc qua chỉ số/tên không ổn định" đã đẻ ra miscompile ở repo này. Nghi vấn *(SAI — không phải
-dispatch, xem phần đã-sửa)*: phân giải **kiểu TRẢ VỀ của lời gọi dispatch** trong typecheck.
-✅ Bốn extern chết ở `std/io.ax` **đã được xoá** cùng bản sửa, đúng như dự kiến làm regression test.
-
-**P5 — KHÔNG phải bug compiler: UTF-8 in ra sai là do CODEPAGE console.** Đã đo: exe phát **đúng
-byte UTF-8** (`4b e1 ba bf 74 …` = "Kết quả…"), và render đúng trong cả Git Bash lẫn PowerShell khi
-`chcp` = 65001. Runtime ghi byte thô bằng `WriteFile` (`bootstrap/runtime/syscall.ax:9-10`,
-`panic.ax:42-50`) ⇒ console codepage ≠ 65001 sẽ mojibake. Cải tiến sản phẩm khả dĩ:
-`SetConsoleOutputCP(65001)` lúc khởi động runtime **chỉ khi stdout là console** (không đổi byte ra
-pipe/file ⇒ giữ tính tất định). **Đừng đi săn bug lexer/string — không có.**
+## 🐞 `print`/`println` — họ defect P1–P6 → **`knowledge/bug-println-arity-and-type-defects.md`**
+**P1/P2/P3 ĐÃ SỬA** (RFC 0038, A==B `99F795C2…`, baseline 677 lúc đó). **P5 không phải bug** (codepage
+console, không phải lexer/string — đừng đi săn). **P6 ĐÃ SỬA** 2026-08-06 (A==B `A58F762A…`).
+🔴 **CÒN MỞ — P4:** hàm `println` do **user định nghĩa** bị selector cướp vì khớp theo **chuỗi tên**
+(`x86_selector.ax:1730`→`:1737`) chứ không theo **danh tính symbol** — cùng lớp defect với RFC 0037.
+Sửa đúng = đưa việc chọn symbol runtime ra khỏi selector ⇒ **chạm backend ⇒ bắt buộc B==C**.
+⚠️ Item phụ chưa xử lý: `cgen.ax:1527-1541` có bảng phân loại kiểu **HẸP HƠN** selector x86.
 
 ## 🔴🔴 B1 — `strip_package_prefixes` LÀM HỎNG **HẰNG CHUỖI** (đo 2026-08-07, TỰ KIỂM CHỨNG)
 ```axiom
@@ -382,46 +222,15 @@ nổi** (10 lỗi parse) nên chưa từng được biên dịch.
 lexer chỉ thấy `len(...)`. Chứng minh: `std.string.no_such_fn` báo lỗi **tên trần**, và literal bị
 hỏng (B1 ở trên).
 
-## 🧭 HƯỚNG ĐÃ ĐỊNH GIÁ — option C, làm 4 stage, mỗi stage A==B
-**Stage 1 ✅ XONG 2026-08-07** (A==B `9C6726C1…`, 709/709 ở cả hai mức, breakage audit 870 file).
-`strip_imports` nay bôi trắng **chỉ khi tên module đúng bằng** một mục trong **MỘT bảng duy nhất**
-`preprocessed_module_name()` (11 mục: 8 bundled + `std.os.win32`/`std.os.linux_sys`/`std.net` —
-ba tên chỉ bị `strip_package_prefixes` viết lại, không bundled, nhưng import của chúng vẫn phải bôi
-trắng vì call site đã mất tiền tố). `concatenate_stdlib` đọc đường dẫn qua `bundled_module_path(i)`
-suy ra **từ chính bảng đó** ⇒ hết "hai danh sách".
-⇒ `import std.math` + `std.math.sqrt(16.0)` **chạy end-to-end** (`bin/t_stdmath.ax` = 12.000000).
-✅ **B2 rơi ra miễn phí** (so khớp CHÍNH XÁC ⇒ có biên phân cách theo cấu trúc); **B4** và **B5**
-đã sửa cùng stage (xem §BUG PHỤ).
-⚠️ **Hệ quả đã đo:** `import std.{sync,thread,process,iter,cli}` nay **tới được loader ⇒ compiler
-SEGV** (B3/B6) thay vì bị nuốt im lặng như trước. Không file nào trong corpus dính (audit 0
-collateral), nhưng đây là **bug tiếp theo phải sửa** — crash không chẩn đoán là tệ hơn cả im lặng.
-⛔⛔ **THỨ TỰ DƯỚI ĐÂY LÀ SAI — đã đo 2026-09-05, xem
-`knowledge/bug-b3b-cross-module-index-and-loader-defects.md` §5-§7.** Giữ nguyên văn để đối chiếu,
-nhưng **đừng thực hiện theo thứ tự này**:
-- **Stage 4 KHÔNG "tuỳ chọn" — nó là TIỀN ĐỀ của stage 2.** Không có danh tính theo module thì stage 2
-  **buộc phải khớp theo CHÍNH TẢ** ⇒ **vi phạm quyết định D1-3**.
-- **Stage 3 KHÔNG rẻ hơn stage 2 — nó PHỤ THUỘC stage 2** (hôm nay chính lời gọi `std.string.replace`
-  của compiler chỉ chạy nhờ viết lại văn bản). Và **B1 không cần stage 3**: cho
-  `strip_package_prefixes` **bỏ qua vùng `"…"`** là một hàm, không RFC, và mở khoá luôn số CỘT.
-- **Thứ tự đúng (rủi ro thấp trước):** B3b-3 → B3b-2 → B3b (chỉ số xuyên cây) →
-  `strip_package_prefixes` biết-literal → *rồi mới* định giá lại stage 2 trên nền stage 4.
-
-*(Nguyên văn cũ:)*
-**Stage 2:** đăng ký 8 tên bundled thành `SYM_MODULE` có cờ *bundled*; `lazy_resolver_resolve_field`
-tra cứu **scope toàn cục của unit hiện tại** thay vì nạp file ⇒ `std.collections.new_vec` chạy, và
-`std.string.len` bind **cùng một symbol** với `len` trần ⇒ **delta codegen = 0**.
-⚠️ Lời hứa "delta codegen = 0" **chỉ đúng cho những tên tình cờ đang là duy nhất** — vỡ trên
-overload thật (`map` ở cả Option lẫn Vec; `unwrap` ở cả Option lẫn Result), mà `resolver.ax:653/662`
-đã ghi rõ là chọn **TÙY TIỆN theo thứ tự hash-slot**. **BẮT BUỘC RFC** (§13: đổi `std.X.f` biểu thị gì).
-**Stage 3:** **XOÁ HẲN `strip_package_prefixes`** ⇒ hết B1, và **mở khoá CỘT trong chẩn đoán** (§3b).
-**Stage 4 (~~tuỳ chọn~~ → **TIỀN ĐỀ**):** module scoping thật cho symbol spliced, dùng
-`Symbol.decl_node` → offset → `srcmap_find` (hạ tầng đã có: `main_air.ax:682-689` ghi sẵn vùng srcmap
-cho **từng** module bundled).
-⛔ **KHÔNG làm option B** (nhồi thêm module vào bundle): chỉ 2/12 module thêm được an toàn
-(`math`, `sort`), trả **+0,15 s mỗi lần biên dịch VĨNH VIỄN** cho mọi user kể cả người không dùng,
-và **không sửa gì về cấu trúc**.
-📏 Đo được (bác bỏ lo ngại của tôi): DFE **bật mặc định** (`main_air.ax:928`) ⇒ bundle thêm module
-không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian biên dịch**, không phải kích thước.
+## 🧭 Stdlib reachability — option C, 4 stage → `knowledge/stdlib-reachability-option-c-stages.md`
+**Stage 1 ✅ XONG 2026-08-07** (A==B `9C6726C1…`): `strip_imports` bôi trắng **chỉ khi khớp CHÍNH XÁC**
+một mục của bảng DUY NHẤT `preprocessed_module_name()` (11 mục) ⇒ hết "hai danh sách"; B2 rơi ra miễn phí.
+⛔⛔ **THỨ TỰ STAGE GỐC LÀ SAI** (đo 2026-09-05) — xem `bug-b3b-cross-module-index-and-loader-defects.md`
+§5–§7: **stage 4 là TIỀN ĐỀ của stage 2** (thiếu danh tính theo module ⇒ stage 2 buộc khớp theo chính tả
+⇒ **vi phạm D1-3**, vỡ trên overload `map`/`unwrap`); **stage 3 PHỤ THUỘC stage 2**, không rẻ hơn.
+**Stage 2 BẮT BUỘC RFC.** Thứ tự đúng: B3b-3 ✅ → B3b-2 ✅ → B3b (chỉ số xuyên cây) →
+`strip_package_prefixes` biết-literal (đóng B1, mở khoá CỘT, **không cần RFC**) → *rồi mới* stage 2.
+⛔ **KHÔNG làm option B** (nhồi thêm module vào bundle) — đã đo và bác bỏ; lý do + số đo DFE ở file trên.
 
 ## 🐞 BUG PHỤ tìm được cùng lúc (mỗi cái filable riêng)
 - **B2 ✅ ĐÃ SỬA (stage 1)** `import stdthing` bị xoá oan — `match_prefix(s,i,"import std")` **không
