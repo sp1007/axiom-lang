@@ -1939,7 +1939,16 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     let intern = lazy.intern as ptr[InternPool]
     let mod_name = intern.get(mod.name_id)
 
+    // `std.string.replace` returns its INPUT unchanged when it finds no match
+    // (std/string.ax:760), so for every DOT-LESS module name -- i.e. every single-segment
+    // module, `import mymod` -- `rel_path` IS `mod_name`, not a copy of it. Freeing it below
+    // then destroyed the very name this function prints in its diagnostics, registers every
+    // export under (`mod_name + "." + local_name`), and frees a second time on the way out.
+    // This is the same trap the comment above `module_qualifier` (:869) already records for
+    // the resolver; the loader still had it, at BOTH free sites. So: own `rel_path` only when
+    // `replace` actually allocated, and never free an alias.
     let rel_path = std.string.replace(mod_name, ".", "/")
+    let rel_path_owned = (get_str_ptr(rel_path) as i64) != (get_str_ptr(mod_name) as i64)
     mut file_path := std.string.concat(rel_path, ".ax")
 
     // RFC 0011 P4 (increment 3b/3d): prefer a precompiled `<module>.lib` when the module is
@@ -1948,13 +1957,15 @@ pub fn ax_driver_load_module(mod_void: ptr[void], st: ptr[SymbolTable], tt: ptr[
     // threaded from lazy.modules), so its source is never recompiled.
     let lib_path = std.string.concat(rel_path, ".lib")
     if (lazy.auto_lib or source_is_library(file_path)) and file_exists(lib_path):
-        @free(get_str_ptr(rel_path))
+        if rel_path_owned:
+            @free(get_str_ptr(rel_path))
         @free(get_str_ptr(file_path))
         let rc = register_module_from_lib(mod, st, tt as ptr[TypeTable], intern, lib_path, mod_name)
         @free(get_str_ptr(lib_path))
         return rc
     @free(get_str_ptr(lib_path))
-    @free(get_str_ptr(rel_path))
+    if rel_path_owned:
+        @free(get_str_ptr(rel_path))
 
     mut opened := false
     mut actual_path := ""

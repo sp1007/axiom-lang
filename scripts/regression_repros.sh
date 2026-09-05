@@ -1442,6 +1442,45 @@ else
   fail=$((fail+1)); failed="$failed stdcli-halt"
 fi
 
+# --- B3b-2: the lazy loader must not FREE the module name it goes on using -----------
+# `std.string.replace` returns its INPUT unchanged when it finds no match, so for a module
+# name with NO DOT (`import b3b2mod` -- every single-segment module) `rel_path` IS
+# `mod_name`. ax_driver_load_module freed `rel_path` at both of its free sites and then kept
+# using `mod_name`: to print this diagnostic, to build the `<mod>.<name>` key every export is
+# registered under in the global scope, and to free a second time on the way out.
+#
+# Calibration on the pre-fix driver (bin/axc_native.exe, 2329600 bytes, A==B E4434464...):
+# the name came out DESTROYED -- the line ended at the opening quote,
+# `error: 1 type error(s) in imported module '` with no name and no closing quote --
+# reproducibly, 3/3 runs at -O0 and 3/3 at -O1. (Elsewhere the same defect printed differing
+# mojibake per optimization level; it is a use-after-free, so the exact garbage is not a
+# contract. What IS asserted is the post-fix invariant: the name appears VERBATIM.)
+#
+# Not a `reject` row on purpose: that comparator only asks whether an executable was
+# emitted, and the pre-fix compiler emitted none either -- it would have passed while
+# printing a nameless diagnostic.
+mnu_out="$REGTMP/modnameuaf.exe"
+rm -f "$mnu_out"
+mnu_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_b3b2modname.ax -o "$mnu_out" -O1 $AXEXTRA 2>&1 )
+mnu_rc=$?
+mnu_ok=1
+if [ "$mnu_rc" -ge 128 ]; then
+  echo "FAIL modname-uaf (exit=$mnu_rc -- the compiler CRASHED loading a dot-less module)"; mnu_ok=0
+elif [ "$mnu_rc" = "0" ]; then
+  echo "FAIL modname-uaf (exit 0; a module with type errors must fail the importing build)"; mnu_ok=0
+elif ! printf '%s' "$mnu_log" | grep -q "type error(s) in imported module 'b3b2mod'"; then
+  echo "FAIL modname-uaf (the diagnostic does not name the module VERBATIM -- name freed?)"; mnu_ok=0
+elif ! printf '%s' "$mnu_log" | grep -q 'aborting before code generation'; then
+  echo "FAIL modname-uaf (build did not stop at the load_errors gate)"; mnu_ok=0
+elif [ -f "$mnu_out" ]; then
+  echo "FAIL modname-uaf (emitted an executable from a module that failed to typecheck)"; mnu_ok=0
+fi
+if [ "$mnu_ok" = "1" ]; then
+  echo "PASS modname-uaf (exit=$mnu_rc, names the module verbatim, no exe emitted)"; pass=$((pass+1))
+else
+  fail=$((fail+1)); failed="$failed modname-uaf"
+fi
+
 # --- emit-c: the C backend writes through std.io, not libc stdio (libc step 5) ---
 # cgen.ax's ~40 `fputs(..., self.file)` calls became std.io stream writes. Nothing
 # else in this suite exercises the C backend at all, and the fixpoint does not:

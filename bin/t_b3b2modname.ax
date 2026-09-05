@@ -1,0 +1,20 @@
+// B3b-2: use-after-free of the module name in the lazy module loader.
+// `std.string.replace` returns its INPUT unchanged when there is no match, so for a module
+// name with NO DOT `rel_path` IS `mod_name`; ax_driver_load_module then freed `rel_path`
+// and kept using `mod_name` -- to print this very diagnostic, to build the qualified name
+// every export is registered under, and to free a second time on the way out.
+//
+// Calibration on the pre-fix driver (bin/axc_native.exe, 2329600 bytes, A==B E4434464...):
+// the module name printed as GARBAGE and the garbage differed by optimization level --
+// `'\xef\xbf\xbd\xef\xbf\xbd'` at -O0 and `'Sj'` at -O1 -- while a DOTTED module name
+// printed correctly. After the fix the name must appear verbatim: `b3b2mod`.
+//
+// NOT a `reject` row: that comparator only asks whether an executable was emitted, and a
+// use-after-free that crashes the compiler emits none either, so it would pass on the
+// broken compiler and prove nothing. The discriminating check is the `modname-uaf` block
+// at the end of scripts/regression_repros.sh.
+import b3b2mod
+
+fn main() -> i64:
+    println("không được biên dịch tới đây: ", b3b2mod.broken(41))
+    return 0
