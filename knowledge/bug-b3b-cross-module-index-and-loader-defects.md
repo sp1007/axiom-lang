@@ -75,6 +75,15 @@ ai đó từng đụng phải và **né tại chỗ** thay vì sửa hợp đồ
 Sửa ở call site (đừng free một alias) là rẻ nhất; đổi `replace` thành luôn-copy chạm hợp đồng stdlib
 nóng khắp self-image ⇒ phải đo A==B.
 
+⭐ **ĐÍNH CHÍNH/ MỞ RỘNG (tự đo 2026-09-05, sau báo cáo): có HAI chỗ free `rel_path`, không phải một.**
+`main_air.ax:1951` **và** `:1957` (đọc `:1938-1957`). Chỗ `:1951` **tệ hơn**: nó free `rel_path` rồi
+**ngay sau đó truyền `mod_name` vào `register_module_from_lib(...)`** ⇒ UAF tức thì trên con trỏ vừa
+giải phóng, trên nhánh `.lib` (`auto_lib` hoặc `source_is_library`). Bản vá phải sửa **cả hai**.
+📏 Đã quét cả lớp (rule 1 của [[lesson-comment-protects-one-line-only]]): **156** chỗ
+`@free(get_str_ptr(` trong compiler; **`cgen.ax` AN TOÀN** — cả 6 chỗ `replace(...)` ở `:236/241/305/
+348/379/392` đều bọc ngay bằng `alloc_str(mangled)` (copy) và **không bao giờ free `mangled`**, đó là
+idiom ĐÚNG. `resolver.ax:801-803` đã comment bỏ free. ⇒ **Chỉ `main_air.ax:1951` + `:1957` còn vi phạm.**
+
 #### ⭐⭐ B3b-2: hợp đồng aliasing NÀY ĐÃ ĐƯỢC VIẾT RA GIẤY — và vẫn bị vi phạm (đo 2026-09-05)
 `main_air.ax:869-873`, ngay trên `module_qualifier`, ghi **chính xác** cái bẫy:
 
