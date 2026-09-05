@@ -11,6 +11,16 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
+## Trạng thái cây (cập nhật 2026-09-05b — TẠM DỪNG, cây KHÔNG sạch)
+- ⛔ **ĐỌC `knowledge/session-handoff-2026-09-05b.md` TRƯỚC.** Cây còn **thay đổi B3b CHƯA COMMIT và
+  CHƯA QUA GATE**; bản lưu ở nhánh **`wip/b3b-current-tree` (`f71f40c`, local, UNVERIFIED)**.
+- 🆕 **B3b — ĐÃ TÌM RA NGUYÊN NHÂN GỐC, chưa kiểm chứng:** `ax_driver_load_module` ghi đè
+  `symtable.current_tree` và không khôi phục; nạp module là **TÁI NHẬP** nên khi quay ra, thanh ghi
+  còn trỏ vào module A ⇒ mọi symbol B định nghĩa **sau dòng `import`** bị đóng dấu thuộc cây của A.
+  Giải thích cả "kích hoạt chỉ theo SỐ NODE của A" lẫn `undefined name 'aparam'`.
+- Driver `bin/axc_native.exe` **nguyên vẹn**: A==B `29DB6D68…`, **2.330.112 byte** (đã đo lại sau khi
+  giết agent). Baseline **714/714** là số của phiên trước — **phiên 09-05b không chạy trọn suite**.
+
 ## Trạng thái cây (cập nhật 2026-09-05 — sửa B3/B6)
 - 🆕 **B3+B6 (một bug: `decl_node` xuyên cây trong `pre_infer_func_signature`) — A==B
   `F7146F3DBCDD3280E838B06538E946B33D2F3D19F32A18909BBAD81E22BC77E3`** (2.329.600 byte).
