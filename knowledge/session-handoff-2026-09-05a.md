@@ -1,6 +1,6 @@
 ---
 name: session-handoff-2026-09-05a
-description: Resume point — B3/B6 fixed, gated and pushed (360b3a2); B3b/stage-2 scoping investigation dispatched
+description: Resume point — B3/B6 + B3b-3 shipped (cc4a2cf, baseline 713); B3b mechanism refuted and the stage order re-priced; B3b-2 in flight
 metadata:
   type: project
 ---
@@ -39,20 +39,35 @@ unit KHÁC vào `self.tree`; ba call site (`:1626`, `:5898`, `:7081`) trong khi 
    với **vị trí** còn luật sống ở **khái niệm**. Xem `knowledge/lesson-comment-protects-one-line-only.md`.
    Áp luật đó vào chính nó đã **sửa được chẩn đoán**: có **HAI** chỗ free alias, không phải một.
 
-## 🔴 VIỆC TIẾP THEO — B3b (stage 2 của lộ trình stdlib)
-`import std.{iter,process,cli}` **vẫn 139**. Nguồn module nạp trễ **không được tiền xử lý** ⇒ nạp
-`std/collections.ax` **lần thứ hai**. **Đã chứng minh độc lập với bản vá B3** bằng biến thể chỉ-P0.
-Repro đã gửi ngân hàng (untracked): `nestbundledmod.ax` + `bin/probe_nestbundled.ax`.
+## 🔴 VIỆC TIẾP THEO — theo THỨ TỰ ĐÃ ĐỊNH GIÁ LẠI (không phải thứ tự cũ của lộ trình)
+⛔⛔ **Cơ chế cũ ghi ở đây ("nạp `std/collections.ax` lần thứ hai") ĐÃ BỊ BÁC BỎ 2026-09-05.**
+Ba phép đo: `--no-stdlib` (không hề trùng lặp) **vẫn hỏng**; trùng `std.result` **build sạch**; và
+**hai module user thuần** tái hiện y hệt. Nguyên nhân thật là **chỉ số node xuyên cây** (họ B3/B6,
+đường mono/`clone_subtree_from`), yếu tố kích hoạt là **SỐ NODE của module được import**.
+⇒ **B3b KHÔNG phải vấn đề stdlib/bundling.** Toàn bộ bằng chứng + phán quyết RFC:
+**`knowledge/bug-b3b-cross-module-index-and-loader-defects.md`**.
+
+**Thứ tự đúng (rủi ro thấp trước):**
+1. ✅ **B3b-3** — xong (`cc4a2cf`).
+2. 🔄 **B3b-2** — UAF loader, **đang chạy nền**. **HAI** chỗ free alias: `main_air.ax:1951` (tệ hơn —
+   free rồi truyền `mod_name` vào `register_module_from_lib`) **và** `:1957`, cộng chỗ thứ ba mới
+   thêm ở `cc4a2cf`. Làm **route (a)** (sửa call site); ⛔ **KHÔNG** đụng `replace` (route (b) chạm
+   24 call site, phải tách commit + đo A==B riêng).
+3. **B3b thật** — chỉ số xuyên cây: đưa qua `typecheck.ax:3793 sym_decl_tree` + kiểm biên §9.
+   Site cần audit: `typecheck.ax:5416-5427` (**không kiểm biên**), `:1206-1216`, `mono.ax:418-437`,
+   `mono.ax:473-529`, `air_builder.ax:769/:2096` (không kiểm) vs `:2705/:4005` (có kiểm).
+   Repro: `b3bpkg/moda.ax` + `b3bpkg/modb.ax` + `bin/probe_b3b_dotted.ax` (untracked, đã bank).
+4. **`strip_package_prefixes` biết-literal** ⇒ đóng **B1** + mở khoá **CỘT** trong chẩn đoán.
+   **Rẻ hơn stage 3 rất nhiều**, một hàm, không RFC.
+5. **Rồi mới** định giá lại stage 2 — ⛔ **stage 2 như đề xuất VI PHẠM D1-3** (buộc khớp theo chính
+   tả; vỡ trên overload `map`/`unwrap`), và **stage 4 là TIỀN ĐỀ của nó**, không phải phần đi sau.
+   **BẮT BUỘC RFC.**
+
 ⚠️ `std/iter.ax` còn ~23 lỗi parse của riêng nó ⇒ **không dùng nó làm acceptance test**.
 
-**Một `axiom-investigator` đang chạy nền** để scope stage 2 (agent `ae16a6660309714ee`). Nhiệm vụ:
-xác nhận/bác bỏ cơ chế, liệt kê 8 tên bundled từ bảng thật, chỉ ra chỗ sửa đúng lớp, trả lời câu hỏi
-**định danh** (D1 quyết định 3: khớp theo **identity**, KHÔNG theo **cách viết**), quan hệ với
-`strip_package_prefixes` (stage 3), có cần RFC không, oracle + hiệu chuẩn, và rủi ro với baseline 711.
-Nếu phiên mới không thấy báo cáo của nó ⇒ **chạy lại investigator với cùng đề bài**.
-
-## Hàng đợi sau đó (không đổi)
-- **Stage 3**: **XOÁ `strip_package_prefixes`** ⇒ hết **B1** (nó **làm hỏng HẰNG CHUỖI**) + mở khoá CỘT chẩn đoán.
+## Hàng đợi sau đó
+- ⛔ **Stage 3 (xoá `strip_package_prefixes`) KHÔNG rẻ — nó PHỤ THUỘC stage 2** (lời gọi
+  `std.string.replace` của chính compiler hôm nay chỉ chạy nhờ viết lại văn bản). Dùng mục 4 ở trên thay thế.
 - **libc 6-9 (đều B==C)**: `system`, `memcpy`/`memset` (`x86_regs.ax:233`), `strlen`
   (`x86_selector.ax:1202`), và giết `ax_runtime.dll` (gate ELF-only ở `linker.ax:3162-3175`).
 - **P4** (RFC 0038): `println` do user định nghĩa bị selector cướp vì khớp **chuỗi tên** ⇒ B==C.
