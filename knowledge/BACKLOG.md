@@ -259,6 +259,25 @@ Ma trận đo được:
 ĐƯỢC.** Cùng cảnh: `sort, json, fmt, time, process, thread, crypto, log, sync, iter`.
 ✅ Chẩn đoán **tốt, không im lặng**: `error: unresolved call to 'sqrt' on undefined namespace 'std'
 -- module not imported or not bundled on this build`.
+⚠️ **ĐÍNH CHÍNH câu "chẩn đoán tốt" ngay trên (đo lại 2026-09-05, có cặp control):** chẩn đoán đó
+**KHÔNG im lặng — nhưng nó NÓI SAI NGUYÊN NHÂN** cho đúng ba module *đã* bundled:
+```
+ax_assert(true, "x")            ⇒ build exit 0, chạy, in 42     // bare  ⇒ CHỨNG MINH nó ĐÃ bundled
+std.runtime.ax_assert(true,"x") ⇒ "unresolved call ... on undefined namespace 'std'
+                                   -- module not imported or not bundled on this build"
+```
+Câu *"not bundled on this build"* **đúng** cho `std.math` (thật sự không bundled), nhưng **SAI** cho
+`std.result` / `std.runtime` / `std.collections` — chúng **có** trong bundle (`preprocessed_module_name`
+0/3/7) và bare name chạy được. §8 đòi chẩn đoán **actionable**; câu này đẩy user đi bundle một thứ
+đã bundled rồi, thay vì nói sự thật: **tiền tố không nằm trong danh sách rewrite**.
+
+📏 **Con số chính xác của "hai danh sách" (đo 2026-09-05):** stage 1 đã hợp nhất `strip_imports` với
+bảng `preprocessed_module_name` (**11** mục) — nhưng **`strip_package_prefixes` (`main_air.ax:411-419`)
+vẫn giữ danh sách ĐỘC LẬP riêng của nó, chỉ **8** tiền tố**: `mem.alloc, scheduler, os.win32,
+os.linux_sys, os, string, io, net`. **Thiếu đúng 3: `std.result.`, `std.runtime.`, `std.collections.`**
+⇒ đó là toàn bộ nguyên nhân của hàng `std.collections` trong ma trận trên. **"Hai danh sách" CHƯA hết**,
+mới hết ở một trong hai chỗ.
+
 ⚠️ **ĐÍNH CHÍNH audit libc:** mục "`std/process.ax` + `std/net.ax` bị phân loại nhầm DLL ⇒ import
 từ `ucrtbase` không export" là **KHÔNG TỚI ĐƯỢC** — hai module đó **không dùng được** trên đường
 native ngay từ đầu. Vẫn nên sửa whitelist, nhưng **không phải bug user gặp**; hạ ưu tiên.
