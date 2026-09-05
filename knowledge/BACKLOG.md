@@ -414,9 +414,14 @@ không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian bi�
 - **B3 + B6 ✅ ĐÃ SỬA 2026-09-05 — HAI CÁI LÀ MỘT BUG.** `pre_infer_func_signature` đánh chỉ số
   `decl_node` của unit KHÁC vào `self.tree` ⇒ compiler SEGV 139. Chi tiết, ma trận kích hoạt, thí
   nghiệm nhồi và cách sửa: **`knowledge/bug-cross-tree-decl-node-segv.md`**.
-- **B3b 🔴 CÒN MỞ (defect KHÁC)** — `import std.{iter,process,cli}` vẫn 139: nguồn module nạp trễ
-  không được tiền xử lý ⇒ nạp `std/collections.ax` **lần thứ hai**. Đã chứng minh độc lập với bản vá
-  B3 ⇒ thuộc **stage 2** (đổi thiết kế). Repro: `nestbundledmod.ax` + `bin/probe_nestbundled.ax`.
+- **B3b 🔴 CÒN MỞ — và cơ chế ghi ở lộ trình đã bị BÁC BỎ (đo 2026-09-05).** Nạp trùng module là
+  hiện tượng **đi kèm, không phải nguyên nhân**: bản `--no-stdlib` (không hề trùng) vẫn hỏng y hệt,
+  còn trùng `std.result` thì **build sạch**. Nguyên nhân thật là **chỉ số node xuyên cây** (đúng họ
+  B3/B6, đường mono/typecheck mà bản vá B3 chưa phủ) và **hai module user thuần tái hiện được** ⇒
+  **không phải vấn đề stdlib/bundling**. ⛔ **Stage 2 như đề xuất VI PHẠM D1-3** (buộc phải khớp theo
+  chính tả; vỡ trên overload `map`/`unwrap`) — **stage 4 là TIỀN ĐỀ của stage 2**, lộ trình ghi ngược.
+  Kèm hai defect loader mới: **B3b-2** UAF ở `main_air.ax:1957`, **B3b-3** cổng B5 kiểm quá muộn.
+  Toàn bộ đo đạc, thứ tự khuyến nghị và phán quyết RFC: **`knowledge/bug-b3b-cross-module-index-and-loader-defects.md`**.
 - **B4 ✅ ĐÃ SỬA (stage 1)** — `mod.no_such_member()` trên module **đã nạp thành công**: nhận, sinh
   exe, SEGV lúc chạy, KHÔNG chẩn đoán. Nay `error: module 'X' has no member 'Y'` + `--> file:line`
   + caret. ⭐ Kiểm BUG#93 cũ (`typecheck.ax`) **không thấy** hình dạng này: nó hỏi "gốc chuỗi có
