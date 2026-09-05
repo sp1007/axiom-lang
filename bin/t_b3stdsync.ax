@@ -1,0 +1,10 @@
+// B3/B6 oracle: a std module that is NOT bundled is loaded lazily on import, and its
+// symbols carry decl_node indices belonging to the ROOT unit's tree. Forcing a signature
+// for one of those on the module's own (tiny) tree read out of bounds and killed the
+// COMPILER with SIGSEGV -- `import std.sync` could not be compiled at all (exit 139,
+// deterministic, no diagnostic). Now it loads and the program runs.
+import std.sync
+
+fn main() -> i32:
+    println("Nạp trễ std.sync không còn làm sập trình biên dịch: ", 42)
+    return 0

@@ -975,6 +975,18 @@ rows=(
   "t_modnomember|reject|"
   # ...and the FIELD_EXPR-receiver shape of the same rule, on a lazily loaded std module.
   "t_stdmathnomember|reject|"
+  # B3/B6: `pre_infer_func_signature` indexes self.tree, but three call sites handed it a
+  # `Symbol.decl_node` owned by ANOTHER unit's tree (the resolver records the owner in
+  # `symbol_trees`). Applying a root-unit node index (10^4..10^5) to a lazily loaded
+  # module's small tree read unmapped memory and killed the COMPILER: `import std.sync`,
+  # `std.thread`, `std.process` and any user module using `@compiler_intrinsic` exited 139
+  # with no diagnostic, deterministically, at every optimization level. Calibration on the
+  # pre-fix driver (bin/axc_native.exe, 9C6726C1...): both rows crashed the build with 139
+  # and produced no exe. The second row also pins the P1 half -- routing the inference to a
+  # checker bound to the OWNING tree, instead of merely skipping it, which otherwise turns
+  # the crash into spurious rejections ("undefined name 'raw32'").
+  "t_b3stdsync|out|Nạp trễ std.sync không còn làm sập trình biên dịch: 42"
+  "t_b3lazyintrinsic|out|Mô-đun nạp trễ gọi được stdlib đã bundle: 42"
 )
 
 # EXIT-CODE RANGE GUARD. A process exit code is masked to 8 bits, so an `exit` row whose

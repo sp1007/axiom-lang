@@ -6843,6 +6843,20 @@ pub struct TypeChecker:
     // the same situation means the param is genuinely un-inferable and the deferred
     // call is never instantiated -> segfault. This flag lets the defer site reject.
     current_fn_is_generic: bool
+    // BUG B3/B6: cross-tree signature inference. `pre_infer_func_signature` indexes
+    // `self.tree`, so a symbol whose `decl_node` belongs to ANOTHER unit's tree (a
+    // lazily loaded module, see `sym_decl_tree`) must be inferred by a checker bound
+    // to THAT tree. `node_types` is sized per tree, so the helper checker cannot be
+    // this one with `tree` swapped -- it is a separate TypeChecker, cached here (one
+    // live helper, keyed by owner tree) so a run of symbols from the same module does
+    // not rebuild it per symbol. Stored as ptr[void] because a struct cannot name a
+    // pointer to itself; cast back at the single use site.
+    foreign_tc: ptr[void]
+    foreign_tc_tree: ptr[AstTree]
+    // False on a helper checker built by the rule above: cross-tree inference is
+    // allowed to descend exactly ONE level, so two modules that name each other's
+    // functions cannot drive an unbounded checker-construction recursion.
+    allow_cross_tree_infer: bool
     pub diags_count: i64
 
 pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: ptr[SymbolTable], types: ptr[TypeTable]) -> ptr[TypeChecker]:
@@ -6865,6 +6879,9 @@ pub fn new_type_checker(tree: ptr[AstTree], intern: ptr[InternPool], symtable: p
     tc.current_return = 0 as u32
     tc.current_match_scrutinee = 0 as u32
     tc.current_fn_is_generic = false
+    tc.foreign_tc = null as ptr[void]
+    tc.foreign_tc_tree = null as ptr[AstTree]
+    tc.allow_cross_tree_infer = true
     tc.diags_count = 0 as i64
     return tc
 
@@ -8376,12 +8393,14 @@ pub fn resolve_method_sym(self: ptr[TypeChecker], field_name_id: u32, rec_type: 
                         ax_printf_local("      [TC-DEBUG-RESOLVE-FALLBACK] candidate sym_name=%s matches field!\n", (get_str_ptr(dbg_name)) as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64, 0 as i64)
                         safe_free_str(dbg_name)
                     mut t_id := sym.type_id
-                    if t_id == TYPE_UNKNOWN and sym.decl_node != 0 as u32:
-                        self.pre_infer_func_signature(sym.decl_node)
-                        t_id = self.symtable.symbols.data[idx].type_id
-                    if t_id != TYPE_UNKNOWN:
+                    if t_id == TYPE_UNKNOWN:
+                        // BUG B3/B6: this scans EVERY symbol, including ones declared in a
+                        // lazily loaded module's tree, so the decl node must be inferred on
+                        // ITS OWN tree (see `pre_infer_symbol_signature`), never on self.tree.
+                        t_id = self.pre_infer_symbol_signature(idx as u32)
+                    if t_id != TYPE_UNKNOWN and (t_id as i64) < self.types.entries.len:
                         let f_entry = self.types.entries.data[t_id]
-                        if f_entry.kind == TYPE_KIND_FUNC:
+                        if f_entry.kind == TYPE_KIND_FUNC and (f_entry.extra as i64) < self.types.funcs.len:
                             let fi = self.types.funcs.data[f_entry.extra]
                             if fi.params.len > 0:
                                 mut first_param_type = fi.params.data[0]
@@ -8735,10 +8754,14 @@ pub fn method_ret_type(self: ptr[TypeChecker], field_name_id: u32, rec_type: u32
     mut idx := 0 as i64
     while idx < self.symtable.symbols.len:
         let sym = self.symtable.symbols.data[idx]
-        // Only consider methods whose signature is ALREADY inferred. Do NOT call
-        // pre_infer_func_signature here: sym.decl_node may index a DIFFERENT
-        // module's AST tree, but pre_infer uses self.tree, so forcing it reads out
-        // of bounds and crashes the compiler (regression: t_mathx bignum methods).
+        // Only consider methods whose signature is ALREADY inferred. Forcing one here
+        // would have to go through `pre_infer_symbol_signature`, the single home of the
+        // "a symbol's decl_node belongs to the tree in symbol_trees, not to self.tree"
+        // rule (`sym_decl_tree`); this scan deliberately does NOT force inference -- it
+        // is a candidate FILTER over every symbol in the table, and inferring signatures
+        // as a side effect of filtering would change which types exist depending on how
+        // many candidates were scanned. (Historically it called pre_infer directly and
+        // crashed the compiler on a foreign decl_node: regression t_mathx bignum methods.)
         // Every index into the type table is bounds-checked for the same reason.
         if sym.kind == SYM_FUNC and sym.type_id != TYPE_UNKNOWN and (sym.type_id as i64) < self.types.entries.len:
             // PERF: zero-alloc name match (was intern.get + match_method_name + free
@@ -10521,16 +10544,87 @@ pub fn register_tuple_type(mut self: ptr[TypeChecker], first: u32) -> u32:
         @free(elem_types.data as ptr[u8])
     return self.types.register_struct(synth_nm_id, synth_fields)
 
+// The ONE implementation of "which AST tree does this symbol's `decl_node` index?".
+// `Symbol.decl_node` is a node index LOCAL to the unit it was declared in: the resolver
+// stamps the owning tree into `symtable.symbol_trees` at every define site
+// (resolver.ax:562/606/621, from `symtable.current_tree`). Applying a root-unit
+// decl_node (10^4..10^5 for a real program) to a lazily loaded module's small tree
+// reads far out of bounds -- BUG B3/B6: `import std.collections` / a module using
+// `@compiler_intrinsic` crashed the COMPILER with SIGSEGV -- and, when the index
+// happens to land in range, it silently stamps a signature taken from an unrelated
+// node, which is the worse, silent variant of the same defect.
+// Returns `self.tree` when nothing better is known (unstamped/builtin symbols).
+pub fn sym_decl_tree(self: ptr[TypeChecker], sym_idx: u32) -> ptr[AstTree]:
+    if (sym_idx as i64) < self.symtable.symbol_trees.len:
+        let t = self.symtable.symbol_trees.data[sym_idx as i64]
+        if t != null as ptr[AstTree]:
+            return t
+    return self.tree
+
+// Ensure `sym_idx` has an inferred function signature and return its type id
+// (TYPE_UNKNOWN when it cannot be inferred). This is the ONLY sanctioned way to force a
+// signature for a symbol that came from `symtable` rather than from a node of `self.tree`.
+//
+// Two things it does that a bare `pre_infer_func_signature(sym.decl_node)` cannot:
+//   1. it never applies a decl node to a tree that does not own it (see `sym_decl_tree`);
+//   2. when the owner is a DIFFERENT tree it still RESTORES the signature, by running the
+//      pre-inference on a checker bound to that tree. The results land in the SHARED
+//      SymbolTable/TypeTable, so this checker sees them. Skipping the inference instead
+//      would leave `type_id` UNKNOWN, which turns the crash into spurious rejections
+//      ("undefined name 'raw32'", "type 'hash_key' does not implement 'rem'").
+// Module loading runs during the ROOT unit's resolve, i.e. BEFORE the root unit's own
+// pre_infer pre-pass, so every bundled symbol is still UNKNOWN when a module is checked
+// and this on-demand path is the normal case, not a corner case.
+pub fn pre_infer_symbol_signature(mut self: ptr[TypeChecker], sym_idx: u32) -> u32:
+    if sym_idx == 0 as u32 or (sym_idx as i64) >= self.symtable.symbols.len:
+        return TYPE_UNKNOWN
+    let existing = self.symtable.symbols.data[sym_idx as i64].type_id
+    if existing != TYPE_UNKNOWN:
+        return existing
+    let decl = self.symtable.symbols.data[sym_idx as i64].decl_node
+    if decl == 0 as u32 or decl == 0xffffffff as u32:
+        return TYPE_UNKNOWN
+    let owner = self.sym_decl_tree(sym_idx)
+    if (decl as i64) >= owner.nodes.len:
+        return TYPE_UNKNOWN
+    if owner == self.tree:
+        self.pre_infer_func_signature(decl)
+        return self.symtable.symbols.data[sym_idx as i64].type_id
+    if not self.allow_cross_tree_infer:
+        return TYPE_UNKNOWN
+    mut helper := self.foreign_tc as ptr[TypeChecker]
+    if helper == null as ptr[TypeChecker] or self.foreign_tc_tree != owner:
+        helper = new_type_checker(owner, self.intern, self.symtable, self.types)
+        helper.allow_cross_tree_infer = false
+        self.foreign_tc = helper as ptr[void]
+        self.foreign_tc_tree = owner
+    let diags_before = helper.diags_count
+    helper.pre_infer_func_signature(decl)
+    // B5 rule: a diagnostic raised while checking another unit must not be swallowed --
+    // the driver halts on diags_count, and an error nobody counts is an accept-then-
+    // miscompile. Only the DELTA is adopted, because the helper's counter is cumulative.
+    if helper.diags_count > diags_before:
+        self.diags_count = self.diags_count + (helper.diags_count - diags_before)
+    return self.symtable.symbols.data[sym_idx as i64].type_id
+
 pub fn pre_infer_func_signature(mut self: ptr[TypeChecker], node_idx: u32):
+    // CLAUDE.md Â§9: a pass validates its own input. `node_idx` must be a node of
+    // `self.tree` and `sym_idx` a real symbol; callers used to pass a `Symbol.decl_node`
+    // owned by another module's tree (BUG B3/B6), which both crashed here and, in range,
+    // stamped a bogus signature. Callers should go through `pre_infer_symbol_signature`.
+    if (node_idx as i64) >= self.tree.nodes.len:
+        return
     let sym_idx = self.tree.nodes.data[node_idx].payload
+    if (sym_idx as i64) >= self.symtable.symbols.len:
+        return
     mut has_existing := false
     if sym_idx != 0 as u32:
         let sym = self.symtable.symbols.data[sym_idx]
-        if sym.type_id != 0 as u32:
+        if sym.type_id != 0 as u32 and (sym.type_id as i64) < self.types.entries.len:
             let entry = self.types.entries.data[sym.type_id]
             if entry.kind == TYPE_KIND_FUNC:
                 has_existing = true
-    
+
     if not has_existing:
         mut param_types := new_u32_vec()
         mut ret_type := TYPE_UNKNOWN
@@ -12647,10 +12741,10 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                 if csym != 0 as u32 and self.symtable.symbols.data[csym as i64].kind == SYM_FUNC:
                     mut cft = self.symtable.symbols.data[csym].type_id
                     if cft == TYPE_UNKNOWN:
-                        let cdecl = self.symtable.symbols.data[csym].decl_node
-                        if cdecl != 0 as u32 and cdecl != 0xffffffff as u32:
-                            self.pre_infer_func_signature(cdecl)
-                            cft = self.symtable.symbols.data[csym].type_id
+                        // BUG B3/B6: the callee may live in a lazily loaded module (this is
+                        // the free-call path, e.g. `streq(..)` inside such a module), whose
+                        // decl_node indexes ANOTHER tree -- infer it there, not here.
+                        cft = self.pre_infer_symbol_signature(csym)
                     if cft != TYPE_UNKNOWN and (cft as i64) < self.types.entries.len:
                         let ce = self.types.entries.data[cft]
                         if ce.kind == TYPE_KIND_FUNC:
@@ -13831,9 +13925,10 @@ pub fn infer_node(mut self: ptr[TypeChecker], node_idx: u32, expected: u32) -> u
                     // above already consumed `args`; we only reinterpret result_type.)
                     if sym.kind == SYM_FUNC:
                         mut fnty := sym.type_id
-                        if fnty == TYPE_UNKNOWN and sym.decl_node != 0 as u32 and sym.decl_node != 0xffffffff as u32:
-                            self.pre_infer_func_signature(sym.decl_node)
-                            fnty = self.symtable.symbols.data[sym_idx as i64].type_id
+                        if fnty == TYPE_UNKNOWN:
+                            // BUG B3/B6: `f[T](..)` may name a function of another unit;
+                            // its decl_node belongs to that unit's tree.
+                            fnty = self.pre_infer_symbol_signature(sym_idx)
                         if fnty != TYPE_UNKNOWN and (fnty as i64) < self.types.entries.len:
                             let fe = self.types.entries.data[fnty as i64]
                             if fe.kind == TYPE_KIND_FUNC:

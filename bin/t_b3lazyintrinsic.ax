@@ -1,0 +1,11 @@
+// B3/B6 oracle: a lazily loaded (non-bundled) module whose body uses
+// `@compiler_intrinsic` AND calls into the BUNDLED stdlib. Both shapes made the
+// compiler read a ROOT-tree decl_node index against the module's own small tree in
+// `pre_infer_func_signature` -> SIGSEGV (exit 139) while type-checking the module.
+// See the fixture `b3mod.ax` at the repo root (same placement as `std_util.ax`, the
+// B2 fixture: the loader resolves a module path relative to the build cwd).
+import b3mod
+
+fn main() -> i32:
+    println("Mô-đun nạp trễ gọi được stdlib đã bundle: ", b3mod.twice(21))
+    return 0

@@ -11,8 +11,15 @@ file này (~2k token) + handoff mới nhất; vào `MEMORY.md` **chỉ bằng `G
 
 ---
 
-## Trạng thái cây (cập nhật 2026-08-07 — stdlib reachability stage 1)
-- 🆕 **Stage 1 stdlib-reachability + B2/B4/B5 — A==B
+## Trạng thái cây (cập nhật 2026-09-05 — sửa B3/B6)
+- 🆕 **B3+B6 (một bug: `decl_node` xuyên cây trong `pre_infer_func_signature`) — A==B
+  `F7146F3DBCDD3280E838B06538E946B33D2F3D19F32A18909BBAD81E22BC77E3`** (2.329.600 byte).
+  Module nạp trễ gọi được stdlib đã bundle; `import std.{sync,thread,collections,string}` hết SEGV.
+  Regression **711/711 ở CẢ default lẫn `-O0`** ⇒ **BASELINE MỚI = 711**.
+  ⚠️ Frontend-only ⇒ chỉ cần A==B; **mốc B==C gần nhất vẫn là `c3eae77`/`52D1ABD4…`**.
+  ⚠️ Bản vá **không** byte-identical với seed (code mới nằm trong self-image dù quá trình tự biên
+  dịch không hề đi qua đường nạp trễ) — **A==B mới là tiêu chí**, đừng kỳ vọng byte-identical.
+- Mốc trước: **Stage 1 stdlib-reachability + B2/B4/B5 — A==B
   `9C6726C11F366ACA5BA3970F72D0C0502C7495506F82AEBBCEF33A6C14C326E2`** (2.329.600 byte).
   `import std.math` + `std.math.sqrt(16.0)` chạy end-to-end. Regression **709/709 ở CẢ
   default lẫn `-O0`** ⇒ **BASELINE MỚI = 709**. Chi tiết ở §"HƯỚNG ĐÃ ĐỊNH GIÁ" bên dưới.
@@ -404,11 +411,12 @@ không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian bi�
 - **B2 ✅ ĐÃ SỬA (stage 1)** `import stdthing` bị xoá oan — `match_prefix(s,i,"import std")` **không
   có biên phân cách**. Rơi ra miễn phí khi đổi sang so khớp **chính xác** với bảng module.
   Oracle `bin/t_stdprefixmod.ax` (+ fixture `std_util.ax` ở gốc repo): reject trước, 42 sau.
-- **B3 🔴🔴 CRASH — nay ĐÃ TỚI ĐƯỢC sau stage 1, ưu tiên tăng** — module user
-  `import std.string`/`std.collections` ⇒ **compiler SEGV 139**, deterministic 4/4 ở cả -O0/-O1,
-  trong lúc typecheck module được nạp. Không crash dưới `--no-stdlib` ⇒ do **trùng lặp
-  bundled-vs-loaded**. **Chưa localize được dòng.** Đo 2026-08-07: `import std.iter` và
-  `import std.cli` (hai module import `std.collections`) làm compiler SEGV.
+- **B3 + B6 ✅ ĐÃ SỬA 2026-09-05 — HAI CÁI LÀ MỘT BUG.** `pre_infer_func_signature` đánh chỉ số
+  `decl_node` của unit KHÁC vào `self.tree` ⇒ compiler SEGV 139. Chi tiết, ma trận kích hoạt, thí
+  nghiệm nhồi và cách sửa: **`knowledge/bug-cross-tree-decl-node-segv.md`**.
+- **B3b 🔴 CÒN MỞ (defect KHÁC)** — `import std.{iter,process,cli}` vẫn 139: nguồn module nạp trễ
+  không được tiền xử lý ⇒ nạp `std/collections.ax` **lần thứ hai**. Đã chứng minh độc lập với bản vá
+  B3 ⇒ thuộc **stage 2** (đổi thiết kế). Repro: `nestbundledmod.ax` + `bin/probe_nestbundled.ax`.
 - **B4 ✅ ĐÃ SỬA (stage 1)** — `mod.no_such_member()` trên module **đã nạp thành công**: nhận, sinh
   exe, SEGV lúc chạy, KHÔNG chẩn đoán. Nay `error: module 'X' has no member 'Y'` + `--> file:line`
   + caret. ⭐ Kiểm BUG#93 cũ (`typecheck.ax`) **không thấy** hình dạng này: nó hỏi "gốc chuỗi có
@@ -422,17 +430,14 @@ không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian bi�
   driver chặn ngay trước cổng `checker.diags_count`. Bonus: srcmap của module được gắn **TRƯỚC**
   `parse_program` ⇒ lỗi parse trong module in `--> std/foo.ax:4` thay vì "byte offset N".
   Oracle `bin/t_modparseerr.ax` (in 42 trước, reject sau).
-- **B6 🔴🔴 CRASH — nay ĐÃ TỚI ĐƯỢC sau stage 1, ưu tiên tăng** —
-  `@compiler_intrinsic("is_windows")` trong module nạp lazy ⇒ **SEGV 139**.
-  Đo 2026-08-07: `import std.{sync,thread,process}` **làm compiler SEGV** (trước stage 1 thì dòng
-  import bị nuốt nên nhận im lặng). **Đây là item ưu tiên cao nhất kế tiếp của hướng này.**
 
 ## 📋 SỨC KHOẺ 12 module (đo, không đoán)
 Đo lại **sau stage 1** (bằng `import std.X` thật, không phải suy đoán):
 | module | trạng thái sau stage 1 |
 |---|---|
 | `math`, `sort` | ✅ **chạy end-to-end** (`sqrt(16)+pow(2,3)` = 12.000000, cả -O0 lẫn -O1) |
-| `sync`, `thread`, `process`, `iter`, `cli` | 🔴 **compiler SEGV** (B6 / B3) — nay tới được |
+| `sync`, `thread` | ✅ **biên dịch sạch** sau khi sửa B3/B6 (2026-09-05) |
+| `process`, `iter`, `cli` | 🔴 vẫn **SEGV** — nhưng vì **B3b** (nạp trùng module đã bundle), không phải B3 |
 | `json, fmt, time, crypto, log` | ❌ reject sạch (lỗi parse của module, nay CHÍ TỬ nhờ B5) |
 | `net` | vẫn nằm trong bảng bôi trắng ⇒ không đổi (không có gì để gọi) |
 ⇒ **Chỉ `math` + `sort` dùng được**, đúng như định giá trước khi làm — stage 1 gỡ **rào cấu trúc**,
