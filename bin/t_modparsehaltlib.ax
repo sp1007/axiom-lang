@@ -1,0 +1,18 @@
+// Fixture (not a standalone test): the imported half of bin/t_modparsehalt.ax. Compiled on
+// its own it is expected to be REJECTED -- the missing `:` on `broken` below is deliberate.
+//
+// Two properties are baked in on purpose and neither may be "tidied away":
+//   1. the parse error, which is what B3b-3 halts on;
+//   2. `import std.collections`, a BUNDLED module. A lazily loaded module's source is not
+//      preprocessed, so this import is not blanked and the loader reads std/collections.ax
+//      a SECOND time (B3b proper, still open). That duplicated tree is what the half-built
+//      AST used to be dragged into, and it is why the pre-fix compiler did not merely print
+//      the parse error but died of SIGSEGV (139) right after printing it.
+// Once B3b proper is fixed this fixture must STILL be rejected -- via (1) alone.
+import std.collections
+
+pub fn ok(x: i64) -> i64:
+    return x + 1
+
+pub fn broken(x: i64) -> i64
+    return x

@@ -1378,6 +1378,70 @@ else
   fail=$((fail+1)); failed="$failed input-halt"
 fi
 
+# --- B3b-3: a parse error in a LAZILY LOADED module must HALT, not crash ------
+# ax_driver_load_module counted an imported module's parse errors and then deliberately
+# CONTINUED into resolve -> typecheck -> the export walk on the half-built AST. The
+# diagnostics were printed correctly and the compiler then died of SIGSEGV, so the crash
+# BURIED the diagnostic. CLAUDE.md §9: a pass must not run on invalid input.
+#
+# These are exit-code checks and NOT `reject` rows on purpose. The `reject` comparator only
+# asks whether an executable was emitted -- and a SEGFAULT emits none either, so a reject
+# row would have PASSED on the pre-fix compiler and proved nothing. Calibration on the
+# pre-fix driver (bin/axc_native.exe, 2329600 bytes, A==B F7146F3D...): BOTH fixtures exited
+# 139 with no exe, at -O0 and at -O1.
+#
+# (1) Self-contained fixture pair, so the check does not depend on std/ contents:
+#     bin/t_modparsehaltlib.ax has a deliberate missing `:` AND imports a bundled module
+#     (the shape that made the continuation fatal). Three properties, and the exit code is
+#     the one that actually bit:
+#       1. exit non-zero and NOT a crash (139 / >=128)
+#       2. the diagnostic names the module whose parse failed
+#       3. no executable produced
+mph_out="$REGTMP/modparsehalt.exe"
+rm -f "$mph_out"
+mph_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_modparsehalt.ax -o "$mph_out" -O1 $AXEXTRA 2>&1 )
+mph_rc=$?
+mph_ok=1
+if [ "$mph_rc" -ge 128 ]; then
+  echo "FAIL modparse-halt (exit=$mph_rc -- the compiler CRASHED on a module with parse errors)"; mph_ok=0
+elif [ "$mph_rc" = "0" ]; then
+  echo "FAIL modparse-halt (exit 0; a module with parse errors must fail the importing build)"; mph_ok=0
+elif ! printf '%s' "$mph_log" | grep -q "parse error(s) in imported module 'bin.t_modparsehaltlib'"; then
+  echo "FAIL modparse-halt (diagnostic does not name the module that failed to parse)"; mph_ok=0
+elif ! printf '%s' "$mph_log" | grep -q 'aborting before code generation'; then
+  echo "FAIL modparse-halt (build did not stop at the load_errors gate)"; mph_ok=0
+elif [ -f "$mph_out" ]; then
+  echo "FAIL modparse-halt (emitted an executable from a half-built module AST)"; mph_ok=0
+fi
+if [ "$mph_ok" = "1" ]; then
+  echo "PASS modparse-halt (exit=$mph_rc, names the module, no exe emitted)"; pass=$((pass+1))
+else
+  fail=$((fail+1)); failed="$failed modparse-halt"
+fi
+
+# (2) The case measured in the wild: `import std.cli` (std/cli.ax is written in the brace
+#     syntax the parser rejects -- 9 parse errors). Asserted as NOT-A-CRASH rather than a
+#     fixed exit code, deliberately: if std/cli.ax is ever ported to the accepted syntax the
+#     program becomes a legitimately successful build and that must not read as a
+#     regression. What may never come back is the compiler dying on it.
+sch_out="$REGTMP/stdclihalt.exe"
+rm -f "$sch_out"
+sch_log=$( timeout "$TIMEOUT" "$AXC" build bin/t_stdclihalt.ax -o "$sch_out" -O1 $AXEXTRA 2>&1 )
+sch_rc=$?
+sch_ok=1
+if [ "$sch_rc" -ge 128 ]; then
+  echo "FAIL stdcli-halt (exit=$sch_rc -- the compiler CRASHED on 'import std.cli')"; sch_ok=0
+elif [ "$sch_rc" != "0" ] && ! printf '%s' "$sch_log" | grep -q 'aborting before code generation'; then
+  echo "FAIL stdcli-halt (failed without stopping at a gate: exit=$sch_rc)"; sch_ok=0
+elif [ "$sch_rc" != "0" ] && [ -f "$sch_out" ]; then
+  echo "FAIL stdcli-halt (rejected the build but emitted an executable anyway)"; sch_ok=0
+fi
+if [ "$sch_ok" = "1" ]; then
+  echo "PASS stdcli-halt (exit=$sch_rc, no crash on a module full of parse errors)"; pass=$((pass+1))
+else
+  fail=$((fail+1)); failed="$failed stdcli-halt"
+fi
+
 # --- emit-c: the C backend writes through std.io, not libc stdio (libc step 5) ---
 # cgen.ax's ~40 `fputs(..., self.file)` calls became std.io stream writes. Nothing
 # else in this suite exercises the C backend at all, and the fixpoint does not:

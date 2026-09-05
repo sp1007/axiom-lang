@@ -1,0 +1,17 @@
+// B3b-3, the case measured in the wild: std/cli.ax carries 9 parse errors of its own (it is
+// written in the brace syntax the parser does not accept), and importing it made the
+// compiler print `error: 9 parse error(s) in imported module 'std.cli'` and then die of
+// SIGSEGV -- exit 139, no diagnostic about the crash, at every optimization level.
+//
+// Calibration on the pre-fix driver (bin/axc_native.exe, 2329600 bytes): exit 139 at -O0 and
+// at -O1. After the fix: exit 1, no executable, `aborting before code generation`.
+//
+// The check in scripts/regression_repros.sh asserts NOT-A-CRASH rather than a fixed exit
+// code, deliberately: if std/cli.ax is ever ported to the accepted syntax this program
+// becomes a legitimately successful build, and that must not read as a regression. What may
+// never come back is the compiler dying on it.
+import std.cli
+
+fn main() -> i64:
+    println("std.cli không được làm sập compiler: ", 42)
+    return 0

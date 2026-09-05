@@ -1,0 +1,19 @@
+// B3b-3: after counting an imported module's parse errors the loader deliberately CONTINUED
+// into resolve -> typecheck -> the export walk on a half-built AST (CLAUDE.md §9 forbids a
+// pass operating on invalid input). The compiler printed the parse diagnostics and then
+// SEGFAULTED, so the crash buried a diagnostic that had already been produced correctly.
+//
+// Calibration on the pre-fix driver (bin/axc_native.exe, 2329600 bytes, A==B F7146F3D...):
+// this program exits **139** with no executable, at -O0 and at -O1. After the fix it exits
+// 1 with `error: N parse error(s) in imported module 'bin.t_modparsehaltlib'` followed by
+// `aborting before code generation`.
+//
+// NOTE the exit code is the point here, so this row cannot be a plain `reject` row: the
+// suite's `reject` comparator only asks whether an executable was emitted, and a SEGFAULT
+// emits none either -- it would have PASSED before the fix. The discriminating check lives
+// in the `modparse-halt` block at the end of scripts/regression_repros.sh.
+import bin.t_modparsehaltlib
+
+fn main() -> i64:
+    println("không được biên dịch tới đây: ", bin.t_modparsehaltlib.ok(41))
+    return 0
