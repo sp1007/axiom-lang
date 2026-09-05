@@ -8,13 +8,13 @@ metadata:
 # Handoff 2026-09-05a
 
 ## ✅ TRẠNG THÁI: SẠCH, ĐÃ COMMIT + PUSH, GREEN
-HEAD = **`360b3a2`** `fix(typecheck): a lazily loaded module may call the bundled stdlib again`.
-Đã push lên `main`. Không có việc dở dang trong cây.
+HEAD = **`cc4a2cf`** `fix(loader): a module with parse errors stops the build instead of crashing it`.
+Đã push lên `main`. **Một implementer đang chạy nền cho B3b-2** (UAF loader) — chưa commit gì.
 
 | | |
 |---|---|
-| Driver `bin/axc_native.exe` | A==B **`F7146F3DBCDD3280E838B06538E946B33D2F3D19F32A18909BBAD81E22BC77E3`**, **2.329.600 byte** (đã `ls -l`) |
-| Baseline | **711/711** ở **CẢ** default **LẪN `-O0`** — **tự chạy lại, không lấy số của agent** |
+| Driver `bin/axc_native.exe` | A==B **`E44344648837F413CB631C3CC1C3D8137C0F8D9B8B6EE35614DBF180C7284744`**, **2.329.600 byte** (đã `ls -l`) |
+| Baseline | **713/713** ở **CẢ** default **LẪN `-O0`** — **tự chạy lại, không lấy số của agent** |
 | Mốc **B==C** gần nhất | vẫn `c3eae77` / `52D1ABD4…` ⇒ **thay đổi backend kế tiếp phải dựng lại B==C từ driver MỚI này** |
 
 ## Đã ship phiên này
@@ -22,6 +22,22 @@ HEAD = **`360b3a2`** `fix(typecheck): a lazily loaded module may call the bundle
 unit KHÁC vào `self.tree`; ba call site (`:1626`, `:5898`, `:7081`) trong khi **bản sao thứ tư `:1985`
 đã được canh sẵn**. Chi tiết đầy đủ: **`knowledge/bug-cross-tree-decl-node-segv.md`**.
 `import std.{sync,thread,collections,string}` + module user dùng `@compiler_intrinsic`: **139 → 0**.
+
+## 📦 ĐÃ SHIP THÊM SAU B3/B6 (cùng phiên)
+`cc4a2cf` **B3b-3** — loader dừng khi module có lỗi parse (§9): `std.iter`/`std.cli` **139 → 1**,
+`std.process` vẫn 139 (đúng: nó chết ở B3b thật). Baseline **711 → 713**.
+`4cc1617` bỏ chặn quy tắc oracle §7.1 (P1 đã đóng từ RFC 0038 — dòng "bị chặn" đã cũ).
+`9646de4` **RFC 0040** `--verbose` (proposed). `5a2c385` + `9beeda6` + `500d550` + `5b659f0` tài liệu.
+
+## ⚠️ HAI PHÁT HIỆN VỀ HẠ TẦNG KIỂM THỬ (quan trọng hơn bản vá)
+1. ⛔ **`cmp=reject` KHÔNG phân biệt "từ chối sạch" với "compiler SẬP"** — nó chỉ xét "không có exe",
+   mà SIGSEGV cũng không sinh exe. **107 hàng `reject`** đang mù với việc compiler sập trên đúng
+   chương trình chúng canh. Tôi đã **đưa gợi ý comparator SAI** trong đề bài B3b-3; chỉ **quy tắc hiệu
+   chuẩn bắt buộc** mới bắt được. Đề xuất guard: `knowledge/lesson-reject-comparator-blind-to-crashes.md`
+   — **chưa cài**, cần hiệu chuẩn riêng và có thể làm đỏ vài hàng trong 107 (đó là tính năng).
+2. ⭐ **Meta-defect lặp 4 lần trong một ngày**: luật được **ghi đúng** rồi vẫn bị vi phạm, vì prose gắn
+   với **vị trí** còn luật sống ở **khái niệm**. Xem `knowledge/lesson-comment-protects-one-line-only.md`.
+   Áp luật đó vào chính nó đã **sửa được chẩn đoán**: có **HAI** chỗ free alias, không phải một.
 
 ## 🔴 VIỆC TIẾP THEO — B3b (stage 2 của lộ trình stdlib)
 `import std.{iter,process,cli}` **vẫn 139**. Nguồn module nạp trễ **không được tiền xử lý** ⇒ nạp
