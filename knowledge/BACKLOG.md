@@ -395,12 +395,28 @@ suy ra **từ chính bảng đó** ⇒ hết "hai danh sách".
 ⚠️ **Hệ quả đã đo:** `import std.{sync,thread,process,iter,cli}` nay **tới được loader ⇒ compiler
 SEGV** (B3/B6) thay vì bị nuốt im lặng như trước. Không file nào trong corpus dính (audit 0
 collateral), nhưng đây là **bug tiếp theo phải sửa** — crash không chẩn đoán là tệ hơn cả im lặng.
+⛔⛔ **THỨ TỰ DƯỚI ĐÂY LÀ SAI — đã đo 2026-09-05, xem
+`knowledge/bug-b3b-cross-module-index-and-loader-defects.md` §5-§7.** Giữ nguyên văn để đối chiếu,
+nhưng **đừng thực hiện theo thứ tự này**:
+- **Stage 4 KHÔNG "tuỳ chọn" — nó là TIỀN ĐỀ của stage 2.** Không có danh tính theo module thì stage 2
+  **buộc phải khớp theo CHÍNH TẢ** ⇒ **vi phạm quyết định D1-3**.
+- **Stage 3 KHÔNG rẻ hơn stage 2 — nó PHỤ THUỘC stage 2** (hôm nay chính lời gọi `std.string.replace`
+  của compiler chỉ chạy nhờ viết lại văn bản). Và **B1 không cần stage 3**: cho
+  `strip_package_prefixes` **bỏ qua vùng `"…"`** là một hàm, không RFC, và mở khoá luôn số CỘT.
+- **Thứ tự đúng (rủi ro thấp trước):** B3b-3 → B3b-2 → B3b (chỉ số xuyên cây) →
+  `strip_package_prefixes` biết-literal → *rồi mới* định giá lại stage 2 trên nền stage 4.
+
+*(Nguyên văn cũ:)*
 **Stage 2:** đăng ký 8 tên bundled thành `SYM_MODULE` có cờ *bundled*; `lazy_resolver_resolve_field`
 tra cứu **scope toàn cục của unit hiện tại** thay vì nạp file ⇒ `std.collections.new_vec` chạy, và
 `std.string.len` bind **cùng một symbol** với `len` trần ⇒ **delta codegen = 0**.
+⚠️ Lời hứa "delta codegen = 0" **chỉ đúng cho những tên tình cờ đang là duy nhất** — vỡ trên
+overload thật (`map` ở cả Option lẫn Vec; `unwrap` ở cả Option lẫn Result), mà `resolver.ax:653/662`
+đã ghi rõ là chọn **TÙY TIỆN theo thứ tự hash-slot**. **BẮT BUỘC RFC** (§13: đổi `std.X.f` biểu thị gì).
 **Stage 3:** **XOÁ HẲN `strip_package_prefixes`** ⇒ hết B1, và **mở khoá CỘT trong chẩn đoán** (§3b).
-**Stage 4 (tuỳ chọn):** module scoping thật cho symbol spliced, dùng `Symbol.decl_node` → offset →
-`srcmap_find` (hạ tầng đã có từ stage 2b chẩn đoán).
+**Stage 4 (~~tuỳ chọn~~ → **TIỀN ĐỀ**):** module scoping thật cho symbol spliced, dùng
+`Symbol.decl_node` → offset → `srcmap_find` (hạ tầng đã có: `main_air.ax:682-689` ghi sẵn vùng srcmap
+cho **từng** module bundled).
 ⛔ **KHÔNG làm option B** (nhồi thêm module vào bundle): chỉ 2/12 module thêm được an toàn
 (`math`, `sort`), trả **+0,15 s mỗi lần biên dịch VĨNH VIỄN** cho mọi user kể cả người không dùng,
 và **không sửa gì về cấu trúc**.
@@ -435,6 +451,18 @@ không dùng cho ra **binary BYTE-IDENTICAL**. Giá thật là **thời gian bi�
   driver chặn ngay trước cổng `checker.diags_count`. Bonus: srcmap của module được gắn **TRƯỚC**
   `parse_program` ⇒ lỗi parse trong module in `--> std/foo.ax:4` thay vì "byte offset N".
   Oracle `bin/t_modparseerr.ax` (in 42 trước, reject sau).
+
+## 🐞 CLI — CỜ KHÔNG NHẬN DẠNG BỊ **NUỐT IM LẶNG** (đo 2026-09-05, chưa sửa)
+Chuỗi `if/elif` phân tích tuỳ chọn ở `main_air.ax:1058-1169` kết thúc ở `-ctgc-free-report`
+**KHÔNG có `else` cuối** ⇒ mọi tham số không khớp nhánh nào **rơi tọt qua**, vòng lặp đi tiếp.
+⇒ `axc foo.ax --no-stdib` (gõ sai) biên dịch **CÓ stdlib**, báo thành công, và **không hề nói** rằng
+cờ vừa nhận là vô nghĩa. Tương tự với `-O2`, `--target`, `--shared` gõ sai.
+⭐ Đây là **lớp accept-then-miscompile (BUG#53) áp vào CLI**: user nhận một bản build **không phải**
+bản họ yêu cầu, mà không có tín hiệu nào.
+⚠️ **Hệ quả cho việc kiểm thử**: mọi cờ mới "chạy được" ngay cả trước khi hiện thực ⇒ oracle phải
+assert **HIỆU QUẢ**, không bao giờ assert việc cờ **được chấp nhận** (đã ghi vào RFC 0040 §7.1).
+Chưa sửa: bề mặt breakage riêng (mọi script đang truyền cờ mà compiler này không biết sẽ bắt đầu
+fail — đúng mục đích, nhưng phải audit riêng).
 
 ## 📋 SỨC KHOẺ 12 module (đo, không đoán)
 Đo lại **sau stage 1** (bằng `import std.X` thật, không phải suy đoán):
