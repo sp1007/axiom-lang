@@ -27,6 +27,7 @@ Prose gắn với **vị trí**, không gắn với **luật**. Ai đọc dòng 
 | 2 | `BACKLOG.md` §print/println — ghi rõ **"P1+P2+P3 đóng bằng RFC 0038"** | cùng file, ~300 dòng sau: **"BỊ CHẶN BỞI P1 ⇒ phải sửa P1 trước"**; và `CLAUDE.md §7.1` | Chặn oan **quy tắc oracle §7.1** suốt nhiều phiên |
 | 3 | `print_helpers.ax:114` `is_verbose_debug` — whitelist **19 chuỗi** quyết định "dòng nào là debug" | mọi call site: phân loại theo **CÁCH VIẾT**; `parser.ax:171` đã ghi một ca rò rỉ | 19 dòng in **vô điều kiện**, không cờ nào tắt được; **đổi câu chữ = âm thầm đổi việc in hay không** |
 | 4 | `main_air.ax:869-873` — prose mô tả **chính xác** bẫy aliasing của `replace`, kèm *"which segfaulted the resolver on the first attempt here"* | `main_air.ax:1957` **vẫn free alias** (dù `resolver.ax:803`/`:809` đã comment bỏ free, và chuỗi `r0…r8` không free trung gian) | **UAF** tên module ⇒ chẩn đoán in **rác khác nhau theo mức tối ưu** (`\xef\xbf\xbd\xef\xbf\xbd` ở -O0, `Sj` ở -O1) |
+| **5** | **CHÍNH TÔI**, cùng phiên: viết `lesson-comment-protects-one-line-only.md` (file này) + luật §24 "commit sau đóng TODO thì sửa file chứa TODO **trong cùng commit**" | **`session-handoff-2026-09-05a.md`** — mục "VIỆC TIẾP THEO" vẫn kể **cơ chế B3b ĐÃ BỊ BÁC BỎ** và vẫn nói investigator "đang chạy" dù nó đã báo cáo xong | File có nhiệm vụ **DUY NHẤT** là làm điểm resume ⇒ phiên mới đọc nó **đầu tiên** và tin theo. Sửa ở `4e1426b` |
 
 ## Vì sao nó cứ lọt (đừng đổ cho bất cẩn)
 - **Prose vô hình ở nơi cần nó.** Người viết `typecheck.ax:5898` không có lý do gì để đọc `:1985`.
@@ -37,6 +38,19 @@ Prose gắn với **vị trí**, không gắn với **luật**. Ai đọc dòng 
 - **"Một luật, N bản sao" là hình dạng, không phải sự trùng hợp.** Cùng họ với P6
   (`ownership.ax:138,162`), RFC 0037 rank 2/3, và P4 — tất cả đều là **khớp theo chính tả / lặp lại
   luật**, đúng lớp mà user đã phán quyết ở **D1 quyết định 3: khoá theo DANH TÍNH, không theo CÁCH VIẾT.**
+
+## ⭐⭐⭐ Ca 5 là ca quan trọng nhất: luật này áp cho **CHÍNH BẢN VIẾT CỦA MÌNH**
+Bốn ca đầu là defect **tìm thấy trong repo**. Ca 5 do **chính tôi tạo ra, trong cùng phiên mà tôi
+đang viết file bài học này** — và nằm ở **file resume**, chỗ đắt nhất có thể.
+⇒ Kết luận không dễ chịu nhưng đúng: **prose của tôi cũng gắn với VỊ TRÍ y như prose của người
+khác.** Viết ra luật **không** miễn nhiễm cho người viết. Nó cũng bác bỏ cách đọc dễ chịu về bốn ca
+kia ("ai đó bất cẩn"). Cụ thể:
+- Khi một phép đo **BÁC BỎ** một mô tả cũ, phải sửa **mọi chỗ đang kể mô tả đó** trong **CÙNG
+  commit** — nhất là handoff/BACKLOG, vốn được đọc **TRƯỚC** file bằng chứng.
+- **Trạng thái động ("đang chạy nền", "chờ báo cáo") hết hạn nhanh nhất.** Đã ghi vào file bền thì
+  phải sửa ngay khi nó hết đúng, hoặc **đừng ghi vào file bền**.
+- Kiểm rẻ trước khi commit tài liệu: đọc lại **chính đoạn mình vừa dán** và hỏi *"câu này còn đúng
+  sau những gì tôi vừa đo không?"* Ca 5 lẽ ra chỉ tốn một lần đọc lại.
 
 ## Luật hành động
 1. ⭐ **Khi phát hiện một bẫy, đừng chỉ ghi comment — hãy đi tìm CÁC BẢN SAO KHÁC NGAY.**
