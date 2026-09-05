@@ -49,6 +49,37 @@ tra từng cái chứ đừng nới guard cho vừa.
 ⛔ **Sửa `scripts/regression_repros.sh` TRƯỚC khi bắt đầu lượt chạy nào, không bao giờ trong lúc chạy**
 (bash đọc script dần — xem [[lesson-taskstop-leaves-suite-running]]).
 
+## ⭐ HIỆU CHUẨN ĐÃ ĐO TRƯỚC (2026-09-05, trên driver `29DB6D68…`) — guard là THUẦN BỔ SUNG
+
+Câu hỏi chặn đường của bản ghi này (*"nếu trong 107 hàng đang có crash bị che thì guard sẽ làm đỏ"*)
+**đã được trả lời bằng phép đo, TRƯỚC khi sửa script**: chạy cả **107** chương trình `reject` qua một
+**bản sao riêng** của driver (tách khỏi `bin/` để không đụng lần build nào đang chạy —
+[[lesson-taskstop-leaves-suite-running]]):
+
+| tiêu chí | kết quả trên 107/107 |
+|---|---|
+| exit code | **exit=1** ở **tất cả** — không hàng nào là 139/134/136/124 |
+| sinh exe | **không hàng nào** sinh exe |
+| dòng chẩn đoán | **≥ 2 dòng** ở tất cả (phân bố 2/3/5/7/8/9/13/29) — **không hàng nào im lặng** |
+
+⇒ **Cả ba tiêu chí đều cài được mà KHÔNG làm đỏ hàng nào.** Guard này là **thuần bổ sung bảo vệ**,
+không phải một cuộc dọn dẹp ⇒ nó **không còn bị chặn** bởi việc "phải điều tra từng cái trong 107".
+
+### Fixture hiệu chuẩn (bắt buộc: test phải FAIL được trước khi tin nó)
+```axiom
+import std.process        // ⇒ SIGSEGV 139, không sinh exe  (đo 2026-09-05)
+fn main() -> i32:
+    return 0
+```
+Hôm nay một hàng `reject` trỏ vào chương trình này **PASS** — đúng cái defect này.
+
+### ⚠️ ĐÍNH CHÍNH cho chính đề xuất ở trên: tiêu chí 3 **KHÔNG** bắt được ca này
+Bản `std.process` **có in chẩn đoán** (`error: undefined name 'raw32'` × nhiều) **rồi mới sập**.
+⇒ Tiêu chí *"có ít nhất một dòng chẩn đoán"* sẽ cho nó **QUA**. Chỉ **tiêu chí 1 (mã thoát là tín
+hiệu crash)** mới bắt được. Tiêu chí 3 vẫn đáng có (nó canh §8 "reject im lặng"), nhưng **đừng nhầm
+nó là cái chặn crash** — đúng lớp sai lầm mà chính bản ghi này cảnh báo: *một comparator đặt tên theo
+Ý ĐỊNH nhưng cài đặt theo TÁC DỤNG PHỤ*.
+
 ## Bài học phương pháp
 ⭐ **Một comparator được đặt tên theo Ý ĐỊNH ("reject") nhưng cài đặt theo TÁC DỤNG PHỤ ("không có
 file") sẽ nhận nhầm mọi thứ khác cũng gây ra tác dụng phụ đó.** Trước khi tin một comparator, hãy hỏi:
