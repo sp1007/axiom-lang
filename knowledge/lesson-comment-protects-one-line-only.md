@@ -1,13 +1,13 @@
 ---
 name: lesson-comment-protects-one-line-only
-description: Four measured instances in one day of the same meta-defect — the rule was written down correctly and violated anyway, because prose protects one line and only a check protects every line
+description: Five measured instances in one day of the same meta-defect (the fifth self-inflicted, in the resume file) — the rule was written down correctly and violated anyway, because prose protects one line and only a check protects every line
 metadata:
   type: feedback
 ---
 
 # Một comment bảo vệ ĐÚNG MỘT DÒNG. Chỉ một CHECK mới bảo vệ mọi dòng.
 
-Câu này **đã có sẵn** trong [[lesson-exit-code-8bit-masking]]. Ngày 2026-09-05 nó tái xuất **bốn lần
+Câu này **đã có sẵn** trong [[lesson-exit-code-8bit-masking]]. Ngày 2026-09-05 nó tái xuất **NĂM lần
 trong một phiên**, mỗi lần ở một hệ thống con khác nhau. Ghi lại ở đây như một **lớp defect có tên**,
 kèm *check nào lẽ ra đã bắt được* — vì sản phẩm bền của bài học này không phải thêm một ghi chú, mà là
 những cái check đó.
@@ -17,9 +17,9 @@ những cái check đó.
 > **bản sao khác của cùng luật vẫn vi phạm.**
 
 Prose gắn với **vị trí**, không gắn với **luật**. Ai đọc dòng đó thì được bảo vệ; ai viết dòng thứ hai
-ở file khác thì không. Và cả bốn ca dưới đây đều **thất bại IM LẶNG** — không có test nào đỏ.
+ở file khác thì không. Và cả năm ca dưới đây đều **thất bại IM LẶNG** — không có test nào đỏ.
 
-## Bốn ca đo được (2026-09-05)
+## Năm ca đo được (2026-09-05)
 
 | # | Luật đã viết ở đâu | Bị vi phạm ở đâu | Hậu quả |
 |---|---|---|---|
@@ -33,7 +33,7 @@ Prose gắn với **vị trí**, không gắn với **luật**. Ai đọc dòng 
 - **Prose vô hình ở nơi cần nó.** Người viết `typecheck.ax:5898` không có lý do gì để đọc `:1985`.
 - **Né tại chỗ trông giống như đã sửa.** Ca 4: comment bỏ hai dòng free ở `resolver.ax` **có tác dụng**
   — bug biến mất khỏi tầm mắt, nên không ai đi tìm bản sao thứ ba.
-- **Cả bốn ca đều im lặng.** Không có ca nào làm đỏ một test đang có. Ca 1 và 4 còn **phụ thuộc dữ
+- **Cả năm ca đều im lặng.** Không có ca nào làm đỏ một test đang có. Ca 1 và 4 còn **phụ thuộc dữ
   liệu** (kích thước cây / có dấu chấm trong tên) nên tái hiện thất thường.
 - **"Một luật, N bản sao" là hình dạng, không phải sự trùng hợp.** Cùng họ với P6
   (`ownership.ax:138,162`), RFC 0037 rank 2/3, và P4 — tất cả đều là **khớp theo chính tả / lặp lại
@@ -70,7 +70,7 @@ kia ("ai đó bất cẩn"). Cụ thể:
    được đóng ở tầng luật**. Đọc lý do, rồi đi tìm bản sao.
 
 ## Cách phát hiện rẻ nhất (dùng được ngay)
-Bốn ca đều lộ ra bằng **một** trong ba động tác, không cái nào cần build:
+Năm ca đều lộ ra bằng **một** trong ba động tác, không cái nào cần build:
 - `grep` tên hàm/biểu thức nguy hiểm rồi **đếm bản sao có canh vs không canh**;
 - đọc **comment cạnh chỗ vừa sửa** và hỏi *"luật này còn ở đâu nữa?"*;
 - với contract cấp phát: `grep '@free(get_str_ptr('` rồi đối chiếu từng cái với hàm sinh ra chuỗi đó
